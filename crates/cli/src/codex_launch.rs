@@ -199,6 +199,13 @@ fn prepare(
             &Default::default(),
             "",
         )?;
+        // Outside a role, the user directory is the kept one, not the host
+        // user's: the operator's guards are given it there.
+        crate::agent_guards::keep(
+            Path::new(&home),
+            harness,
+            &crate::agent_setup::guards_of_host()?,
+        )?;
         let command = harness.in_worktree(command, &worktree.path.display().to_string(), &home);
         (Line::new().launch(&command), PathBuf::from(home))
     };
@@ -210,7 +217,8 @@ fn prepare(
         codex_home: Some(home),
     };
     let line = harness.with_effort(&line.done(), effort.as_deref());
-    Ok((harness.with_service_tier(&line, service_tier.as_deref()), settings))
+    let line = harness.with_service_tier(&line, service_tier.as_deref());
+    Ok((harness.with_goal_budget(&line), settings))
 }
 
 /// A watch's launch line. A harness with a session of its own gets a fresh
@@ -231,6 +239,7 @@ pub(crate) fn watch_line(
                 harness,
                 true,
             )?;
+            crate::agent_guards::keep(&home, harness, &crate::agent_setup::guards_of_host()?)?;
             let (effort, _) = effort(harness)?;
             (home.display().to_string(), effort)
         }

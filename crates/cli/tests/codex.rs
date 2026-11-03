@@ -441,7 +441,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
              --config 'project_doc_fallback_filenames=[\"CLAUDE.md\"]' \
              --config 'project_root_markers=[]' \
              --config '{hook}' --config features.memories=false \
-             --config skills.bundled.enabled=false --model 'gpt-5.5'",
+             --config skills.bundled.enabled=false --model 'gpt-5.5' \
+             --config 'goals.max_goal_token_budget=1000000'",
             role = role.display(),
             kept = kept.display(),
             worktree = dir.display(),
@@ -451,14 +452,19 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
         )
     );
     // Nothing was asked at its terminal: both of its questions are answered
-    // on the line, and the worker backend was sent the brief's pointer alone.
+    // on the line, and the worker backend was sent the brief's pointer alone,
+    // set as the session's goal.
     let sent: Vec<Vec<String>> = world
         .orca_calls()
         .into_iter()
         .filter(|call| call.starts_with(&["terminal".to_string(), "send".to_string()]))
         .collect();
     assert_eq!(sent.len(), 1, "{sent:?}");
-    assert!(sent[0].iter().any(|word| word.starts_with("Your task brief is the file ")));
+    let brief = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]))
+        .join("convoy-worker-prompt.md");
+    let goal = afkconvoy_core::harness::Harness::Codex.brief_line(&brief.display().to_string());
+    assert!(goal.starts_with("/goal Your task brief is the file "), "{goal}");
+    assert!(sent[0].contains(&goal), "{sent:?}");
 
     // The fleet's own user directory for Codex: the user's login, as a link
     // to theirs, and nothing else of the user's — and no `AGENTS.md`, which
@@ -496,6 +502,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
             "skills.bundled.enabled=false",
             "--model",
             "gpt-5.5",
+            "--config",
+            "goals.max_goal_token_budget=1000000",
         ])
     );
 
@@ -510,7 +518,13 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     let next = PathBuf::from(&under_codex(&world, &line)[1]);
     assert_ne!(next, kept);
     assert_eq!(held(&next), [] as [&str; 0], "a link to no login is left");
-    assert!(line.ends_with(" --config skills.bundled.enabled=false --model 'gpt-5.5'"), "{line}");
+    assert!(
+        line.ends_with(
+            " --config skills.bundled.enabled=false --model 'gpt-5.5' \
+             --config 'goals.max_goal_token_budget=1000000'"
+        ),
+        "{line}"
+    );
 }
 
 /// What the stand-in Codex was told in `ran` as a developer's: the rules the
@@ -1666,4 +1680,207 @@ fn a_codex_worker_takes_fresh_user_effort_and_casting_starts_nothing() {
     );
     world.issue(8, &["ready-for-agent"]);
     assert_selection(&launch(&world, 8, 1100), "fleet-first", Some("high"));
+}
+
+/// Declares, in `world`'s host settings, one guard (sunfmin/control#529)
+/// that refuses deleting a branch, saying which harness asked.
+fn declare_guard(world: &World) {
+    let guard = world.root.join("dotfiles/no-delete.sh");
+    std::fs::create_dir_all(guard.parent().unwrap()).unwrap();
+    std::fs::write(
+        &guard,
+        "#!/bin/sh\ncase \"$(cat)\" in *'push origin --delete'*) echo \"no deleting, said to $AFKCONVOY_HARNESS\" >&2; exit 2 ;; esac\n",
+    )
+    .unwrap();
+    let list = world.root.join("dotfiles/guards.txt");
+    std::fs::write(&list, format!("shell sh '{}'\n", guard.display())).unwrap();
+    world.say_host_settings(json!({"agent_guards": list}));
+}
+
+/// What the shell line `command` answers when run as Codex runs a hook, for
+/// a shell call of `line`: its exit code and what it said on standard error.
+fn guard_answers(command: &str, line: &str) -> (i32, String) {
+    use std::io::Write;
+    let call = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": line}, "cwd": "/tmp"});
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", command])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(call.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+#[test]
+fn an_unbound_codex_worker_is_given_the_declared_guards_in_its_kept_home_and_nothing_else() {
+    let world = unbound_codex();
+    declare_guard(&world);
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    // The host user's own hooks, orca's among them, are not the worker's.
+    write(
+        &world.home(),
+        ".codex/hooks.json",
+        "{\"hooks\": {\"PreToolUse\": [{\"matcher\": \"\", \"hooks\": [{\"type\": \"command\", \"command\": \"orca-hook\", \"timeout\": 5}]}]}}\n",
+    );
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    let ran = under_codex(&world, &format!("cd '{}' && {}", dir.display(), started(&world, &dir)));
+    let kept = Path::new(&ran[1]);
+    assert!(kept.starts_with(dir.join(".afkconvoy-tmp")), "{ran:?}");
+    assert!(ran.iter().any(|word| word == "--dangerously-bypass-hook-trust"), "{ran:?}");
+
+    let hooks: Value =
+        serde_json::from_str(&std::fs::read_to_string(kept.join("hooks.json")).unwrap()).unwrap();
+    let groups = hooks["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(groups.len(), 1, "the guard alone, none of the user's: {hooks}");
+    assert_eq!(groups[0]["matcher"], "Bash");
+    let command = groups[0]["hooks"][0]["command"].as_str().unwrap();
+    let (code, said) = guard_answers(command, "git push origin --delete topic");
+    assert_eq!((code, said.trim()), (2, "no deleting, said to codex"));
+    assert_eq!(guard_answers(command, "git status").0, 0);
+}
+
+#[test]
+fn an_unbound_codex_worker_with_no_guards_declared_has_no_hook_settings_in_its_kept_home() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    write(&world.home(), ".codex/hooks.json", "{\"hooks\": {}}\n");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    let ran = under_codex(&world, &format!("cd '{}' && {}", dir.display(), started(&world, &dir)));
+    assert!(!Path::new(&ran[1]).join("hooks.json").exists(), "{ran:?}");
+}
+
+#[test]
+fn a_codex_worker_in_a_role_is_given_none_of_the_declared_guards() {
+    let world = bound_alone();
+    declare_guard(&world);
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.issue(7, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+    let dir = worktree(&world, 7);
+    let kept = PathBuf::from(&under_codex(&world, &started(&world, &dir))[1]);
+    let held: Vec<String> = std::fs::read_dir(&kept)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(held, ["auth.json"]);
+}
+
+/// The directory the fleet kept for the session of the Codex worker in `dir`.
+fn session_home(dir: &Path) -> PathBuf {
+    let notes = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
+    let note = afkconvoy_core::harness::Harness::Codex.noted_home().unwrap();
+    PathBuf::from(std::fs::read_to_string(notes.join(note)).unwrap().trim())
+}
+
+/// Codex's goal store in `home`, holding one goal at `status`, as
+/// codex-cli 0.166.0 keeps it.
+fn goal_at(home: &Path, status: &str) {
+    let store = home.join("goals_1.sqlite");
+    let _ = std::fs::remove_file(&store);
+    let sql = format!(
+        "create table thread_goals (thread_id text primary key, status text not null, \
+         updated_at_ms integer not null); insert into thread_goals values ('t', '{status}', 1);"
+    );
+    let made = Command::new("sqlite3").arg(&store).arg(sql).status().unwrap();
+    assert!(made.success());
+}
+
+/// Codex's session of the worker in `dir`, in `home`, as codex-cli 0.166.0
+/// records a goal's turns: one the goal's setting started, and — `continued`
+/// — one Codex began by itself after that one ended, still open.
+fn goal_session(home: &Path, dir: &Path, continued: bool) {
+    let started = |at: u64| {
+        json!({"timestamp": "2026-11-03T03:50:56.776Z", "type": "event_msg", "payload": {
+            "type": "task_started", "started_at": at,
+            "turn_attribution": {"turn_trigger": "goal"}}})
+    };
+    let mut lines = vec![
+        json!({"timestamp": "2026-11-03T03:50:56.700Z", "type": "session_meta",
+            "payload": {"cwd": dir, "id": "t"}}),
+        started(1010),
+    ];
+    if continued {
+        lines.push(json!({"timestamp": "2026-11-03T03:51:05.368Z", "type": "event_msg",
+            "payload": {"type": "task_complete", "completed_at": 1040}}));
+        lines.push(started(1041));
+    }
+    let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    write(home, "sessions/2026/11/03/rollout-goal.jsonl", &text);
+}
+
+/// The lines typed at the worker's terminal in `dir`, in order.
+fn typed(world: &World, dir: &Path) -> Vec<String> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    let here = terminals.iter().filter(|t| t["worktreePath"] == dir.to_str().unwrap());
+    let sent = here.flat_map(|t| t["sent"].as_array().cloned().unwrap_or_default());
+    sent.map(|sent| sent["text"].as_str().unwrap_or_default().to_string()).collect()
+}
+
+#[test]
+fn a_codex_worker_whose_verdict_stands_has_the_goal_codex_still_continues_ended() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    let home = session_home(&dir);
+    assert!(typed(&world, &dir)[0].starts_with("/goal Your task brief is the file "));
+    let comments_read = || {
+        let calls: Vec<String> = world.gh_calls().iter().map(|call| call.join(" ")).collect();
+        calls.iter().any(|call| call.contains("issues/7/comments"))
+    };
+
+    // At its first turn, its goal active and a verdict already said: at
+    // work, and nothing on GitHub is read for it.
+    goal_at(&home, "active");
+    goal_session(&home, &dir, false);
+    world.comment(7, "<!--convoy:verdict phase=escalate-->\nwhat the worker says");
+    orca_heard(&world, "UserPromptSubmit", 1010);
+    wrote(&world, 1050);
+    world.gh_calls();
+    assert_eq!(did(&tick(&world, 1060).ok())[0], "judge 7 nothing");
+    assert!(!comments_read());
+    assert_eq!(typed(&world, &dir).len(), 1);
+
+    // Codex continued it after its verdict: its goal is ended, once, and
+    // the turn it is in left to finish.
+    goal_session(&home, &dir, true);
+    orca_heard(&world, "UserPromptSubmit", 1041);
+    wrote(&world, 1070);
+    assert_eq!(did(&tick(&world, 1080).ok())[0], "judge 7 nothing");
+    assert!(comments_read());
+    assert_eq!(typed(&world, &dir)[1..], ["/goal clear"]);
+
+    // Its goal ended, nothing more is typed, and nothing read.
+    goal_at(&home, "complete");
+    world.gh_calls();
+    assert_eq!(did(&tick(&world, 1090).ok())[0], "judge 7 nothing");
+    assert!(!comments_read());
+    assert_eq!(typed(&world, &dir).len(), 2);
+}
+
+#[test]
+fn a_codex_worker_its_harness_continues_with_no_verdict_is_left_at_its_goal() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    let home = session_home(&dir);
+    goal_at(&home, "active");
+    goal_session(&home, &dir, true);
+    orca_heard(&world, "UserPromptSubmit", 1041);
+    wrote(&world, 1070);
+    assert_eq!(did(&tick(&world, 1080).ok())[0], "judge 7 nothing");
+    assert_eq!(typed(&world, &dir).len(), 1, "the brief alone");
 }

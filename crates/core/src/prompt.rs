@@ -959,6 +959,17 @@ pub fn brief_pointer(brief: &str) -> String {
     )
 }
 
+/// What a worker whose harness keeps a goal is given as that goal
+/// (`Harness::brief_line`): the brief pointer, and when to mark the goal
+/// complete. The task stays in the brief: this names it, and copies none of it.
+pub fn goal_objective(brief: &str) -> String {
+    format!(
+        "{} Mark this goal complete once the brief's outcome stands: your PR landed, or your \
+         verdict comment posted.",
+        brief_pointer(brief)
+    )
+}
+
 /// The one line typed at a worker that stopped with no PR and no verdict.
 /// Short on purpose: a long text arrives as a paste the worker asks to have
 /// confirmed, which is the stall this is sent to break.

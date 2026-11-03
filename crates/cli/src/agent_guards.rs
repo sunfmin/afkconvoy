@@ -240,8 +240,26 @@ fn wired_text(text: Option<&str>, harness: Harness, guards: &[Guard]) -> Result<
 /// changed the file. A harness with no hook settings is given none.
 pub fn wire(home: &Path, harness: Harness, guards: &[Guard]) -> Result<bool> {
     let Some(hooks) = harness.user_hooks() else { return Ok(false) };
-    let file = home.join(hooks.settings);
-    let text = match std::fs::read_to_string(&file) {
+    wire_file(&home.join(hooks.settings), harness, guards)
+}
+
+/// Gives a session of `harness` outside a role, whose user directory is the
+/// kept home `dir` and not the host user's (sunfmin/control#543), `guards`
+/// in that home: its hook settings there hold the guard entries `wire`
+/// makes, and nothing of the host user's own hooks, which would run orca's
+/// too. With no guards, a home that holds no hook settings is given none.
+pub fn keep(dir: &Path, harness: Harness, guards: &[Guard]) -> Result<bool> {
+    let Some(hooks) = harness.user_hooks() else { return Ok(false) };
+    // The settings file is named under the user directory the kept home
+    // stands in for.
+    let name = Path::new(hooks.settings).file_name().context("the hook settings name no file")?;
+    wire_file(&dir.join(name), harness, guards)
+}
+
+/// Wires `guards` for `harness` into the hook settings `file` → whether it
+/// changed the file.
+fn wire_file(file: &Path, harness: Harness, guards: &[Guard]) -> Result<bool> {
+    let text = match std::fs::read_to_string(file) {
         Ok(text) => Some(text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error).with_context(|| format!("cannot read {}", file.display())),
@@ -256,7 +274,7 @@ pub fn wire(home: &Path, harness: Harness, guards: &[Guard]) -> Result<bool> {
             .with_context(|| format!("cannot make {}", parent.display()))?;
     }
     // Written through, not replaced: the file may be a link of the operator's.
-    std::fs::write(&file, written).with_context(|| format!("cannot write {}", file.display()))?;
+    std::fs::write(file, written).with_context(|| format!("cannot write {}", file.display()))?;
     Ok(true)
 }
 
