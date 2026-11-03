@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::harness::Harness;
+use crate::harness::{Goal, Harness};
 
 /// The System One model asked.
 pub const MODEL: &str = "jev-latest";
@@ -347,6 +347,8 @@ pub enum Evidence<'a> {
     Judged(&'a Answers),
     /// The session exited with a failure, as these lines say.
     Exited(&'a [String]),
+    /// The goal its harness keeps for it, as its store says it.
+    Goal(Goal),
 }
 
 /// What a stopped worker is, and what the fleet does with it.
@@ -387,6 +389,16 @@ pub fn decide(evidence: Evidence) -> Result<Option<Decision>, String> {
         Evidence::Error { harness, error } => errored(harness, error),
         Evidence::Judged(answers) => Some(judged(answers)?),
         Evidence::Exited(lines) => Some(Decision::of(Class::Failed, lines.to_vec())),
+        Evidence::Goal(goal) => goal_stopped(goal),
+    })
+}
+
+/// A goal its harness stopped short of its task — blocked by its model, or
+/// at its budget — is a worker short of its task: its harness continues it
+/// no more. Any other goal decides nothing.
+fn goal_stopped(goal: Goal) -> Option<Decision> {
+    goal.stopped().then(|| {
+        Decision::of(Class::Short, vec![format!("its harness stopped its goal: {}", goal.key())])
     })
 }
 
@@ -690,5 +702,17 @@ mod tests {
             (failed.class, failed.scope, failed.action),
             (Class::Failed, Scope::Worker, Action::Continue)
         );
+    }
+
+    #[test]
+    fn a_goal_its_harness_stopped_is_a_worker_short_of_its_task_and_any_other_decides_nothing() {
+        for goal in [Goal::Blocked, Goal::BudgetLimited] {
+            let decided = decide(Evidence::Goal(goal)).unwrap().unwrap();
+            assert_eq!((decided.class, decided.action), (Class::Short, Action::Nudge), "{goal:?}");
+            assert_eq!(decided.evidence, [format!("its harness stopped its goal: {}", goal.key())]);
+        }
+        for goal in [Goal::Unset, Goal::Active, Goal::Paused, Goal::UsageLimited, Goal::Complete] {
+            assert_eq!(decide(Evidence::Goal(goal)), Ok(None), "{goal:?}");
+        }
     }
 }

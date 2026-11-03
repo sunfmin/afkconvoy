@@ -441,7 +441,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
              --config 'project_doc_fallback_filenames=[\"CLAUDE.md\"]' \
              --config 'project_root_markers=[]' \
              --config '{hook}' --config features.memories=false \
-             --config skills.bundled.enabled=false --model 'gpt-5.5'",
+             --config skills.bundled.enabled=false --model 'gpt-5.5' \
+             --config 'goals.max_goal_token_budget=1000000'",
             role = role.display(),
             kept = kept.display(),
             worktree = dir.display(),
@@ -451,14 +452,19 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
         )
     );
     // Nothing was asked at its terminal: both of its questions are answered
-    // on the line, and the worker backend was sent the brief's pointer alone.
+    // on the line, and the worker backend was sent the brief's pointer alone,
+    // set as the session's goal.
     let sent: Vec<Vec<String>> = world
         .orca_calls()
         .into_iter()
         .filter(|call| call.starts_with(&["terminal".to_string(), "send".to_string()]))
         .collect();
     assert_eq!(sent.len(), 1, "{sent:?}");
-    assert!(sent[0].iter().any(|word| word.starts_with("Your task brief is the file ")));
+    let brief = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]))
+        .join("convoy-worker-prompt.md");
+    let goal = afkconvoy_core::harness::Harness::Codex.brief_line(&brief.display().to_string());
+    assert!(goal.starts_with("/goal Your task brief is the file "), "{goal}");
+    assert!(sent[0].contains(&goal), "{sent:?}");
 
     // The fleet's own user directory for Codex: the user's login, as a link
     // to theirs, and nothing else of the user's — and no `AGENTS.md`, which
@@ -496,6 +502,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
             "skills.bundled.enabled=false",
             "--model",
             "gpt-5.5",
+            "--config",
+            "goals.max_goal_token_budget=1000000",
         ])
     );
 
@@ -510,7 +518,13 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     let next = PathBuf::from(&under_codex(&world, &line)[1]);
     assert_ne!(next, kept);
     assert_eq!(held(&next), [] as [&str; 0], "a link to no login is left");
-    assert!(line.ends_with(" --config skills.bundled.enabled=false --model 'gpt-5.5'"), "{line}");
+    assert!(
+        line.ends_with(
+            " --config skills.bundled.enabled=false --model 'gpt-5.5' \
+             --config 'goals.max_goal_token_budget=1000000'"
+        ),
+        "{line}"
+    );
 }
 
 /// What the stand-in Codex was told in `ran` as a developer's: the rules the
@@ -1758,4 +1772,115 @@ fn a_codex_worker_in_a_role_is_given_none_of_the_declared_guards() {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(held, ["auth.json"]);
+}
+
+/// The directory the fleet kept for the session of the Codex worker in `dir`.
+fn session_home(dir: &Path) -> PathBuf {
+    let notes = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
+    let note = afkconvoy_core::harness::Harness::Codex.noted_home().unwrap();
+    PathBuf::from(std::fs::read_to_string(notes.join(note)).unwrap().trim())
+}
+
+/// Codex's goal store in `home`, holding one goal at `status`, as
+/// codex-cli 0.166.0 keeps it.
+fn goal_at(home: &Path, status: &str) {
+    let store = home.join("goals_1.sqlite");
+    let _ = std::fs::remove_file(&store);
+    let sql = format!(
+        "create table thread_goals (thread_id text primary key, status text not null, \
+         updated_at_ms integer not null); insert into thread_goals values ('t', '{status}', 1);"
+    );
+    let made = Command::new("sqlite3").arg(&store).arg(sql).status().unwrap();
+    assert!(made.success());
+}
+
+/// Codex's session of the worker in `dir`, in `home`, as codex-cli 0.166.0
+/// records a goal's turns: one the goal's setting started, and — `continued`
+/// — one Codex began by itself after that one ended, still open.
+fn goal_session(home: &Path, dir: &Path, continued: bool) {
+    let started = |at: u64| {
+        json!({"timestamp": "2026-11-03T03:50:56.776Z", "type": "event_msg", "payload": {
+            "type": "task_started", "started_at": at,
+            "turn_attribution": {"turn_trigger": "goal"}}})
+    };
+    let mut lines = vec![
+        json!({"timestamp": "2026-11-03T03:50:56.700Z", "type": "session_meta",
+            "payload": {"cwd": dir, "id": "t"}}),
+        started(1010),
+    ];
+    if continued {
+        lines.push(json!({"timestamp": "2026-11-03T03:51:05.368Z", "type": "event_msg",
+            "payload": {"type": "task_complete", "completed_at": 1040}}));
+        lines.push(started(1041));
+    }
+    let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    write(home, "sessions/2026/11/03/rollout-goal.jsonl", &text);
+}
+
+/// The lines typed at the worker's terminal in `dir`, in order.
+fn typed(world: &World, dir: &Path) -> Vec<String> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    let here = terminals.iter().filter(|t| t["worktreePath"] == dir.to_str().unwrap());
+    let sent = here.flat_map(|t| t["sent"].as_array().cloned().unwrap_or_default());
+    sent.map(|sent| sent["text"].as_str().unwrap_or_default().to_string()).collect()
+}
+
+#[test]
+fn a_codex_worker_whose_verdict_stands_has_the_goal_codex_still_continues_ended() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    let home = session_home(&dir);
+    assert!(typed(&world, &dir)[0].starts_with("/goal Your task brief is the file "));
+    let comments_read = || {
+        let calls: Vec<String> = world.gh_calls().iter().map(|call| call.join(" ")).collect();
+        calls.iter().any(|call| call.contains("issues/7/comments"))
+    };
+
+    // At its first turn, its goal active and a verdict already said: at
+    // work, and nothing on GitHub is read for it.
+    goal_at(&home, "active");
+    goal_session(&home, &dir, false);
+    world.comment(7, "<!--convoy:verdict phase=escalate-->\nwhat the worker says");
+    orca_heard(&world, "UserPromptSubmit", 1010);
+    wrote(&world, 1050);
+    world.gh_calls();
+    assert_eq!(did(&tick(&world, 1060).ok())[0], "judge 7 nothing");
+    assert!(!comments_read());
+    assert_eq!(typed(&world, &dir).len(), 1);
+
+    // Codex continued it after its verdict: its goal is ended, once, and
+    // the turn it is in left to finish.
+    goal_session(&home, &dir, true);
+    orca_heard(&world, "UserPromptSubmit", 1041);
+    wrote(&world, 1070);
+    assert_eq!(did(&tick(&world, 1080).ok())[0], "judge 7 nothing");
+    assert!(comments_read());
+    assert_eq!(typed(&world, &dir)[1..], ["/goal clear"]);
+
+    // Its goal ended, nothing more is typed, and nothing read.
+    goal_at(&home, "complete");
+    world.gh_calls();
+    assert_eq!(did(&tick(&world, 1090).ok())[0], "judge 7 nothing");
+    assert!(!comments_read());
+    assert_eq!(typed(&world, &dir).len(), 2);
+}
+
+#[test]
+fn a_codex_worker_its_harness_continues_with_no_verdict_is_left_at_its_goal() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    let home = session_home(&dir);
+    goal_at(&home, "active");
+    goal_session(&home, &dir, true);
+    orca_heard(&world, "UserPromptSubmit", 1041);
+    wrote(&world, 1070);
+    assert_eq!(did(&tick(&world, 1080).ok())[0], "judge 7 nothing");
+    assert_eq!(typed(&world, &dir).len(), 1, "the brief alone");
 }

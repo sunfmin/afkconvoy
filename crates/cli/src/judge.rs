@@ -478,6 +478,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64, look: Look) -> Result<Option<As
             && let Some(worktree) = &worktree
         {
             worktree.background_since(false, None, fleet.now)?;
+            end_goal_past_verdict(fleet, &claim, worktree)?;
         }
         return Ok(Some(Asked::Settled(settled)));
     }
@@ -507,6 +508,29 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64, look: Look) -> Result<Option<As
     };
     let route = route(state, &progress, verdict.as_ref(), nudged, (handed, background), fleet.now);
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, verdict, said, route }))))
+}
+
+/// Ends the goal of the busy worker in `worktree` once a verdict of its
+/// stands: its harness would carry it on round its brief at cost, never
+/// stopping for the tick to carry the verdict out. A worker its harness has
+/// not continued since it was handed its brief costs no GitHub read: the
+/// one at its first turn is at work, not past its verdict.
+fn end_goal_past_verdict(fleet: &Fleet, claim: &Claim, worktree: &Worktree) -> Result<()> {
+    let Some((harness, afkconvoy_core::harness::Goal::Active)) = crate::goal::of(worktree) else {
+        return Ok(());
+    };
+    let since = worktree.handed(claim.since)?.unwrap_or_default();
+    if !crate::goal::continued(worktree, harness, since)? {
+        return Ok(());
+    }
+    let comments = fleet.gh.comments(claim.number)?;
+    let verdict = crate::gh::verdict_since(&comments, claim.since);
+    let said =
+        verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
+    if standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref()).is_some() {
+        crate::goal::end(worktree, harness)?;
+    }
+    Ok(())
 }
 
 /// A held claim's worker found silent, with the command the tick runs next

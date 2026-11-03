@@ -179,6 +179,54 @@ pub struct Keystroke {
     pub enter: bool,
 }
 
+/// Where a harness that keeps a goal for its session keeps it: a SQLite
+/// file under the directory kept for the session, and the query whose one
+/// answer is the goal's status (`Harness::goal`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoalStore {
+    pub file: &'static str,
+    pub query: &'static str,
+}
+
+/// A worker's goal, where its harness keeps one (sunfmin/control#544).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Goal {
+    /// The session has none: never set, or cleared.
+    Unset,
+    /// It is pursued: the harness continues it after each turn its model
+    /// ends.
+    Active,
+    Paused,
+    /// Its model found the same blocker on three goal turns in a row.
+    Blocked,
+    /// The account's usage limit stopped it.
+    UsageLimited,
+    /// Its token budget stopped it.
+    BudgetLimited,
+    Complete,
+}
+
+impl Goal {
+    /// A goal that stopped its worker short of its brief: the harness
+    /// continues it no more, and the worker is a stopped one.
+    pub fn stopped(self) -> bool {
+        matches!(self, Goal::Blocked | Goal::BudgetLimited)
+    }
+
+    /// The word the store says it by.
+    pub fn key(self) -> &'static str {
+        match self {
+            Goal::Unset => "unset",
+            Goal::Active => "active",
+            Goal::Paused => "paused",
+            Goal::Blocked => "blocked",
+            Goal::UsageLimited => "usage_limited",
+            Goal::BudgetLimited => "budget_limited",
+            Goal::Complete => "complete",
+        }
+    }
+}
+
 /// A harness the fleet can start a worker of a bound repo on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Harness {
@@ -1154,6 +1202,82 @@ impl Harness {
             Harness::Kimi => kimi::indexed_sessions(cwd, index),
             Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Grok => {
                 Vec::new()
+            }
+        }
+    }
+
+    /// The line typed at a worker to hand it the brief at `brief`. Codex is
+    /// given it as its session's goal, which starts its first turn, and
+    /// continues it on its own after each turn its model ends short of it.
+    /// Every other harness is given the brief pointer.
+    pub fn brief_line(self, brief: &str) -> String {
+        match self {
+            Harness::Codex => codex::brief_line(brief),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                crate::prompt::brief_pointer(brief)
+            }
+        }
+    }
+
+    /// A worker's launch `line` with its goal's token budget, where this
+    /// harness keeps a goal. Unchanged for every other harness.
+    pub fn with_goal_budget(self, line: &str) -> String {
+        match self {
+            Harness::Codex => codex::with_goal_budget(line),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                line.to_string()
+            }
+        }
+    }
+
+    /// The token budget of a worker's goal; `None` where it keeps none.
+    pub fn goal_tokens(self) -> Option<u64> {
+        match self {
+            Harness::Codex => Some(codex::GOAL_TOKENS),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// Where this harness keeps a session's goal; `None` where it keeps none.
+    pub fn goal_store(self) -> Option<GoalStore> {
+        match self {
+            Harness::Codex => Some(codex::GOAL_STORE),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// The goal `answer`, what the store answered its query, says. `None`:
+    /// it says none this harness knows.
+    pub fn goal(self, answer: &str) -> Option<Goal> {
+        match self {
+            Harness::Codex => codex::goal(answer),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// What ends a session's goal when typed, its turn left to finish.
+    pub fn goal_end(self) -> Option<Keystroke> {
+        match self {
+            Harness::Codex => Some(codex::GOAL_END),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// Whether the session `text` shows the harness began a turn of its goal
+    /// by itself, after an earlier turn ended.
+    pub fn goal_continued(self, text: &str) -> bool {
+        match self {
+            Harness::Codex => codex::goal_continued(text),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                false
             }
         }
     }

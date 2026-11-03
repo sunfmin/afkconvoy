@@ -265,6 +265,18 @@ fn kept_roots(harness: Harness) -> Result<Vec<PathBuf>> {
     Ok(roots)
 }
 
+/// Whether `harness`'s session for `cwd` shows it began a turn of its goal
+/// by itself (`Harness::goal_continued`), in files written since `since`.
+pub fn goal_continued(cwd: &Path, harness: Harness, since: u64) -> Result<bool> {
+    notes_match(cwd, harness, since, |text| harness.goal_continued(text))
+}
+
+/// The directory the launch kept for the session of the worker in `cwd`,
+/// where `harness` keeps one apart.
+pub fn kept_home(cwd: &Path, harness: Harness) -> Option<PathBuf> {
+    noted(cwd, harness.noted_home()?)
+}
+
 /// The harness directory a launch noted beside the worktree's git directory.
 fn noted(cwd: &Path, name: &str) -> Option<PathBuf> {
     let home = std::fs::read_to_string(git_dir(cwd)?.join(name)).ok()?;
