@@ -59,6 +59,12 @@ fn a_tick_gives_a_harness_held_since_the_setup_and_doctor_names_each_that_drifte
     assert!(evidence.contains("missing skills: every skill of mattpocock/skills, mypython"));
     assert_eq!(found[0]["fix"], "afkconvoy kit");
 
+    // What `npx skills` will track for Claude Code once installed, and a
+    // skill of the user's own it does not.
+    let fake = json!({"name": "fake", "source": "mattpocock/skills", "agents": ["Claude Code"]});
+    installed(&world, "claude-code", json!([fake]));
+    std::fs::create_dir_all(world.home().join(".claude/skills/mine")).unwrap();
+
     // A tick gives it to the harness held, with no step by the operator.
     world.afk(&TICK).ok();
     let linked = world.home().join(".claude/CLAUDE.md");
@@ -76,11 +82,16 @@ fn a_tick_gives_a_harness_held_since_the_setup_and_doctor_names_each_that_drifte
     assert!(asked.contains(
         &"npx -y skills add 'sunfmin/mypython' -g -y -a 'claude-code' -s 'mypython'".to_string()
     ));
-    // The copies are read-only once the sync is done.
-    let copy = world.home().join(".agents/skills/fake/SKILL.md");
-    let mode = std::fs::metadata(&copy).unwrap().permissions().mode();
-    assert_eq!(mode & 0o222, 0, "an installed copy is writable: {mode:o}");
-    assert!(std::fs::write(&copy, "edited in place\n").is_err());
+    // The copies are read-only once the sync is done: the shared one, and
+    // the one of Claude Code's own that `npx skills` tracks; a skill of the
+    // user's own beside it is left as it is.
+    for copy in [".agents/skills/fake/SKILL.md", ".claude/skills/fake/SKILL.md"] {
+        let copy = world.home().join(copy);
+        let mode = std::fs::metadata(&copy).unwrap().permissions().mode();
+        assert_eq!(mode & 0o222, 0, "{} is writable: {mode:o}", copy.display());
+        assert!(std::fs::write(&copy, "edited in place\n").is_err());
+    }
+    std::fs::write(world.home().join(".claude/skills/mine/SKILL.md"), "still mine\n").unwrap();
 
     // A later tick gives nothing again to a harness given it.
     let before = npx_asked(&world).len();

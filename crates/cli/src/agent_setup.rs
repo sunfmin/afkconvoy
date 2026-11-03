@@ -191,37 +191,69 @@ pub fn link(home: &Path, harness: Harness, file: &Path, now: u64) -> Result<bool
     Ok(true)
 }
 
-/// Makes everything under each copy in `copies` writable by its owner
-/// (`open`), or by no one (`!open`). A link is left as it is, and so is
-/// `copies` itself, where a sync adds a new copy.
-pub fn set_open(copies: &Path, open: bool) -> Result<()> {
+/// Makes everything under the copy at `path` writable by its owner (`open`),
+/// or by no one (`!open`). A link is left as it is.
+fn set_mode(path: &Path, open: bool) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    fn each(path: &Path, open: bool) -> std::io::Result<()> {
-        let meta = std::fs::symlink_metadata(path)?;
-        if meta.file_type().is_symlink() {
-            return Ok(());
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    let mode = meta.permissions().mode();
+    let mode = if open { mode | 0o200 } else { mode & !0o222 };
+    // A directory is opened before what is in it is read, and closed after.
+    if open || !meta.is_dir() {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            set_mode(&entry?.path(), open)?;
         }
-        let mode = meta.permissions().mode();
-        let mode = if open { mode | 0o200 } else { mode & !0o222 };
-        // A directory is opened before what is in it is read, and closed after.
-        if open || !meta.is_dir() {
+        if !open {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
         }
-        if meta.is_dir() {
-            for entry in std::fs::read_dir(path)? {
-                each(&entry?.path(), open)?;
-            }
-            if !open {
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-            }
-        }
-        Ok(())
     }
+    Ok(())
+}
+
+/// `set_mode` of each copy in `copies`, leaving `copies` itself writable,
+/// where a sync adds a new copy.
+pub fn set_open(copies: &Path, open: bool) -> Result<()> {
     let Ok(entries) = std::fs::read_dir(copies) else { return Ok(()) };
     for entry in entries {
         let path = entry?.path();
-        each(&path, open)
+        set_mode(&path, open)
             .with_context(|| format!("cannot change the mode of {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// `set_open` of the shared copies under `home`, and `set_mode` of each skill
+/// `npx skills` tracks for one of `harnesses` that is a copy of its own in a
+/// directory where that harness reads its user's skills (Claude Code's
+/// `~/.claude/skills`): an agent installed for alone may be given a copy
+/// there, where several are given links to the shared one. A skill there
+/// that `npx skills` does not track is the user's own, and left as it is.
+fn set_open_all(home: &Path, harnesses: &[(Harness, &str)], open: bool) -> Result<()> {
+    set_open(&home.join(COPIES), open)?;
+    for (harness, agent) in harnesses {
+        // An agent whose list cannot be read has no copy known to close.
+        let names: Vec<String> = listed(agent)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|skill| skill.source.is_some())
+            .map(|skill| skill.name)
+            .collect();
+        let dirs = harness.kept().host_user.iter().filter(|link| link.home.ends_with("skills"));
+        for dir in dirs.filter(|link| link.home != COPIES) {
+            for name in &names {
+                let path = home.join(dir.home).join(name);
+                if std::fs::symlink_metadata(&path).is_ok() {
+                    set_mode(&path, open)
+                        .with_context(|| format!("cannot change the mode of {}", path.display()))?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -449,8 +481,7 @@ fn sync(
     if agents.is_empty() {
         return Ok(());
     }
-    let copies = home.join(COPIES);
-    set_open(&copies, true)?;
+    set_open_all(home, agents, true)?;
     let names: Vec<&str> = agents.iter().map(|(_, agent)| *agent).collect();
     let mut run = || -> Result<()> {
         for entry in &entries {
@@ -469,7 +500,7 @@ fn sync(
         Ok(())
     };
     let ran = run();
-    let closed = set_open(&copies, false);
+    let closed = set_open_all(home, agents, false);
     ran.and(closed)
 }
 

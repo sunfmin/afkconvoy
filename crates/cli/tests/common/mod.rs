@@ -1767,7 +1767,11 @@ case "$2" in
         if [ -f "$root/npx-ls-$agent.json" ]; then cat "$root/npx-ls-$agent.json"; else echo '[]'; fi ;;
       *" add "*)
         if [ -e "$root/npx-fails" ]; then echo "network down" >&2; exit 1; fi
-        mkdir -p "$HOME/.agents/skills/fake" && echo "$2" > "$HOME/.agents/skills/fake/SKILL.md" || exit 1 ;;
+        mkdir -p "$HOME/.agents/skills/fake" && echo "$2" > "$HOME/.agents/skills/fake/SKILL.md" || exit 1
+        # One agent alone may be given a copy of its own in its directory.
+        case "$2" in *" -a 'claude-code' -s "*)
+          mkdir -p "$HOME/.claude/skills/fake" && echo "$2" > "$HOME/.claude/skills/fake/SKILL.md" || exit 1 ;;
+        esac ;;
     esac
     exit 0 ;;
   "type -- "*)
