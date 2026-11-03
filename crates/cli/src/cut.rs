@@ -205,7 +205,7 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Opti
     let path = checkout.path.display().to_string();
     let command = crate::own_command_in(&path).fixed(" cut; exit").own();
     let title = format!("afkconvoy cut v{}", record.version);
-    agent.start(&checkout, first, &command, Some(&title), me.now)?;
+    agent.start(&checkout, &fleet.gh.tracker, first, &command, Some(&title), me.now)?;
     Ok(Some(record))
 }
 

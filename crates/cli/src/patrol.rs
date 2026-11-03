@@ -234,7 +234,15 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let line = in_role(fleet, kept, name, &chosen, launch.as_str(), &checkout)?;
-    let terminal = agent.start_worker(&checkout, (&chosen).into(), &line, true, None, me.now)?;
+    let terminal = agent.start_worker(
+        &checkout,
+        &fleet.gh.tracker,
+        (&chosen).into(),
+        &line,
+        true,
+        None,
+        me.now,
+    )?;
     checkout.deliver(&terminal, &brief)?;
 
     // The record carries the runs of the day before it: they are counted from it alone.
@@ -347,7 +355,15 @@ pub(crate) fn switch(
     let continuing = said(&checkout);
     checkout.stop_for_continuation()?;
     crate::dispatch::continue_brief(fleet, &checkout, None, None, &continuing)?;
-    let terminal = agent.start_worker(&checkout, (&chosen).into(), &line, true, None, me.now)?;
+    let terminal = agent.start_worker(
+        &checkout,
+        &fleet.gh.tracker,
+        (&chosen).into(),
+        &line,
+        true,
+        None,
+        me.now,
+    )?;
     checkout.deliver(&terminal, &checkout.brief()?)?;
     Ok(json!({"patrol": name, "from": continuing.from, "to": harness,
         "worktree": checkout.path, "terminal": terminal, "skipped": skipped}))
