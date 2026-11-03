@@ -4035,6 +4035,25 @@ fn kind(name: &str) -> Kind {
     }
 }
 
+/// The command line `cli` as the operator's session reads it. The watch, and
+/// the asking session beside it, are the operator on their host: a `rule` or
+/// `send` they run is a human's, though the fleet started them on a harness
+/// and their environment names it (#554). Only a consult names its harness
+/// and model to those two, beside its commits.
+fn operators(cli: clap::Command) -> clap::Command {
+    let session = daybook::Kind::of(|name| std::env::var(name).ok());
+    if !matches!(session, daybook::Kind::Watch | daybook::Kind::Asking) {
+        return cli;
+    }
+    ["rule", "send"].into_iter().fold(cli, |cli, name| {
+        cli.mut_subcommand(name, |command| {
+            command
+                .mut_arg("harness", |arg| arg.env(None::<&str>))
+                .mut_arg("model", |arg| arg.env(None::<&str>))
+        })
+    })
+}
+
 /// The command line as parsed: `Cli`, each command about one repo with how it
 /// takes its checkout added to its text, and each command that acts with what
 /// it logs.
@@ -4607,7 +4626,7 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             Err(error) => fail(1, &error),
         };
     }
-    let parsed = cli()
+    let parsed = operators(cli())
         .try_get_matches_from(&args)
         .and_then(|matches| Ok((Cli::from_arg_matches(&matches)?, matches)));
     let (cli, matches) = match parsed {
