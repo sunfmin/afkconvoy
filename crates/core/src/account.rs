@@ -9,6 +9,7 @@
 use flux_rs::attrs::*;
 
 mod data;
+mod goal;
 pub mod rewrite;
 mod tokens;
 pub use tokens::parse as parse_tokens;
@@ -16,6 +17,7 @@ pub use tokens::parse_between as parse_tokens_between;
 pub use tokens::{Counts, Tokens};
 
 pub use data::{Gate, Host, Record, SCHEMA_VERSION, Worker, read, render};
+pub use goal::{CLEARED, WorkerGoal};
 
 use crate::gate::GATE;
 use crate::record;
@@ -387,6 +389,7 @@ fn worker_row(start: &Start, cited: Option<Cite>, end: u64) -> Worker {
         end: Some(row_end),
         seconds,
         tokens: None,
+        goal: None,
     }
 }
 
@@ -771,6 +774,42 @@ mod tests {
         for unsafe_text in ["</details>", "<!--", "-->", "```", "&"] {
             assert!(!json.contains(unsafe_text), "{json}");
         }
+    }
+
+    #[test]
+    fn a_codex_worker_s_goal_round_trips_and_a_worker_of_another_harness_carries_none() {
+        let first = account(&[], &[], true, Some(1), 2).unwrap();
+        let mut row = read(&first, 7).unwrap();
+        let goal = WorkerGoal {
+            set: true,
+            objective: Some("Read /b.md".into()),
+            goal_turns: Some(3),
+            goal_turns_after_verdict: Some(1),
+            status: Some(CLEARED.into()),
+            tokens_used: None,
+            token_budget: None,
+            session: Some("/kept/rollout.jsonl".into()),
+        };
+        row.workers.push(Worker {
+            harness: Some("codex".into()),
+            goal: Some(goal),
+            ..Worker::default()
+        });
+        row.workers.push(Worker { harness: Some("claude-code".into()), ..Worker::default() });
+        let body = render(&row);
+        assert_eq!(read(&body, 7).unwrap(), row);
+        assert!(
+            body.contains(
+                "goal `cleared`, 3 goal turns (1 after its verdict), goal tokens unknown"
+            ),
+            "{body}"
+        );
+        let (_, block) = body.rsplit_once("```json\n").unwrap();
+        let (json, _) = block.split_once("\n```").unwrap();
+        let json: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(json["workers"][0]["goal"]["status"], "cleared");
+        assert_eq!(json["workers"][0]["goal"]["goal_turns_after_verdict"], 1);
+        assert!(json["workers"][1].get("goal").is_none(), "{json}");
     }
 
     #[test]

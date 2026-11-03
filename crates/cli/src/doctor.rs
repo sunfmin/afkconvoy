@@ -196,6 +196,7 @@ kinds! {
     HealthOverdue: Warning, "its health observation is overdue";
     NotAlive: Warning, "its fleet instance is not alive";
     TickFailed: Warning, "a tick failed since the last look";
+    GoalMisbehaved: Warning, "worker's goal misbehaved";
     NothingStarted: Warning, "the last tick started no worker";
     NoWorkflow: Warning, "follows no workflow of the team";
     BlockerUnworked: Warning, "waits on a blocker no fleet works";
@@ -2708,6 +2709,8 @@ pub fn all_since_rounds(
                                 &examined.found,
                             );
                             examined.found.extend(ticks);
+                            let goals = watching::goal_findings(&examined.answer["watching"]);
+                            examined.found.extend(goals);
                         }
                         Ok(examined)
                     });

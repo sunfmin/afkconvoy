@@ -595,6 +595,66 @@ pub(super) fn goal(answer: &str) -> Option<super::Goal> {
     })
 }
 
+/// What a rollout says of its goal: its thread (`session_meta`'s id), the
+/// objective of its first `thread_goal_updated`, and when every turn with
+/// `turn_trigger: goal` started. Codex writes the goal's status only at its
+/// setting; after that the store alone holds it.
+pub(super) fn goal_session(text: &str) -> super::GoalSession {
+    let mut said = super::GoalSession::default();
+    for value in json_lines(text) {
+        let payload = &value["payload"];
+        if value["type"] == "session_meta" && said.thread.is_none() {
+            said.thread = payload["id"].as_str().map(str::to_string);
+        }
+        match payload["type"].as_str() {
+            Some("thread_goal_updated") if said.objective.is_none() => {
+                said.objective = payload["goal"]["objective"].as_str().map(str::to_string);
+            }
+            Some("task_started") if payload["turn_attribution"]["turn_trigger"] == "goal" => {
+                let at =
+                    session::number_at(payload["started_at"].as_u64(), value["timestamp"].as_str());
+                said.turns.extend(at);
+            }
+            _ => {}
+        }
+    }
+    said
+}
+
+/// The question that reads the row of the session `thread`: its status, the
+/// tokens it used and its budget, `|`-separated, a budget it has none of
+/// empty. A thread id Codex writes is a UUID; any other is never quoted
+/// into the query.
+pub(super) fn goal_row_query(thread: &str) -> Option<String> {
+    let plain = !thread.is_empty()
+        && thread.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+    plain.then(|| {
+        format!(
+            "select status, tokens_used, token_budget from thread_goals where thread_id = '{thread}'"
+        )
+    })
+}
+
+/// The row as `sqlite3` answers `goal_row_query`: nothing where the session
+/// has none, as a cleared goal has not.
+pub(super) fn goal_row(answer: &str) -> Option<Option<super::GoalRow>> {
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return Some(None);
+    }
+    let mut fields = answer.split('|');
+    let status = goal(fields.next()?).filter(|status| *status != super::Goal::Unset)?;
+    let tokens_used = fields.next()?.trim().parse().ok()?;
+    let token_budget = match fields.next()?.trim() {
+        "" => None,
+        budget => Some(budget.parse().ok()?),
+    };
+    if fields.next().is_some() {
+        return None;
+    }
+    Some(Some(super::GoalRow { status, tokens_used, token_budget }))
+}
+
 /// Whether Codex began a turn of the goal by itself: a turn its goal
 /// started after an earlier turn ended. The turn the goal's setting starts is
 /// the brief's own, not one Codex continued.
@@ -1472,5 +1532,63 @@ mod tests {
         .filter(|goal| goal.stopped())
         .collect();
         assert_eq!(stopped, [Goal::Blocked, Goal::BudgetLimited]);
+    }
+
+    #[test]
+    fn a_rollout_says_its_thread_its_goal_s_objective_and_each_goal_turn() {
+        use crate::harness::{Goal, GoalRow, GoalSession};
+        let objective = crate::prompt::goal_objective("/b.md");
+        let rollout = goal_rollout(
+            "/wt",
+            &objective,
+            &[
+                ended(1_793_677_865),
+                began(1_793_677_900, "user"),
+                ended(1_793_677_950),
+                began(1_793_677_951, "goal"),
+            ],
+        );
+        assert_eq!(
+            Harness::Codex.goal_session(&rollout),
+            Some(GoalSession {
+                thread: Some("t".into()),
+                objective: Some(objective),
+                turns: vec![1_793_677_856, 1_793_677_951],
+            })
+        );
+        let unset = serde_json::json!({"type": "session_meta", "payload": {"id": "u"}});
+        assert_eq!(
+            Harness::Codex.goal_session(&format!("{unset}\n")),
+            Some(GoalSession { thread: Some("u".into()), objective: None, turns: vec![] })
+        );
+        assert_eq!(Harness::ClaudeCode.goal_session(&rollout), None);
+
+        let thread = "019a4a5e-6a2b-7c41-9f0e-2d5c1b3a4e6f";
+        let query = Harness::Codex.goal_row_query(thread).unwrap();
+        assert!(query.ends_with(&format!("where thread_id = '{thread}'")), "{query}");
+        assert_eq!(Harness::Codex.goal_row_query("x' or '1'='1"), None);
+        assert_eq!(Harness::Codex.goal_row_query(""), None);
+        assert_eq!(Harness::Pi.goal_row_query(thread), None);
+
+        assert_eq!(
+            Harness::Codex.goal_row("complete|24959|50000\n"),
+            Some(Some(GoalRow {
+                status: Goal::Complete,
+                tokens_used: 24_959,
+                token_budget: Some(50_000)
+            }))
+        );
+        assert_eq!(
+            Harness::Codex.goal_row("budget_limited|20800|\n"),
+            Some(Some(GoalRow {
+                status: Goal::BudgetLimited,
+                tokens_used: 20_800,
+                token_budget: None
+            }))
+        );
+        assert_eq!(Harness::Codex.goal_row(""), Some(None), "a cleared goal has no row");
+        assert_eq!(Harness::Codex.goal_row("done|1|2"), None);
+        assert_eq!(Harness::Codex.goal_row("complete|many|2"), None);
+        assert_eq!(Harness::Kimi.goal_row("complete|1|2"), None);
     }
 }

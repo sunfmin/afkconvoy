@@ -133,7 +133,9 @@ pub(super) fn read(repo: &Repo, host: &str, since: u64, until: u64) -> Result<Va
     let mut issues: BTreeMap<u64, Issue> = BTreeMap::new();
     let mut read_comments = BTreeSet::new();
     let mut ended = vec![];
+    let mut goals = vec![];
     for row in recent {
+        goals.extend(misbehaved_goals(row.number, &row.comments));
         let found = issues.entry(row.number).or_default();
         found.title = Some(row.title);
         read_comments.insert(row.number);
@@ -182,9 +184,54 @@ pub(super) fn read(repo: &Repo, host: &str, since: u64, until: u64) -> Result<Va
         }
     }
     let mut answer = interval(&entries, host, since, until, issues, ended);
+    answer["goals"] = Value::Array(goals);
     answer["log"] = json!({"file": log.file, "first": entries.first().map(|e| e.at),
         "retained_only": true});
     Ok(answer)
+}
+
+/// The workers of issue `issue` whose work account, among `comments`, says
+/// their goal misbehaved (sunfmin/control#548): an account written or
+/// edited in the interval updates its issue, so each is said in the look
+/// after it is.
+fn misbehaved_goals(issue: u64, comments: &[Comment]) -> Vec<Value> {
+    let Some((comment, account)) = comments.iter().find_map(|comment| {
+        Some((comment, afkconvoy_core::account::read(&comment.body, issue).ok()?))
+    }) else {
+        return vec![];
+    };
+    account
+        .workers
+        .iter()
+        .filter_map(|worker| {
+            let evidence = worker.goal.as_ref()?.misbehaved()?;
+            Some(json!({"issue": issue, "url": comment.url, "harness": worker.harness,
+                "claim": worker.claim, "start": worker.start, "evidence": evidence}))
+        })
+        .collect()
+}
+
+/// Each worker of the interval `watching` whose goal misbehaved, as a
+/// finding naming its issue and the account's evidence.
+pub(super) fn goal_findings(watching: &Value) -> Vec<Finding> {
+    let goals = watching["goals"].as_array().into_iter().flatten();
+    goals
+        .filter_map(|goal| {
+            let issue = goal["issue"].as_u64()?;
+            let harness = goal["harness"].as_str().unwrap_or("unknown");
+            Some(finding(
+                Kind::GoalMisbehaved,
+                json!(["goal", issue, goal["claim"], goal["start"]]),
+                format!("#{issue}: a `{harness}` worker's goal misbehaved"),
+                format!(
+                    "its work account {} says {}",
+                    goal["url"].as_str().unwrap_or("unknown"),
+                    goal["evidence"].as_str().unwrap_or_default()
+                ),
+                format!("afkconvoy show --issue {issue}"),
+            ))
+        })
+        .collect()
 }
 
 /// Each failed tick of the interval `watching` whose failures no finding of
@@ -365,6 +412,67 @@ fn interval(
 mod tests {
     use super::*;
     use crate::log::Tick;
+
+    #[test]
+    fn a_worker_whose_goal_misbehaved_is_a_finding_naming_its_issue_and_evidence() {
+        use afkconvoy_core::account::{Record, SCHEMA_VERSION, Worker, WorkerGoal, render};
+        let goal = |status: &str, after: u64| WorkerGoal {
+            set: true,
+            objective: Some("Read /b.md".into()),
+            goal_turns: Some(4),
+            goal_turns_after_verdict: Some(after),
+            status: Some(status.into()),
+            tokens_used: Some(1_000_300),
+            token_budget: Some(1_000_000),
+            session: Some("/kept/rollout-t.jsonl".into()),
+        };
+        let codex = |claim: &str, goal: WorkerGoal| Worker {
+            harness: Some("codex".into()),
+            claim: Some(claim.into()),
+            start: Some(100),
+            goal: Some(goal),
+            ..Worker::default()
+        };
+        let record = Record {
+            schema_version: SCHEMA_VERSION,
+            issue: 9,
+            repo: None,
+            tracker: None,
+            afkconvoy_version: None,
+            host: Default::default(),
+            start: None,
+            end: None,
+            wall_seconds: None,
+            outcome: None,
+            workers: vec![
+                codex("good", goal("complete", 0)),
+                codex("spent", goal("budget_limited", 0)),
+                codex("ran-on", goal("cleared", 2)),
+                Worker { harness: Some("claude-code".into()), ..Worker::default() },
+            ],
+            gates: vec![],
+            legacy_evidence: None,
+        };
+        let comment = |body: String| Comment {
+            id: 1,
+            body,
+            url: "https://github.com/acme/t/issues/9#issuecomment-1".into(),
+            at: Some(200),
+        };
+        let goals = misbehaved_goals(9, &[comment("no account".into()), comment(render(&record))]);
+        assert_eq!(goals.len(), 2, "{goals:?}");
+        let found = goal_findings(&json!({"goals": goals}));
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|finding| finding.kind == Kind::GoalMisbehaved));
+        assert_eq!(found[0].what, "#9: a `codex` worker's goal misbehaved");
+        assert!(found[0].evidence.contains("issuecomment-1"), "{}", found[0].evidence);
+        assert!(found[0].evidence.contains("`budget_limited`, 1000300 of 1000000"));
+        assert!(found[1].evidence.contains("2 goal turns after its verdict"));
+        assert!(found[1].evidence.contains("/kept/rollout-t.jsonl"));
+        assert_eq!(found[0].fix, "afkconvoy show --issue 9");
+        assert_ne!(found[0].watch_id, found[1].watch_id);
+        assert_eq!(goal_findings(&json!({"goals": []})), []);
+    }
 
     fn entry(at: u64, instance: &str, what: What) -> Entry {
         Entry { at, instance: instance.into(), host: "h1".into(), what }
