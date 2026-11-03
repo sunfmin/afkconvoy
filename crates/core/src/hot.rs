@@ -400,7 +400,8 @@ mod tests {
 
     #[test]
     fn memory_under_an_exclusive_command_makes_a_worker_hot_only_under_pressure() {
-        let under = |exclusive, pressed| Sample { exclusive, pressed, ..sample(1000, 100, 9 * GIB) };
+        let under =
+            |exclusive, pressed| Sample { exclusive, pressed, ..sample(1000, 100, 9 * GIB) };
         let turned = |sample: Sample| Watch::default().sampled(&sample, &LIMITS, SAMPLE_EVERY);
         // Over the limit only through what runs under `exclusive`, pressure low.
         assert_eq!(turned(under(2 * GIB, false)), None);
