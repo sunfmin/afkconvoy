@@ -593,6 +593,11 @@ impl Cutting<'_> {
     /// whether it passes, fails or hangs.
     fn gate(&self, record: &mut Record, now: u64) -> Result<()> {
         let commit = self.commit(record)?;
+        // An earlier afkconvoy's record names the commit its turn landed:
+        // the base branch brings it here.
+        if !self.repo.try_git(&["cat-file", "-e", &format!("{commit}^{{commit}}")])?.ok {
+            self.base()?;
+        }
         if self.repo.git(&["rev-parse", "HEAD"])? != commit {
             self.repo.git(&["checkout", "--quiet", "--detach", &commit])?;
         }
