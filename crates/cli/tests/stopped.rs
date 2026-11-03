@@ -1659,12 +1659,12 @@ fn tick_with_note_bound(world: &World, now: u64) -> (String, Value) {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
-    let line = stdout.lines().filter(|line| line.starts_with("tick ")).last().unwrap();
+    let line = stdout.lines().filter(|line| line.starts_with("tick ")).next_back().unwrap();
     let answer = logs(world)
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .filter(|entry| entry["tick"]["answer"].is_object())
-        .last()
+        .next_back()
         .map(|entry| entry["tick"]["answer"].clone())
         .unwrap();
     (line.to_string(), answer)
