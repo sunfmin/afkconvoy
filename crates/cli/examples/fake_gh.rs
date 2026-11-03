@@ -396,6 +396,12 @@ fn is_open(row: &Value) -> bool {
     row["state"].as_str().unwrap_or("open") == "open"
 }
 
+/// Whether a rebuild's listing has `row` open: one marked `open_at_rebuild`
+/// closed after the listing read it, as a read of it alone says.
+fn listed_open(row: &Value) -> bool {
+    is_open(row) || row["open_at_rebuild"] == true
+}
+
 fn is_fork(row: &Value) -> bool {
     row["fork"].as_bool().unwrap_or(false)
 }
@@ -1066,7 +1072,7 @@ fn open_issues(st: &State) -> ! {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|issue| is_open(issue))
+            .filter(|issue| listed_open(issue))
             .filter(labelled)
             .map(|issue| {
                 let number = issue["number"].to_string();
@@ -1095,7 +1101,7 @@ fn open_issues(st: &State) -> ! {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|issue| !is_open(issue))
+            .filter(|issue| !listed_open(issue))
             .filter(labelled)
             .collect();
         let mut rows = open_rows;
@@ -1139,7 +1145,7 @@ fn open_issues(st: &State) -> ! {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|issue| is_open(issue))
+        .filter(|issue| listed_open(issue))
         .filter(labelled)
         .map(|issue| {
             let number = issue["number"].to_string();

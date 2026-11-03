@@ -290,7 +290,7 @@ pub(crate) fn dispatch_continuing(
                 }
                 Ok(started)
             }
-            Err(error) if error.is::<crate::paused::Held>() => Err(error),
+            Err(error) if error.is::<crate::paused::Held>() || error.is::<Closed>() => Err(error),
             Err(error) if error.is::<crate::orca::StillClosing>() => {
                 wait_for_close(fleet, me, number, previous, error)
             }
@@ -411,6 +411,18 @@ fn wait_for_close(
     ))
 }
 
+/// A dispatch found its issue closed: nothing was claimed or started. A
+/// tick whose frontier still had it, read before it closed, skips it and
+/// fails nothing (sunfmin/control#569); any other caller fails on it.
+#[derive(Debug)]
+pub(crate) struct Closed(pub u64);
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "issue #{} is closed, not open — nothing to dispatch", self.0)
+    }
+}
+impl std::error::Error for Closed {}
+
 /// What the brief of a worker that continues one ended mid-way says of it.
 pub(crate) struct Continuing {
     /// The harness the worker ended ran on.
@@ -460,7 +472,7 @@ fn start(
     let issue = fleet.gh.issue(number)?;
     if issue.is_closed() {
         // before the claim: never lock a closed issue
-        bail!("issue #{number} is closed, not open — nothing to dispatch");
+        return Err(Closed(number).into());
     }
     let target = fleet.task_branch(number)?;
     agent.discover_casting(&issue.labels)?;

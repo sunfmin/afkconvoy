@@ -393,6 +393,7 @@ fn said(step: TickStep, outcome: Outcome) -> Option<(u64, &'static str)> {
         (_, Outcome::Asked) => "its turn was asked for again this tick",
         (TickStep::Dispatch { .. }, Outcome::Done) => "started this tick",
         (TickStep::Dispatch { .. }, Outcome::Blocked) => "skipped this tick: a blocker is open",
+        (TickStep::Dispatch { .. }, Outcome::Closed) => "skipped this tick: it closed meanwhile",
         (TickStep::Reclaim { .. }, Outcome::Done) => "taken from a silent peer this tick",
         (TickStep::Escalate { .. }, Outcome::Done) => "handed over this tick",
         (_, Outcome::Done | Outcome::HandedOn) => "its claim ended this tick",

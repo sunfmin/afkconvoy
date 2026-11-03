@@ -497,7 +497,12 @@ fn carry_out(
         TickStep::Unlock { issue } => unlock(fleet, me, issue),
         TickStep::Reclaim { issue } => reclaim(fleet, me, agent, read.flows, issue),
         TickStep::Dispatch { issue } => {
-            let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            let started = match dispatch(fleet, me, agent, issue, StartFrom::Auto) {
+                // Closed since the frontier was read: it left the frontier
+                // meanwhile, which fails nothing (sunfmin/control#569).
+                Err(error) if error.is::<crate::dispatch::Closed>() => return Ok(Outcome::Closed),
+                started => started?,
+            };
             if started["gone"].is_string() {
                 return Ok(Outcome::Gone);
             }
@@ -800,6 +805,7 @@ impl Ticked {
                     Outcome::Lost => "lost",
                     Outcome::Blocked => "blocked",
                     Outcome::Gone => "gone",
+                    Outcome::Closed => "closed",
                     Outcome::Superseded => "superseded",
                     Outcome::Failed => "failed",
                 };
@@ -957,6 +963,19 @@ impl Ticked {
             .collect();
         if !skipped.is_empty() {
             parts.push(format!("skipped {}", skipped.join(", ")));
+        }
+        // A frontier issue closed after the rebuild read it, found so by its
+        // dispatch: nothing failed.
+        let closed: Vec<String> = self
+            .pass
+            .did
+            .iter()
+            .filter(|(step, outcome)| words(*step).0 == "dispatch" && *outcome == Outcome::Closed)
+            .filter_map(|(step, _)| words(*step).1)
+            .map(|issue| format!("#{issue}"))
+            .collect();
+        if !closed.is_empty() {
+            parts.push(format!("{} closed meanwhile", closed.join(", ")));
         }
         for (verb, kept) in [
             ("nudged", Outcome::Nudged),
