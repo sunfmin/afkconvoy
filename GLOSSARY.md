@@ -317,7 +317,7 @@ _Avoid_: ping, reminder, retry
 
 **Worker goal**:
 The goal a harness that keeps one — Codex — is handed a worker's brief as: the brief pointer, and when to mark the goal complete. While it is active the harness begins the worker's next turn by itself each time its model ends one short, a continuation, which is a sign of life. It ends complete, cleared by the fleet once the worker's verdict stands, `blocked` by its model, or at its token budget; a worker whose goal its harness stopped is a stopped worker, nudged as any other.
-_Avoid_: objective (Codex's own word for what the goal says), task
+_Avoid_: thread goal, task goal
 
 **Tell**:
 The operator's note to the worker at work on an issue, busy or stopped, with `afkconvoy tell`, or a later issue comment or body edit the fleet tells it automatically each tick. The issue is the words' one home, which every later worker reads. Typed at the worker under this host's claim, with the comment's link or the body's changed lines (the whole new body when needed), they are told only once its harness's session record holds them as a message its model was given as the user's. A note seen only in the harness's input queue is not told. A busy Grok keeps a line typed while it works in that queue until its screen shows the line queued, and tell presses send now so the model is given it. The fleet skips its own marked comments and comments whose write receipt is in this worker's session, retries failed deliveries next tick, and names an update still untold after three consecutive ticks in doctor. With no worker here, nothing is typed. A nudge is the fleet's own line to a stopped worker, telling it to carry on; a tell carries the issue's words for the worker to decide within its scope or open another issue for.
