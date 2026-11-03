@@ -140,13 +140,17 @@ pub struct Asked {
 pub fn daybook(checkout: Result<Repo>, asked: Asked) -> Result<Value> {
     let Asked { said, repo, tracker } = asked;
     if said.did.is_none() && said.why.is_none() && said.undo.is_none() && said.links.is_empty() {
-        bail!("an entry says nothing: give its text, or one of `--did`, `--why`, `--undo`, `--link`");
+        bail!(
+            "an entry says nothing: give its text, or one of `--did`, `--why`, `--undo`, `--link`"
+        );
     }
     let checkout = checkout.ok();
     let repo = match (repo, &checkout) {
         (Some(repo), _) => repo,
         (None, Some(checkout)) => crate::checkout_list::named_repo(checkout)?,
-        (None, None) => bail!("it was run in no checkout: name the repo the entry is of with `--repo`"),
+        (None, None) => {
+            bail!("it was run in no checkout: name the repo the entry is of with `--repo`")
+        }
     };
     let tracker = match (tracker, &checkout) {
         (Some(tracker), _) => tracker,
@@ -265,7 +269,9 @@ impl Discussions {
         });
         match category.and_then(|category| category["id"].as_str()) {
             Some(category) => Ok((id.to_string(), category.to_string())),
-            None => bail!("the tracker {tracker} has no discussion category `{CATEGORY}`: {create}"),
+            None => {
+                bail!("the tracker {tracker} has no discussion category `{CATEGORY}`: {create}")
+            }
         }
     }
 
@@ -274,7 +280,8 @@ impl Discussions {
     fn day(&self, name: &str, category: &str, day: &str) -> Result<Option<Day>> {
         let answer = self.ask(&days_query(name), &[("category", category)], false)?;
         let nodes = answer["data"]["repository"]["discussions"]["nodes"].clone();
-        let days: Vec<Day> = serde_json::from_value(nodes).context("GitHub listed no discussions")?;
+        let days: Vec<Day> =
+            serde_json::from_value(nodes).context("GitHub listed no discussions")?;
         Ok(days.into_iter().filter(|found| found.title == day).min_by_key(|found| found.number))
     }
 
