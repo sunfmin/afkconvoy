@@ -77,6 +77,8 @@ pub struct Board<'a> {
     pub pr: Option<u64>,
     /// The open issues a parked one waits on.
     pub blocked_by: &'a [u64],
+    /// Whether a parked one waits on the next cut of its repo.
+    pub cut: bool,
     /// The stage a claim's verdict left the issue at, when that stage is a
     /// human's: the issue waits there for them.
     pub waits_at: Option<&'a str>,
@@ -140,11 +142,22 @@ fn off_ramp(board: &Board) -> Option<String> {
             })
         }
         Stage::Parked => {
-            let blockers: Vec<String> =
+            let mut on: Vec<String> =
                 board.blocked_by.iter().map(|number| format!("#{number}")).collect();
+            let blockers = on.len();
+            if board.cut {
+                on.push("the next cut of this repo".to_string());
+            }
+            let returns = match (blockers, board.cut) {
+                (0, true) => "once a cut has published and installed a new version",
+                (_, true) => {
+                    "once they close and a cut has published and installed a new version"
+                }
+                _ => "when they close",
+            };
             Some(format!(
-                "**Parked** — waiting on {}. It returns to the frontier when they close.{}",
-                blockers.join(", "),
+                "**Parked** — waiting on {}. It returns to the frontier {returns}.{}",
+                on.join(", "),
                 kept_line(board)
             ))
         }
@@ -235,6 +248,7 @@ mod tests {
             stage,
             pr,
             blocked_by: &[3, 4],
+            cut: false,
             waits_at: None,
             answer: None,
             kept: None,

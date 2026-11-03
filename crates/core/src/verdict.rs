@@ -1,6 +1,7 @@
 //! A verdict: what a worker that opens no PR declares, as a marker comment on
 //! its issue.
 
+use crate::blocked::BlockedOn;
 use crate::record;
 
 /// The kind of record a verdict comment carries.
@@ -11,7 +12,8 @@ pub const VERDICT: &str = "convoy:verdict";
 pub enum Phase {
     /// The issue is already implemented on the base branch.
     AlreadySatisfied,
-    /// The issue waits on other issues, which the verdict names.
+    /// The issue waits on other issues, which the verdict names, or on the
+    /// next cut of its repo.
     Blocked,
     /// A human has to step in: the worker is stuck, or the issue cannot be done as written.
     Escalate,
@@ -44,8 +46,8 @@ pub struct Verdict {
     /// `None` when the marker names no phase the fleet knows: the worker
     /// writes it by hand, and a marker is a verdict whatever it says.
     pub phase: Option<Phase>,
-    /// The issues a `blocked` verdict says it waits on.
-    pub blocked_by: Vec<u64>,
+    /// What a `blocked` verdict says it waits on.
+    pub blocked_by: BlockedOn,
     /// Which of the comments read carries it.
     pub comment: usize,
 }
@@ -58,13 +60,13 @@ pub fn latest_verdict<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<V
         Some(word) => Phase::read(word),
         None => None,
     };
-    Some(Verdict { phase, blocked_by: fields.numbers("blocked_by"), comment })
+    Some(Verdict { phase, blocked_by: BlockedOn::read(fields.get("blocked_by")), comment })
 }
 
 /// The marker as it is shown to a worker that must write one by hand.
 pub fn marker_format() -> String {
     let words: Vec<&str> = Phase::ALL.iter().map(|phase| phase.word()).collect();
-    format!("<!--{VERDICT} phase=<{}> [blocked_by=<n,…>]-->", words.join("|"))
+    format!("<!--{VERDICT} phase=<{}> [blocked_by=<n,…|cut>]-->", words.join("|"))
 }
 
 #[cfg(test)]
@@ -80,7 +82,7 @@ mod tests {
         assert_eq!(Phase::read("giving-up"), None);
         assert_eq!(
             marker_format(),
-            "<!--convoy:verdict phase=<already-satisfied|blocked|escalate> [blocked_by=<n,…>]-->"
+            "<!--convoy:verdict phase=<already-satisfied|blocked|escalate> [blocked_by=<n,…|cut>]-->"
         );
     }
 
@@ -96,8 +98,10 @@ mod tests {
         let first = latest_verdict(bodies[..2].iter().copied()).unwrap();
         assert_eq!(
             (first.phase, first.blocked_by, first.comment),
-            (Some(Phase::Blocked), vec![41, 42], 0)
+            (Some(Phase::Blocked), BlockedOn::issues(vec![41, 42]), 0)
         );
+        let on_cut = latest_verdict(["<!--convoy:verdict phase=blocked blocked_by=cut-->"]);
+        assert_eq!(on_cut.unwrap().blocked_by, BlockedOn { issues: vec![], cut: true });
         assert_eq!(latest_verdict(["<!--convoy:verdict phase=giving-up-->"]).unwrap().phase, None);
         assert_eq!(latest_verdict(["<!--convoy:verdict-->"]).unwrap().phase, None);
         assert_eq!(latest_verdict(["nothing declared"]), None);

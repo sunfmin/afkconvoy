@@ -8,6 +8,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use afkconvoy_core::blocked::CutWait;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::cut::{
     self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, Row, Seen, Standing, Step, Tag, Took,
@@ -70,6 +71,33 @@ pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue], base: &str) -> Result
         claim,
         failure,
     }))
+}
+
+/// Whether a cut will come for an issue that waits on the next one: one is
+/// running; or the base branch holds landed work past the newest version tag,
+/// or the repo declares its initial version on an untagged remote, so one is
+/// due or will be — a failed cut too, which holds the next back only until a
+/// human answers. A repo that names no cut steps is never cut, and one with
+/// nothing past its newest tag has no cut to come until more lands.
+pub fn wait(fleet: &Fleet) -> Result<CutWait> {
+    let Some(steps) = &fleet.config.cut else {
+        return Ok(CutWait::Never("the repo names no cut steps".to_string()));
+    };
+    if fleet.scan.runs.iter().any(|run| run.key == CLAIM_KEY) {
+        return Ok(CutWait::Coming);
+    }
+    Ok(match cut::newest(fleet.version_tags()) {
+        Some(tag) if past(&fleet.repo, &tag, &fleet.base_tip()?)? > 0 => CutWait::Coming,
+        Some(tag) => CutWait::Never(format!(
+            "nothing has landed past {} and no cut is running: the version it names is the \
+             newest there is",
+            tag.version.tag()
+        )),
+        None if steps.initial_version().is_some() => CutWait::Coming,
+        None => CutWait::Never("the remote has no version tag and the repo declares no initial \
+             version"
+            .to_string()),
+    })
 }
 
 /// How many commits the base branch at `base` holds past the tag `tag`, its
@@ -270,6 +298,12 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
     };
     match failure {
         None => {
+            // Its version is published and installed: what waited on it is
+            // worked again. Before the checkout goes, so that a release that
+            // fails is taken up by the next tick, which reads the cut again.
+            if record.superseded.is_none() {
+                release_waiting(fleet)?;
+            }
             fleet.cut_said.push(What::CutEnded {
                 version,
                 said: record.line(),
@@ -318,6 +352,17 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
     }
     drop_run(&fleet.repo, &mut fleet.scan, claim)?;
     Ok(if record.superseded.is_some() { Outcome::Superseded } else { Outcome::Done })
+}
+
+/// Takes the label that waits on the next cut (`cut::WAITING_LABEL`) off
+/// every open issue that carries it, read as it is now: an issue parked on the
+/// cut since the rebuild returns too. Each returns to the frontier at the
+/// stage it left.
+fn release_waiting(fleet: &Fleet) -> Result<()> {
+    for issue in fleet.gh.open_with(cut::WAITING_LABEL)? {
+        fleet.gh.remove_label(issue, cut::WAITING_LABEL)?;
+    }
+    Ok(())
 }
 
 /// How a cut that is over ended: as its checkout says, or out of sight, why.

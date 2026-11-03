@@ -611,7 +611,14 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     for patrol in seen.patrols {
         set.patrols.push(patrol::row(patrol, me, seen.heartbeats, now, locked));
     }
-    set.cut = seen.cut.map(|cut| cut::row(cut, me, seen.heartbeats, now, locked));
+    set.cut = seen.cut.map(|cut| cut::Row {
+        waiting: issues
+            .iter()
+            .filter(|issue| cut::waits(&issue.labels))
+            .map(|issue| issue.number)
+            .collect(),
+        ..cut::row(cut, me, seen.heartbeats, now, locked)
+    });
     set.waiting_on_human = waiting(seen, &issues, &claims, &set.patrols, set.cut.as_ref());
     for issue in &issues {
         if config.bound.is_some() && !seen.flows.among(&issue.labels).is_empty() {
@@ -626,6 +633,10 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             said.filter(|_| !matches!(bar, LabelBar::Epic(_))).unwrap_or_else(|| bar.reason())
         } else if claimed {
             "already claimed".to_string()
+        } else if cut::waits(&issue.labels) {
+            // Off the frontier until a cut installs a version: no worker
+            // waits for it, and the fleet can go idle and cut.
+            cut::WAITS.to_string()
         } else if config.bound.is_some() && !is_repair(&issue.labels) {
             match call(issue, seen.due, seen.handoffs) {
                 Call::Human(reason) => {
@@ -1016,7 +1027,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 model: None,
             },
-            blocked_by: vec![],
+            blocked_by: Default::default(),
             text: "stuck".to_string(),
         }];
         let issues = [
@@ -1096,7 +1107,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 model: None,
             },
-            blocked_by: vec![],
+            blocked_by: Default::default(),
             text: "done".to_string(),
         };
         let planned = [record("plan", Declared::Pass, "c1")];

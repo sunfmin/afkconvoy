@@ -7,6 +7,7 @@
 use flux_rs::attrs::*;
 use flux_rs::macros::qualifier;
 
+use crate::blocked::BlockedOn;
 use crate::harness::Harness;
 use crate::lock;
 use crate::position::{ConsultOn, Declared, Failure, LANDING_ESCALATION, Place, Position};
@@ -107,8 +108,8 @@ pub struct StageRecord {
     pub stage: String,
     pub stated: Stated,
     pub by: Author,
-    /// The issues a `blocked` verdict says it waits on.
-    pub blocked_by: Vec<u64>,
+    /// What a `blocked` verdict says it waits on.
+    pub blocked_by: BlockedOn,
     /// What the stage produced, as its worker wrote it; of a human, what
     /// they ruled or why they sent the issue.
     pub text: String,
@@ -122,7 +123,7 @@ impl StageRecord {
             stage: stage.to_string(),
             stated: Stated::LockClosed,
             by: Author::Fleet,
-            blocked_by: vec![],
+            blocked_by: BlockedOn::default(),
             text: lock::closed_text(lock),
         }
     }
@@ -135,7 +136,7 @@ impl StageRecord {
             stage: stage.to_string(),
             stated: Stated::Failed(failure),
             by: Author::Fleet,
-            blocked_by: vec![],
+            blocked_by: BlockedOn::default(),
             text: text.to_string(),
         }
     }
@@ -197,7 +198,7 @@ impl StageRecord {
     /// The comment that carries the record: its marker, a line for a human,
     /// then the text.
     pub fn comment(&self) -> String {
-        let blocked_by: Vec<String> = self.blocked_by.iter().map(u64::to_string).collect();
+        let blocked_by = self.blocked_by.word();
         let (claim, role_commit, team_commit, harness, model, by) = match &self.by {
             Author::Worker { consult, claim, role_commit, team_commit, harness, model } => {
                 let by = if *consult { CONSULT } else { "" };
@@ -225,7 +226,7 @@ impl StageRecord {
                 ("team_commit", team_commit),
                 ("harness", harness),
                 ("model", model),
-                ("blocked_by", &blocked_by.join(",")),
+                ("blocked_by", &blocked_by),
             ],
         );
         format!("{marker}\n**afkconvoy** — {}.\n\n{}", self.headline(), self.text.trim())
@@ -259,7 +260,7 @@ impl StageRecord {
             stage: fields.get("stage")?.to_string(),
             stated: Stated::read(fields.get("verdict")?)?,
             by,
-            blocked_by: fields.numbers("blocked_by"),
+            blocked_by: BlockedOn::read(fields.get("blocked_by")),
             text: text.to_string(),
         })
     }
@@ -581,9 +582,9 @@ pub enum Advance {
     Close,
     /// The consult closes with a reason, preserving any branch work.
     ConsultClose,
-    /// Its stage declared `blocked` by these issues: where they stand
-    /// decides (`blocked::blocked_route`).
-    Blocked(Vec<u64>),
+    /// Its stage declared `blocked` on these issues, or on the next cut:
+    /// where they stand decides (`blocked::blocked_route`).
+    Blocked(BlockedOn),
     /// The issue is handed to a human, for this reason.
     Escalate(String),
 }
@@ -683,7 +684,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 model: None,
             },
-            blocked_by: vec![],
+            blocked_by: BlockedOn::default(),
             text: format!("{stage} is done"),
         }
     }
@@ -723,7 +724,7 @@ mod tests {
                 stage: "sign off".to_string(),
                 stated,
                 by,
-                blocked_by: vec![41, 42],
+                blocked_by: BlockedOn::issues(vec![41, 42]),
                 text: "## Plan\n\nTwo steps.\n\n<!--convoy:stage stage=x-->\nand `-->`".to_string(),
             };
             let comment = written.comment();
@@ -1043,8 +1044,8 @@ mod tests {
             [&passed[..], &[record("build", Pass, "c2"), record("review", Pass, "c3")]].concat();
         assert_eq!(advanced(&reviewed, "c3"), Advance::HandOn);
         let mut waiting = record("plan", Blocked, "c1");
-        waiting.blocked_by = vec![41, 42];
-        assert_eq!(advanced(&[waiting], "c1"), Advance::Blocked(vec![41, 42]));
+        waiting.blocked_by = BlockedOn::issues(vec![41, 42]);
+        assert_eq!(advanced(&[waiting], "c1"), Advance::Blocked(BlockedOn::issues(vec![41, 42])));
         assert_eq!(advanced(&[record("plan", AlreadySatisfied, "c1")], "c1"), Advance::Close);
         let triage = one("stages:\n  - { name: a, by: dev, do: plan, on: { pass: done } }\n");
         let done = [record("a", Pass, "c1")];
@@ -1082,14 +1083,14 @@ mod tests {
             .map(|(at, stage)| record(stage, Pass, &format!("c{at}")))
             .collect();
         let mut blocked = record(LAND, Blocked, "landing");
-        blocked.blocked_by = vec![41];
+        blocked.blocked_by = BlockedOn::issues(vec![41]);
         let mut records = signed.clone();
         records.push(blocked);
         // Another declaration under the spent claim never changes its first word.
         records.push(record(LAND, Escalate, "landing"));
         let parked = history(workflow, records.clone());
         assert_eq!(parked.place.position, Position::LandingParked);
-        assert_eq!(advance(&parked, "landing"), Advance::Blocked(vec![41]));
+        assert_eq!(advance(&parked, "landing"), Advance::Blocked(BlockedOn::issues(vec![41])));
         assert!(!lands(&parked, "landing"));
         assert!(lands(&parked, "resumed"));
         assert_eq!(parked.readings.last(), Some(&Reading::ClaimSpent));

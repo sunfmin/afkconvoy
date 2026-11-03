@@ -4,7 +4,7 @@
 //! for is the core's to say (`afkconvoy_core::stage_record::advance`).
 
 use afkconvoy_core::account::End;
-use afkconvoy_core::blocked::{Blocked, blocked_route};
+use afkconvoy_core::blocked::Blocked;
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::position::Failure;
@@ -27,7 +27,7 @@ use crate::judge::{
 };
 use crate::lock::explaining_lock;
 use crate::orca::{Source, Worktree};
-use crate::park::{park_claim, standings};
+use crate::park::{park_claim, routed};
 use crate::stage::Flows;
 use crate::wake::wake;
 
@@ -312,7 +312,7 @@ pub fn advance(
             let why = Handed::at(stage, Why::Refuted.brief(), reason);
             return hand_off(fleet, flows, &claim, Failure::Refuted, &why, worktree.as_ref());
         }
-        Advance::Blocked(named) => match blocked_route(&standings(fleet, issue, &named)?) {
+        Advance::Blocked(named) => match routed(fleet, issue, &named)? {
             Blocked::Park(parkable) => {
                 let worktree = worktree_of(fleet, issue)?;
                 park_claim(fleet, &claim, &parkable, worktree.as_ref())?;

@@ -16,7 +16,7 @@
 use flux_rs::attrs::*;
 
 use crate::account::End;
-use crate::blocked::Parkable;
+use crate::blocked::{Hold, Parkable};
 use crate::config::Config;
 use crate::left::Spare;
 use crate::record;
@@ -403,6 +403,9 @@ pub enum ParkStep {
     Edge {
         blocker: u64,
     },
+    /// Record the issue as waiting on the next cut of its repo — the label
+    /// that says so; one already there is left as it is.
+    Cut,
     /// Write the status board: parked.
     Board,
     Release,
@@ -430,6 +433,16 @@ impl Parking {
         ParkStep::Edge { blocker }
     }
 
+    /// What `hold` writes: an edge, or the label that waits on the cut.
+    #[spec(fn(self: &mut Self, hold: Hold) -> ParkStep ensures self: Self[true])]
+    fn hold(&mut self, hold: Hold) -> ParkStep {
+        self.edged = true;
+        match hold {
+            Hold::Issue(blocker) => ParkStep::Edge { blocker },
+            Hold::Cut => ParkStep::Cut,
+        }
+    }
+
     /// The claim goes only once an edge is written: released first, the issue
     /// is on the frontier — ready, unclaimed, unblocked — for whoever plans next.
     #[spec(fn(&Self[true], word: &LastWord[true], issue: u64) -> Released)]
@@ -439,12 +452,13 @@ impl Parking {
     }
 }
 
-/// Parks the claim on `issue`: an edge to every open blocker its worker named
-/// → release the claim → remove the worktree, when it holds nothing the remote
+/// Parks the claim on `issue`: the label that waits on the next cut, where it
+/// does, and an edge to every open blocker its worker named → release the claim → remove the worktree, when it holds nothing the remote
 /// does not (`spare`) — a later dispatch recreates it at the pushed tip — and
 /// close its worker's terminal when it does.
 /// `ready_label` is not touched: the edges hold the issue back, and it returns
-/// to the frontier by itself once the last blocker closes.
+/// to the frontier by itself once the last blocker closes — and, waiting on the
+/// cut, once a cut has installed a version and taken the label off.
 pub fn park<E, F>(
     issue: u64,
     parkable: &Parkable,
@@ -455,7 +469,7 @@ where
     F: FnMut(ParkStep) -> Result<(), E>,
 {
     let mut parking = Parking::begin();
-    carry_out(parking.edge(parkable.first()))?;
+    carry_out(parking.hold(parkable.first()))?;
     for blocker in parkable.rest() {
         carry_out(parking.edge(*blocker))?;
     }
@@ -614,7 +628,7 @@ mod rejected {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blocked::{Blocked, Standing, blocked_route};
+    use crate::blocked::{Blocked, CutWait, Standing, blocked_route};
     use crate::config::Settings;
     use crate::left::{Held, Left};
     use crate::stopped::Progress;
@@ -805,7 +819,7 @@ mod tests {
             assert_eq!(accounts(&did), owed, "{end:?}");
         }
         let waiting = [(41, Standing::Waiting)];
-        let Blocked::Park(parkable) = blocked_route(&waiting) else { panic!() };
+        let Blocked::Park(parkable) = blocked_route(&waiting, &CutWait::No) else { panic!() };
         let mut parked = 0;
         park::<(), _>(7, &parkable, None, |_| {
             parked += 1;
@@ -867,7 +881,7 @@ mod tests {
     #[test]
     fn park_writes_every_edge_before_it_releases() {
         let waiting = [(41, Standing::Waiting), (42, Standing::Closed), (43, Standing::Waiting)];
-        let Blocked::Park(parkable) = blocked_route(&waiting) else { panic!() };
+        let Blocked::Park(parkable) = blocked_route(&waiting, &CutWait::No) else { panic!() };
         let run = |spare: Option<&Spare>, fail_at: Option<ParkStep>| {
             let mut steps = vec![];
             let done = park(7, &parkable, spare, |step| {
@@ -894,5 +908,34 @@ mod tests {
         // an edge that failed: the claim is still held
         let (done, steps) = run(None, Some(edges[1]));
         assert_eq!((done, steps), (Err("cut"), edges.to_vec()));
+    }
+
+    #[test]
+    fn park_on_the_cut_labels_the_issue_before_it_releases() {
+        let waiting = [(41, Standing::Waiting)];
+        let Blocked::Park(parkable) = blocked_route(&waiting, &CutWait::Coming) else { panic!() };
+        let mut steps = vec![];
+        park::<(), _>(7, &parkable, None, |step| {
+            steps.push(step);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            steps,
+            [
+                ParkStep::Cut,
+                ParkStep::Edge { blocker: 41 },
+                ParkStep::Board,
+                ParkStep::Release,
+                ParkStep::CloseTerminal
+            ]
+        );
+        let Blocked::Park(alone) = blocked_route(&[], &CutWait::Coming) else { panic!() };
+        let mut steps = vec![];
+        let failed = park(7, &alone, None, |step| {
+            steps.push(step);
+            if step == ParkStep::Cut { Err("gh down") } else { Ok(()) }
+        });
+        assert_eq!((failed.map(|r| r.issue), steps), (Err("gh down"), vec![ParkStep::Cut]));
     }
 }

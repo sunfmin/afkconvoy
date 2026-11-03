@@ -609,7 +609,7 @@ mod tests {
     }
 
     fn said(phase: Option<Phase>) -> Verdict {
-        Verdict { phase, blocked_by: vec![], comment: 0 }
+        Verdict { phase, blocked_by: Default::default(), comment: 0 }
     }
 
     const STOPPED: WorkerState = WorkerState::Idle { quiet: Some(GRACE) };

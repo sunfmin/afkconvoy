@@ -615,12 +615,22 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
         }
         _ => ("", String::new()),
     };
-    let waited = match last.map_or(&[][..], |last| &last.blocked_by) {
-        [] => "it named no issue to wait on".to_string(),
+    let blocked_by = last.map(|last| &last.blocked_by);
+    let issues = blocked_by.map_or(&[][..], |on| &on.issues[..]);
+    let waited_issues = match issues {
+        [] => None,
         on => {
             let on: Vec<String> = on.iter().map(|&blocker| fields.tracker.issue(blocker)).collect();
-            format!("every issue it waited on has closed ({})", on.join(", "))
+            Some(format!("every issue it waited on has closed ({})", on.join(", ")))
         }
+    };
+    let waited_cut = blocked_by
+        .is_some_and(|on| on.cut)
+        .then(|| "a cut of this repo has published and installed a new version".to_string());
+    let waited = match (waited_issues, waited_cut) {
+        (None, None) => "it named no issue to wait on".to_string(),
+        (Some(said), None) | (None, Some(said)) => said,
+        (Some(issues), Some(cut)) => format!("{issues}, and {cut}"),
     };
     let workflows: Vec<String> = fields.workflows.iter().map(|name| format!("`{name}`")).collect();
     let gate = match fields.gate {
@@ -1278,7 +1288,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 model: None,
             },
-            blocked_by,
+            blocked_by: crate::blocked::BlockedOn::issues(blocked_by),
             text: "v1 or v2?".to_string(),
         };
         let (asked, parked) =
@@ -1480,7 +1490,7 @@ mod tests {
             stage: stage.to_string(),
             stated,
             by,
-            blocked_by: vec![],
+            blocked_by: Default::default(),
             text: text.to_string(),
         };
         let worker = |stage: &str, declared, text: &str| {
@@ -1682,7 +1692,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 model: None,
             },
-            blocked_by: vec![11, 12],
+            blocked_by: crate::blocked::BlockedOn::issues(vec![11, 12]),
             text: "Split in two:\n#11 the parser, #12 the printer.".to_string(),
         };
         let records = [Said { record: &parked, url: "https://gh/c/1" }];
@@ -1703,7 +1713,7 @@ mod tests {
         assert!(!without.contains("## Splitting"), "{without}");
         assert!(without.contains("Judge what is left now:"), "{without}");
         // A human's `blocked` names no issue, and parks nothing.
-        let unnamed = StageRecord { blocked_by: vec![], by: Author::Human, ..parked.clone() };
+        let unnamed = StageRecord { blocked_by: Default::default(), by: Author::Human, ..parked.clone() };
         let records = [Said { record: &unnamed, url: "https://gh/c/2" }];
         let human = stage_prompt(&StageFields { records: &records, ..fields.clone() }).unwrap();
         assert!(human.contains("it declared `blocked`, and it named no issue to wait on."));
@@ -1835,7 +1845,7 @@ mod tests {
                 harness: Harness::ClaudeCode,
                 model: None,
             },
-            blocked_by: vec![],
+            blocked_by: Default::default(),
             text: "v1 or v2?".to_string(),
         };
         let escalated = [Said { record: &asked, url: "https://gh/c/5" }];

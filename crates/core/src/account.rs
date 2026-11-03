@@ -537,7 +537,7 @@ mod tests {
                 harness,
                 model: model.map(str::to_string),
             },
-            blocked_by: vec![],
+            blocked_by: Default::default(),
             text: "done".to_string(),
         }
         .comment()

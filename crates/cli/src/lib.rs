@@ -2475,9 +2475,9 @@ enum Command {
         stage: String,
         #[command(flatten)]
         text: TextArgs,
-        /// The issues a `blocked` verdict waits on, as numbers separated by commas
-        #[arg(long, value_delimiter = ',')]
-        blocked_by: Vec<u64>,
+        /// What a `blocked` verdict waits on, separated by commas: issue numbers, and `cut` for the next cut of this repo — a version that is not installed yet
+        #[arg(long, value_delimiter = ',', value_parser = blocker)]
+        blocked_by: Vec<Blocker>,
         /// The commit of the role's repo a worker's stage ran under [a human names none]
         #[arg(long, env = ROLE_COMMIT_ENV, requires = "team_commit")]
         role_commit: Option<String>,
@@ -4339,6 +4339,37 @@ fn declared(text: &str) -> Result<Declared, String> {
 }
 
 /// A stage or consult verdict. A ruling answers an escalation separately.
+/// One thing a `blocked` verdict waits on, as `--blocked-by` names it.
+#[derive(Debug, Clone, Copy)]
+enum Blocker {
+    Issue(u64),
+    Cut,
+}
+
+/// `--blocked-by`'s item: an issue's number — `#3` too — or `cut`.
+fn blocker(text: &str) -> Result<Blocker, String> {
+    use afkconvoy_core::blocked::CUT;
+    let text = text.trim();
+    if text == CUT {
+        return Ok(Blocker::Cut);
+    }
+    afkconvoy_core::record::fleet_number(text.strip_prefix('#').unwrap_or(text))
+        .map(Blocker::Issue)
+        .ok_or_else(|| format!("names neither an issue's number nor `{CUT}`"))
+}
+
+/// What `--blocked-by`'s items name together.
+fn blocked_on(items: &[Blocker]) -> afkconvoy_core::blocked::BlockedOn {
+    let mut on = afkconvoy_core::blocked::BlockedOn::default();
+    for item in items {
+        match item {
+            Blocker::Issue(number) => on.issues.push(*number),
+            Blocker::Cut => on.cut = true,
+        }
+    }
+    on
+}
+
 fn verdict(text: &str) -> Result<Declared, String> {
     let verdicts = || Declared::ALL.into_iter().filter(|declared| *declared != Declared::Ruling);
     verdicts().find(|declared| declared.word() == text).ok_or_else(|| {
@@ -5089,7 +5120,7 @@ fn run(
                 issue: issue.number(),
                 stage,
                 declared: verdict,
-                blocked_by,
+                blocked_by: blocked_on(&blocked_by),
                 text: text.read()?,
                 ran: ran(role_commit, team_commit, harness, model),
                 consult,
@@ -5113,7 +5144,7 @@ fn run(
                     issue,
                     stage,
                     declared: Declared::Ruling,
-                    blocked_by: vec![],
+                    blocked_by: Default::default(),
                     text: text.read()?,
                     ran: Some(ran),
                     consult: true,
