@@ -188,6 +188,17 @@ pub(crate) fn installs(repo: &Repo, config: &Config) -> Vec<(&'static str, Insta
         .collect()
 }
 
+/// The check of `check` of `kind` passed on this host: a failed install
+/// noted for it is no longer this host's, and is dropped, so `doctor` and
+/// `plan` no longer name it. An install that passed stays noted.
+fn passed(repo: &Repo, check: &GateNeed, kind: &str) -> Result<()> {
+    if installed_of(repo, check, kind).is_some_and(|noted| !noted.passed) {
+        let (_, _, note) = need_files(repo, &check.name, kind)?;
+        let _ = std::fs::remove_file(note);
+    }
+    Ok(())
+}
+
 /// One need on this host at `now`: its check; where it fails and declares
 /// an install, that install — in the host's exclusive queue, within its
 /// limit — and the check again. A failed install of the same declaration
@@ -200,6 +211,7 @@ fn need(
 ) -> Result<(Option<Failed>, Option<Installed>)> {
     let (stderr, install_stderr, note) = need_files(repo, &check.name, kind)?;
     let Some(reason) = run_private(repo, &check.command, check.seconds, &stderr)? else {
+        passed(repo, check, kind)?;
         return Ok((None, None));
     };
     let (Some(install), Some(seconds)) = (&check.install, check.install_seconds) else {
@@ -336,11 +348,11 @@ pub(crate) fn check_cut_needs(
             need(repo, check, CUT_NEEDS, now)?.0
         } else {
             let (stderr, _, _) = need_files(repo, &check.name, CUT_NEEDS)?;
-            run_private(repo, &check.command, check.seconds, &stderr)?.map(|reason| Failed {
-                reason,
-                stderr,
-                install: None,
-            })
+            let failed = run_private(repo, &check.command, check.seconds, &stderr)?;
+            if failed.is_none() {
+                passed(repo, check, CUT_NEEDS)?;
+            }
+            failed.map(|reason| Failed { reason, stderr, install: None })
         };
         if let Some(failed) = failed {
             let tail = std::fs::read_to_string(&failed.stderr).unwrap_or_default();

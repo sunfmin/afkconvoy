@@ -732,6 +732,27 @@ fn a_failed_install_refuses_and_is_not_run_again_within_the_hour_unless_declared
 }
 
 #[test]
+fn a_failed_install_is_no_longer_listed_once_its_check_passes() {
+    let world = World::new();
+    declare_install(&world, "sh install.sh", 30);
+    std::fs::write(world.clone.join("install.sh"), "echo ran >> installs.log\nexit 3\n").unwrap();
+    plan(&world).error();
+    // Its check still failing, the failed install stays listed.
+    let error = plan_at(&world, "1100").error();
+    assert!(error.contains("not tried again within the hour"), "{error}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json.to_string();
+    assert!(doctor.contains("toolchain: its install failed on this host"), "{doctor}");
+    // The need met another way, a later check passes: the failure is dropped.
+    std::fs::write(world.clone.join("tool"), "").unwrap();
+    let planned = plan_at(&world, "1200").ok();
+    assert_eq!(planned["need_installs"], json!([]), "{planned}");
+    assert_eq!(installs(&world), 1);
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json.to_string();
+    assert!(!doctor.contains("need_install_failed"), "{doctor}");
+    assert!(!doctor.contains("its install failed on this host"), "{doctor}");
+}
+
+#[test]
 fn an_install_past_its_limit_is_stopped_and_named() {
     let world = World::new();
     declare_install(&world, "sh install.sh", 1);
