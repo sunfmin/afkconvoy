@@ -1748,8 +1748,8 @@ enum Command {
         #[arg(long, env = JEV_KEY_COMMAND_ENV, value_name = "COMMAND", value_parser = jev_key_command_or_default)]
         jev_key_command: Option<To<String>>,
         /// Shell command receiving each human decision as JSON on stdin; `default` disables sending.
-        #[arg(long, env = NOTIFY_COMMAND_ENV, value_name = "COMMAND", value_parser = notify_command_or_default)]
-        notify_command: Option<To<String>>,
+        #[arg(long, env = NOTIFY_COMMAND_ENV, value_name = "COMMAND", value_parser = boxed_notify_command)]
+        notify_command: Option<Box<To<String>>>,
         /// The agent setup's instructions file, linked to the global instructions of every
         /// harness the host kit holds (Claude Code's `~/.claude/CLAUDE.md`, Codex's
         /// `~/.codex/AGENTS.md`, …): a host setting; `default` removes it [default: none]
@@ -4323,6 +4323,11 @@ fn boxed_file(said: &str) -> Result<Box<To<PathBuf>>, String> {
     host_settings::file_or_default(said).map(Box::new)
 }
 
+/// `--notify-command`, boxed: `Run` is the largest command, and clippy bounds it.
+fn boxed_notify_command(said: &str) -> Result<Box<To<String>>, String> {
+    notify_command_or_default(said).map(Box::new)
+}
+
 /// `--host-name`, boxed: `Run` is the largest command, and clippy bounds it.
 fn boxed_host_name(said: &str) -> Result<Box<To<String>>, String> {
     host_settings::host_name_or_default(said).map(Box::new)
@@ -4450,7 +4455,7 @@ fn start_of(
         watch_dir,
         watch_every,
         jev_key_command,
-        notify_command,
+        notify_command: notify_command.map(|command| *command),
         host_name: host_name.map(|name| *name),
         agent_instructions: agent_instructions.map(|file| *file),
         agent_skills: agent_skills.map(|file| *file),
