@@ -36,6 +36,8 @@ const LOOK_SECONDS: u64 = 300;
 /// How many ended watches are kept, for what earlier watches on the same
 /// items did.
 const HISTORY: usize = 20;
+/// What a distillation's item identity begins with, as its brief names it.
+const DISTILL: &str = afkconvoy_core::distill::ITEM;
 /// The linked checkout a watch makes for a change of a listed repo.
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
@@ -177,6 +179,8 @@ struct State {
     watched: Vec<String>,
     /// Last successful start that took kit research, retained across restarts.
     research_started: Option<u64>,
+    /// When it last distilled the daybook, and the last day it covered.
+    distilling: crate::distill::Distilling,
     /// A resident session is independent of the round currently executing.
     resident: Option<Watch>,
     /// Current observation's episode identities and durable delivery queue.
@@ -289,6 +293,8 @@ impl State {
             .running
             .as_ref()
             .is_some_and(|r| r.items.iter().any(|i| i.id.starts_with(host_watch::RESEARCH_ITEM)));
+        let mut distill_seen =
+            self.running.as_ref().is_some_and(|round| crate::distill::takes(&round.items));
         for watch in self.last.iter().chain(self.history.iter().rev()) {
             for item in &watch.items {
                 if seen.insert(&item.id) && watch.report.is_none() {
@@ -303,6 +309,12 @@ impl State {
                     self.research_started = None;
                 }
             }
+            if !distill_seen && crate::distill::takes(&watch.items) {
+                distill_seen = true;
+                if watch.report.is_none() {
+                    self.distilling.unreported(watch.started);
+                }
+            }
         }
     }
 }
@@ -315,6 +327,27 @@ fn read() -> Result<State> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
         Err(error) => Err(error.into()),
     }
+}
+
+fn write(state: &State) -> Result<()> {
+    let file = cache()?.join(STATE);
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
+    std::fs::write(&temporary, serde_json::to_vec_pretty(state)?)?;
+    std::fs::rename(temporary, &file)?;
+    Ok(())
+}
+
+/// `afkconvoy daybook --distill`: asks the host's watch to distill the daybook
+/// at its next look, without waiting out its week → {asked, at}.
+pub fn ask_distillation(now: u64) -> Result<Value> {
+    let _lock = state_lock()?;
+    let mut state = read()?;
+    state.distilling.asked = Some(now);
+    write(&state)?;
+    Ok(json!({"asked": true, "at": now}))
 }
 
 pub(crate) fn running() -> Result<Option<Watch>> {
@@ -493,13 +526,7 @@ impl Watcher {
     }
 
     fn save(&self, state: &State) -> Result<()> {
-        let file = cache()?.join(STATE);
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-        std::fs::write(&temporary, serde_json::to_vec_pretty(state)?)?;
-        std::fs::rename(temporary, &file)?;
+        write(state)?;
         self.shared.set(state.running.clone());
         Ok(())
     }
@@ -527,6 +554,7 @@ impl Watcher {
         let mut look = doctor_look(state.until, &self.ended)?;
         crate::unworked::reconcile(&mut look, &crate::this_host(), crate::clock())?;
         crate::human_wait::take_look(&mut look)?;
+        crate::distill::look(&mut look, &mut state.distilling, crate::clock());
         state.observe(look, crate::clock());
         self.say_state(&state);
         // Commit the observation interval and queue before any launch or
@@ -702,6 +730,7 @@ impl Watcher {
         if watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM)) {
             state.research_started = Some(watch.started);
         }
+        state.distilling.started(&watch.items, watch.started);
         state.pending.clear();
         state.unavailable = None;
         (self.say)(What::WatchStarted {
@@ -811,6 +840,7 @@ impl Watcher {
                 state.research_started = Some(watch.started);
             }
         }
+        state.distilling.started(&watch.items, watch.started);
         let worktree = Worktree::at(watch.directory.clone(), String::new());
         let transcript = std::fs::read_to_string(&watch.transcript).unwrap_or_default();
         let exited = host_watch::exited(&transcript);
@@ -844,6 +874,7 @@ impl Watcher {
             if watch.items.iter().any(|item| item.id.starts_with(host_watch::RESEARCH_ITEM)) {
                 state.research_started = Some(watch.started);
             }
+            state.distilling.reported(&watch.items, watch.started);
             state.unavailable = None;
             for did in &report.did {
                 (self.say)(What::WatchDid { id: watch.id.clone(), did: did.clone() });
@@ -1471,6 +1502,33 @@ fn brief(watch: &Watch) -> String {
          and a harness with none placed stays on its default model. Check the command's \
          `placed`, `settled` and updated doctor answer; record what you placed or settled \
          and what remains unplaced.\n\n\
+         ## Distill the daybook's lessons into their lasting homes\n\n\
+         A `{DISTILL}<tracker>:<since>:<until>` item is the week's distillation of that \
+         tracker's daybook; take it after anything holding work up. Read \
+         `afkconvoy daybook --help`. List the span's lessons with `afkconvoy daybook \
+         --lessons --since <since> --until <until> --tracker <tracker>`, and read the span's \
+         day discussions in the tracker's `Daybook` category for patterns that recur across \
+         entries without a lesson, the same fault twice. Decide each one's lasting home and \
+         propose it there through that home's normal path:\n\n\
+         - a repeated mistake: first a mechanism — a hook, a gate check, a tool fix — as a \
+         ticket to the repo that owns it;\n\
+         - one project's decision or term: a ticket for that project's ADR or GLOSSARY;\n\
+         - a cross-project decision or term: the control repo's own ADR or GLOSSARY, changed \
+         directly, through the landing path below;\n\
+         - how to use a tool: a ticket for that tool's own skill;\n\
+         - how the operator thinks, the global principles in sunfmin/dotfiles \
+         `claude/CLAUDE.md`: a **draft** PR on dotfiles (`gh pr create --draft`) for the \
+         operator to read. Never merge it, mark it ready or land it.\n\n\
+         Open each ticket with the create line `afkconvoy flows` gives in that repo's \
+         checkout, on the tracker it names, as a human-opened ticket would be. First check \
+         the home: a lesson its home already holds is `covered`, with a link to where. Keep \
+         nothing of your own — no memory, precedent or proposal list: the proposal is the \
+         record. Then write a JSON file carrying every lesson of the span exactly once, and \
+         each pattern from its entries, and record the run with `afkconvoy daybook \
+         --distilled <file> --tracker <tracker> --repo <tracker>`: it checks the file against \
+         the span and writes the run's one daybook entry mapping each lesson to its outcome. \
+         A refusal names what is wrong: correct the file and run it again. The daybook's \
+         entries are left to age out.\n\n\
          ## Change any repo on the checkout list\n\n\
          When a lasting fix needs code, make it yourself, even if that repo's fleet cannot \
          start a worker. In the affected repo create a linked worktree on a branch of your \
@@ -1698,6 +1756,9 @@ pub(crate) fn actionable(look: &Value) -> Vec<Item> {
                 push(&mut items, scoped_finding_id(at, &identity.watch_id()), reason);
             }
         }
+    }
+    for item in crate::distill::items(look) {
+        push(&mut items, item.id, item.reason);
     }
     items
 }
