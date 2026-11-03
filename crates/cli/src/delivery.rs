@@ -748,6 +748,7 @@ fn aggregate(repo: &Repo, delivery: &Delivery, host: &str, now: u64) -> Result<A
             now,
             Duration::from_secs(config.gate_seconds()),
             None,
+            None,
         )?;
         let tree = crate::gate::head_tree(checkout)?.name().to_string();
         match gated {

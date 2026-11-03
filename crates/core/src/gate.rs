@@ -522,9 +522,99 @@ mod relied_on {
     }
 }
 
+/// How many lines of a red gate's output are quoted from its first failure
+/// on, or from its end where it names no failing test.
+pub const QUOTE_LINES: usize = 60;
+
+/// The statuses nextest names a test that failed by, at the start of its
+/// line: `FAIL`, `TIMEOUT`, `LEAK-FAIL`, `ABORT`, and a signal (`SIGSEGV`).
+fn failed_status(word: &str) -> bool {
+    matches!(word, "FAIL" | "TIMEOUT" | "LEAK-FAIL" | "ABORT") || word.starts_with("SIG")
+}
+
+/// The test a line of nextest's output names as failing, as nextest names
+/// it — its binary, then the test: `afkconvoy cutting::a_test`. A line of a
+/// retry (`TRY 2 FAIL`) names one too; `None` of every other line.
+pub fn failed_test(line: &str) -> Option<&str> {
+    let mut rest = line.trim_start();
+    if let Some(retry) = rest.strip_prefix("TRY ") {
+        rest = retry.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start();
+    }
+    let (status, rest) = rest.split_once(' ')?;
+    if !failed_status(status) {
+        return None;
+    }
+    let rest = rest.trim_start().strip_prefix('[')?;
+    let (_, rest) = rest.split_once(']')?;
+    let mut rest = rest.trim_start();
+    if let Some(counted) = rest.strip_prefix('(') {
+        rest = counted.split_once(')')?.1.trim_start();
+    }
+    let name = rest.trim_end();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The tests a red gate's output `lines` names as failing, each once, in the
+/// order it first names them. A test a later retry passed is not among them.
+pub fn failing_tests(lines: &[String]) -> Vec<String> {
+    let mut failing: Vec<String> = vec![];
+    for line in lines {
+        if let Some(name) = failed_test(line)
+            && !failing.iter().any(|named| named == name)
+        {
+            failing.push(name.to_string());
+        }
+        let passed = line.trim_start();
+        if (passed.starts_with("TRY ") && passed.contains(" PASS ")) || passed.starts_with("FLAKY ")
+        {
+            failing.retain(|named| !passed.ends_with(named.as_str()));
+        }
+    }
+    failing
+}
+
+/// What a red gate's output `lines` is quoted by: `QUOTE_LINES` from the
+/// line that names its first failing test — nextest prints what the test
+/// printed after it — or, where no line names one, its last `QUOTE_LINES`.
+pub fn quoted(lines: &[String]) -> Vec<String> {
+    let first = lines.iter().position(|line| failed_test(line).is_some());
+    let from = first.unwrap_or(lines.len().saturating_sub(QUOTE_LINES));
+    lines.iter().skip(from).take(QUOTE_LINES).cloned().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_red_gate_s_output_names_its_failing_tests_and_is_quoted_from_the_first() {
+        let lines: Vec<String> = [
+            "    Starting 3 tests across 1 binary",
+            "        PASS [   0.012s] (1/3) nx tests::passes",
+            "        FAIL [   0.012s] (2/3) nx tests::fails_here",
+            "  stderr ───",
+            "    thread 'tests::fails_here' panicked at src/lib.rs:4:56:",
+            "    TRY 1 FAIL [   1.000s] (3/3) nx tests::flaky",
+            "    TRY 2 PASS [   1.000s] (3/3) nx tests::flaky",
+            "   TIMEOUT [ 240.004s] nx tests::slow",
+            "     Summary [   0.017s] 3 tests run: 1 passed, 2 failed, 0 skipped",
+            "        FAIL [   0.012s] (2/3) nx tests::fails_here",
+            "gate: the seconds each step took: fmt 1s",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(failing_tests(&lines), ["nx tests::fails_here", "nx tests::slow"]);
+        let quote = quoted(&lines);
+        assert_eq!(quote[0], lines[2]);
+        assert!(quote.iter().any(|line| line.contains("panicked at")), "{quote:?}");
+        assert_eq!(failed_test("        PASS [   0.012s] (1/3) nx tests::passes"), None);
+        assert_eq!(failed_test("FAIL to start"), None);
+        // No test named: its end is quoted, not only its last line.
+        let built: Vec<String> = (0..100).map(|n| format!("line {n}")).collect();
+        assert!(failing_tests(&built).is_empty());
+        let quote = quoted(&built);
+        assert_eq!((quote.len(), quote[0].as_str()), (QUOTE_LINES, "line 40"));
+    }
 
     fn tree() -> Tree {
         Tree::named("4b825dc642cb6eb9a060e54bf8d69288fbee4904")

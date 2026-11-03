@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::io::{BufRead, BufReader};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -105,14 +106,25 @@ const CANCELLED_EVERY: Duration = Duration::from_secs(1);
 /// log. A run that reaches the gate limit, `limit`, is killed, with everything
 /// it started, and is reported as a timeout rather than an outside signal.
 /// `alone` is the one of the two gates run alone, which the command's
-/// `exclusive` is told, so that a fast gate takes the fast lane.
+/// `exclusive` is told, so that a fast gate takes the fast lane. Its whole
+/// log is also written to `output`, where one is given: a file of this run's
+/// own, which it creates.
 fn run_command(
     repo: &Repo,
     command: &str,
     limit: Duration,
     candidate: Option<&crate::candidates::Gate<'_>>,
     alone: Option<Which>,
+    output: Option<&Path>,
 ) -> Result<CommandRun> {
+    let mut kept =
+        output
+            .map(|file| {
+                std::fs::OpenOptions::new().write(true).create_new(true).open(file).with_context(
+                    || format!("cannot write the gate's output to {}", file.display()),
+                )
+            })
+            .transpose()?;
     let mut shell = Command::new("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
     match alone {
@@ -168,6 +180,12 @@ fn run_command(
         for line in BufReader::new(log).split(b'\n').map_while(|line| line.ok()) {
             let line = String::from_utf8_lossy(&line).into_owned();
             eprintln!("{line}");
+            // Soft: a log that cannot be written leaves the run as it is.
+            if let Some(file) = kept.as_mut()
+                && writeln!(file, "{line}").is_err()
+            {
+                kept = None;
+            }
             if lines.send(line).is_err() {
                 break;
             }
@@ -278,10 +296,12 @@ pub fn run_and_record(
     now: u64,
     limit: Duration,
     issue: Option<u64>,
+    output: Option<&Path>,
 ) -> Result<GateRun> {
-    controlled_run(repo, command, host, now, limit, issue, None)
+    controlled_run(repo, command, host, now, limit, issue, None, output)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn controlled_run(
     repo: &Repo,
     command: &GateCommand,
@@ -290,6 +310,7 @@ fn controlled_run(
     limit: Duration,
     issue: Option<u64>,
     candidate: Option<&crate::candidates::Gate<'_>>,
+    output: Option<&Path>,
 ) -> Result<GateRun> {
     let _permit = if crate::exclusive::held() {
         None
@@ -304,7 +325,7 @@ fn controlled_run(
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
-    let command_run = run_command(repo, command.text(), limit, candidate, None)?;
+    let command_run = run_command(repo, command.text(), limit, candidate, None, output)?;
     let ended = match command_run.termination {
         Some(termination) => termination.description(),
         None => format!("gate command ended (exit {})", command_run.exit_code),
@@ -392,7 +413,7 @@ pub(crate) fn candidate_gate(
     issue: Option<u64>,
     candidate: &crate::candidates::Gate<'_>,
 ) -> Result<Value> {
-    let run = controlled_run(repo, command, host, now, limit, issue, Some(candidate))?;
+    let run = controlled_run(repo, command, host, now, limit, issue, Some(candidate), None)?;
     Ok(
         json!({"status": if run.cancelled { "cancelled" } else if run.ran.green() { "green" } else { "red" },
         "recorded": run.green.is_some() && run.not_recorded.is_none(), "head": run.head,
@@ -536,7 +557,8 @@ pub enum Gated {
 /// which is put on record on the noted layout. A run made now answers only
 /// when it was a run of the committed tree: otherwise this is an error, and
 /// nothing lands. A record of another tree, including the commit a cut lands,
-/// is not a run of this one.
+/// is not a run of this one. A run made now writes its whole log to
+/// `output`, where one is given (`run_command`).
 pub fn gated(
     repo: &Repo,
     command: &GateCommand,
@@ -544,6 +566,7 @@ pub fn gated(
     now: u64,
     limit: Duration,
     issue: Option<u64>,
+    output: Option<&Path>,
 ) -> Result<Gated> {
     let tree = head_tree(repo)?;
     if let Some(run) = recorded(repo, &tree, command, now)? {
@@ -563,7 +586,7 @@ pub fn gated(
     if !strays.is_empty() {
         return Err(not_the_commit("it has uncommitted or untracked files", &strays));
     }
-    let run = run_and_record(repo, command, host, now, limit, issue)?;
+    let run = run_and_record(repo, command, host, now, limit, issue, output)?;
     match run.green {
         Some(green) => Ok(Gated::Green { run: green, source: "run" }),
         None if run.ran.green() => {
@@ -603,7 +626,7 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     let issue = std::env::var(afkconvoy_core::role::ISSUE_ENV)
         .ok()
         .and_then(|raw| afkconvoy_core::record::fleet_number(&raw));
-    let run = run_and_record(repo, &command, host, now, Duration::from_secs(limit), issue)?;
+    let run = run_and_record(repo, &command, host, now, Duration::from_secs(limit), issue, None)?;
     // A worker's fresh build is what its worktree holds after its first green
     // run — one that built everything — by the train worktree's measure: what
     // its held disk is judged against (`hot`). Best effort: none on record
@@ -677,8 +700,14 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
              (`afkconvoy config --help`); run `afkconvoy gate`, the whole gate"
         )
     })?;
-    let run =
-        run_command(repo, &gate.command, Duration::from_secs(gate.seconds), None, Some(which))?;
+    let run = run_command(
+        repo,
+        &gate.command,
+        Duration::from_secs(gate.seconds),
+        None,
+        Some(which),
+        None,
+    )?;
     let green = run.exit_code == 0 && !run.timed_out && run.termination.is_none();
     let over_budget = run.seconds > gate.budget_seconds;
     let detail = match (green, &run.termination) {

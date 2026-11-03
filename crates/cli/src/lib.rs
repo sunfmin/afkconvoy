@@ -2997,6 +2997,8 @@ enum Command {
     ///
     /// The fleet titles its terminal `afkconvoy cut v<version>`. Before its first step, including when continued with `--from <step>`, it prints one line naming the version, the tag it is cut past (or the initial version), the PRs it holds, the steps it will take, and the paths to `convoy-cut.log` and `convoy-cut.json`. Each step prints a start line and an end line with its seconds and whether it passed or failed; its commands' output stays between those lines. These lines and the commands' output go to stderr; stdout holds the JSON answer.
     ///
+    /// The step `gate` writes the whole output of each run it makes to a file of that run's own in the checkout's git dir, `convoy-cut-gate-<seconds>.log`, named for when the run started; a later run, as with `--from gate`, writes another and leaves it. A red run fails the step naming the tests its output says failed (nextest's `FAIL`, `TIMEOUT` and signal lines) and that file; the answer names it as `gate_output`. The issue the failure opens names those tests, quotes the output from the first of them on — its end, where it names none — and names that file.
+    ///
     /// ## Turning it on
     ///
     /// A repo turns cutting on by naming its cut steps in its config file, {const:CONFIG_FILE}, in a block of their own opened by the line ```yaml cut — never in the ```yaml block of the config, which a version older than this one reads with every key known to it, refusing a key it does not know. Older versions read only that first block, and read past this one.

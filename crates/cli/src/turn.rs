@@ -52,6 +52,7 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
         now,
         Duration::from_secs(config.gate_seconds()),
         None,
+        None,
     );
     let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
     let run = run?;
