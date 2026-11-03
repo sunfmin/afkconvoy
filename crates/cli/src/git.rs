@@ -414,15 +414,16 @@ impl Repo {
     }
 
     /// The subject of each of `records`, fetched by ref name when its commit
-    /// is not here yet. Nothing is fetched when `records` is empty.
-    pub(crate) fn read_record_subjects(&self, records: &mut [RemoteRecord]) -> Result<()> {
+    /// is not here yet. Nothing is fetched when `records` is empty. A ref the
+    /// remote deleted since it was listed is absent: it leaves `records`.
+    pub(crate) fn read_record_subjects(&self, records: &mut Vec<RemoteRecord>) -> Result<()> {
         self.read_records(records)
     }
 
     /// Reads the record each of `records` carries: the subject of its commit,
     /// fetched by the name of each ref when one is not here yet — by name,
     /// for git takes a pattern only with a ref of this repo to write.
-    fn read_records(&self, records: &mut [RemoteRecord]) -> Result<()> {
+    fn read_records(&self, records: &mut Vec<RemoteRecord>) -> Result<()> {
         if records.is_empty() {
             return Ok(());
         }
@@ -430,10 +431,7 @@ impl Repo {
         let subjects = match self.subjects(records)? {
             Some(subjects) => subjects,
             None => {
-                let mut fetch =
-                    vec!["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE];
-                fetch.extend(records.iter().map(|record| record.name.as_str()));
-                self.fetch(&fetch)?;
+                self.fetch_records(records)?;
                 self.subjects(records)?.unwrap_or_default()
             }
         };
@@ -441,6 +439,31 @@ impl Repo {
             // A ref that moved between the listing and the fetch reads as a
             // record nobody can read; the next read sees it where it is.
             record.subject = subjects.get(&record.sha).cloned().unwrap_or_default();
+        }
+        Ok(())
+    }
+
+    /// Fetches every one of `records` by name. git fails the whole fetch on
+    /// one ref the remote no longer has, and names it: that ref was deleted
+    /// after the listing (a publication's scratch ref, a settled claim), so it
+    /// leaves `records`, reads as absent from now on, and the rest is fetched
+    /// again. Any other failure fails the read.
+    fn fetch_records(&self, records: &mut Vec<RemoteRecord>) -> Result<()> {
+        while !records.is_empty() {
+            let mut fetch = vec!["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE];
+            fetch.extend(records.iter().map(|record| record.name.as_str()));
+            let ran = self.try_fetch(&fetch)?;
+            if ran.ok {
+                return Ok(());
+            }
+            let gone = vanished(&ran.stderr)
+                .filter(|gone| records.iter().any(|record| record.name == *gone))
+                .map(str::to_string);
+            let Some(gone) = gone else {
+                bail!("git {} failed: {}", fetch.join(" "), ran.stderr.trim());
+            };
+            records.retain(|record| record.name != gone);
+            lock(&self.reads().seen).vanished(&gone);
         }
         Ok(())
     }
@@ -480,6 +503,12 @@ impl Repo {
         }
         Ok(Some(subjects_of(&known, records)))
     }
+}
+
+/// The ref a failed fetch says the remote does not have, if that is why
+/// it failed.
+fn vanished(stderr: &str) -> Option<&str> {
+    stderr.lines().find_map(|line| line.trim().strip_prefix("fatal: couldn't find remote ref "))
 }
 
 fn subjects_of(
