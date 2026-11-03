@@ -417,14 +417,11 @@ impl World {
         cmd
     }
 
-    /// What every command of this world is run with beyond the caller's
-    /// environment: the stand-ins first on PATH and nothing of the caller's git
-    /// or GitHub setup. The same is the world's login profile (`home/.profile`,
-    /// written once, with the world): what a fresh login shell of its host user
-    /// starts with, and so a host runner too.
-    pub fn login_env(&self) -> Vec<(String, String)> {
+    /// The PATH every command of this world runs with: its stand-ins first,
+    /// and so this build's `afkconvoy`, never one installed on the host.
+    pub fn path(&self) -> String {
         let only = self.root.join("path");
-        let path = match only.exists() {
+        match only.exists() {
             true => only.display().to_string(),
             false => match &*REAL_GIT_DIR {
                 Some(dir) => format!(
@@ -435,7 +432,23 @@ impl World {
                 ),
                 None => format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
             },
-        };
+        }
+    }
+
+    /// `text` with this world's directory taken out of it. The tests run
+    /// under any TMPDIR, whose path may hold any word: what a test looks for
+    /// in a command line it must not find in where the world happens to be.
+    pub fn unrooted(&self, text: &str) -> String {
+        text.replace(&self.root.display().to_string(), "<world>")
+    }
+
+    /// What every command of this world is run with beyond the caller's
+    /// environment: the stand-ins first on PATH and nothing of the caller's git
+    /// or GitHub setup. The same is the world's login profile (`home/.profile`,
+    /// written once, with the world): what a fresh login shell of its host user
+    /// starts with, and so a host runner too.
+    pub fn login_env(&self) -> Vec<(String, String)> {
+        let path = self.path();
         let shown = |path: &Path| path.display().to_string();
         let mut env = vec![
             ("PATH".to_string(), path),

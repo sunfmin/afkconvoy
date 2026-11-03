@@ -449,11 +449,16 @@ mod tests {
         std::fs::create_dir(&outside).unwrap();
         std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o555)).unwrap();
         symlink(&outside, root.join("link")).unwrap();
+        // The bits as the system kept them: macOS drops setgid from a
+        // directory whose group its owner is not in, as one under /tmp
+        // (wheel) is, so the test asks only that removable add owner write.
+        let (sealed, kept) = (mode(&root.join("sealed")), mode(&nested));
+        assert_eq!(sealed, 0o1555);
 
         removable(&root);
 
-        assert_eq!(mode(&root.join("sealed")), 0o1755);
-        assert_eq!(mode(&nested), 0o2755);
+        assert_eq!(mode(&root.join("sealed")), sealed | 0o200);
+        assert_eq!(mode(&nested), kept | 0o200);
         assert_eq!(mode(&nested.join("f")), 0o444);
         assert_eq!(mode(&outside), 0o555, "a symlink is not opened");
     }

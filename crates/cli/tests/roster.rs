@@ -321,7 +321,7 @@ fn a_role_with_nothing_it_can_run_safely_waits_and_goes_on_once_it_has() {
     let orca = world.orca();
     let reviewer_on_pi = orca["terminals"].as_array().unwrap().iter().any(|terminal| {
         let line = terminal["command"].as_str().unwrap_or_default();
-        line.contains("reviewer") && !line.contains("claude")
+        line.contains("reviewer") && !world.unrooted(line).contains("claude")
     });
     assert!(!reviewer_on_pi, "{orca}");
 }
