@@ -136,6 +136,7 @@ mod unbound_issue;
 mod unworked;
 pub mod wake;
 pub mod watch;
+mod watch_daybook;
 pub mod watch_landing;
 mod watch_notify;
 mod watch_report;
@@ -1324,7 +1325,7 @@ enum Command {
     ///
     /// With `--all`:
     ///
-    /// {"host": {"host_kit", "exclusive", "watch", "notify", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
+    /// {"host": {"host_kit", "exclusive", "watch", "notify", "daybook", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
     ///
     /// - `host`: what of `host` is the host's alone, as above, said once
     /// - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy, a worker health observation overdue by the pace of every fleet instance on the host. A checkout's own findings add, under `--all`, its fleet instance not alive, and, with `--since`, each tick of the interval that failed with what no unrecovered step's finding says
@@ -2350,6 +2351,8 @@ enum Command {
     /// ## What it reads and writes
     ///
     /// It reads the running watch on this host and the report file, and atomically keeps the report in the host cache. It needs no repo or GitHub login. The same report may be submitted again; a different report cannot replace it. A missing part, unknown key, empty entry, wrong watch or expired hour is refused with {error} and nonzero exit; fix the JSON or use the running watch's brief.
+    ///
+    /// Once the host runner reads the report, it appends one entry for the round to the daybook (`afkconvoy daybook --help`), of session kind `watch`: what held work back under `Why`; the actions, what was verified and what was left under `Did`; and the issues and PRs the report links under `Links`. Each human question still goes to the asking session; the entry notes only that it was raised, with its link, and asks nothing. The entry is written later and retried until it is: it never holds the round, or the next one, back; one not written is a `doctor` finding.
     ///
     /// Recording completes only the named round and keeps the healthy resident Agent and Terminal available for later rounds. It does not finish queued work or another active round. `doctor.host.watch` and later briefs show the report; an ended watch with no report says `reported: false`.
     ///
@@ -4143,6 +4146,7 @@ pub fn manual() -> agent_help::Help {
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("NOTIFY_SECONDS", watch_notify::SECONDS)
         .constant("NOTIFY_FAILURES", watch_notify::FAILURES)
+        .constant("DAYBOOK_RETRY_MAX", watch_daybook::RETRY_MAX)
         .constant("WATCH_EVERY", host_settings::WATCH_EVERY)
         .constant("WATCH_TITLE", watch_terminal::TITLE)
         .constant("WATCH_CHECKOUT", host_watch::CHECKOUT)
