@@ -168,7 +168,17 @@ pub struct Config {
     /// Commands a host must pass before claiming a cut.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cut_needs: Vec<GateNeed>,
+    /// The repo's heavy commands, each a pattern of words, which a worker
+    /// runs only through the host's exclusive queue: the guard refuses one
+    /// run bare (`guard::heavy`). Read off a block of their own
+    /// (`HEAVY_BLOCK`); empty where the file has none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub heavy_commands: Vec<String>,
 }
+
+/// The opening line of the block that declares a repo's heavy commands: one
+/// of its own, which an older afkconvoy skips.
+pub const HEAVY_BLOCK: &str = "```yaml heavy-commands";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -507,6 +517,7 @@ fn checked(
         gates: None,
         gate_needs: Vec::new(),
         cut_needs: Vec::new(),
+        heavy_commands: Vec::new(),
     })
 }
 

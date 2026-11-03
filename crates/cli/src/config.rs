@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use afkconvoy_core::config::{Config, GATES_BLOCK, GateNeed, Gates, Settings};
+use afkconvoy_core::config::{Config, GATES_BLOCK, GateNeed, Gates, HEAVY_BLOCK, Settings};
 use afkconvoy_core::cut;
 use anyhow::{Context, Result, anyhow};
 
@@ -19,6 +19,12 @@ pub const BUDGET_BLOCK: &str = "```yaml gate-budget";
 #[serde(deny_unknown_fields)]
 struct GateBudget {
     gate_budget_seconds: u64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HeavyCommands {
+    commands: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -111,6 +117,7 @@ pub fn parse(markdown: &str) -> Result<Config> {
         }
         *target = needs.checks;
     }
+    config.heavy_commands = heavy_commands(markdown)?;
     // An outer gate/land would ask for the lane a second time before it
     // could even reach the inherited gate wrapper.
     if config.gate_command.split_whitespace().collect::<Vec<_>>().windows(2).any(|pair| {
@@ -122,6 +129,39 @@ pub fn parse(markdown: &str) -> Result<Config> {
         ));
     }
     Ok(config)
+}
+
+/// The heavy commands a markdown text declares in its ```` ```yaml
+/// heavy-commands ```` blocks (`HEAVY_BLOCK`): none where it has none. Each
+/// is a pattern of words, nonempty and declared once.
+pub fn heavy_commands(markdown: &str) -> Result<Vec<String>> {
+    let blocks = fenced_all(markdown, HEAVY_BLOCK);
+    if blocks.is_empty() {
+        return Ok(vec![]);
+    }
+    let heavy: HeavyCommands =
+        serde_yaml::from_str(&blocks.join("\n")).context("its ```yaml heavy-commands block")?;
+    let mut said = std::collections::HashSet::new();
+    let mut commands = vec![];
+    for pattern in heavy.commands {
+        let words = pattern.split_whitespace().collect::<Vec<_>>().join(" ");
+        anyhow::ensure!(!words.is_empty(), "heavy-commands: a command is empty");
+        anyhow::ensure!(said.insert(words.clone()), "heavy-commands: `{words}` is declared twice");
+        commands.push(words);
+    }
+    Ok(commands)
+}
+
+/// The heavy commands the config file `file` declares, read off their block
+/// alone: what the guard asks at each call, which a fault elsewhere in the
+/// file does not change. None where the file cannot be read.
+pub fn heavy_commands_of(file: &Path) -> Result<Vec<String>> {
+    match std::fs::read_to_string(file) {
+        Ok(text) => {
+            heavy_commands(&text).with_context(|| format!("config file {}", file.display()))
+        }
+        Err(_) => Ok(vec![]),
+    }
 }
 
 /// Whether the repo puts its gate in the host's worker lane. The wrapper

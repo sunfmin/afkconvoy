@@ -123,6 +123,29 @@ fn a_warning_budget_has_one_home_and_old_readers_keep_the_termination_limit() {
     assert!(world.afk(&["config"]).error().contains("unknown field"));
 }
 
+#[test]
+fn config_reads_back_the_heavy_commands_a_repo_declares() {
+    let world = World::new();
+    write_config(&world, "base_branch: main\ngate_command: make test");
+    let file = world.clone.join("docs/agents/afkconvoy.md");
+    let original = std::fs::read_to_string(&file).unwrap();
+    assert!(world.afk(&["config"]).ok().get("heavy_commands").is_none(), "none declared");
+    let heavy = "\n```yaml heavy-commands\ncommands:\n  - cargo   nextest\n  - ./gate.sh\n```\n";
+    std::fs::write(&file, format!("{original}{heavy}")).unwrap();
+    let config = world.afk(&["config"]).ok();
+    assert_eq!(config["heavy_commands"], serde_json::json!(["cargo nextest", "./gate.sh"]));
+    for (block, fault) in [
+        ("commands: [cargo test, cargo  test]", "declared twice"),
+        ("commands: ['  ']", "empty"),
+        ("patterns: [cargo test]", "unknown field"),
+    ] {
+        std::fs::write(&file, format!("{original}\n```yaml heavy-commands\n{block}\n```\n"))
+            .unwrap();
+        let error = world.afk(&["config"]).error();
+        assert!(error.contains(fault) && error.contains("heavy-commands"), "{block} → {error}");
+    }
+}
+
 /// The config file `config --help` shows whole: the ```` ```yaml ```` block of
 /// the one file it shows, as the yaml a repo would write.
 fn shown_config() -> String {

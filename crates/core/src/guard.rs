@@ -900,6 +900,94 @@ pub fn refused(
     commands(line).iter().find_map(|words| limits.refuses(words, processes))
 }
 
+/// Why `call` is refused for running one of a repo's heavy commands, `patterns`,
+/// outside the host's exclusive queue (sunfmin/control#577); `None` when it
+/// runs none bare. A heavy command is a pattern of words: a simple command
+/// runs it when its words, from its program on, begin with the pattern's — a
+/// pattern's program with no `/` matches a program by its file name. A
+/// simple command `afkconvoy exclusive …` is already in the queue, whatever
+/// it runs. The argument after `sh -c` is judged as the line it is. The
+/// reason names the pattern and gives the line to run in its place.
+pub fn heavy(call: &Call, patterns: &[String]) -> Option<String> {
+    let Call::Shell(line) = call else { return None };
+    if patterns.is_empty() {
+        return None;
+    }
+    commands(line).iter().find_map(|command| runs_heavy(command, patterns))
+}
+
+fn runs_heavy(words: &[String], patterns: &[String]) -> Option<String> {
+    let mut before: Vec<&str> = vec![];
+    let mut rest = words.iter().map(String::as_str);
+    let mut wrapped = false;
+    let program = loop {
+        let word = rest.next()?;
+        if WRAPPERS.contains(&word) {
+            wrapped = true;
+        } else if !(is_assignment(word) || wrapped && word.starts_with('-')) {
+            break word;
+        }
+        before.push(word);
+    };
+    let args: Vec<&str> = rest.collect();
+    match file_name(program) {
+        "afkconvoy" if positionals(&args, &["-C"]).first() == Some(&"exclusive") => return None,
+        "sh" | "bash" | "zsh" | "dash" | "ksh" => {
+            let mut rest = args.iter();
+            while let Some(arg) = rest.next() {
+                if arg.starts_with('-') && !arg.starts_with("--") && arg.contains('c') {
+                    return rest.next().and_then(|line| heavy(&Call::shell(line), patterns));
+                }
+            }
+            return None;
+        }
+        _ => {}
+    }
+    let pattern = patterns.iter().find(|pattern| runs_pattern(pattern, program, &args))?;
+    let mut instead: Vec<String> = before.iter().map(|word| shell_word(word)).collect();
+    instead.extend(["afkconvoy", "exclusive", "--"].map(String::from));
+    instead.push(shell_word(program));
+    instead.extend(args.iter().map(|word| shell_word(word)));
+    Some(format!(
+        "`{pattern}` is a heavy command of this repo (its `yaml heavy-commands` block in \
+         docs/agents/afkconvoy.md): it runs through the host's exclusive queue, never bare, so \
+         it waits for the gates and builds already running. Run `{}` instead",
+        instead.join(" ")
+    ))
+}
+
+/// Whether the command `program` run with `args` runs `pattern`: its words
+/// begin with the pattern's, a pattern's program with no `/` matching
+/// `program` by its file name.
+fn runs_pattern(pattern: &str, program: &str, args: &[&str]) -> bool {
+    let mut said = pattern.split_whitespace();
+    let Some(first) = said.next() else { return false };
+    let ran = if first.contains('/') { program } else { file_name(program) };
+    if ran != first {
+        return false;
+    }
+    let mut args = args.iter();
+    for word in said {
+        if args.next() != Some(&word) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The file name of the program `word` names: what follows its last `/`.
+fn file_name(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+/// `word` as a shell line would say it: as it is where nothing in it means
+/// anything to a shell, else quoted.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word.chars().all(|c| c.is_ascii_alphanumeric() || "_-./=:,+@%^".contains(c));
+    if plain { word.to_string() } else { format!("'{}'", word.replace('\'', "'\\''")) }
+}
+
 /// Refuses Orca input to the asking Terminal. The caller resolves an omitted
 /// Terminal through Orca; an explicit handle needs no lookup. This uses the
 /// same shell reader as the stage guards, including wrappers and `sh -c`.
@@ -1633,5 +1721,59 @@ mod tests {
             ),
             "{why}"
         );
+    }
+
+    fn bizkernel() -> Vec<String> {
+        ["cargo build", "cargo test", "cargo nextest", "cargo clippy", "./gate.sh"]
+            .map(String::from)
+            .to_vec()
+    }
+
+    #[test]
+    fn a_heavy_command_run_bare_is_refused_with_the_line_to_run_instead() {
+        let why = heavy(&Call::shell("cd cli && cargo nextest run -p x"), &bizkernel())
+            .expect("a refusal");
+        assert!(why.contains("`cargo nextest` is a heavy command"), "{why}");
+        assert!(
+            why.contains("Run `afkconvoy exclusive -- cargo nextest run -p x` instead"),
+            "{why}"
+        );
+        let quoted = "RUST_LOG=debug cargo nextest run -E 'test(a_b)'";
+        let why = heavy(&Call::shell(quoted), &bizkernel()).expect("a refusal");
+        assert!(
+            why.contains(
+                "`RUST_LOG=debug afkconvoy exclusive -- cargo nextest run -E 'test(a_b)'`"
+            ),
+            "{why}"
+        );
+        for line in [
+            "./gate.sh fast",
+            "/Users/me/.cargo/bin/cargo build --release",
+            "sh -c 'cargo clippy --workspace'",
+            "git status; cargo test -p core",
+        ] {
+            assert!(heavy(&Call::shell(line), &bizkernel()).is_some(), "allowed: {line}");
+        }
+    }
+
+    #[test]
+    fn a_heavy_command_in_the_exclusive_queue_or_none_declared_is_allowed() {
+        for line in [
+            "cd cli && afkconvoy exclusive -- cargo nextest run -p x",
+            "afkconvoy -C . exclusive -- ./gate.sh",
+            "afkconvoy exclusive -C . -- sh -c 'cargo test'",
+            // afkconvoy's own heavy steps already queue through exclusive.
+            "afkconvoy gate --fast",
+            "afkconvoy land --issue 577",
+            "afkconvoy cut",
+            "cargo fmt --all",
+            "cargo buildx",
+            "echo 'cargo test'",
+            "gate.sh",
+        ] {
+            assert_eq!(heavy(&Call::shell(line), &bizkernel()), None, "{line}");
+        }
+        assert_eq!(heavy(&Call::shell("cd cli && cargo nextest run -p x"), &[]), None);
+        assert_eq!(heavy(&Call::Other, &bizkernel()), None);
     }
 }
