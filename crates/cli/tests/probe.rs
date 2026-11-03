@@ -1,5 +1,7 @@
 use crate::common;
 
+use std::path::Path;
+
 use common::{Answer, World, commit, git};
 use serde_json::{Value, json};
 
@@ -750,4 +752,68 @@ fn a_config_gives_install_and_install_seconds_together() {
     std::fs::write(&config, format!("{original}\n```yaml gate-needs\nchecks:\n  - name: toolchain\n    command: test -f tool\n    seconds: 5\n    install: sh install.sh\n```\n")).unwrap();
     let error = world.afk(&["config"]).error();
     assert!(error.contains("install_seconds"), "{error}");
+}
+
+/// `plan` at `now`, as a worker's command: run in a Claude Code sandbox,
+/// whose environment carries a dead proxy, a scratchpad `TMPDIR` and a tool
+/// home pointed there, and the issue the worker is on (sunfmin/control#574).
+fn plan_in_sandbox(world: &World, now: &str, scratchpad: &Path) -> Answer {
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["plan", "--now", now])
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("https_proxy", "http://127.0.0.1:9")
+        .env("TMPDIR", scratchpad)
+        .env("RUSTUP_HOME", scratchpad.join("rustup"))
+        .env("AFKCONVOY_ISSUE", "546")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Answer {
+        json: serde_json::from_str(stdout.trim()).unwrap(),
+        code: out.status.code().unwrap(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
+#[test]
+fn a_need_set_off_from_a_worker_command_installs_with_the_hosts_environment_not_its_sandbox() {
+    let world = World::new();
+    let scratchpad = tempfile::tempdir().unwrap();
+    declare_install(&world, "sh install.sh", 30);
+    std::fs::write(
+        world.clone.join("install.sh"),
+        "echo \"proxy=${HTTPS_PROXY-}${https_proxy-} tmpdir=${TMPDIR-} rustup=${RUSTUP_HOME-}\" >> installs.log\ntouch tool\n",
+    )
+    .unwrap();
+    let answer = plan_in_sandbox(&world, "1000", scratchpad.path());
+    assert!(
+        answer.stderr.contains("gate need toolchain was installed on this host"),
+        "{}",
+        answer.stderr
+    );
+    let log = std::fs::read_to_string(world.clone.join("installs.log")).unwrap();
+    assert!(!log.contains("127.0.0.1:9"), "the install saw the sandbox's proxy: {log}");
+    let scratch = scratchpad.path().display().to_string();
+    assert!(!log.contains(&scratch), "the install saw the sandbox's scratchpad: {log}");
+    assert_eq!(log.trim(), "proxy= tmpdir= rustup=", "{log}");
+}
+
+#[test]
+fn an_install_that_failed_in_a_worker_command_is_not_noted_as_failed_on_this_host() {
+    let world = World::new();
+    let scratchpad = tempfile::tempdir().unwrap();
+    declare_install(&world, "sh install.sh", 30);
+    std::fs::write(world.clone.join("install.sh"), "echo ran >> installs.log\nexit 3\n").unwrap();
+    let error = plan_in_sandbox(&world, "1000", scratchpad.path()).error();
+    assert!(error.contains("toolchain") && error.contains("(exit status: 3)"), "{error}");
+    assert_eq!(installs(&world), 1);
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json.to_string();
+    assert!(!doctor.contains("install failed on this host"), "{doctor}");
+    // Nothing holds the host's own install for the hour: it runs at once.
+    plan_at(&world, "1100").error();
+    assert_eq!(installs(&world), 2);
+    // The host's own failed install is its: noted, and held.
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json.to_string();
+    assert!(doctor.contains("toolchain: its install failed on this host"), "{doctor}");
 }

@@ -9,6 +9,7 @@
 //! (`Private`): a running fleet instance asks again once it no longer stands
 //! (`public_tracker`), and a probe stands only while it does.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::config::{Config, GateNeed};
@@ -236,10 +237,40 @@ fn need(
         held: false,
         check: check.clone(),
     };
-    std::fs::write(&note, serde_json::to_string(&installed)?)
-        .with_context(|| format!("cannot write {}", note.display()))?;
+    // A failed install a worker's command set off may have failed only in
+    // its sandbox: it is not noted as this host's, so it neither holds the
+    // host's own install for the hour nor is said as failed on this host.
+    if installed.passed || !from_worker() {
+        std::fs::write(&note, serde_json::to_string(&installed)?)
+            .with_context(|| format!("cannot write {}", note.display()))?;
+    }
     let failed = again.map(|reason| Failed { reason, stderr, install: Some(installed.clone()) });
     Ok((failed, Some(installed)))
+}
+
+/// The host's environment a need's check and install run with, read once a
+/// look (`host_runner::host_environment`).
+static HOST_ENV: crate::look::Reading<Result<Vec<(OsString, OsString)>, String>> =
+    crate::look::Reading::per_look("host environment");
+
+/// A need is the host's: its check and its install run with the host's
+/// network and paths, never with the sandbox of the worker whose command set
+/// them off — its proxy, its scratchpad `TMPDIR`, the tool homes it points
+/// there (sunfmin/control#574).
+fn host_environment() -> Result<Vec<(OsString, OsString)>> {
+    HOST_ENV
+        .read("", || crate::host_runner::host_environment().map_err(|error| format!("{error:#}")))
+        .map_err(|error| anyhow::anyhow!("a need runs with the host's environment: {error}"))
+}
+
+/// Whether this command is a worker's: the fleet put the issue or the patrol
+/// it is on in its environment. What it runs may be held by its harness's
+/// sandbox whatever environment it is given, so a failed install it set off
+/// is not this host's (`need`).
+fn from_worker() -> bool {
+    [afkconvoy_core::role::ISSUE_ENV, afkconvoy_core::patrol::PATROL_ENV]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
 }
 
 /// Run `command` with `sh -e` in the checkout within `seconds`, its stdout
@@ -253,7 +284,7 @@ fn run_private(repo: &Repo, command: &str, seconds: u64, stderr: &Path) -> Resul
     }
     let script = format!("exec 1>/dev/null\n{command}");
     let mut shell = std::process::Command::new("sh");
-    shell.args(["-e", "-c", &script]).current_dir(&repo.dir);
+    shell.args(["-e", "-c", &script]).current_dir(&repo.dir).env_clear().envs(host_environment()?);
     crate::exclusive::inherit(&mut shell, repo)?;
     let (output, timed_out) = crate::process::output_within_with_timeout(
         &mut shell,
