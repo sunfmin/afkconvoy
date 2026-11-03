@@ -441,7 +441,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
              --config 'project_doc_fallback_filenames=[\"CLAUDE.md\"]' \
              --config 'project_root_markers=[]' \
              --config '{hook}' --config features.memories=false \
-             --config skills.bundled.enabled=false --model 'gpt-5.5'",
+             --config skills.bundled.enabled=false --model 'gpt-5.5' \
+             --config 'goals.max_goal_token_budget=1000000'",
             role = role.display(),
             kept = kept.display(),
             worktree = dir.display(),
@@ -451,14 +452,19 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
         )
     );
     // Nothing was asked at its terminal: both of its questions are answered
-    // on the line, and the worker backend was sent the brief's pointer alone.
+    // on the line, and the worker backend was sent the brief's pointer alone,
+    // set as the session's goal.
     let sent: Vec<Vec<String>> = world
         .orca_calls()
         .into_iter()
         .filter(|call| call.starts_with(&["terminal".to_string(), "send".to_string()]))
         .collect();
     assert_eq!(sent.len(), 1, "{sent:?}");
-    assert!(sent[0].iter().any(|word| word.starts_with("Your task brief is the file ")));
+    let brief = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]))
+        .join("convoy-worker-prompt.md");
+    let goal = afkconvoy_core::harness::Harness::Codex.brief_line(&brief.display().to_string());
+    assert!(goal.starts_with("/goal Your task brief is the file "), "{goal}");
+    assert!(sent[0].contains(&goal), "{sent:?}");
 
     // The fleet's own user directory for Codex: the user's login, as a link
     // to theirs, and nothing else of the user's — and no `AGENTS.md`, which
@@ -496,6 +502,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
             "skills.bundled.enabled=false",
             "--model",
             "gpt-5.5",
+            "--config",
+            "goals.max_goal_token_budget=1000000",
         ])
     );
 
@@ -510,7 +518,13 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     let next = PathBuf::from(&under_codex(&world, &line)[1]);
     assert_ne!(next, kept);
     assert_eq!(held(&next), [] as [&str; 0], "a link to no login is left");
-    assert!(line.ends_with(" --config skills.bundled.enabled=false --model 'gpt-5.5'"), "{line}");
+    assert!(
+        line.ends_with(
+            " --config skills.bundled.enabled=false --model 'gpt-5.5' \
+             --config 'goals.max_goal_token_budget=1000000'"
+        ),
+        "{line}"
+    );
 }
 
 /// What the stand-in Codex was told in `ran` as a developer's: the rules the
