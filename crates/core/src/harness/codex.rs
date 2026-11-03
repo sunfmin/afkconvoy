@@ -527,6 +527,84 @@ pub(super) fn with_service_tier(line: &str, service_tier: Option<&str>) -> Strin
     with_preference(line, SERVICE_TIER, service_tier)
 }
 
+/// The command that sets a goal of a Codex session, and starts its first
+/// turn on it (codex-cli 0.166.0, sunfmin/control#544). While the goal is
+/// active Codex begins the next turn by itself each time its model ends one
+/// short of it.
+const GOAL: &str = "/goal ";
+/// The command that clears a session's goal. Typed mid-turn it lets that turn
+/// finish, and no turn follows it.
+const GOAL_CLEAR: &str = "/goal clear";
+/// The key of Codex's configuration that gives a goal set without a budget
+/// its token budget: uncached input and output tokens, counted from the
+/// goal's setting. Past it Codex stops the turn and marks the goal
+/// `budget_limited`, and begins no other.
+const GOAL_BUDGET: &str = "goals.max_goal_token_budget";
+/// A worker goal's budget: five times what a Codex worker used, uncached
+/// input and output, on this fleet's issues in the week to 2026-11-03
+/// (about 207,000). It bounds a worker that waits, its goal still active,
+/// being continued round at cost.
+pub(super) const GOAL_TOKENS: u64 = 1_000_000;
+/// Where Codex keeps a session's goal, under its user directory, and the
+/// question that reads its status: the session's latest goal, nothing when
+/// it has none or it was cleared.
+pub(super) const GOAL_STORE: super::GoalStore = super::GoalStore {
+    file: "goals_1.sqlite",
+    query: "select status from thread_goals order by updated_at_ms desc limit 1",
+};
+
+/// The line typed at a worker to hand it the brief at `brief`: set as its goal.
+pub(super) fn brief_line(brief: &str) -> String {
+    format!("{GOAL}{}", crate::prompt::goal_objective(brief))
+}
+
+/// `line` with a worker goal's budget.
+pub(super) fn with_goal_budget(line: &str) -> String {
+    Line::new()
+        .launch(line)
+        .fixed(" --config ")
+        .word(&format!("{GOAL_BUDGET}={GOAL_TOKENS}"))
+        .done()
+}
+
+pub(super) const GOAL_END: super::Keystroke =
+    super::Keystroke { text: Some(GOAL_CLEAR), enter: true };
+
+/// The status of a goal, as the store says it.
+pub(super) fn goal(answer: &str) -> Option<super::Goal> {
+    use super::Goal;
+    Some(match answer.trim() {
+        "" => Goal::Unset,
+        "active" => Goal::Active,
+        "paused" => Goal::Paused,
+        "blocked" => Goal::Blocked,
+        "usage_limited" => Goal::UsageLimited,
+        "budget_limited" => Goal::BudgetLimited,
+        "complete" => Goal::Complete,
+        _ => return None,
+    })
+}
+
+/// Whether Codex began a turn of the goal by itself: a turn its goal
+/// started after an earlier turn ended. The turn the goal's setting starts is
+/// the brief's own, not one Codex continued.
+pub(super) fn goal_continued(text: &str) -> bool {
+    let mut ended = false;
+    for value in json_lines(text) {
+        let payload = &value["payload"];
+        match payload["type"].as_str() {
+            Some("task_complete" | "turn_aborted") => ended = true,
+            Some("task_started") if ended => {
+                if payload["turn_attribution"]["turn_trigger"] == "goal" {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// A watch's launch line: the worker's, with search, the model inside the
 /// command, and the effort after it.
 pub(super) fn session_watch(
@@ -805,6 +883,12 @@ pub(super) fn names_brief(text: &str, brief: &str) -> bool {
             && (payload["role"] == "assistant" || payload["type"] != "message")
         {
             return false;
+        }
+        // A brief handed as the goal is said in the goal's setting: its
+        // objective, exactly (`brief_line`).
+        if value["type"] == "event_msg" && payload["type"] == "thread_goal_updated" {
+            let objective = payload["goal"]["objective"].as_str();
+            return objective == Some(crate::prompt::goal_objective(brief).as_str());
         }
         if let Some(matches) = session::brief_match(&value, brief) {
             return matches;

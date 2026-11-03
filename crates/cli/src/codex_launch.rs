@@ -210,7 +210,8 @@ fn prepare(
         codex_home: Some(home),
     };
     let line = harness.with_effort(&line.done(), effort.as_deref());
-    Ok((harness.with_service_tier(&line, service_tier.as_deref()), settings))
+    let line = harness.with_service_tier(&line, service_tier.as_deref());
+    Ok((harness.with_goal_budget(&line), settings))
 }
 
 /// A watch's launch line. A harness with a session of its own gets a fresh

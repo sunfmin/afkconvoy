@@ -63,6 +63,7 @@ pub mod gh;
 mod gh_equivalent;
 mod gh_quota;
 pub mod git;
+mod goal;
 pub mod guard;
 pub mod harness_down;
 pub mod health;
