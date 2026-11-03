@@ -278,10 +278,10 @@ impl Standing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Row {
     pub standing: Standing,
-    /// A failed host check while this cut is due: the one evaluation a
+    /// The failed host checks while this cut is due: the one evaluation a
     /// tick says and starts the cut by (sunfmin/control#532).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub not_cutting_here: Option<NeedFailed>,
+    pub not_cutting_here: Option<Held>,
     /// The newest version tag, and how many commits the base branch holds
     /// past it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,38 +303,58 @@ pub struct Row {
     pub claim: Option<RunClaim>,
 }
 
-/// A cut need that failed on this host: the check's name, why it failed,
-/// and the user-only host-cache file of its last stderr lines — named,
-/// never read, so its output stays on the host (docs/adr/0053). Plan and
+/// A due cut this host does not claim: each cut need that failed at the
+/// look, in declared order, and the user-only host-cache file of their last
+/// stderr lines — one per checkout, named, never read, so its output stays
+/// on the host (docs/adr/0053). The file stands until a look finds no need
+/// failing, whichever need fails meanwhile (sunfmin/control#570). Plan and
 /// the tick say it as `said`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    pub needs: Vec<NeedFailed>,
+    pub stderr: String,
+}
+
+/// One cut need that failed on this host: the check's name, why it failed,
+/// and what an install that ran for it, or is not tried again yet, did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeedFailed {
     pub name: String,
     pub reason: String,
-    pub stderr: String,
-    /// What an install that ran for it, or is not tried again yet, did.
     pub install: Option<String>,
 }
 
-impl NeedFailed {
-    /// `not cutting here: <name> failed`.
+impl Held {
+    /// `not cutting here: <name>, <name> failed`.
     pub fn said(&self) -> String {
-        format!("not cutting here: {} failed", self.name)
+        let names: Vec<&str> = self.needs.iter().map(|need| need.name.as_str()).collect();
+        format!("not cutting here: {} failed", names.join(", "))
     }
 
-    /// Its status, its stderr file and any install, as doctor says them.
+    /// Each need's status and any install, and the stderr file, as doctor
+    /// says them.
     pub fn evidence(&self) -> String {
+        let needs: Vec<String> = self
+            .needs
+            .iter()
+            .map(|need| {
+                format!(
+                    "{} failed ({}){}",
+                    need.name,
+                    need.reason,
+                    need.install.as_deref().unwrap_or_default()
+                )
+            })
+            .collect();
         format!(
-            "the cut is due and the host check {} failed ({}); stderr: {}{}",
-            self.name,
-            self.reason,
-            self.stderr,
-            self.install.as_deref().unwrap_or_default()
+            "the cut is due and host checks failed: {}; stderr: {}",
+            needs.join("; "),
+            self.stderr
         )
     }
 }
 
-impl Serialize for NeedFailed {
+impl Serialize for Held {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.said())
     }

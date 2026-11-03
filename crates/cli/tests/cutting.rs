@@ -1161,8 +1161,69 @@ fn a_cut_need_that_passes_then_fails_claims_no_cut_and_doctor_names_its_stderr()
         .nth(1)
         .and_then(|rest| rest.split(['"', '\\']).next())
         .unwrap_or_else(|| panic!("doctor names the stderr file: {doctor}"));
-    assert_eq!(std::fs::read_to_string(stderr).unwrap().trim(), "private-late-failure");
+    let lines = std::fs::read_to_string(stderr).unwrap();
+    assert!(lines.contains("publish-access") && lines.contains("private-late-failure"), "{lines}");
     assert!(!format!("{tick}{doctor}{}", logged(&world).join(" ")).contains("private-late"));
+}
+
+/// The `cut-need` finding of a doctor's answer.
+fn cut_need(world: &World, now: u64) -> Option<Value> {
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", &now.to_string()]).ok();
+    doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|found| found["watch_id"].as_str().unwrap().contains("cut-need"))
+        .cloned()
+}
+
+/// The stderr file a finding's evidence names.
+fn named_stderr(found: &Value) -> String {
+    let evidence = found["evidence"].as_str().unwrap();
+    evidence.split("stderr: ").nth(1).unwrap().split(['"', ';']).next().unwrap().to_string()
+}
+
+/// sunfmin/control#570: a cut held first by one need, then by another, then
+/// by both, is one `cut-need` condition. Its evidence names the needs failing
+/// now and a stderr file that exists; a cut no longer held clears it.
+#[test]
+fn a_held_cut_is_one_cut_need_finding_whichever_need_fails() {
+    let world = cutting();
+    let (signing, upload) = (world.root.join("signing-ok"), world.root.join("upload-ok"));
+    let config = format!(
+        "{CONFIG}\n{}\n```yaml cut-needs\nchecks:\n  - name: signing\n    command: test -f '{}' || {{ echo no-signing >&2; exit 1; }}\n    seconds: 5\n  - name: upload\n    command: test -f '{}' || {{ echo no-upload >&2; exit 1; }}\n    seconds: 5\n```\n",
+        cut_block(&says_published(&world)),
+        signing.display(),
+        upload.display()
+    );
+    commit_config(&world, &config, "Declare two cut needs");
+    std::fs::write(&upload, "yes").unwrap();
+    let first = cut_need(&world, 10_000).expect("signing holds the cut");
+    assert_eq!(first["what"], "not cutting here: signing failed", "{first}");
+
+    std::fs::write(&signing, "yes").unwrap();
+    std::fs::remove_file(&upload).unwrap();
+    let then = cut_need(&world, 10_010).expect("upload holds the cut");
+    assert_eq!(then["what"], "not cutting here: upload failed", "{then}");
+    assert_eq!(then["watch_id"], first["watch_id"], "one held cut, one condition");
+    assert_eq!(named_stderr(&then), named_stderr(&first), "{then}");
+    let lines = std::fs::read_to_string(named_stderr(&then)).unwrap();
+    assert!(lines.contains("no-upload") && !lines.contains("no-signing"), "{lines}");
+
+    std::fs::remove_file(&signing).unwrap();
+    let both = cut_need(&world, 10_020).expect("both hold the cut");
+    assert_eq!(both["what"], "not cutting here: signing, upload failed", "{both}");
+    assert_eq!(both["watch_id"], first["watch_id"]);
+    let evidence = both["evidence"].as_str().unwrap();
+    assert!(evidence.contains("signing failed") && evidence.contains("upload failed"), "{both}");
+    let lines = std::fs::read_to_string(named_stderr(&both)).unwrap();
+    assert!(lines.contains("no-signing") && lines.contains("no-upload"), "{lines}");
+    assert!(!both.to_string().contains("no-signing"), "never its output: {both}");
+
+    std::fs::write(&signing, "yes").unwrap();
+    std::fs::write(&upload, "yes").unwrap();
+    assert_eq!(cut_need(&world, 10_030), None, "a cut no longer held clears it");
+    assert!(!std::path::Path::new(&named_stderr(&both)).exists());
 }
 
 /// The plan's frontier, by number.
