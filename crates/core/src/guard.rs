@@ -917,19 +917,20 @@ pub fn heavy(call: &Call, patterns: &[String]) -> Option<String> {
 }
 
 fn runs_heavy(words: &[String], patterns: &[String]) -> Option<String> {
+    let mut before: Vec<&str> = vec![];
+    let mut rest = words.iter().map(String::as_str);
     let mut wrapped = false;
-    let at = words.iter().position(|word| {
-        if WRAPPERS.contains(&word.as_str()) {
+    let program = loop {
+        let word = rest.next()?;
+        if WRAPPERS.contains(&word) {
             wrapped = true;
-            false
-        } else {
-            !(is_assignment(word) || wrapped && word.starts_with('-'))
+        } else if !(is_assignment(word) || wrapped && word.starts_with('-')) {
+            break word;
         }
-    })?;
-    let (before, run) = words.split_at(at);
-    let name = |word: &str| word.rsplit('/').next().unwrap_or(word).to_string();
-    let args: Vec<&str> = run[1..].iter().map(String::as_str).collect();
-    match name(&run[0]).as_str() {
+        before.push(word);
+    };
+    let args: Vec<&str> = rest.collect();
+    match file_name(program) {
         "afkconvoy" if positionals(&args, &["-C"]).first() == Some(&"exclusive") => return None,
         "sh" | "bash" | "zsh" | "dash" | "ksh" => {
             let mut rest = args.iter();
@@ -942,24 +943,41 @@ fn runs_heavy(words: &[String], patterns: &[String]) -> Option<String> {
         }
         _ => {}
     }
-    let pattern = patterns.iter().find(|pattern| {
-        let said: Vec<&str> = pattern.split_whitespace().collect();
-        let Some((program, rest)) = said.split_first() else { return false };
-        let ran = if program.contains('/') { run[0].clone() } else { name(&run[0]) };
-        ran == *program
-            && run.len() > rest.len()
-            && rest.iter().zip(&run[1..]).all(|(said, ran)| said == ran)
-    })?;
-    let line = |words: &[String]| words.iter().map(|word| shell_word(word)).collect::<Vec<_>>();
-    let mut instead = line(before);
+    let pattern = patterns.iter().find(|pattern| runs_pattern(pattern, program, &args))?;
+    let mut instead: Vec<String> = before.iter().map(|word| shell_word(word)).collect();
     instead.extend(["afkconvoy", "exclusive", "--"].map(String::from));
-    instead.extend(line(run));
+    instead.push(shell_word(program));
+    instead.extend(args.iter().map(|word| shell_word(word)));
     Some(format!(
         "`{pattern}` is a heavy command of this repo (its `yaml heavy-commands` block in \
          docs/agents/afkconvoy.md): it runs through the host's exclusive queue, never bare, so \
          it waits for the gates and builds already running. Run `{}` instead",
         instead.join(" ")
     ))
+}
+
+/// Whether the command `program` run with `args` runs `pattern`: its words
+/// begin with the pattern's, a pattern's program with no `/` matching
+/// `program` by its file name.
+fn runs_pattern(pattern: &str, program: &str, args: &[&str]) -> bool {
+    let mut said = pattern.split_whitespace();
+    let Some(first) = said.next() else { return false };
+    let ran = if first.contains('/') { program } else { file_name(program) };
+    if ran != first {
+        return false;
+    }
+    let mut args = args.iter();
+    for word in said {
+        if args.next() != Some(&word) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The file name of the program `word` names: what follows its last `/`.
+fn file_name(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
 }
 
 /// `word` as a shell line would say it: as it is where nothing in it means
