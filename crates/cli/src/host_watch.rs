@@ -357,6 +357,7 @@ pub struct HostWatch {
     thread: Option<std::thread::JoinHandle<()>>,
     sender: Option<std::thread::JoinHandle<()>>,
     asking: Option<std::thread::JoinHandle<()>>,
+    daybook: Option<std::thread::JoinHandle<()>>,
 }
 
 impl HostWatch {
@@ -373,6 +374,13 @@ impl HostWatch {
         let sender = std::thread::spawn(move || {
             crate::watch_notify::run(&sender_ended, panel.as_deref(), |said| {
                 sender_say(What::WatchFailed { said })
+            });
+        });
+        let daybook_ended = Arc::clone(&ended);
+        let daybook_say = Arc::clone(&say);
+        let daybook = std::thread::spawn(move || {
+            crate::watch_daybook::run(&daybook_ended, |said| {
+                daybook_say(What::WatchFailed { said });
             });
         });
         let asking_ended = Arc::clone(&ended);
@@ -394,6 +402,7 @@ impl HostWatch {
             thread: Some(std::thread::spawn(move || watcher.run())),
             sender: Some(sender),
             asking: Some(asking),
+            daybook: Some(daybook),
         }
     }
 }
@@ -409,6 +418,9 @@ impl Drop for HostWatch {
         }
         if let Some(asking) = self.asking.take() {
             let _ = asking.join();
+        }
+        if let Some(daybook) = self.daybook.take() {
+            let _ = daybook.join();
         }
     }
 }
@@ -810,6 +822,13 @@ impl Watcher {
                 // completed round open for the sender's cache error.
                 (self.say)(What::WatchFailed {
                     said: format!("human decision report not queued: {error:#}"),
+                });
+            }
+            // The daybook is written later, by its own thread; a failure to
+            // queue it never holds the round open.
+            if let Err(error) = crate::watch_daybook::reported(&watch, &report) {
+                (self.say)(What::WatchFailed {
+                    said: format!("daybook entry not queued: {error:#}"),
                 });
             }
             // A fast or explicitly recovered report can precede Orca's
