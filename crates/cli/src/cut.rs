@@ -232,8 +232,8 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
                 let record = checkout.cut_record()?;
                 let gone = checkout.state(me.now)? == WorkerState::Gone;
                 let limit = cut::time_limit(fleet.config.gate_seconds());
-                let ending = cut::ending(record.as_ref(), started, gone, me.now, limit)
-                    .map(|ending| Ending::Read(ending));
+                let ending =
+                    cut::ending(record.as_ref(), started, gone, me.now, limit).map(Ending::Read);
                 (Some(checkout), record, ending, limit)
             }
         },
