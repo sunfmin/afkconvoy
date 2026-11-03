@@ -26,10 +26,10 @@ use serde_json::{Value, json};
 
 pub mod account;
 pub mod accounts;
-pub mod agent_setup;
 pub mod acting;
 pub mod admission;
 pub mod advance;
+pub mod agent_setup;
 mod asking_report;
 mod asking_terminal;
 pub mod blockers;
@@ -150,10 +150,10 @@ use fleet::Fleet;
 use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
-    EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV,
-    AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, JEV_KEY_COMMAND_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
-    jev_key_command_or_default, notify_command_or_default, port_or_default, thousandths_or_default,
-    watch_dir_or_default, watch_every_or_default, whole_or_default,
+    AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOT_CORES_ENV,
+    HOT_MEMORY_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV,
+    WATCH_EVERY_ENV, jev_key_command_or_default, notify_command_or_default, port_or_default,
+    thousandths_or_default, watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
 

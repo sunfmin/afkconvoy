@@ -6,6 +6,7 @@ mod common;
 
 mod accounts;
 mod admission;
+mod agent_setup;
 mod asking;
 mod asking_guard;
 mod board;

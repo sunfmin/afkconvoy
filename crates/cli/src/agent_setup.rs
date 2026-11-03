@@ -114,7 +114,8 @@ pub struct Installed {
 /// track is no one's to remove, and a `*` source lacks something only where
 /// none of its skills is installed.
 pub fn drift(entries: &[Entry], installed: &[Installed]) -> (Vec<String>, Vec<String>) {
-    let given: Vec<&Installed> = installed.iter().filter(|skill| !skill.agents.is_empty()).collect();
+    let given: Vec<&Installed> =
+        installed.iter().filter(|skill| !skill.agents.is_empty()).collect();
     let has = |source: &str, name: Option<&str>| {
         given.iter().any(|skill| {
             skill.source.as_deref() == Some(source) && name.is_none_or(|name| skill.name == name)
@@ -175,8 +176,7 @@ pub fn link(home: &Path, harness: Harness, file: &Path, now: u64) -> Result<bool
     }
     let at = home.join(harness.instructions());
     let parent = at.parent().context("an instructions location has a directory")?;
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("cannot make {}", parent.display()))?;
+    std::fs::create_dir_all(parent).with_context(|| format!("cannot make {}", parent.display()))?;
     if std::fs::symlink_metadata(&at).is_ok() {
         let name = at.file_name().unwrap_or_default().to_string_lossy();
         let mut aside = at.with_file_name(format!("{name}.before-agent-setup"));
@@ -220,7 +220,8 @@ pub fn set_open(copies: &Path, open: bool) -> Result<()> {
     let Ok(entries) = std::fs::read_dir(copies) else { return Ok(()) };
     for entry in entries {
         let path = entry?.path();
-        each(&path, open).with_context(|| format!("cannot change the mode of {}", path.display()))?;
+        each(&path, open)
+            .with_context(|| format!("cannot change the mode of {}", path.display()))?;
     }
     Ok(())
 }
@@ -305,7 +306,10 @@ struct Given {
 }
 
 fn read_record(file: &Path) -> Record {
-    std::fs::read(file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    std::fs::read(file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
 /// Which harnesses a converge gives the setup to.
@@ -350,9 +354,7 @@ pub fn converge(harnesses: &[Harness], to: To, now: u64) -> Result<Option<Value>
         _ if to == To::Every => true,
         None => true,
         Some(given) if given.declared != declared => true,
-        Some(given) => {
-            given.failed.is_some() && now.saturating_sub(given.at) >= TRIED_AGAIN_AFTER
-        }
+        Some(given) => given.failed.is_some() && now.saturating_sub(given.at) >= TRIED_AGAIN_AFTER,
     };
     let targets: Vec<Harness> = harnesses.iter().copied().filter(due).collect();
     if targets.is_empty() {
@@ -434,7 +436,12 @@ fn give(home: &Path, declared: &Declared, targets: &[Harness], now: u64) -> Done
 
 /// Installs `list` for `agents`, and removes from each what it does not
 /// name, with the copies open only while it does.
-fn sync(home: &Path, list: &Path, agents: &[(Harness, &str)], synced: &mut Vec<String>) -> Result<()> {
+fn sync(
+    home: &Path,
+    list: &Path,
+    agents: &[(Harness, &str)],
+    synced: &mut Vec<String>,
+) -> Result<()> {
     let text = std::fs::read_to_string(list)
         .with_context(|| format!("cannot read the skill list {}", list.display()))?;
     let entries = parse(&text)
@@ -502,7 +509,10 @@ pub fn findings() -> Vec<crate::doctor::Finding> {
                             said.push(format!("missing skills: {}", missing.join(", ")));
                         }
                         if !extra.is_empty() {
-                            said.push(format!("skills the list does not name: {}", extra.join(", ")));
+                            said.push(format!(
+                                "skills the list does not name: {}",
+                                extra.join(", ")
+                            ));
                         }
                     }
                 }
