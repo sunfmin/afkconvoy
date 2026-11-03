@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::config::{Config, GateNeed};
-use afkconvoy_core::cut::NeedFailed;
+use afkconvoy_core::cut::{Held, NeedFailed};
 use afkconvoy_core::gate::outlived;
 use afkconvoy_core::layout::{
     Answer, BaseCheck, GATE_KIND, Layout, PROBE_STANDS, answer, base_check, no_base_branch,
@@ -281,17 +281,25 @@ fn run_private(repo: &Repo, command: &str, seconds: u64, stderr: &Path) -> Resul
     }))
 }
 
-/// The first cut need that fails on this host at `now`, after any install
-/// it declares (`need`), with its status and private stderr file. `install`
+/// Each cut need that fails on this host at `now`, after any install it
+/// declares (`need`), with its status; `None` where every one passes. `install`
 /// is false for a look that must not install — `plan`'s — which then says a
-/// check as it finds it. A check that passes removes its stderr file, so a
-/// tick says only the evaluation it starts the cut by (sunfmin/control#532).
+/// check as it finds it. Every need is checked, so a look names the needs
+/// failing now, not only the first (sunfmin/control#570).
+///
+/// Their stderr lines go to one user-only file of the checkout's held cut
+/// (`held_stderr`), written again at each look that finds one failing and
+/// removed only at one that finds none: the file a `cut-need` finding names
+/// stands while the finding does, whichever need fails meanwhile. A tick
+/// says only the evaluation it starts the cut by (sunfmin/control#532).
 pub(crate) fn check_cut_needs(
     repo: &Repo,
     config: &Config,
     now: u64,
     install: bool,
-) -> Result<Option<NeedFailed>> {
+) -> Result<Option<Held>> {
+    let mut needs = vec![];
+    let mut lines = String::new();
     for check in &config.cut_needs {
         let failed = if install {
             need(repo, check, CUT_NEEDS, now)?.0
@@ -304,15 +312,58 @@ pub(crate) fn check_cut_needs(
             })
         };
         if let Some(failed) = failed {
-            return Ok(Some(NeedFailed {
+            let tail = std::fs::read_to_string(&failed.stderr).unwrap_or_default();
+            lines.push_str(&format!(
+                "== {}: {} ==\n{}\n",
+                check.name,
+                failed.reason,
+                tail.trim_end()
+            ));
+            needs.push(NeedFailed {
                 name: check.name.clone(),
                 reason: failed.reason,
-                stderr: failed.stderr.display().to_string(),
                 install: failed.install.as_ref().map(Installed::said),
-            }));
+            });
         }
     }
-    Ok(None)
+    let file = held_stderr(repo)?;
+    if needs.is_empty() {
+        let _ = std::fs::remove_file(&file);
+        return Ok(None);
+    }
+    write_private(&file, &lines)?;
+    Ok(Some(Held { needs, stderr: file.display().to_string() }))
+}
+
+/// The host-cache file of the stderr lines of the cut needs that hold the
+/// checkout `repo`'s cut: one per checkout, whichever need fails.
+fn held_stderr(repo: &Repo) -> Result<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    repo.common_dir()?.hash(&mut hash);
+    Ok(crate::copies::cache()?.join("cut-held").join(format!("{:016x}.stderr", hash.finish())))
+}
+
+/// Write `text` to the user-only file `path` whole: a reader sees the last
+/// look's file or this one's, never a part.
+fn write_private(path: &Path, text: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = path.parent().context("a stderr file has a directory")?;
+    std::fs::create_dir_all(dir)?;
+    let partial = dir.join(format!(
+        ".{}.{}",
+        path.file_name().and_then(|name| name.to_str()).unwrap_or("stderr"),
+        std::process::id()
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&partial)?;
+    file.write_all(text.as_bytes())?;
+    std::fs::rename(&partial, path).with_context(|| format!("cannot write {}", path.display()))
 }
 
 pub(crate) fn check_gate_needs(repo: &Repo, now: u64) -> Result<Option<String>> {

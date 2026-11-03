@@ -1236,10 +1236,15 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             fix,
         ));
     }
-    if let Some(failed) = set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+    if let Some(cut) = set.cut.as_ref()
+        && let Some(failed) = cut.not_cutting_here.as_ref()
+    {
+        // One held cut is one condition, whichever of its needs fails: it is
+        // of the version the cut is due for, past its newest tag or the
+        // declared initial one (sunfmin/control#570).
         found.push(finding(
             Kind::CutNeed,
-            json!(["cut-need", failed.said()]),
+            json!(["cut-need", cut.newest_tag, cut.initial]),
             failed.said(),
             failed.evidence(),
             "read its stderr file on this host, then check the repo's cut-needs declaration"

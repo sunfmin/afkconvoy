@@ -79,7 +79,7 @@ pub struct Fleet {
     /// The cut needs as the pass's start of a cut evaluated them, where it
     /// did: what the tick then says in place of its rebuild's look, so no
     /// tick both names a failed need and starts the cut (`cut::start`).
-    pub cut_needs: Option<Option<afkconvoy_core::cut::NeedFailed>>,
+    pub cut_needs: Option<Option<afkconvoy_core::cut::Held>>,
     /// The landings this view asked a turn for again that had stopped at a
     /// fleet lock, each with the locks that turn named, closed since: what a
     /// tick's line names.
