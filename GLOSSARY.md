@@ -155,7 +155,7 @@ A repo whose config names a team. An unbound repo has no roles and one fixed pat
 _Avoid_: team mode, managed repo
 
 **Guard**:
-The check made before each thing a worker does, refusing what its role or its stage may not do — and, of a watch, what crosses the bounds of any unattended worker. Every worker, bound or unbound, and the watch is refused input to the asking session's Terminal. Only the host runner's marked deliveries and the operator supply that input; the asking session itself is exempt by its Terminal identity. It stops a worker that errs, not one that means to get past it.
+The check made before each thing a worker does, refusing what its role or its stage may not do — and, of a watch, what crosses the bounds of any unattended worker. Every worker, bound or unbound, and the watch is refused input to the asking session's Terminal. Only the host runner's marked deliveries and the operator supply that input; the asking session itself is exempt by its Terminal identity. Every worker, bound or unbound, is refused a **heavy command** of its repo run outside `afkconvoy exclusive`. It stops a worker that errs, not one that means to get past it.
 _Avoid_: permission (what a harness's own settings deny), sandbox (what a harness may shut a worker's commands in)
 
 ### Workflows
@@ -310,6 +310,10 @@ _Avoid_: watch round (the watch's independent bounded task), notification (a one
 **Exclusive queue**:
 The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane. A worker's fast gate takes the fast lane.
 _Avoid_: gate queue
+
+**Heavy command**:
+A command of a repo that fills the host by itself — a build or a suite of the whole workspace, a gate run by hand — which a worker runs only through the exclusive queue. A repo declares its heavy commands as patterns of words in its config's `yaml heavy-commands` block; the guard refuses a worker's call that runs one bare, naming the pattern and the line to run instead. What `afkconvoy gate`, `land` and `cut` run already queues, and is never refused.
+_Avoid_: heavy step (unnamed), expensive command
 
 **Nudge**:
 The one line the fleet types at a stopped worker with no outcome, telling it to carry on. Sent once for silence; a capacity stop may call for another after a longer wait.

@@ -285,3 +285,58 @@ fn a_call_or_a_stage_it_cannot_read_is_refused() {
     assert_eq!(answered.code, 2);
     assert!(answered.stderr.contains("neither true nor false"), "{}", answered.stderr);
 }
+
+#[test]
+fn a_repo_s_heavy_command_is_refused_outside_afkconvoy_exclusive_for_bound_and_unbound_workers() {
+    let home = tempfile::tempdir().unwrap();
+    let declares = |dir: &std::path::Path, config: &str| {
+        let worktree = dir.join("worktree");
+        std::fs::create_dir_all(worktree.join(".afkconvoy-tmp")).unwrap();
+        std::fs::create_dir_all(worktree.join("docs/agents")).unwrap();
+        std::fs::write(worktree.join("docs/agents/afkconvoy.md"), config).unwrap();
+        let tmp = dir.join("tmp-link");
+        std::os::unix::fs::symlink(worktree.join(".afkconvoy-tmp"), &tmp).unwrap();
+        tmp
+    };
+    let declaring = tempfile::tempdir().unwrap();
+    let declaring = declares(
+        declaring.path(),
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\n```\n\n\
+         ```yaml heavy-commands\ncommands:\n  - cargo nextest\n  - ./gate.sh\n```\n",
+    );
+    let silent = tempfile::tempdir().unwrap();
+    let silent =
+        declares(silent.path(), "```yaml\nbase_branch: main\ngate_command: ./gate.sh\n```\n");
+    let call = |line: &str| json!({"tool_name":"Bash", "tool_input":{"command":line}}).to_string();
+    let bare = call("cd cli && cargo nextest run -p x");
+    let wrapped = call("cd cli && afkconvoy exclusive -- cargo nextest run -p x");
+    for terminal_only in [false, true] {
+        let tmp = declaring.to_str().unwrap();
+        let mut facts = FACTS.to_vec();
+        facts.push(("TMPDIR", tmp));
+        let refused = guard_at(&bare, &facts, home.path(), terminal_only);
+        assert_eq!(refused.code, 2, "{}", refused.stderr);
+        assert!(
+            refused.stderr.contains("`cargo nextest` is a heavy command"),
+            "{}",
+            refused.stderr
+        );
+        assert!(
+            refused.stderr.contains("`afkconvoy exclusive -- cargo nextest run -p x`"),
+            "{}",
+            refused.stderr
+        );
+        let allowed = guard_at(&wrapped, &facts, home.path(), terminal_only);
+        assert_eq!(allowed.code, 0, "{}", allowed.stderr);
+        for line in ["afkconvoy gate --fast", "afkconvoy land --issue 577", "afkconvoy cut"] {
+            let allowed = guard_at(&call(line), &facts, home.path(), terminal_only);
+            assert_eq!(allowed.code, 0, "{line}: {}", allowed.stderr);
+        }
+        let mut facts = FACTS.to_vec();
+        facts.push(("TMPDIR", silent.to_str().unwrap()));
+        for described in [&bare, &wrapped] {
+            let allowed = guard_at(described, &facts, home.path(), terminal_only);
+            assert_eq!(allowed.code, 0, "{}", allowed.stderr);
+        }
+    }
+}

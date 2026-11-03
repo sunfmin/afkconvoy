@@ -80,10 +80,30 @@ fn decide_on_host(
             return Ok(Some(why));
         }
     }
+    let heavy = heavy_commands(std::env::var_os("TMPDIR").as_deref().map(std::path::Path::new))?;
+    if let Some(why) = afkconvoy_core::guard::heavy(&call, &heavy) {
+        return Ok(Some(why));
+    }
     if terminal_input_only {
         return Ok(None);
     }
     decide(harness, described, |name| std::env::var(name).ok(), processes)
+}
+
+/// The heavy commands of the repo whose worktree the worker's `tmp`, its
+/// `TMPDIR`, is: the link the fleet made to the worktree's own
+/// (`worker_tmp`), read off that worktree's config as it stands. None where
+/// `tmp` is no worker's — a watch, or a session the fleet did not start —
+/// or its worktree has no config. An error is a declaration that cannot be
+/// read: a guard allows nothing unread.
+fn heavy_commands(tmp: Option<&std::path::Path>) -> Result<Vec<String>, String> {
+    let Some(own) = tmp.and_then(|tmp| std::fs::read_link(tmp).ok()) else { return Ok(vec![]) };
+    if own.file_name() != Some(crate::worker_tmp::TMP_DIR.as_ref()) {
+        return Ok(vec![]);
+    }
+    let Some(worktree) = own.parent() else { return Ok(vec![]) };
+    crate::config::heavy_commands_of(&worktree.join(crate::config::FILE))
+        .map_err(|error| format!("{error:#}"))
 }
 
 /// The harness that asks, by what the worker's environment `names` for it: a
@@ -188,6 +208,32 @@ mod tests {
         assert!(decide(Harness::ClaudeCode, pi, facts, &nobody).is_err());
         let allowed = r#"{"toolName":"bash","input":{"command":"ls"}}"#;
         assert_eq!(decide(Harness::Pi, allowed, facts, &nobody), Ok(None));
+    }
+
+    #[test]
+    fn the_heavy_commands_are_those_of_the_worktree_the_worker_s_tmpdir_links_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().join("w");
+        std::fs::create_dir_all(worktree.join(crate::worker_tmp::TMP_DIR)).unwrap();
+        std::fs::create_dir_all(worktree.join("docs/agents")).unwrap();
+        let tmp = dir.path().join("link");
+        std::os::unix::fs::symlink(worktree.join(crate::worker_tmp::TMP_DIR), &tmp).unwrap();
+        assert_eq!(heavy_commands(Some(&tmp)), Ok(vec![]), "a worktree with no config");
+        std::fs::write(
+            worktree.join(crate::config::FILE),
+            "```yaml heavy-commands\ncommands: [cargo nextest, ./gate.sh]\n```\n",
+        )
+        .unwrap();
+        let heavy = heavy_commands(Some(&tmp)).unwrap();
+        assert_eq!(heavy, ["cargo nextest", "./gate.sh"]);
+        assert_eq!(heavy_commands(None), Ok(vec![]));
+        assert_eq!(heavy_commands(Some(&worktree)), Ok(vec![]), "no worker's link");
+        std::fs::write(
+            worktree.join(crate::config::FILE),
+            "```yaml heavy-commands\nnope: 1\n```\n",
+        )
+        .unwrap();
+        assert!(heavy_commands(Some(&tmp)).unwrap_err().contains("heavy-commands"));
     }
 
     #[test]
