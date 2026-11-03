@@ -2522,7 +2522,7 @@ enum Command {
     ///
     /// ## Who runs it
     ///
-    /// The operator, or whichever human the issue was handed to: in a checkout of the bound repo, with no commit named and none in the environment.
+    /// The operator, or whichever human the issue was handed to: in a checkout of the bound repo, with no commit named and none in the environment. The host's watch, and the asking session beside it, are the operator: the harness and model their environment names (AFKCONVOY_HARNESS, AFKCONVOY_MODEL) are not read, and their ruling is a human's.
     ///
     /// Or a consult, in the issue's worktree: the fleet put the commits of its role and of its team in its environment, and those are what make the ruling a consult's; the harness it is a session of is there too, and its record names it. No other worker runs it: a stage does not rule on itself.
     ///
@@ -2594,7 +2594,7 @@ enum Command {
     ///
     /// ## Who runs it
     ///
-    /// The operator, or whichever human steers the issue: in a checkout of the bound repo. Or a consult answering in a human's place, under its claim, as with `afkconvoy rule`; its send starts no count over. No other worker runs it: where an issue goes is its workflow's to say, or a human's.
+    /// The operator, or whichever human steers the issue: in a checkout of the bound repo — the host's watch among them, whatever harness its environment names, as with `afkconvoy rule`. Or a consult answering in a human's place, under its claim, as with `afkconvoy rule`; its send starts no count over. No other worker runs it: where an issue goes is its workflow's to say, or a human's.
     ///
     /// ## What it reads and writes
     ///
