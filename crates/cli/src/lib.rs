@@ -1740,7 +1740,9 @@ enum Command {
         #[arg(long, env = HOT_CORES_ENV, value_name = "CORES", value_parser = thousandths_or_default)]
         hot_cores: Option<To<u64>>,
         /// The GiB of memory a worker's processes may hold resident before it turns hot: a
-        /// host setting; `default` changes it back [default: a quarter of this host's memory]
+        /// host setting; `default` changes it back. What runs under its `afkconvoy exclusive`
+        /// commands counts only while `sysctl kern.memorystatus_vm_pressure_level` is 2 or
+        /// above [default: a quarter of this host's memory]
         #[arg(long, env = HOT_MEMORY_ENV, value_name = "GIB", value_parser = thousandths_or_default)]
         hot_memory: Option<To<u64>>,
         /// The GiB a worker's processes may write to disk in ten minutes before it turns hot:

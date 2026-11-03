@@ -1323,7 +1323,7 @@ pub fn run(
             second,
             clock,
             hears,
-            (hot, shared.resources.clone()),
+            (hot, shared.resources.clone(), shared.queue.clone()),
             wakes.waker(),
             stop.clone(),
         );

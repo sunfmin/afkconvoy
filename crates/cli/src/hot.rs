@@ -11,6 +11,10 @@
 //! whose environment cannot be read — a system binary — is counted through
 //! the one it was started under. A server shared by the host that the worker
 //! started is not (`shared`). The landing train's worktree is no worker's.
+//! What runs under one of its `afkconvoy exclusive` commands — a running
+//! ticket's process, and every one under it — is said apart (`exclusive`):
+//! the queue bounds that heavy work, and its memory counts against the limit
+//! only while the host's memory pressure is at level 2 or above.
 //!
 //! As a worker turns hot, what shows it is taken down there and then, on a
 //! thread of its own (`evidence`), and the `run` is woken. The resource
@@ -449,9 +453,13 @@ struct Took {
     written: Option<u64>,
     /// The bytes resident.
     resident: u64,
+    /// The bytes of `resident` held under an exclusive command.
+    exclusive: u64,
 }
 
-fn took(watched: &mut Watched, procs: &[&Proc]) -> Took {
+/// What a worker's processes `procs` took, those of `exclusive` held under an
+/// exclusive command.
+fn took(watched: &mut Watched, procs: &[&Proc], exclusive: &HashSet<u32>) -> Took {
     let now: HashMap<u32, (u64, u64)> =
         procs.iter().map(|proc| (proc.pid, (proc.cpu_ms, proc.written))).collect();
     // A process new since the sample before took all it has since then.
@@ -474,7 +482,35 @@ fn took(watched: &mut Watched, procs: &[&Proc]) -> Took {
     watched.hottest = busiest.or(largest);
     watched.pids = procs.iter().map(|proc| proc.pid).collect();
     watched.before = Some(now);
-    Took { cpu_ms, written, resident: procs.iter().map(|proc| proc.resident).sum() }
+    Took {
+        cpu_ms,
+        written,
+        resident: procs.iter().map(|proc| proc.resident).sum(),
+        exclusive: procs
+            .iter()
+            .filter(|proc| exclusive.contains(&proc.pid))
+            .map(|proc| proc.resident)
+            .sum(),
+    }
+}
+
+/// The pids of `procs` under an exclusive command: each of `running` — the
+/// processes of the queue's running tickets — and every one under those.
+pub(crate) fn exclusive(procs: &[Proc], running: &[u32]) -> HashSet<u32> {
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for proc in procs {
+        children.entry(proc.ppid).or_default().push(proc.pid);
+    }
+    let mut found: Vec<u32> = running.to_vec();
+    let mut seen: HashSet<u32> = found.iter().copied().collect();
+    while let Some(pid) = found.pop() {
+        for child in children.get(&pid).into_iter().flatten() {
+            if seen.insert(*child) {
+                found.push(*child);
+            }
+        }
+    }
+    seen
 }
 
 /// What was known of `watched` as it turned hot in `episode`, under `limits`.
@@ -518,7 +554,9 @@ struct Sampler {
 
 impl Sampler {
     /// Takes one sample of every worker, `every` seconds after the one before
-    /// on the run's clock and `wall_ms` on the wall's, at `at` → each turn,
+    /// on the run's clock and `wall_ms` on the wall's, at `at`, `running` the
+    /// processes of the exclusive queue's running tickets and `pressed`
+    /// whether the host's memory pressure is at 2 or above → each turn,
     /// as a line of the log, and what is to be taken down of each worker that
     /// turned hot.
     fn sample(
@@ -527,6 +565,7 @@ impl Sampler {
         at: u64,
         every: u64,
         wall_ms: u64,
+        (running, pressed): (&[u32], bool),
     ) -> (Vec<What>, Vec<(Worktree, Taken)>) {
         let measuring = self.samples.is_multiple_of(LISTED_FOR);
         if measuring {
@@ -559,6 +598,7 @@ impl Sampler {
             }
         }
         let procs = processes();
+        let exclusive = exclusive(&procs, running);
         let mut taken = vec![];
         let mut hot_now = vec![];
         for (path, worker, worktree, issue) in &self.listed {
@@ -569,7 +609,7 @@ impl Sampler {
                 }
                 watched
             });
-            let took = took(watched, &tree(&procs, path));
+            let took = took(watched, &tree(&procs, path), &exclusive);
             watched.resident.push_back((at, took.resident));
             if watched.resident.len() > RESIDENT_KEPT {
                 watched.resident.pop_front();
@@ -582,6 +622,8 @@ impl Sampler {
                 at,
                 millicores: took.cpu_ms.map(|cpu| millicores(cpu, wall_ms)),
                 resident: took.resident,
+                exclusive: took.exclusive,
+                pressed,
                 written: took.written,
                 held,
             };
@@ -687,7 +729,7 @@ pub fn watch(
     second: Duration,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     hears: Arc<dyn Hears>,
-    (hot, resources): (Hot, crate::resources::Shared),
+    (hot, resources, queue): (Hot, crate::resources::Shared, crate::exclusive::Queue),
     waker: Waker,
     stop: Stop,
 ) {
@@ -735,7 +777,16 @@ pub fn watch(
                 sampler.said = settings.hot();
                 sampler.limits = limits(sampler.said, &repo.dir);
             }
-            let (turned, to_take) = sampler.sample(source, at, SAMPLE_EVERY, wall_ms);
+            // A queue that cannot be read leaves every process counted.
+            let running: Vec<u32> = queue.observation().map_or_else(
+                |_| vec![],
+                |(tickets, _)| {
+                    tickets.iter().filter(|ticket| ticket.ran.is_some()).map(|t| t.pid).collect()
+                },
+            );
+            let pressed = crate::resources::pressure_level().is_some_and(|level| level >= 2);
+            let (turned, to_take) =
+                sampler.sample(source, at, SAMPLE_EVERY, wall_ms, (&running, pressed));
             for turned in turned {
                 hears.turned(at, turned);
             }
@@ -898,6 +949,24 @@ mod tests {
     }
 
     #[test]
+    fn what_runs_under_an_exclusive_command_is_its_running_tickets_process_and_all_under_it() {
+        // a worker's harness 10, its gate 11, the gate's `afkconvoy exclusive`
+        // 12 running cargo 13 and rustc 14; another ticket's 20, waiting
+        let procs = [
+            proc(10, 1, "claude"),
+            proc(11, 10, "afkconvoy gate"),
+            proc(12, 11, "afkconvoy exclusive -- ./gate.sh"),
+            proc(13, 12, "cargo nextest run"),
+            proc(14, 13, "rustc"),
+            proc(20, 10, "afkconvoy exclusive -- make"),
+        ];
+        let mut under: Vec<u32> = exclusive(&procs, &[12]).into_iter().collect();
+        under.sort();
+        assert_eq!(under, [12, 13, 14]);
+        assert!(exclusive(&procs, &[]).is_empty());
+    }
+
+    #[test]
     fn what_a_worker_took_is_what_its_processes_took_since_the_sample_before() {
         let worktree = Worktree::at(PathBuf::from("/w/a"), "a".into());
         let mut watched = Watched::new("#7".into(), worktree, Some(7));
@@ -911,15 +980,15 @@ mod tests {
         };
         let first = at(&[(1, 5000, 1 << 20), (2, 700, 0)]);
         assert_eq!(
-            took(&mut watched, &first.iter().collect::<Vec<_>>()),
-            Took { cpu_ms: None, written: None, resident: 2048 }
+            took(&mut watched, &first.iter().collect::<Vec<_>>(), &HashSet::from([2])),
+            Took { cpu_ms: None, written: None, resident: 2048, exclusive: 1024 }
         );
         // 1 took 2000 more and wrote 1 KiB more, 2 ended, 3 started and took
         // 300, writing 4 KiB
         let second = at(&[(1, 7000, (1 << 20) + 1024), (3, 300, 4096)]);
         assert_eq!(
-            took(&mut watched, &second.iter().collect::<Vec<_>>()),
-            Took { cpu_ms: Some(2300), written: Some(5120), resident: 2048 }
+            took(&mut watched, &second.iter().collect::<Vec<_>>(), &HashSet::new()),
+            Took { cpu_ms: Some(2300), written: Some(5120), resident: 2048, exclusive: 0 }
         );
         // 1 took the most since the sample before
         assert_eq!((watched.hottest, watched.pids.clone()), (Some(1), vec![1, 3]));

@@ -69,12 +69,26 @@ pub struct Sample {
     pub millicores: Option<u64>,
     /// The bytes they held resident.
     pub resident: u64,
+    /// The bytes of `resident` held under an `afkconvoy exclusive` command:
+    /// the exclusive queue bounds that heavy work, and it counts against the
+    /// memory limit only while the host is `pressed`.
+    pub exclusive: u64,
+    /// Whether the host's memory pressure was at level 2 or above.
+    pub pressed: bool,
     /// The bytes they wrote to disk since the sample before; `None` at the
     /// first.
     pub written: Option<u64>,
     /// What the worker's worktree holds, measured with this sample; `None`
     /// when it was not, for measuring it is slow: the measure before stands.
     pub held: Option<Built>,
+}
+
+impl Sample {
+    /// The bytes resident that count against the memory limit: those outside
+    /// its exclusive commands, or every one while the host is pressed.
+    pub fn counted(&self) -> u64 {
+        if self.pressed { self.resident } else { self.resident.saturating_sub(self.exclusive) }
+    }
 }
 
 /// Why a worker turned hot.
@@ -154,7 +168,8 @@ impl Watch {
     ///
     /// It turns hot when its CPU has been past the limit for `CPU_HELD`,
     /// counted from the start of the first sample past it; when it holds more
-    /// memory than the limit; when it wrote more than the limit within
+    /// memory than the limit — outside its exclusive commands, but for while
+    /// the host is pressed (`Sample::counted`); when it wrote more than the limit within
     /// `WRITTEN_WITHIN`, counted from the start of the oldest sample in it; or
     /// when its worktree, as last measured, has outgrown its fresh build
     /// (`Built::outgrown`). Hot, it is hot once only: it stops being hot once
@@ -170,7 +185,7 @@ impl Watch {
         };
         let cpu_held =
             self.cpu_since.is_some_and(|since| sample.at.saturating_sub(since) >= CPU_HELD);
-        let memory_over = sample.resident > limits.resident;
+        let memory_over = sample.counted() > limits.resident;
         // A sample counts what was written from the one before it on.
         let within = sample.at.saturating_sub(WRITTEN_WITHIN.saturating_sub(every));
         self.written.retain(|(at, _)| *at >= within);
@@ -239,7 +254,15 @@ mod tests {
     const LIMITS: Limits = Limits { millicores: 4000, resident: 8 * GIB, written: 4 * GIB };
 
     fn sample(at: u64, millicores: u64, resident: u64) -> Sample {
-        Sample { at, millicores: Some(millicores), resident, written: Some(0), held: None }
+        Sample {
+            at,
+            millicores: Some(millicores),
+            resident,
+            exclusive: 0,
+            pressed: false,
+            written: Some(0),
+            held: None,
+        }
     }
 
     /// Samples one every `SAMPLE_EVERY` seconds from `from`, each taking
@@ -323,7 +346,15 @@ mod tests {
     #[test]
     fn the_first_sample_takes_no_cpu() {
         let mut watch = Watch::default();
-        let first = Sample { at: 1000, millicores: None, resident: GIB, written: None, held: None };
+        let first = Sample {
+            at: 1000,
+            millicores: None,
+            resident: GIB,
+            exclusive: 0,
+            pressed: false,
+            written: None,
+            held: None,
+        };
         assert_eq!(watch.sampled(&first, &LIMITS, SAMPLE_EVERY), None);
         assert_eq!(watch, Watch::default());
     }
@@ -365,6 +396,34 @@ mod tests {
             worker.sampled(&sample(1610, 100, 9 * GIB), &LIMITS, SAMPLE_EVERY),
             Some(Turned::Hot(Episode { why: Why::Memory, .. }))
         ));
+    }
+
+    #[test]
+    fn memory_under_an_exclusive_command_makes_a_worker_hot_only_under_pressure() {
+        let under = |exclusive, pressed| Sample { exclusive, pressed, ..sample(1000, 100, 9 * GIB) };
+        let turned = |sample: Sample| Watch::default().sampled(&sample, &LIMITS, SAMPLE_EVERY);
+        // Over the limit only through what runs under `exclusive`, pressure low.
+        assert_eq!(turned(under(2 * GIB, false)), None);
+        // The same worker with the host pressed.
+        assert!(matches!(
+            turned(under(2 * GIB, true)),
+            Some(Turned::Hot(Episode { why: Why::Memory, resident, .. })) if resident == 9 * GIB
+        ));
+        // Over the limit outside `exclusive`, pressure low.
+        assert!(matches!(
+            turned(under(GIB / 2, false)),
+            Some(Turned::Hot(Episode { why: Why::Memory, .. }))
+        ));
+        // Hot, it cools once what counts is back under, though its exclusive
+        // work still holds the memory.
+        let mut watch = Watch::default();
+        assert!(watch.sampled(&sample(1000, 100, 9 * GIB), &LIMITS, SAMPLE_EVERY).is_some());
+        let mut cooled = None;
+        for at in (1010..=1400).step_by(SAMPLE_EVERY as usize) {
+            let sample = Sample { exclusive: 2 * GIB, ..sample(at, 100, 9 * GIB) };
+            cooled = cooled.or(watch.sampled(&sample, &LIMITS, SAMPLE_EVERY));
+        }
+        assert!(matches!(cooled, Some(Turned::Cooled { at: 1310, .. })), "{cooled:?}");
     }
 
     #[test]
