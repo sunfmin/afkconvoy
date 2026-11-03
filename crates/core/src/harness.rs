@@ -227,6 +227,25 @@ impl Goal {
     }
 }
 
+/// What a session record says of its goal (sunfmin/control#548): the
+/// session's thread, the objective it was set with, if it was, and when each
+/// turn its goal began started, the turn the setting began among them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GoalSession {
+    pub thread: Option<String>,
+    pub objective: Option<String>,
+    pub turns: Vec<u64>,
+}
+
+/// One session's row of a goal store: its status and the tokens it used
+/// against its budget. A cleared goal has no row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoalRow {
+    pub status: Goal,
+    pub tokens_used: u64,
+    pub token_budget: Option<u64>,
+}
+
 /// A harness the fleet can start a worker of a bound repo on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Harness {
@@ -1255,6 +1274,41 @@ impl Harness {
     pub fn goal(self, answer: &str) -> Option<Goal> {
         match self {
             Harness::Codex => codex::goal(answer),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// What the session record `text` says of its goal; `None` where this
+    /// harness keeps none.
+    pub fn goal_session(self, text: &str) -> Option<GoalSession> {
+        match self {
+            Harness::Codex => Some(codex::goal_session(text)),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// The query of this harness's goal store whose answer is the row of the
+    /// session `thread` (`goal_row`); `None` where it keeps no goal, or
+    /// `thread` is no thread id it writes.
+    pub fn goal_row_query(self, thread: &str) -> Option<String> {
+        match self {
+            Harness::Codex => codex::goal_row_query(thread),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// The row `answer`, what the store answered `goal_row_query`, says:
+    /// `Some(None)` where it has none. `None`: it says nothing this harness
+    /// knows.
+    pub fn goal_row(self, answer: &str) -> Option<Option<GoalRow>> {
+        match self {
+            Harness::Codex => codex::goal_row(answer),
             Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
                 None
             }

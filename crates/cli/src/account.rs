@@ -90,7 +90,18 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
                         && old.harness == worker.harness
                 })
             })
-            .and_then(|old| old.tokens.clone());
+            .cloned();
+        let verdict_at = verdict_at(worker, &comments, before);
+        let harness = worker.harness.as_deref().and_then(afkconvoy_core::harness::Harness::read);
+        worker.goal = worktree
+            .as_ref()
+            .zip(harness)
+            .zip(worker.start)
+            .and_then(|((worktree, harness), start)| {
+                crate::goal::account(&worktree.path, harness, start, before, verdict_at)
+            })
+            .or_else(|| old.as_ref().and_then(|old| old.goal.clone()));
+        let old = old.and_then(|old| old.tokens);
         worker.tokens = worktree
             .as_ref()
             .and_then(|worktree| {
@@ -110,6 +121,31 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
         Some(comment) => gh.edit_comment(comment.id, &text),
         None => gh.comment(issue, &text),
     }
+}
+
+/// When the verdict of `worker` stood: the stage record its row ends at,
+/// for a worker with a stage; else the last verdict comment declared within
+/// its row, before the next worker's start `before`. `None`: it declared
+/// none.
+fn verdict_at(
+    worker: &account::Worker,
+    comments: &[crate::gh::Comment],
+    before: Option<u64>,
+) -> Option<u64> {
+    if worker.verdict.is_some() {
+        return worker.end;
+    }
+    let start = worker.start?;
+    let within: Vec<&crate::gh::Comment> = comments
+        .iter()
+        .filter(|comment| {
+            comment.at.is_some_and(|at| at >= start && before.is_none_or(|before| at < before))
+        })
+        .collect();
+    let verdict = afkconvoy_core::verdict::latest_verdict(
+        within.iter().map(|comment| comment.body.as_str()),
+    )?;
+    within.get(verdict.comment)?.at
 }
 
 /// Refresh an existing account after its worker has stopped, while the

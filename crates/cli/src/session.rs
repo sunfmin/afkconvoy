@@ -1112,20 +1112,12 @@ mod tests {
     }
 }
 
-/// Read the usage of sessions started for one worker. Missing or unreadable
-/// records are unknown; an unavailable session never becomes a zero count.
-pub(crate) fn tokens(
-    cwd: &Path,
-    harness: Harness,
-    start: u64,
-    before: Option<u64>,
-) -> Result<Option<afkconvoy_core::account::Tokens>> {
-    use afkconvoy_core::account::{Tokens, parse_tokens};
-    let cwd_text = cwd_str(cwd);
-    let brief = brief(cwd);
+/// Every directory `harness` may keep a worker's sessions under in `cwd`
+/// (`roots`), with each earlier launch's home: Codex uses a new private home
+/// for each launch, and the note names only the latest. Earlier homes remain
+/// in the worktree until it is removed.
+fn worker_homes(cwd: &Path, harness: Harness) -> Result<Vec<PathBuf>> {
     let mut homes = roots(cwd, harness)?;
-    // Codex uses a new private home for each launch; the note names only the
-    // latest. Earlier homes remain in the worktree until it is removed.
     if harness == Harness::Codex
         && let Some(entries) = list_dir(&cwd.join(crate::worker_tmp::TMP_DIR))?
     {
@@ -1140,6 +1132,62 @@ pub(crate) fn tokens(
     }
     homes.sort();
     homes.dedup();
+    Ok(homes)
+}
+
+/// The session record of the worker started in `cwd` at `start`, and before
+/// the next worker's `before`, where its harness keeps a goal: the home it
+/// is under, its path and what it says of its goal. Of several, the one
+/// begun last — a relaunch's — is the worker's last goal.
+pub(crate) fn goal_session(
+    cwd: &Path,
+    harness: Harness,
+    start: u64,
+    before: Option<u64>,
+) -> Result<Option<(PathBuf, PathBuf, afkconvoy_core::harness::GoalSession)>> {
+    if harness.goal_store().is_none() {
+        return Ok(None);
+    }
+    let cwd_text = cwd_str(cwd);
+    let brief = brief(cwd);
+    let SessionLayout::Tree { dir, extension } = harness.session_place(&cwd_text).layout else {
+        return Ok(None);
+    };
+    let mut found: Option<(u64, PathBuf, PathBuf, String)> = None;
+    for home in worker_homes(cwd, harness)? {
+        let mut files = Vec::new();
+        collect(&home.join(&dir), extension, start.saturating_sub(60), &mut files)?;
+        for file in files {
+            let Some(text) = read_text(&file)? else { continue };
+            let Some(at) = session_first_at(&text) else { continue };
+            if at < start.saturating_sub(60)
+                || before.is_some_and(|end| at >= end.saturating_sub(2))
+            {
+                continue;
+            }
+            if harness.recorded_turn(&cwd_text, &text, None, brief.as_deref()).is_none() {
+                continue;
+            }
+            if found.as_ref().is_none_or(|(last, ..)| at >= *last) {
+                found = Some((at, home.clone(), file, text));
+            }
+        }
+    }
+    Ok(found.and_then(|(_, home, file, text)| Some((home, file, harness.goal_session(&text)?))))
+}
+
+/// Read the usage of sessions started for one worker. Missing or unreadable
+/// records are unknown; an unavailable session never becomes a zero count.
+pub(crate) fn tokens(
+    cwd: &Path,
+    harness: Harness,
+    start: u64,
+    before: Option<u64>,
+) -> Result<Option<afkconvoy_core::account::Tokens>> {
+    use afkconvoy_core::account::{Tokens, parse_tokens};
+    let cwd_text = cwd_str(cwd);
+    let brief = brief(cwd);
+    let homes = worker_homes(cwd, harness)?;
     let mut total = Tokens::new();
     let mut found = false;
     for root in homes {

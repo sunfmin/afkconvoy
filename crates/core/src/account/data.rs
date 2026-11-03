@@ -46,6 +46,9 @@ pub struct Worker {
     pub verdict: Option<String>,
     #[serde(default)]
     pub tokens: Option<super::Tokens>,
+    /// How its goal went, where its harness keeps one: absent for any other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<super::WorkerGoal>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +135,9 @@ pub fn render(row: &Record) -> String {
             }
         } else {
             line.push_str(", tokens unknown");
+        }
+        if let Some(goal) = &worker.goal {
+            line.push_str(&format!(", {}", goal.words()));
         }
         workers.push(format!("{line}."));
     }

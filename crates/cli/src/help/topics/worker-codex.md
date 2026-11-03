@@ -40,6 +40,8 @@ Every Codex worker, of every role, works under a Codex goal: its brief is typed 
 
 A turn Codex begins on its goal is a turn like any other, and a sign of life: Codex begins it at once (11 ms after the last ended, measured on 2026-11-03). A worker whose goal Codex marked `blocked` or `budget_limited` is a stopped worker short of its task: worker health nudges it once, then hands it to a human, as any other. The goal is read from Codex's store in the session's directory (goals_1.sqlite, through `sqlite3`); where it cannot be read, the worker is judged as one with no goal.
 
+The work account records how each Codex worker's goal went, in its `goal` (`afkconvoy accounts --help`): whether it was set and its objective, its goal turns and those after its verdict, its final status or `cleared`, the tokens it used against its budget, and the session record. A goal that ended `budget_limited`, or took goal turns after its verdict, is a `doctor` finding, `worker's goal misbehaved`.
+
 ## Model, effort and service tier
 
 Unless a model label is followed, an automatic Codex worker reads `model` from your `~/.codex/config.toml` at each launch and passes it with `--model` when that value is a nonempty string the host kit lists for Codex. Kit order and research do not replace it. The launch records `user_selection`. A followed model label is recorded as the issue's model label (`model_label`); a launch record that already says `casting` is still read as that. With no such preference the worker starts without `--model` on Codex's native default, recorded as `codex_default`. A value that is not a nonempty string, or that the kit does not list, refuses the start. A model outside the role's range refuses too, whether or not a model label was present and not followed.
