@@ -182,16 +182,35 @@ pub fn index_of(body: &str) -> Vec<Indexed> {
 
 /// Today on this host, `YYYY-MM-DD` in its local time.
 pub fn today() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs()) as libc::time_t;
+    day_at(crate::clock())
+}
+
+/// The day the epoch second `at` falls on, `YYYY-MM-DD` in this host's
+/// local time.
+pub fn day_at(at: u64) -> String {
+    let at = at as libc::time_t;
     let mut local = std::mem::MaybeUninit::<libc::tm>::zeroed();
     // SAFETY: `localtime_r` writes only the `tm` it is handed.
     let local = unsafe {
-        libc::localtime_r(&now, local.as_mut_ptr());
+        libc::localtime_r(&at, local.as_mut_ptr());
         local.assume_init()
     };
     format!("{:04}-{:02}-{:02}", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday)
+}
+
+/// The day after `day`, a `YYYY-MM-DD` said as `day_named` takes it.
+pub fn next_day(day: &str) -> String {
+    let part = |range: std::ops::Range<usize>| day.get(range).and_then(|p| p.parse::<i32>().ok());
+    let (Some(year), Some(month), Some(date)) = (part(0..4), part(5..7), part(8..10)) else {
+        return day.to_string();
+    };
+    // SAFETY: an all-zero `tm` is a valid one.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    (tm.tm_year, tm.tm_mon, tm.tm_mday) = (year - 1900, month - 1, date + 1);
+    (tm.tm_hour, tm.tm_isdst) = (12, -1);
+    // SAFETY: `mktime` reads and normalizes only the `tm` it is handed.
+    let at = unsafe { libc::mktime(&mut tm) };
+    day_at(at.max(0) as u64)
 }
 
 /// Where the entry goes, and of which repo it is.
@@ -250,6 +269,44 @@ pub fn day_named(said: &str) -> Result<String, String> {
     }
 }
 
+/// The checkout's directory, where `gh` runs, and the tracker whose daybook
+/// it is: `tracker`, or the one this host's checkout list says for the
+/// checkout, its own repo where it says none.
+fn whose(checkout: Result<Repo>, tracker: Option<RepoName>) -> Result<(PathBuf, RepoName)> {
+    match (tracker, checkout) {
+        (Some(tracker), checkout) => {
+            Ok((checkout.map_or_else(|_| std::env::temp_dir(), |checkout| checkout.dir), tracker))
+        }
+        (None, Ok(checkout)) => {
+            let list = crate::checkout_list::List::of_host()?;
+            let tracker = match crate::checkout_list::said_tracker(&list, &checkout)? {
+                Some(tracker) => tracker,
+                None => crate::checkout_list::named_repo(&checkout)?,
+            };
+            Ok((checkout.dir, tracker))
+        }
+        (None, Err(error)) => {
+            bail!("{error:#}: name the tracker whose daybook it is with `--tracker`")
+        }
+    }
+}
+
+/// The days' discussions of the span `since` to `until`, both included,
+/// as `query` lists them.
+fn span(
+    discussions: &Discussions,
+    query: &str,
+    since: &str,
+    until: Option<&str>,
+) -> Result<Vec<Listed>> {
+    let (_, category) = discussions.place()?;
+    Ok(discussions
+        .days_since(query, &category, since)?
+        .into_iter()
+        .filter(|day| until.is_none_or(|until| day.title.as_str() <= until))
+        .collect())
+}
+
 /// The lessons of the days `since` to `until`, both included, from the
 /// days' indexes of the tracker → {lessons: [{day, url, lesson}], since,
 /// until}.
@@ -259,28 +316,10 @@ pub fn lessons(
     since: &str,
     until: Option<&str>,
 ) -> Result<Value> {
-    let (dir, tracker) = match (tracker, checkout) {
-        (Some(tracker), checkout) => {
-            (checkout.map_or_else(|_| std::env::temp_dir(), |checkout| checkout.dir), tracker)
-        }
-        (None, Ok(checkout)) => {
-            let list = crate::checkout_list::List::of_host()?;
-            let tracker = match crate::checkout_list::said_tracker(&list, &checkout)? {
-                Some(tracker) => tracker,
-                None => crate::checkout_list::named_repo(&checkout)?,
-            };
-            (checkout.dir, tracker)
-        }
-        (None, Err(error)) => {
-            bail!("{error:#}: name the tracker whose daybook it is with `--tracker`")
-        }
-    };
+    let (dir, tracker) = whose(checkout, tracker)?;
     let discussions = Discussions::new(dir, &tracker);
-    let (_, category) = discussions.place()?;
-    let lessons: Vec<Value> = discussions
-        .days_since(&category, since)?
+    let lessons: Vec<Value> = span(&discussions, LESSONS, since, until)?
         .into_iter()
-        .filter(|day| until.is_none_or(|until| day.title.as_str() <= until))
         .flat_map(|day| {
             index_of(&day.body).into_iter().map(move |Indexed { url, lesson }| {
                 json!({"day": day.title, "url": url, "lesson": lesson})
@@ -288,6 +327,177 @@ pub fn lessons(
         })
         .collect();
     Ok(json!({"lessons": lessons, "since": since, "until": until}))
+}
+
+/// What a span of a daybook holds for a distillation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    pub lessons: usize,
+    /// Its entries that carry no lesson.
+    pub unlessoned: usize,
+}
+
+/// What the days `since` to `until` of `tracker`'s daybook hold, read with
+/// `gh` in `dir`: the days' indexes and how many entries each day holds,
+/// with no entry fetched.
+pub fn held(dir: PathBuf, tracker: &RepoName, since: &str, until: &str) -> Result<Held> {
+    let discussions = Discussions::new(dir, tracker);
+    let mut held = Held { lessons: 0, unlessoned: 0 };
+    for day in span(&discussions, SPAN, since, Some(until))? {
+        let lessons = index_of(&day.body).len();
+        let entries = day.comments.map_or(0, |counted| counted.total);
+        held.lessons += lessons;
+        held.unlessoned += entries.saturating_sub(lessons);
+    }
+    Ok(held)
+}
+
+/// Where a distillation carried one lesson, or one pattern recurring across
+/// entries that carry none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Home {
+    /// A ticket to the repo that owns it: a mechanism, a project's ADR or
+    /// GLOSSARY, a tool's own skill.
+    Ticket,
+    /// A change to the control repo's own ADR or GLOSSARY.
+    Doc,
+    /// A draft PR on the operator's global principles, for them to read.
+    Draft,
+    /// Its home holds it already.
+    Covered,
+}
+
+impl Home {
+    fn said(self) -> &'static str {
+        match self {
+            Home::Ticket => "ticket",
+            Home::Doc => "control doc change",
+            Home::Draft => "draft PR, for the operator to read",
+            Home::Covered => "already covered",
+        }
+    }
+}
+
+/// One lesson, or one recurring pattern, and where it went.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Carried {
+    /// The entries it was read from: a lesson's own, or a pattern's.
+    entries: Vec<String>,
+    /// What it says; a lesson's is its index's where this says none.
+    #[serde(default)]
+    lesson: Option<String>,
+    home: Home,
+    /// The ticket, change, draft PR, or where its home already holds it.
+    link: String,
+}
+
+/// A distillation's file: its span and where each of its lessons went.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Distillation {
+    since: String,
+    until: String,
+    carried: Vec<Carried>,
+}
+
+/// Checks a distillation's file against the lessons of its span, the
+/// lesson index of each day from `since` to `until`: every lesson carried
+/// once, and a pattern carried from two entries at least → the entry's
+/// `Did`, or what is wrong.
+fn carried(distillation: &Distillation, lessons: &[(String, Indexed)]) -> Result<String> {
+    let Distillation { since, until, carried } = distillation;
+    let mut lines = Vec::new();
+    for (at, carried) in carried.iter().enumerate() {
+        let Carried { entries, lesson, home, link } = carried;
+        let at = at + 1;
+        let web = |url: &str| {
+            url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).is_some_and(
+                |tail| !tail.is_empty() && !tail.chars().any(char::is_whitespace),
+            )
+        };
+        if !web(link) {
+            bail!("carried {at}: its link must be an HTTP or HTTPS URL: {link:?}");
+        }
+        if entries.is_empty() || !entries.iter().all(|entry| web(entry)) {
+            bail!("carried {at}: name the entries it was read from, each by its URL");
+        }
+        let indexed: Vec<&Indexed> = lessons
+            .iter()
+            .filter(|(_, indexed)| entries.contains(&indexed.url))
+            .map(|(_, indexed)| indexed)
+            .collect();
+        let said = lesson.as_deref().map(one_line).filter(|said| !said.is_empty());
+        let said = match (said, indexed.first()) {
+            (Some(said), _) => said,
+            (None, Some(indexed)) => indexed.lesson.clone(),
+            (None, None) => bail!("carried {at}: a pattern says its `lesson`"),
+        };
+        if indexed.is_empty() && entries.len() < 2 {
+            bail!(
+                "carried {at}: it names no lesson of {since} to {until}, so it is a pattern, \
+                 which recurs across two entries at least"
+            );
+        }
+        let read: Vec<String> = entries.iter().map(|entry| format!("[entry]({entry})")).collect();
+        lines.push(format!("- {said} ({}) → {}: {link}", read.join(", "), home.said()));
+    }
+    for (day, Indexed { url, lesson }) in lessons {
+        let times = carried.iter().filter(|carried| carried.entries.contains(url)).count();
+        match times {
+            1 => {}
+            0 => bail!("the lesson of {day} {url} is carried nowhere: {lesson}"),
+            _ => bail!("the lesson of {day} {url} is carried {times} times: carry it once"),
+        }
+    }
+    let did = match lines.is_empty() {
+        true => format!("Distilled the daybook of {since} to {until}: it held nothing to carry."),
+        false => format!(
+            "Distilled the daybook of {since} to {until}: each lesson, and where it went.\n\n{}",
+            lines.join("\n")
+        ),
+    };
+    Ok(did)
+}
+
+/// Records a distillation, said in the file `file`: checks it carries each
+/// lesson of its span exactly once, then appends one entry to today's
+/// discussion mapping each lesson to where it went → the entry's answer, with
+/// the span and how many were carried.
+pub fn distilled(
+    checkout: Result<Repo>,
+    repo: Option<RepoName>,
+    tracker: Option<RepoName>,
+    file: &std::path::Path,
+) -> Result<Value> {
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("cannot read the distillation {}", file.display()))?;
+    let said: Distillation = serde_json::from_str(&text).context(
+        "a distillation is one JSON object: {\"since\", \"until\", \"carried\": [{\"entries\", \
+         \"lesson\", \"home\", \"link\"}]}",
+    )?;
+    let copy = checkout.as_ref().map(Repo::clone).map_err(|error| anyhow::anyhow!("{error:#}"));
+    let (dir, tracker) = whose(copy, tracker)?;
+    for day in [&said.since, &said.until] {
+        day_named(day).map_err(anyhow::Error::msg)?;
+    }
+    let discussions = Discussions::new(dir, &tracker);
+    let lessons: Vec<(String, Indexed)> =
+        span(&discussions, LESSONS, &said.since, Some(&said.until))?
+            .into_iter()
+            .flat_map(|day| {
+                index_of(&day.body).into_iter().map(move |indexed| (day.title.clone(), indexed))
+            })
+            .collect();
+    let did = carried(&said, &lessons)?;
+    let entry = Said { did: Some(did), ..Said::default() };
+    let mut answer = daybook(checkout, Asked { said: entry, repo, tracker: Some(tracker) })?;
+    answer["since"] = json!(said.since);
+    answer["until"] = json!(said.until);
+    answer["carried"] = json!(said.carried.len());
+    answer["lessons"] = json!(lessons.len());
+    Ok(answer)
 }
 
 /// One day's discussion, as a listing reads it.
@@ -305,6 +515,15 @@ struct Listed {
     number: u64,
     title: String,
     body: String,
+    /// How many entries it holds, where the listing counted them.
+    #[serde(default)]
+    comments: Option<Counted>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Counted {
+    #[serde(rename = "totalCount")]
+    total: usize,
 }
 
 /// The cursor of the page after the one `connection` holds, where there is one.
@@ -357,6 +576,14 @@ const LESSONS: &str = "query ConvoyDaybookLessons($owner: String!, $repo: String
     discussions(first: 100, after: $after, categoryId: $category, \
     orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number title body } \
     pageInfo { hasNextPage endCursor } } } }";
+
+/// A page of a category's latest discussions with their bodies and how many
+/// entries each holds, for a distillation's span.
+const SPAN: &str = "query ConvoyDaybookSpan($owner: String!, $repo: String!, \
+    $category: ID!, $after: String) { repository(owner: $owner, name: $repo) { \
+    discussions(first: 100, after: $after, categoryId: $category, \
+    orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number title body \
+    comments { totalCount } } pageInfo { hasNextPage endCursor } } } }";
 
 const ENTRY: &str = "mutation ConvoyDaybookEntry($discussion: ID!, $body: String!) { \
     addDiscussionComment(input: {discussionId: $discussion, body: $body}) { comment { url } } }";
@@ -493,7 +720,7 @@ impl Discussions {
 
     /// The discussions of `category` titled `since` or later, the lowest
     /// numbered of each title, oldest day first.
-    fn days_since(&self, category: &str, since: &str) -> Result<Vec<Listed>> {
+    fn days_since(&self, query: &str, category: &str, since: &str) -> Result<Vec<Listed>> {
         let mut days: Vec<Listed> = Vec::new();
         let mut after = None::<String>;
         loop {
@@ -501,7 +728,7 @@ impl Discussions {
             if let Some(after) = &after {
                 fields.push(("after", after.as_str()));
             }
-            let answer = self.ask(LESSONS, &fields, false)?;
+            let answer = self.ask(query, &fields, false)?;
             let found = &answer["data"]["repository"]["discussions"];
             let page: Vec<Listed> = serde_json::from_value(found["nodes"].clone())
                 .context("GitHub listed no discussions")?;
