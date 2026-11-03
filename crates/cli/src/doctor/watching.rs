@@ -309,9 +309,12 @@ fn interval(
                 );
                 let mut errors =
                     tick.answer.as_ref().map(|a| a["errors"].clone()).unwrap_or(json!([]));
+                // A failed step says `FAILED` in capitals; a failing cut need's
+                // `not cutting here: <need> failed` is no failed tick, the
+                // `cut-need` finding carries it (sunfmin/control#562).
                 let failed = tick.error.is_some()
                     || !tick.failed().is_empty()
-                    || tick.line.to_ascii_uppercase().contains("FAILED");
+                    || tick.line.contains("FAILED");
                 if let Some(error) = &tick.error {
                     errors = json!([{"error": error}]);
                 }
@@ -572,6 +575,31 @@ mod tests {
         assert_eq!(report["issues"][0]["steps"][0]["detail"]["failed"], true);
         assert_eq!(report["events"].as_array().unwrap().len(), 3);
         assert!(report["events"][2]["line"].as_str().unwrap().contains("unattributed gate"));
+    }
+
+    #[test]
+    fn a_tick_held_only_by_a_failing_cut_need_is_no_failed_tick() {
+        let need = "not cutting here: asc-api-key failed · holding 0/3 · frontier 0";
+        let held = json!({"did": [], "errors": []});
+        let mut errored = tick(12, need, held.clone());
+        let What::Tick(t) = &mut errored.what else { unreachable!() };
+        t.error = Some("GitHub not reached".into());
+        let entries = [
+            tick(10, need, held.clone()),
+            tick(
+                11,
+                &format!("FAILED dispatch #7: orca failed · {need}"),
+                json!({"did": [],
+                "errors": [{"do": "dispatch", "issue": 7, "error": "orca failed"}]}),
+            ),
+            errored,
+        ];
+        let quiet = interval(&entries[..1], "h1", 10, 30, BTreeMap::new(), vec![]);
+        assert_eq!(tick_findings(&quiet, &[]), []);
+        let report = interval(&entries, "h1", 10, 30, BTreeMap::new(), vec![]);
+        let found = tick_findings(&report, &[]);
+        assert_eq!(found.len(), 2, "{report}");
+        assert!(found.iter().all(|f| f.what.contains(need)), "{found:?}");
     }
 
     #[test]
