@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
+use afkconvoy_core::config::RepoName;
 use afkconvoy_core::cut;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::{Harness, Keystroke};
@@ -21,6 +22,7 @@ use afkconvoy_core::legacy::TRAIN_WORKTREE;
 use afkconvoy_core::line::niced;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, add_checkout};
+use afkconvoy_core::tracker::Tracker;
 use afkconvoy_core::worker::{WorkerState, is_worktree_named, short_branch, worker_state};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -57,6 +59,9 @@ pub(crate) const TURN_LOG_FILE: &str = "convoy-turn.log";
 const UNDER_FILE: &str = "convoy-started-under";
 /// The harness the worker here was last started on, as its key.
 const HARNESS_FILE: &str = "convoy-harness";
+/// The tracker of the fleet that started the worker here: the repo it
+/// names, or nothing where it is the checkout's own (`keep_tracker`).
+pub(crate) const TRACKER_FILE: &str = "convoy-tracker";
 /// What was taken down as the worker here turned hot (`evidence`).
 const EVIDENCE_DIR: &str = "convoy-hot";
 /// What the cut in a checkout is, and what it did so far (`cut::Record`).
@@ -1393,6 +1398,40 @@ impl Worktree {
         let file = self.note(HARNESS_FILE)?;
         std::fs::write(&file, harness.key())
             .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// Keeps the tracker of the fleet starting the worker here, before it
+    /// starts: a command the worker runs reads its fleet's tracker here
+    /// (`tracker`), whether or not the checkout list holds its checkout yet.
+    pub fn keep_tracker(&self, tracker: &Tracker) -> Result<()> {
+        let file = self.note(TRACKER_FILE)?;
+        let named = tracker.named().map(RepoName::as_str).unwrap_or_default();
+        std::fs::write(&file, named).with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// The tracker the fleet that started the worker here kept
+    /// (`keep_tracker`): the repo it names, `Some(None)` for the checkout's
+    /// own, `None` where none was kept. One that names no repo is an error.
+    pub fn tracker(&self) -> Result<Option<Option<RepoName>>> {
+        let file = self.note(TRACKER_FILE)?;
+        let kept = match std::fs::read_to_string(&file) {
+            Ok(kept) => kept,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot read {}", file.display()));
+            }
+        };
+        match kept.trim() {
+            "" => Ok(Some(None)),
+            named => match RepoName::read(named) {
+                Some(named) => Ok(Some(Some(named))),
+                None => bail!(
+                    "{} says the tracker of the worker here is {named:?}, which names no repo, \
+                     `<owner>/<repo>`",
+                    file.display()
+                ),
+            },
+        }
     }
 
     /// The comment of the `blocked` verdict last answered here, when one was.

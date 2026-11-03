@@ -24,6 +24,7 @@ use crate::gh::Tracker;
 use crate::git::{REMOTE, Repo};
 use crate::host_settings::Settings;
 use crate::instance::Named;
+use crate::orca::Worktree;
 
 /// The file's name in the cache directory.
 const FILE: &str = "checkouts.json";
@@ -221,16 +222,37 @@ pub fn said_tracker(list: &List, repo: &Repo) -> Result<Option<RepoName>> {
 /// `said_tracker` reads it; `None` where it says nothing at all — the list
 /// holds no entry of it or its main checkout, and no `run` of it asked in
 /// this process — so the tracker is not said, which is not the same as its
-/// own repo said.
+/// own repo said. A worker's worktree says the tracker its fleet kept there
+/// as it started the worker (`Worktree::keep_tracker`), which holds while
+/// the list holds no entry of its checkout yet — a fleet's first tick, or a
+/// `run --foreground` — and that kept nothing is read off the list as
+/// another checkout is; where neither says it, it is an error: a worker's
+/// command never acts on the issues of a tracker its fleet does not hold.
 pub fn said(list: &List, repo: &Repo) -> Result<Option<Option<RepoName>>> {
+    let worktree = Worktree::at(repo.dir.clone(), String::new());
+    let worker = worktree.holds_a_worker();
+    if worker && let Some(kept) = worktree.tracker()? {
+        return Ok(Some(kept));
+    }
     let main = repo.main_checkout()?;
     let of = |root: &Path| root == repo.dir || root == main;
     let asked = asked();
     let listed = list.read()?;
-    Ok(match listed.checkouts.into_iter().find(|entry| of(&entry.checkout)) {
+    let said = match listed.checkouts.into_iter().find(|entry| of(&entry.checkout)) {
         Some(entry) => Some(entry.tracker),
         None => asked.iter().find(|(root, _)| of(root)).map(|(_, asked)| asked.tracker.clone()),
-    })
+    };
+    if worker && said.is_none() {
+        bail!(
+            "the tracker of the worker in {} cannot be read: its fleet kept none in its \
+             worktree, and the checkout list {} holds no entry of {}: a worker's command acts \
+             on its fleet's tracker alone, which its fleet keeps there as it starts the worker",
+            repo.dir.display(),
+            list.file().display(),
+            main.display()
+        );
+    }
+    Ok(said)
 }
 
 /// The repo the checkout `repo` is of, as GitHub names it, `owner/name`:
@@ -432,6 +454,57 @@ mod tests {
             .unwrap();
         let error = format!("{:#}", list.read().unwrap_err());
         assert!(error.contains("`acme` is no repo's name"), "{error}");
+    }
+
+    #[test]
+    fn a_workers_worktree_goes_by_the_tracker_its_fleet_kept_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let ran =
+                crate::process::output(Command::new("git").args(args).current_dir(&root)).unwrap();
+            assert!(ran.status.success(), "{ran:?}");
+        };
+        git(&["init", "--quiet", "w"]);
+        git(&["-C", "w", "commit", "--quiet", "--allow-empty", "-m", "initial"]);
+        git(&["-C", "w", "remote", "add", "origin", "git@github.com:Acme/Dev.git"]);
+        git(&["-C", "w", "worktree", "add", "--quiet", "../wt"]);
+        let (checkout, worktree) = (Repo::new(root.join("w")), Repo::new(root.join("wt")));
+        let list = List::at(root.join(FILE));
+        let held = Worktree::at(worktree.dir.clone(), String::new());
+        let other = Tracker::Other {
+            tracker: RepoName::read("acme/tracker").unwrap(),
+            repo: RepoName::read("acme/dev").unwrap(),
+        };
+
+        // a worker's worktree whose tracker nothing says: an error, not its own repo
+        std::fs::write(held.brief().unwrap(), "the brief").unwrap();
+        let error = format!("{:#}", tracker_on(&list, &worktree).unwrap_err());
+        assert!(error.contains("cannot be read"), "{error}");
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own, "the checkout's is said");
+
+        // what its fleet kept there holds while the list holds no entry
+        held.keep_tracker(&other).unwrap();
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), other);
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own, "kept in the worktree");
+        held.keep_tracker(&Tracker::Own).unwrap();
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), Tracker::Own);
+
+        // a worker's worktree that kept none goes by its checkout's entry
+        std::fs::remove_file(held.note(crate::orca::TRACKER_FILE).unwrap()).unwrap();
+        let tracker = RepoName::read("acme/tracker");
+        list.change(|listed| {
+            let mut kept = entry(&checkout.dir.display().to_string());
+            kept.tracker = tracker;
+            listed.checkouts.push(kept);
+        })
+        .unwrap();
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), other);
+
+        // a kept tracker that names no repo is an error
+        std::fs::write(held.note(crate::orca::TRACKER_FILE).unwrap(), "acme").unwrap();
+        let error = format!("{:#}", tracker_on(&list, &worktree).unwrap_err());
+        assert!(error.contains("names no repo"), "{error}");
     }
 
     #[test]

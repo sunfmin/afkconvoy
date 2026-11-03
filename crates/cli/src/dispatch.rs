@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use crate::claims::{Me, Take, take};
 use crate::fleet::Fleet;
 use crate::forget::forget;
-use crate::gh::{IssueRead, gone};
+use crate::gh::{IssueRead, Tracker, gone};
 use crate::git::Repo;
 use crate::launch::Launches;
 use crate::orca::{Source, Worktree};
@@ -123,9 +123,12 @@ impl Agent {
     /// Outside a role it starts already trusting its worktree. Shell-only
     /// auxiliaries use `start`. An issue given here is exported for every
     /// command that worker runs; the train and watches carry no issue context.
+    /// `tracker` is the fleet's, which the worker's commands read (`start`).
+    #[allow(clippy::too_many_arguments)]
     pub fn start_worker(
         &self,
         worktree: &Worktree,
+        tracker: &Tracker,
         selection: WorkerSelection<'_>,
         command: &str,
         in_role: bool,
@@ -147,7 +150,7 @@ impl Agent {
                 .done(),
             None => prepared.command,
         };
-        let terminal = self.start(worktree, harness, &command, None, now)?;
+        let terminal = self.start(worktree, tracker, harness, &command, None, now)?;
         std::fs::write(
             worktree.note("convoy-worker-model")?,
             prepared.model.as_deref().unwrap_or_default(),
@@ -165,15 +168,20 @@ impl Agent {
     }
 
     /// Starts every kind of worker with its harness's host network settings
-    /// and, when given, its terminal title.
+    /// and, when given, its terminal title. The worktree keeps `tracker`, the
+    /// fleet's, before the worker starts (`Worktree::keep_tracker`): each
+    /// command it runs acts on the issues its fleet does, even where the
+    /// checkout list does not hold its checkout yet.
     pub fn start(
         &self,
         worktree: &Worktree,
+        tracker: &Tracker,
         harness: Harness,
         command: &str,
         title: Option<&str>,
         now: u64,
     ) -> Result<String> {
+        worktree.keep_tracker(tracker)?;
         let terminal = worktree.start(&self.launches.worker_line(harness, command), title, now)?;
         // Record what actually started, never a replacement whose old
         // terminal could not be ended.
@@ -541,6 +549,7 @@ fn start(
                 terminal = Some(match &staged {
                     Some(staged) => agent.start_worker(
                         cut,
+                        &fleet.gh.tracker,
                         (&chosen).into(),
                         &staged.command(launch, cut, model.as_deref())?,
                         true,
@@ -551,6 +560,7 @@ fn start(
                     // start line as its worker selection says.
                     None => agent.start_worker(
                         cut,
+                        &fleet.gh.tracker,
                         (&chosen).into(),
                         &chosen.start_line(launch),
                         false,

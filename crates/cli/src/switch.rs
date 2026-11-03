@@ -269,8 +269,15 @@ pub(crate) fn auxiliary(fleet: &Fleet, agent: &Agent, worktree: &Worktree) -> Re
         crate::dispatch::continue_brief(fleet, worktree, None, None, &continued)?;
     }
     let command = chosen.start_line(agent.command(harness)?.as_str());
-    let terminal =
-        agent.start_worker(worktree, (&chosen).into(), &command, false, None, fleet.now)?;
+    let terminal = agent.start_worker(
+        worktree,
+        &fleet.gh.tracker,
+        (&chosen).into(),
+        &command,
+        false,
+        None,
+        fleet.now,
+    )?;
     worktree.deliver(&terminal, &worktree.brief()?)?;
     Ok(json!({"worktree": worktree.path, "from": continued.from, "to": harness,
             "terminal": terminal, "skipped": fleet.skipped_before(harness, None, None)}))
