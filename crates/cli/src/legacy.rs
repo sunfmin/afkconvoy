@@ -183,7 +183,9 @@ pub fn migrate(
     let retire = || -> Result<()> {
         repo.remote().push(&Push::delete(&refs.line).leased(&old))?;
         if let Some(red) = repo.remote().sha(&refs.red, Fresh::Process)? {
-            let _ = repo.remote().try_push(&Push::delete(&refs.red).leased(&red));
+            let _ =
+                repo.remote()
+                    .try_push_retried(&Push::delete(&refs.red).leased(&red), None, || Ok(false));
         }
         Ok(())
     };

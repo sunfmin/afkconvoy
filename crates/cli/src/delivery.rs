@@ -303,7 +303,7 @@ fn keep_receipt(repo: &Repo, delivery: &Delivery, pr: u64) -> Result<()> {
         delivery: delivery.identity.clone(),
         pr,
     })?)?;
-    let pushed = repo.remote().try_push(&Push::set(&sha, &name))?;
+    let pushed = repo.remote().try_push_retried(&Push::set(&sha, &name), None, || Ok(false))?;
     let found = receipt(repo, delivery)?.context("final PR exists but its receipt was not recorded; rerun afkconvoy delivery --jira <url> --final-target <branch>")?;
     ensure!(
         found.pr == pr,
