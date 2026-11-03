@@ -490,6 +490,29 @@ fn a_cut_whose_checkout_is_gone_opens_its_issue_and_the_next_takes_up_its_branch
     assert_eq!(cut_branches(&world), pushed, "no second branch for the same version");
 }
 
+/// A peer's cut whose host went silent is a failed cut too: the tick that
+/// unclaims it opens the one issue, named by the version its branch says,
+/// and no cut of that version starts on its own.
+#[test]
+fn a_silent_peer_s_cut_opens_its_issue_and_starts_no_cut_on_its_own() {
+    let world = cutting();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    git(&checkout, &["push", "-q", "origin", "HEAD:refs/heads/afkconvoy-cut/v0.1.1-10000"]);
+    let late = 10_000 + 1801 + 60;
+    assert_eq!(standing(&world, "beta", late), "stale_run");
+    assert_eq!(cut(&tick_as(&world, "beta", late)), ["end_cut done"]);
+    let failed = failures(&world);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    let issues = world.gh()["issues"].as_array().unwrap().clone();
+    let opened = issues.iter().find(|issue| issue["number"] == failed[0].0).unwrap();
+    assert_eq!(opened["title"], "afkconvoy: the cut of v0.1.1 failed", "{opened}");
+    assert!(opened["body"].as_str().unwrap().contains("h1, went silent"), "{opened}");
+    assert!(!claimed(&world));
+    assert_eq!(standing(&world, "beta", late + 10), "failed");
+    assert_eq!(cut(&tick_as(&world, "beta", late + 10)), Vec::<String>::new());
+}
+
 /// A cut takes no turn: while its gate hangs, a turn on the same repo lands.
 #[test]
 fn a_turn_lands_while_a_cut_s_gate_hangs() {
