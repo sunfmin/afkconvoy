@@ -94,9 +94,11 @@ pub fn wait(fleet: &Fleet) -> Result<CutWait> {
             tag.version.tag()
         )),
         None if steps.initial_version().is_some() => CutWait::Coming,
-        None => CutWait::Never("the remote has no version tag and the repo declares no initial \
+        None => CutWait::Never(
+            "the remote has no version tag and the repo declares no initial \
              version"
-            .to_string()),
+                .to_string(),
+        ),
     })
 }
 

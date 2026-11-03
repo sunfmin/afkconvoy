@@ -150,9 +150,7 @@ fn off_ramp(board: &Board) -> Option<String> {
             }
             let returns = match (blockers, board.cut) {
                 (0, true) => "once a cut has published and installed a new version",
-                (_, true) => {
-                    "once they close and a cut has published and installed a new version"
-                }
+                (_, true) => "once they close and a cut has published and installed a new version",
                 _ => "when they close",
             };
             Some(format!(

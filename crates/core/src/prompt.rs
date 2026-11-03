@@ -157,7 +157,8 @@ no other PR. Nobody reads this terminal: never wait for an answer.
 After a genuine effort, post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`),
 wake the fleet (below) and stop. Its **first line** must be exactly this marker, with `phase=escalate`,
 on one line, followed by where you are stuck, so that a human can act on it in one reply — or,
-with `phase=blocked` and every existing blocking issue in `blocked_by=`:
+with `phase=blocked` and every existing blocking issue in `blocked_by=`, or `cut` there when it
+waits on the next version of this repo being installed (never poll for it):
 ```
 {verdict_marker}
 ```
@@ -215,7 +216,9 @@ body:
 - **`blocked`** — the issue needs something that belongs to another issue and does not exist yet.
   Reuse its issue, or open one for another repo of this host following the cross-repo blocker
   procedure above. Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and say
-  what is missing.
+  what is missing. When it can go on only once the next version of this repo is installed — what
+  it needs has landed but is not released yet — name `cut` there (`blocked_by=cut`) instead of
+  polling for the version: the fleet starts your issue again once a cut has installed one.
 - **`escalate`** — a human must act, as described below.
 
 <escalation>
@@ -270,6 +273,9 @@ what it takes. Then stop.
 ```bash
 {verdict_command}
 ```
+A stage that can go on only once the next version of this repo is installed — what it needs has
+landed but is not released yet — declares `blocked` with `--blocked-by cut` instead of polling for
+the version: it runs again once a cut has installed one.
 ";
 
 /// Where another checkout's missing work enters the fleet, shared by the
@@ -1183,6 +1189,16 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_waits_on_the_next_cut_instead_of_polling_for_its_version() {
+        for variant in [Variant::Fresh, Variant::Continue, Variant::TakeUp { pr: 70 }] {
+            let brief = worker_prompt(&fields(), variant).unwrap();
+            let told = ["(`blocked_by=cut`) instead of\n  polling", "(never poll for it)"];
+            assert!(told.iter().any(|said| brief.contains(said)), "{brief}");
+            assert!(brief.contains("[blocked_by=<n,…|cut>]"), "{brief}");
+        }
+    }
+
+    #[test]
     fn a_worker_passes_the_fast_gate_before_its_pr_where_the_repo_declares_one() {
         let without = worker_prompt(&fields(), Variant::Fresh).unwrap();
         assert!(!without.contains("fast gate"), "{without}");
@@ -1679,6 +1695,7 @@ mod tests {
         assert!(!without.to_lowercase().contains("split"), "{without}");
         assert!(!without.contains("gh issue create"), "{without}");
         assert!(without.contains("## Declare a verdict"));
+        assert!(without.contains("declares `blocked` with `--blocked-by cut` instead of polling"));
 
         // The stage that parked runs again once what it waited on closed.
         let parked = StageRecord {
@@ -1713,7 +1730,8 @@ mod tests {
         assert!(!without.contains("## Splitting"), "{without}");
         assert!(without.contains("Judge what is left now:"), "{without}");
         // A human's `blocked` names no issue, and parks nothing.
-        let unnamed = StageRecord { blocked_by: Default::default(), by: Author::Human, ..parked.clone() };
+        let unnamed =
+            StageRecord { blocked_by: Default::default(), by: Author::Human, ..parked.clone() };
         let records = [Said { record: &unnamed, url: "https://gh/c/2" }];
         let human = stage_prompt(&StageFields { records: &records, ..fields.clone() }).unwrap();
         assert!(human.contains("it declared `blocked`, and it named no issue to wait on."));

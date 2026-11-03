@@ -366,7 +366,9 @@ pub fn blocked_route(standings: &[(u64, Standing)], cut: &CutWait) -> Blocked {
     }
     let mut waiting = waiting.into_iter();
     match waiting.next() {
-        Some(first) => Blocked::Park(Parkable { first: Hold::Issue(first), rest: waiting.collect() }),
+        Some(first) => {
+            Blocked::Park(Parkable { first: Hold::Issue(first), rest: waiting.collect() })
+        }
         None => Blocked::Redispatch,
     }
 }
