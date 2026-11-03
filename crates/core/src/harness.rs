@@ -35,6 +35,24 @@ pub struct Link {
     pub kept: &'static str,
 }
 
+/// Where a harness reads its user's hooks, and how one runs before a tool
+/// call there: where the agent setup's guards are wired (sunfmin/control#529).
+/// The file holds a JSON object whose `table` key holds, by event, groups of
+/// `{"matcher": ..., "hooks": [{"type": "command", "command": ..., "timeout": ...}]}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserHooks {
+    /// The settings file, under the home of the host's user.
+    pub settings: &'static str,
+    /// The key of that file that holds its hooks, by event.
+    pub table: &'static str,
+    /// The event before each tool call.
+    pub event: &'static str,
+    /// The matcher that picks the calls that run a shell command.
+    pub shell: &'static str,
+    /// The matcher that picks the calls that edit a file.
+    pub edits: &'static str,
+}
+
 /// A harness that keeps each session apart, and reads the user's own model
 /// for a start the issue does not name. Codex is the one (docs/adr/0013).
 /// The directory, the file and the note are named here; what they mean is
@@ -318,6 +336,17 @@ impl Harness {
             Harness::Dsh => dsh::SKILLS_AGENT,
             Harness::Kimi => kimi::SKILLS_AGENT,
             Harness::Grok => grok::SKILLS_AGENT,
+        }
+    }
+
+    /// Where it reads its user's hooks, and how a guard runs before a tool
+    /// call there; `None` where the host kit knows no such file of it, and
+    /// the agent setup's guards are given it nowhere.
+    pub const fn user_hooks(self) -> Option<UserHooks> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::USER_HOOKS),
+            Harness::Codex => Some(codex::USER_HOOKS),
+            Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => None,
         }
     }
 
