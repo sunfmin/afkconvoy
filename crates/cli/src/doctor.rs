@@ -1231,13 +1231,14 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             fix,
         ));
     }
-    if let Some(name) = set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+    if let Some(failed) = set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
         found.push(finding(
             Kind::CutNeed,
-            json!(["cut-need", name]),
-            name.clone(),
-            "the cut is due and a host check failed".to_string(),
-            "check the repo's cut-needs declaration on this host".to_string(),
+            json!(["cut-need", failed.said()]),
+            failed.said(),
+            failed.evidence(),
+            "read its stderr file on this host, then check the repo's cut-needs declaration"
+                .to_string(),
         ));
     }
     if let Some(cut) = set.cut.as_ref().filter(|cut| cut.standing == cut::Standing::Failed)

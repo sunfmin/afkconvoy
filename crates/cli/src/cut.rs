@@ -166,7 +166,11 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, busy: bool) -> Result<Ou
     if fleet.config.cut.is_none() {
         return Ok(Outcome::Nothing);
     }
-    if crate::probe::check_cut_needs(&fleet.repo, &fleet.config, me.now, true)?.is_some() {
+    // The one evaluation this tick starts the cut by, and says (#532).
+    let failed = crate::probe::check_cut_needs(&fleet.repo, &fleet.config, me.now, true)?;
+    let held = failed.is_some();
+    fleet.cut_needs = Some(failed);
+    if held {
         return Ok(Outcome::Nothing);
     }
     // Before the claim: a host kit that holds no harness starts nothing.
@@ -344,7 +348,7 @@ pub fn says(repo: &Repo, row: &Row) -> Option<String> {
         Standing::Untagged => "the remote has no version tag to count a version from".to_string(),
     };
     let said = match &row.not_cutting_here {
-        Some(reason) => format!("{said}; {reason}"),
+        Some(failed) => format!("{said}; {}", failed.said()),
         None => said,
     };
     let last = crate::log::Log::of(repo).ok().and_then(|log| log.read()).and_then(|entries| {

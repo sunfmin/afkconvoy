@@ -76,6 +76,10 @@ pub struct Fleet {
     /// What this view's start and end of a cut said: what a tick's line says
     /// of them, and its log keeps.
     pub cut_said: Vec<crate::log::What>,
+    /// The cut needs as the pass's start of a cut evaluated them, where it
+    /// did: what the tick then says in place of its rebuild's look, so no
+    /// tick both names a failed need and starts the cut (`cut::start`).
+    pub cut_needs: Option<Option<afkconvoy_core::cut::NeedFailed>>,
     /// The landings this view asked a turn for again that had stopped at a
     /// fleet lock, each with the locks that turn named, closed since: what a
     /// tick's line names.
@@ -137,6 +141,7 @@ impl Fleet {
             unread: vec![],
             closers: vec![],
             cut_said: vec![],
+            cut_needs: None,
             after_locks: vec![],
             trust_launches: false,
             patrol_landings: None,
@@ -713,8 +718,7 @@ impl Fleet {
             set.cut.as_mut().filter(|row| row.standing == afkconvoy_core::cut::Standing::Due)
         {
             row.not_cutting_here =
-                crate::probe::check_cut_needs(&self.repo, &self.config, self.now, false)?
-                    .map(|name| format!("not cutting here: {name} failed"));
+                crate::probe::check_cut_needs(&self.repo, &self.config, self.now, false)?;
         }
         open.issues.explain(&mut set.waiting_on_human);
 

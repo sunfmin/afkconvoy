@@ -920,6 +920,57 @@ fn a_cut_need_installs_before_the_cut_is_claimed() {
     let tick = tick_as(&world, "alpha", 10_000);
     assert!(claimed(&world), "{tick}");
     assert_eq!(std::fs::read_to_string(&installs).unwrap(), "ran\n");
+    assert!(!tick.to_string().contains("not cutting here"), "the install's pass is said: {tick}");
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "10000"]).ok();
     assert!(doctor.to_string().contains("publish-access was installed on this host"), "{doctor}");
+}
+
+/// sunfmin/control#532: a cut need that fails at the rebuild's look and
+/// passes when the cut is claimed. The tick says the evaluation it claimed
+/// by, and no failed need beside the cut it starts.
+#[test]
+fn a_cut_need_that_fails_then_passes_is_not_said_beside_the_cut_it_starts() {
+    let world = cutting();
+    let looked = world.root.join("cut-looked");
+    let config = format!(
+        "{CONFIG}\n{}\n```yaml cut-needs\nchecks:\n  - name: publish-access\n    command: if ! test -f '{looked}'; then touch '{looked}'; echo first-look >&2; exit 1; fi\n    seconds: 5\n```\n",
+        cut_block(&says_published(&world)),
+        looked = looked.display()
+    );
+    commit_config(&world, &config, "Declare a cut need that fails once");
+    let tick = tick_as(&world, "alpha", 10_000);
+    assert!(looked.exists(), "the rebuild looked first: {tick}");
+    assert!(claimed(&world), "{tick}");
+    assert_eq!(cut(&tick), ["cut done"], "{tick}");
+    assert!(!tick.to_string().contains("not cutting here"), "{tick}");
+}
+
+/// sunfmin/control#532: a cut need that passes at the rebuild's look and
+/// fails when the cut would be claimed. No cut is claimed; the tick says the
+/// failed need, and doctor names its stderr file on this host, never its
+/// output.
+#[test]
+fn a_cut_need_that_passes_then_fails_claims_no_cut_and_doctor_names_its_stderr() {
+    let world = cutting();
+    let looked = world.root.join("cut-looked");
+    let config = format!(
+        "{CONFIG}\n{}\n```yaml cut-needs\nchecks:\n  - name: publish-access\n    command: if test -f '{looked}'; then echo private-late-failure >&2; exit 1; fi; touch '{looked}'\n    seconds: 5\n```\n",
+        cut_block(&says_published(&world)),
+        looked = looked.display()
+    );
+    commit_config(&world, &config, "Declare a cut need that passes once");
+    let tick = tick_as(&world, "alpha", 10_000);
+    assert!(!claimed(&world), "{tick}");
+    assert!(!cut(&tick).contains(&"cut done".to_string()), "{tick}");
+    assert!(tick.to_string().contains("not cutting here: publish-access failed"), "{tick}");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "10000"]).ok();
+    let said = doctor.to_string();
+    assert!(said.contains("not cutting here: publish-access failed"), "{doctor}");
+    let stderr = said
+        .split("stderr: ")
+        .nth(1)
+        .and_then(|rest| rest.split(['"', '\\']).next())
+        .unwrap_or_else(|| panic!("doctor names the stderr file: {doctor}"));
+    assert_eq!(std::fs::read_to_string(stderr).unwrap().trim(), "private-late-failure");
+    assert!(!format!("{tick}{doctor}{}", logged(&world).join(" ")).contains("private-late"));
 }
