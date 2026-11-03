@@ -12,8 +12,10 @@
 //! The installed copies, in the shared `~/.agents/skills`, are read-only
 //! between syncs; a sync opens them for its own writes and closes them again.
 //! Writing the host kit gives it to every held harness; a tick gives it to a
-//! harness held since the setup was last given. With neither setting said,
-//! nothing is given and nothing is reported.
+//! harness held since the setup was last given. With none of the settings
+//! said, nothing is given and nothing is reported. The guards, the third
+//! part (`--agent-guards`), are wired into each held harness's hook
+//! settings (`agent_guards`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -43,6 +45,10 @@ pub const FIX: &str = "afkconvoy kit";
 pub struct Declared {
     pub instructions: Option<PathBuf>,
     pub skills: Option<PathBuf>,
+    /// The guard list (sunfmin/control#529); a record of an older release
+    /// says none.
+    #[serde(default)]
+    pub guards: Option<PathBuf>,
 }
 
 impl Declared {
@@ -51,8 +57,12 @@ impl Declared {
         let declared = Declared {
             instructions: settings.agent_instructions.clone(),
             skills: settings.agent_skills.clone(),
+            guards: settings.agent_guards.clone(),
         };
-        (declared.instructions.is_some() || declared.skills.is_some()).then_some(declared)
+        let any = declared.instructions.is_some()
+            || declared.skills.is_some()
+            || declared.guards.is_some();
+        any.then_some(declared)
     }
 }
 
@@ -409,6 +419,7 @@ pub fn converge(harnesses: &[Harness], to: To, now: u64) -> Result<Option<Value>
 struct Done {
     outcomes: Vec<(Harness, Option<String>)>,
     linked: Vec<Harness>,
+    wired: Vec<Harness>,
     synced: Vec<String>,
 }
 
@@ -424,6 +435,7 @@ impl Done {
         json!({
             "harnesses": self.outcomes.iter().map(|(harness, _)| harness).collect::<Vec<_>>(),
             "linked": self.linked,
+            "wired": self.wired,
             "synced": self.synced,
             "failed": failed,
         })
@@ -446,6 +458,27 @@ fn give(home: &Path, declared: &Declared, targets: &[Harness], now: u64) -> Done
             }
         }
     }
+    let mut wired = vec![];
+    if let Some(list) = &declared.guards {
+        match read_guards(list) {
+            Err(why) => {
+                for &harness in targets.iter().filter(|harness| harness.user_hooks().is_some()) {
+                    failed.entry(harness.key()).or_default().push(why.clone());
+                }
+            }
+            Ok(guards) => {
+                for &harness in targets {
+                    match crate::agent_guards::wire(home, harness, &guards) {
+                        Ok(true) => wired.push(harness),
+                        Ok(false) => {}
+                        Err(error) => {
+                            failed.entry(harness.key()).or_default().push(format!("{error:#}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
     let mut synced = vec![];
     if let Some(list) = &declared.skills {
         let agents: Vec<(Harness, &str)> = targets
@@ -463,7 +496,16 @@ fn give(home: &Path, declared: &Declared, targets: &[Harness], now: u64) -> Done
         .iter()
         .map(|harness| (*harness, failed.get(harness.key()).map(|why| why.join("; "))))
         .collect();
-    Done { outcomes, linked, synced }
+    Done { outcomes, linked, wired, synced }
+}
+
+/// The guards the list at `list` declares; an error says why it cannot be
+/// read as one.
+fn read_guards(list: &Path) -> Result<Vec<crate::agent_guards::Guard>, String> {
+    let text = std::fs::read_to_string(list)
+        .map_err(|error| format!("the guard list {} cannot be read: {error}", list.display()))?;
+    crate::agent_guards::parse(&text)
+        .map_err(|why| format!("the guard list {} is wrong: {why}", list.display()))
 }
 
 /// Installs `list` for `agents`, and removes from each what it does not
@@ -505,8 +547,9 @@ fn sync(
 }
 
 /// Each held harness that differs from the agent setup, as a finding: its
-/// instructions not linked, a declared skill not installed for it, or one
-/// installed for it that the list does not name. None with no setup declared.
+/// instructions not linked, a declared skill not installed for it, one
+/// installed for it that the list does not name, or its hook settings
+/// missing a declared guard or holding one the list does not name. None with no setup declared.
 pub fn findings() -> Vec<crate::doctor::Finding> {
     let Ok(settings) = crate::host_settings::of_host() else { return vec![] };
     let Some(declared) = Declared::of(&settings) else { return vec![] };
@@ -516,6 +559,7 @@ pub fn findings() -> Vec<crate::doctor::Finding> {
             .map_err(|error| format!("the skill list {} cannot be read: {error}", list.display()))
             .and_then(|text| parse(&text).map_err(|why| format!("the skill list is wrong: {why}")))
     });
+    let guards = declared.guards.as_deref().map(read_guards);
     let mut asked: BTreeMap<&str, Result<Vec<Installed>, String>> = BTreeMap::new();
     let mut findings = vec![];
     for held in &kit.harnesses {
@@ -525,6 +569,13 @@ pub fn findings() -> Vec<crate::doctor::Finding> {
             && let Some(why) = unlinked(&home, harness, file)
         {
             said.push(why);
+        }
+        match (&guards, harness.user_hooks()) {
+            (Some(Err(why)), Some(_)) => said.push(why.clone()),
+            (Some(Ok(guards)), Some(_)) => {
+                said.extend(crate::agent_guards::unwired(&home, harness, guards));
+            }
+            _ => {}
         }
         match (&entries, harness.skills_agent()) {
             (Some(Err(why)), _) => said.push(why.clone()),
