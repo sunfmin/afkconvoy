@@ -76,6 +76,16 @@ pub(super) const PROGRAM: &str = "codex";
 pub(super) const INSTRUCTIONS: &str = ".codex/AGENTS.md";
 /// The agent `npx skills` installs its user's skills for.
 pub(super) const SKILLS_AGENT: Option<&str> = Some("codex");
+/// Where Codex reads its user's hooks: beside its user configuration, which
+/// asks its user to review each new one once (`/hooks`). It edits files with
+/// one tool, `apply_patch`, handed the patch as `tool_input.command`.
+pub(super) const USER_HOOKS: super::UserHooks = super::UserHooks {
+    settings: ".codex/hooks.json",
+    table: "hooks",
+    event: "PreToolUse",
+    shell: "Bash",
+    edits: "apply_patch",
+};
 /// Codex with the flag that lets it work with nobody at its terminal, and in
 /// no sandbox: a worker is limited by the guard (docs/adr/0012). A host that
 /// wants a sandbox says a command of its own.
