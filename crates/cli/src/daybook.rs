@@ -144,12 +144,16 @@ pub fn daybook(checkout: Result<Repo>, asked: Asked) -> Result<Value> {
             "an entry says nothing: give its text, or one of `--did`, `--why`, `--undo`, `--link`"
         );
     }
-    let checkout = checkout.ok();
+    // Why it is about no checkout, where it is about none.
+    let (checkout, none) = match checkout {
+        Ok(checkout) => (Some(checkout), String::new()),
+        Err(error) => (None, format!("{error:#}")),
+    };
     let repo = match (repo, &checkout) {
         (Some(repo), _) => repo,
         (None, Some(checkout)) => crate::checkout_list::named_repo(checkout)?,
         (None, None) => {
-            bail!("it was run in no checkout: name the repo the entry is of with `--repo`")
+            bail!("{none}: name the repo the entry is of with `--repo`")
         }
     };
     let tracker = match (tracker, &checkout) {
@@ -158,9 +162,7 @@ pub fn daybook(checkout: Result<Repo>, asked: Asked) -> Result<Value> {
             let list = crate::checkout_list::List::of_host()?;
             crate::checkout_list::said_tracker(&list, checkout)?.unwrap_or_else(|| repo.clone())
         }
-        (None, None) => bail!(
-            "it was run in no checkout: name the tracker whose daybook it is with `--tracker`"
-        ),
+        (None, None) => bail!("{none}: name the tracker whose daybook it is with `--tracker`"),
     };
     let dir = checkout.map_or_else(std::env::temp_dir, |checkout| checkout.dir);
     let kind = Kind::of(|name| std::env::var(name).ok());
