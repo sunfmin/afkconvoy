@@ -6,7 +6,9 @@ status: accepted
 
 A repo whose work the fleet lands is cut by hand: someone notices that `main` is past the newest `v*` tag, bumps the version on a branch, lands it, tags it, publishes it and installs it. On this repo that was a rule in one human's notes, run in their session once the fleet had gone idle: who cut, when, and whether a cut was due were known only there. Work that landed waited for that session to come back.
 
-The fleet cuts a version itself (#466). A **cut** is the run that makes a new version of a repo from its base branch: it sets the version, lands it, tags it, and publishes and installs it.
+The fleet cuts a version itself (#466). A **cut** is the run that makes a new version of a repo from its base branch: it commits the version on a branch of its own from the base tip, gates that commit, tags it, and publishes and installs it.
+
+Amended by sunfmin/control#541: a cut no longer lands on the base branch, and so no longer holds the landing train (below, **A branch of its own**).
 
 ## When
 
@@ -26,27 +28,37 @@ A cut is claimed on the remote as a patrol's run is (`refs/convoy/claim/cut`): o
 
 A worker in no role, started the way an inspection is (ADR-0026): a checkout of its own (`afkconvoy-cut`) cut from the base branch as it stands, a terminal of it under the host kit's first harness, on that harness's user default, the bounds of any unattended worker, and a time limit. It takes no slot of the concurrency. While it runs the fleet is not idle — it keeps its heartbeat, so its claim stays live, and keeps the host awake (ADR-0016) — and dispatches what comes as ever.
 
-It is a command, `afkconvoy cut`, not a model session. Its steps are known and the same every time; a command times each, names the step that failed, and holds the bounds by what it does — it pushes its own branch and one tag, and lands only through its gated turn — where a model would be held to them by a guard and a brief. Nothing in a cut calls for judgement but a failure, and that goes to a human.
+It is a command, `afkconvoy cut`, not a model session. Its steps are known and the same every time; a command times each, names the step that failed, and holds the bounds by what it does — it pushes its own branch and one tag, and nothing to the base branch — where a model would be held to them by a guard and a brief. Nothing in a cut calls for judgement but a failure, and that goes to a human.
 
 ## What
 
 1. The version: the next patch past the newest tag, or the next minor, its patch 0, where a PR that landed since carries `release:minor`. Picked by the tick that starts the cut, and kept in its checkout with the PRs it holds: those the base branch's landings past the tag name, `<title> (#<pr>)`.
-2. `set`: the repo's set lines, on the base branch as it stood, committed as `<repo> <version>` on the cut's branch. `pr`: pushed to a branch of the cut's own, its PR opened. `gate`: take its turn to build one commit on the base tip as it stands, gate that commit, record green and land it (ADR-0037). That commit has one parent, the base tip. Its diff against that parent is what the set lines wrote. Where the base moved while the cut ran, the parent is the base tip at land time, and the landings already on that tip stay. The set commit is not a parent and is not an ancestor of the base branch. `land`: recover that commit. Its message says `By a cut on <host>` and names the cut's PR.
-3. `tag`: the commit that landed it tagged `v<version>` and the tag pushed.
+2. `set`: the base tip as it stood when the checkout was cut is the cut's snapshot `S`. The repo's set lines run on it, and what they wrote — even nothing — is committed as `<repo> <version>`: the version's commit, whose only parent is `S`. `push`: that commit pushed to the cut's own branch, `afkconvoy-cut/v<version>-<stamp>`. It opens no PR. `gate`: the cut gate — the fast gate and the slow gate, the whole `gate_command`, run on that commit in the cut's checkout, in a worker lane like any heavy command; a green run on record for its tree answers. It is not a candidate on `candidates/<base>`, and it reserves no barrier.
+3. `tag`: that commit tagged `v<version>` and the tag pushed.
 4. `publish`: with the tag checked out, the repo's publish lines.
-5. Each step and its seconds, its PR and where it landed are kept in its checkout as it goes; the tick that finds it over says it in its line and the tick log, `doctor` lists it among its events, and the panel shows it.
+5. Each step and its seconds, its branch and its commit are kept in its checkout as it goes; the tick that finds it over says it in its line and the tick log, `doctor` lists it among its events, and the panel shows it.
 
-Its PR lands only through its gated turn; only the turn pushes the base branch.
+The base branch never receives the version commit. Turns keep landing on it while a cut runs, whether the cut succeeds, fails or hangs.
+
+## A branch of its own (sunfmin/control#541)
+
+On 2026-11-03 a cut of v0.5.64 started on FelixMBP14 at 00:46Z and, between then and 02:18Z, opened four PRs (#783, #787, #790, #791) about thirty minutes apart, none of which landed. Its serial barrier on `candidates/main` stood while its host's heartbeat stayed fresh, so no other host took it over, and five gated PRs on macs-Mac-Mini waited behind it with `waiting_for_capacity`, the longest for 1.5 hours. One host's cut stopped every host's landings for the repo. Felix decided (2026-11-03): "我觉着发版应该切一个分支来做。不要阻碍后边的往里面 merge。" — a release is cut on a branch, and blocks nothing merged after it.
+
+The version's home is the tag. The next cut picks its version from the newest tag, as before, and its set lines rewrite the version on its own snapshot; version files on the base branch stay where they are. Landed work past the newest tag is still `v<tag>..<base>`: the tag's parent `S` is an ancestor of the base, so the count is unchanged. A cut that fails now costs only that version.
+
+A cut interrupted after tagging goes on from the tag, and one interrupted before tagging from its branch: its `set` step takes up the commit the remote's tag `v<version>`, or a branch a cut of that version pushed, already holds, and makes no second branch. Records an earlier afkconvoy kept read on: a step `pr` as `push`, `land` as `gate`, and the commit that landed as the commit it tags. Cut candidates and barriers an earlier afkconvoy left on the remote chain are read as before and left to drain; nothing removes a record a host still owns.
+
+The four restarts opened no failure issue. A claimed cut was unclaimed with no issue when the tick ending it found no checkout of it on its host — read as a cut that "started nothing" — and when a peer's claim was presumed dead. The candidate of the first cut's PR #783 is recorded `cancelled` by `operator_cleared`, from outside the fleet, while its fast and slow gates were green, consistent with its checkout being taken from outside before the tick read it. Unclaimed with nothing open, the next idle tick cut v0.5.64 again. Both cases now open the one failure issue, naming the version the cut's branch says: no cut of that version starts again on its own.
 
 ## Failure
 
-A cut that failed at a step, ran out of time, or whose terminal is gone with nothing said opens one issue under the escalate label, `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there — `afkconvoy cut --from <step>`, in its checkout, which is kept. No cut starts while that issue is open, as no patrol runs while its failed run's is (ADR-0008). Going on from the step closes it; closing it by hand has the fleet cut again from the start — but for a cut that failed at `publish`, whose tag is pushed: that version stays unpublished, and the next cut is of the version after it.
+A cut that failed at a step, ran out of time, whose terminal is gone with nothing said, whose checkout is gone from its host, or whose host went silent opens one issue under the escalate label, `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there — `afkconvoy cut --from <step>`, in its checkout, which is kept. No cut starts while that issue is open, as no patrol runs while its failed run's is (ADR-0008). Going on from the step closes it; closing it by hand has the fleet cut again from the start — but for a cut that failed at `publish`, whose tag is pushed: that version stays unpublished, and the next cut is of the version after it.
 
 A PR labelled `release:minor` that lands while a patch cut runs is an expected stop at `tag`: it tags and publishes nothing, records why it was superseded and opens no failure issue. The tag step checks landings up to the current base branch, including a minor that landed after the version's own PR. The next tick ends that cut, releases its remote claim, removes its checkout, and starts the minor cut in the same pass, unless a fleet lock stands. A declared initial version remains exact.
 
-Its time is three hours beside the two gate limits, five hours at the default `gate_seconds` (sunfmin/control#195), allowing for base certification and its own gate. A repo that sets another gate limit is given twice that plus the same three hours. A cut interrupted after landing finds the version set by lines that change nothing, recovers that commit from the base branch and tags it.
+Its time is three hours beside the two gate limits, five hours at the default `gate_seconds` (sunfmin/control#195), allowing for its own gate and its wait for a worker lane. A repo that sets another gate limit is given twice that plus the same three hours.
 
-A cut's turn and exclusive commands go ahead of waiting worker commands, determined by its cut worktree and preserved in its ticket across a host runner replacement. Cuts keep request order among themselves; ordinary commands keep theirs. Neither interrupts a running command; ADR-0031's contention bound and ADR-0037's one turn per repo still apply. This amends ADR-0034's FIFO rule for cuts now that ADR-0037 has removed the train lane: an arbitrary queue of workers' gates must not consume the cut's time limit. Queue waits still count toward the cut's overall limit; the gate's own limit starts only after its turn is granted.
+A cut's gate commands and exclusive commands go ahead of waiting worker commands, determined by its cut worktree and preserved in its ticket across a host runner replacement. Cuts keep request order among themselves; ordinary commands keep theirs. Neither interrupts a running command; ADR-0031's contention bound still applies. This amends ADR-0034's FIFO rule for cuts now that ADR-0037 has removed the train lane: an arbitrary queue of workers' gates must not consume the cut's time limit. Queue waits still count toward the cut's overall limit; the gate's own limit starts only after its worker lane is granted.
 
 ## Turning it on
 
@@ -58,7 +70,7 @@ The optional `busy_after_seconds` key belongs in a second ```` ```yaml cut ```` 
 
 An untagged repo can declare `initial: X.Y.Z` beside `set` and `publish` in its cut block: three whole numbers, without leading zeroes, a `v` prefix or a prerelease suffix. Without that declaration it stays untagged, as before. With it, the next idle tick starts a cut of that exact version under the same admission, fleet lock and remote claim rules. The winner reads the remote tags again: if a peer has cut already, the usual tagged behavior applies. Once a version tag exists, the declaration is ignored; subsequent cuts pick the patch or minor past the newest tag as before.
 
-The first cut has no previous tag (`from: null` in its record), and holds the PRs all of the base branch's landings name. Their labels do not change the declared initial version. Every step still runs: `set`, `pr`, `gate`, `land`, `tag`, `publish`. If `set` changes nothing and no cut's PR of that title has landed, the initial cut makes an empty version commit so that the PR, recorded gate run and landing turn remain the only way to tag a release. A previous cut's landing can still be found across the whole base branch history and tagged after an interrupted cut. There is no seed tag or manual release outside that path.
+The first cut has no previous tag (`from: null` in its record), and holds the PRs all of the base branch's landings name. Their labels do not change the declared initial version. Every step still runs: `set`, `push`, `gate`, `tag`, `publish`. If `set` changes nothing, the cut makes an empty version commit, so that its branch and its recorded gate run remain the only way to tag a release. There is no seed tag or manual release outside that path.
 
 Choosing an explicit version instead of inferring it from files keeps the version's one home in the repo's cut declaration; afkconvoy need not know each language's manifest. Existing cut blocks without `initial`, and existing records naming a previous tag, keep their behavior.
 
@@ -69,14 +81,16 @@ Choosing an explicit version instead of inferring it from files keeps the versio
 - **Cut by a command a human runs.** Refused: it is the human session this replaces, and ordinary landings would still wait.
 - **Cut after every landing.** Refused: a version per PR, each published and installed, while the next PR is a gate away.
 - **Cut steps as keys of the config.** Refused for the older afkconvoy that refuses an unknown key (above).
-- **Tag the base branch's tip, and push the version commit to it.** Refused: the fleet pushes nothing to the base branch but through a gated turn; the tag goes on the commit that landed the version.
+- **Tag the base branch's tip, and push the version commit to it.** Refused: the fleet pushes nothing to the base branch but through a gated turn. Its premise that the tag must sit on a commit the base branch carries gives way (sunfmin/control#541): the tag sits on the release branch's commit, whose parent is a base commit.
+- **Land the version commit through a landing turn, as a serial barrier.** Superseded by sunfmin/control#541: one host's cut that hung held every host's landings, and a cut that failed restarted without telling anyone.
 
 ## Consequences
 
 - A repo that turns cutting on is cut whenever its fleet goes idle with landed work, or the oldest landing reaches its age bound while busy: its published version follows its base branch without a human session.
-- A landing commit names the issue its PR closes, the watch that made it, or the cut and its host; a cut's PR closes no issue.
-- An interrupted cut recovers its landed commit or takes another gated turn when its PR has not landed.
-- A cut adds one commit to the base branch, and the version tag points at it. Issue turns and watches still land as merge commits. A version tag already published stays on the commit it names.
-- After its landing is recorded, a cut closes its PR with a comment naming the landing commit and version tag. It ends CLOSED because its set commit is not an ancestor of the base; GitHub marks a PR MERGED only when its head is an ancestor. This keeps the one-commit landing and gives historical and future cuts the same end state.
+- A landing commit names the issue its PR closes or the watch that made it. Landings an earlier afkconvoy's cuts made still name the cut and its host, and are read as before.
+- An interrupted cut goes on from its tag, or from its branch, and pushes no second branch for the same version.
+- A cut adds no commit to the base branch. The version tag points at the cut's own commit, whose only parent is the snapshot `S`, an ancestor of the base. A version tag already published stays on the commit it names.
+- A cut opens no PR. Its branch and its tag are its record.
+- Turns keep landing while a cut runs: a cut that fails, or hangs until its time limit, costs only its own version.
 - `plan` has a `cut` row in a repo that turns cutting on; `doctor` warns while a failed cut's issue is open.
 - The rule that ran the cut from a human's session ends where a repo turns cutting on.

@@ -12,8 +12,8 @@ use afkconvoy_core::config::Config;
 use afkconvoy_core::cut::{
     self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, Row, Seen, Standing, Step, Tag, Took,
 };
+use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::landing::{LandedPr, Of};
 use afkconvoy_core::line::Line;
 use afkconvoy_core::plan::Issue;
 use afkconvoy_core::tick::Outcome;
@@ -24,16 +24,13 @@ use serde_json::{Value, json};
 use crate::claims::{Me, drop_run, take_run};
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
+use crate::gate::Gated;
 use crate::gh::GitHub;
 use crate::git::Repo;
-use crate::landing::joins_in;
 use crate::log::What;
 use crate::orca::{Source, Worktree};
 use crate::remote::{Fresh, Push};
 use crate::stage::Flows;
-
-/// How many seconds the step `land` waits between two looks at the base branch.
-const LAND_POLL: u32 = 30;
 
 /// What a rebuild reads of the cut: version tags, base tip, open issues
 /// and a running cut's claim. Without declared steps only its claim remains.
@@ -142,8 +139,8 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
         prs,
         minor,
         started: now,
-        pr: None,
-        landed: None,
+        branch: None,
+        commit: None,
         at: None,
         took: vec![],
         failed: None,
@@ -208,52 +205,66 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Opti
     Ok(Some(record))
 }
 
-/// Ends the cut `row` once it is over: a peer's presumed dead is only
-/// unclaimed; mine is read off its checkout (`cut::ending`) — it took every
-/// step, failed at one, ran out of time, or its terminal is gone. One that
-/// took every step is said, and its checkout removed. One that ended short
-/// is said too, opens one issue under the escalate label saying which step
-/// failed, why, and the line that goes on from there — no cut starts while
-/// it is open — and keeps its checkout for that line, its terminal closed.
-/// A cut with no checkout here started nothing: it is only unclaimed.
-/// `Nothing` while it still runs.
+/// Ends the cut `row` once it is over. Mine is read off its checkout
+/// (`cut::ending`) — it took every step, failed at one, ran out of time, or
+/// its terminal is gone. One that took every step is said, and its checkout
+/// removed. One that ended short is said too, opens one issue under the
+/// escalate label saying which step failed, why, and the line that goes on
+/// from there — no cut starts while it is open — and keeps its checkout for
+/// that line, its terminal closed. A cut whose checkout is gone from here,
+/// and a peer's presumed dead, ended short as well, out of sight: each opens
+/// that issue too, named by the version its branch says, and is unclaimed.
+/// Unclaimed without that issue, the next idle tick would start the same
+/// version again on its own. `Nothing` while it still runs.
 pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcome> {
     let Some(claim) = &row.claim else { return Ok(Outcome::Nothing) };
-    match row.standing {
-        Standing::StaleRun => {
-            drop_run(&fleet.repo, &mut fleet.scan, claim)?;
-            return Ok(Outcome::Done);
-        }
-        Standing::Running => {}
-        _ => return Ok(Outcome::Nothing),
-    }
-    let Some(checkout) = Worktree::named(&Source::of(&fleet.repo)?, CHECKOUT)? else {
-        drop_run(&fleet.repo, &mut fleet.scan, claim)?;
-        return Ok(Outcome::Done);
-    };
-    let record = checkout.cut_record()?;
-    let gone = checkout.state(me.now)? == WorkerState::Gone;
     let started = claim.owner.as_ref().map_or(me.now, |owner| owner.ts);
-    let limit = cut::time_limit(fleet.config.gate_seconds());
-    let Some(ending) = cut::ending(record.as_ref(), started, gone, me.now, limit) else {
-        return Ok(Outcome::Nothing);
+    let unseen = |why: &str| Ending::Gone(why.to_string());
+    let (checkout, record, ending, limit) = match row.standing {
+        Standing::StaleRun => {
+            let host = claim.owner.as_ref().map_or("?", |owner| owner.host.as_str());
+            let why = format!("the host that was cutting, {host}, went silent");
+            (None, None, Some(unseen(&why)), 0)
+        }
+        Standing::Running => match Worktree::named(&Source::of(&fleet.repo)?, CHECKOUT)? {
+            None => (None, None, Some(unseen("its checkout is gone from this host")), 0),
+            Some(checkout) => {
+                let record = checkout.cut_record()?;
+                let gone = checkout.state(me.now)? == WorkerState::Gone;
+                let limit = cut::time_limit(fleet.config.gate_seconds());
+                let ending = cut::ending(record.as_ref(), started, gone, me.now, limit)
+                    .map(|ending| Ending::Read(ending));
+                (Some(checkout), record, ending, limit)
+            }
+        },
+        _ => return Ok(Outcome::Nothing),
     };
-    // A record nobody can read names no version: the issue still stands for it.
-    let record = record.unwrap_or_else(|| Record {
-        version: "?".to_string(),
-        from: Some("?".to_string()),
-        prs: vec![],
-        minor: false,
-        started,
-        pr: None,
-        landed: None,
-        at: None,
-        took: vec![],
-        failed: None,
-        superseded: None,
-    });
+    let Some(ending) = ending else { return Ok(Outcome::Nothing) };
+    // A record out of reach names the version its branch does, where it
+    // pushed one: the issue still stands for it.
+    let record = match record {
+        Some(record) => record,
+        None => Record {
+            version: cut::version_started(&cut_heads(&fleet.repo)?, started)
+                .unwrap_or_else(|| "?".to_string()),
+            from: Some("?".to_string()),
+            prs: vec![],
+            minor: false,
+            started,
+            branch: None,
+            commit: None,
+            at: None,
+            took: vec![],
+            failed: None,
+            superseded: None,
+        },
+    };
     let version = record.version.clone();
-    match ending.failure(limit) {
+    let failure = match &ending {
+        Ending::Read(ending) => ending.failure(limit),
+        Ending::Gone(why) => Some(Failure { step: record.step(), why: why.clone() }),
+    };
+    match failure {
         None => {
             fleet.cut_said.push(What::CutEnded {
                 version,
@@ -261,12 +272,22 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
                 failed: None,
                 superseded: record.superseded.clone(),
             });
-            checkout.remove()?;
+            if let Some(checkout) = &checkout {
+                checkout.remove()?;
+            }
         }
         Some(failure) => {
-            checkout.close_terminals()?;
-            let path = checkout.path.display().to_string();
-            let line = goes_on(&path, failure.step);
+            if let Some(checkout) = &checkout {
+                checkout.close_terminals()?;
+            }
+            let path = match &checkout {
+                Some(checkout) => checkout.path.display().to_string(),
+                None => "(gone)".to_string(),
+            };
+            let line = match &checkout {
+                Some(_) => goes_on(&path, failure.step),
+                None => "close this issue: the next cut takes up its branch".to_string(),
+            };
             // One report stands for a cut until a human closes it.
             let issue = match row.failure {
                 Some(open) => open,
@@ -293,6 +314,22 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
     }
     drop_run(&fleet.repo, &mut fleet.scan, claim)?;
     Ok(if record.superseded.is_some() { Outcome::Superseded } else { Outcome::Done })
+}
+
+/// How a cut that is over ended: as its checkout says, or out of sight, why.
+enum Ending {
+    Read(cut::Ending),
+    Gone(String),
+}
+
+/// Every branch a cut pushed on the remote, each with its commit.
+fn cut_heads(repo: &Repo) -> Result<Vec<(String, String)>> {
+    let pattern = format!("refs/heads/{CHECKOUT}/*");
+    let refs = repo.remote().refs(&[&pattern], Fresh::Process)?;
+    Ok(refs
+        .into_iter()
+        .filter_map(|r| Some((r.name.strip_prefix("refs/heads/")?.to_string(), r.sha)))
+        .collect())
 }
 
 /// The line that goes on with the cut in the checkout `path` from `step`.
@@ -371,14 +408,12 @@ pub fn says(repo: &Repo, row: &Row) -> Option<String> {
 /// fleet to read once it ends. A step that fails ends it there, saying why.
 /// One that took its last closes the open issue that said this version's cut
 /// failed. `config` is the checkout's own, whose cut steps it takes; on
-/// `host`, at the time `clock` says, each second of its sleeps taking
-/// `second`.
+/// `host`, at the time `clock` says.
 pub fn run(
     repo: &Repo,
     config: &Config,
     from: Option<Step>,
     host: &str,
-    second: Duration,
     clock: impl Fn() -> u64,
 ) -> Result<Value> {
     let checkout = cut_checkout(repo)?;
@@ -396,8 +431,7 @@ pub fn run(
         )
     })?;
     let gh = GitHub::of(repo)?;
-    let mut cutting =
-        Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout, second };
+    let mut cutting = Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout };
     let first = from.unwrap_or_else(|| record.step());
     let taking = first.from();
     let names: Vec<_> = taking.iter().map(|step| step.word()).collect();
@@ -448,7 +482,7 @@ pub fn run(
         gh.close_issue(*issue)?;
     }
     Ok(json!({"version": record.version, "tag": format!("v{}", record.version),
-        "prs": record.prs, "pr": record.pr, "landed": record.landed, "took": record.took,
+        "prs": record.prs, "branch": record.branch, "commit": record.commit, "took": record.took,
         "closed": closed, "said": record.line()}))
 }
 
@@ -480,8 +514,6 @@ struct Cutting<'a> {
     gh: &'a GitHub,
     host: &'a str,
     checkout: &'a Worktree,
-    /// How long one second of its sleeps takes.
-    second: Duration,
 }
 
 impl Cutting<'_> {
@@ -489,73 +521,137 @@ impl Cutting<'_> {
     fn take(&mut self, step: Step, record: &mut Record, clock: &impl Fn() -> u64) -> Result<()> {
         match step {
             Step::Set => self.set(record),
-            Step::Pr => self.pr(record),
-            Step::Gate if record.landed.is_some() => Ok(()),
-            Step::Gate => {
-                let number = record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?;
-                self.join(record.from.as_deref(), number, clock())
-            }
-            Step::Land => self.land(record, clock),
+            Step::Push => self.push(record),
+            Step::Gate => self.gate(record, clock()),
             Step::Tag => self.tag(record),
             Step::Publish => self.publish(record),
         }
     }
 
-    /// Runs the repo's `set` lines, and commits what they changed. Lines that
-    /// change nothing find the version set already: by a cut whose end was
-    /// cut short after its PR landed. Where that landing is on the base
-    /// branch, it is the one this cut tags. An initial version already set
-    /// still gets its own commit, gate and landing through a landing turn.
+    /// On the snapshot the checkout was cut at, the base tip as it stood:
+    /// runs the repo's `set` lines and commits what they changed, even
+    /// nothing — the version's commit, whose one parent is the snapshot. A
+    /// cut of this version that already tagged, or pushed its branch, made
+    /// that commit before: this one takes it up, and makes no second.
     fn set(&self, record: &mut Record) -> Result<()> {
+        let tag = format!("v{}", record.version);
+        let tagged = self.repo.remote().tags(Fresh::Process)?.into_iter().find(|(n, _)| *n == tag);
+        let taken = match tagged {
+            Some((_, commit)) => {
+                self.repo.bring(&commit, &format!("refs/tags/{tag}"))?;
+                Some((None, commit))
+            }
+            None => cut::pushed(&cut_heads(self.repo)?, &record.version)
+                .map(|(branch, commit)| (Some(branch), commit)),
+        };
+        if let Some((branch, commit)) = taken {
+            if let Some(branch) = &branch {
+                self.repo.bring(&commit, &format!("refs/heads/{branch}"))?;
+            }
+            self.repo.git(&["reset", "--quiet", "--hard", &commit])?;
+            record.branch = branch.or(record.branch.take());
+            record.commit = Some(commit);
+            return Ok(());
+        }
         self.sh(Step::Set, &self.steps.set, &record.version)?;
         self.repo.git(&["add", "-A"])?;
-        let changed = self.repo.git_raw(&["status", "--porcelain"])?;
         let title = cut::title(&repo_name(self.repo)?, &record.version);
-        if changed.trim().is_empty() {
-            if let Some(landed) = self.landed_titled(record.from.as_deref(), &title)? {
-                record.pr = Some(landed.pr);
-                record.landed = Some(landed.commit);
-                return Ok(());
-            }
-            if let Some(from) = &record.from {
-                bail!(
-                    "the set lines changed nothing, and no cut's PR titled {title:?} landed past \
-                     {from}: they set no version"
-                );
-            }
-        }
         self.repo.git(&["commit", "--quiet", "--allow-empty", "-m", &title])?;
+        record.commit = Some(self.repo.git(&["rev-parse", "HEAD"])?);
         Ok(())
     }
 
-    /// The landings on `base` past the previous tag, or all landings for an
-    /// initial cut. Every step reads the same history of the cut's origin.
-    fn landings(&self, from: Option<&str>, base: &str) -> Result<Vec<LandedPr>> {
-        let tag = from.map(|tag| self.tag_commit(tag)).transpose()?;
-        joins_in(self.repo, &self.gh.tracker, &[&history(tag.as_deref(), base)])
+    /// The version's commit, as its step `set` made it or took it up.
+    fn commit(&self, record: &Record) -> Result<String> {
+        match &record.commit {
+            Some(commit) => Ok(commit.clone()),
+            None => self.repo.git(&["rev-parse", "HEAD"]),
+        }
     }
 
-    /// The landing of a cut's PR titled `title` the base branch holds past
-    /// the tag `from`, or anywhere on it for an initial cut, where one is.
-    fn landed_titled(&self, from: Option<&str>, title: &str) -> Result<Option<LandedPr>> {
-        let base = self.base()?;
-        let joins = self.landings(from, &base)?;
-        let ends = format!("{title} (#");
-        Ok(joins.into_iter().find(|join| {
-            matches!(join.of, Of::Cut(_))
-                && self.subject(&join.commit).is_ok_and(|s| s.starts_with(&ends))
-        }))
+    /// Pushes the version's commit to the cut's own branch: never the base
+    /// branch. A branch already there on that commit is the cut's.
+    fn push(&self, record: &mut Record) -> Result<()> {
+        let commit = self.commit(record)?;
+        let branch = record.branch.clone().unwrap_or_else(|| branch(record));
+        let to = format!("refs/heads/{branch}");
+        let there = self.repo.remote().sha(&to, Fresh::Process)?;
+        if there.as_deref() != Some(commit.as_str()) {
+            self.repo.remote().push(&Push::set(&commit, &to))?;
+        }
+        record.branch = Some(branch);
+        record.commit = Some(commit);
+        Ok(())
     }
 
-    /// The cut's landing of PR `number` on the base branch past `from`.
-    fn landed_pr(&self, from: Option<&str>, number: u64) -> Result<Option<LandedPr>> {
-        let base = self.base()?;
-        let joins = self.landings(from, &base)?;
-        Ok(joins.into_iter().rev().find(|join| join.pr == number && matches!(join.of, Of::Cut(_))))
+    /// Gates the version's commit, the whole gate — the fast gate and the
+    /// slow gate — in this checkout, in a worker lane as any heavy command
+    /// is (`gate::gated`): a run on record for its tree answers. It takes no
+    /// landing turn, is no candidate on any chain and reserves no barrier,
+    /// and its lane shares the repo as a candidate's does
+    /// (`Permit::cut_gate`): turns land on the base branch while it runs,
+    /// whether it passes, fails or hangs.
+    fn gate(&self, record: &mut Record, now: u64) -> Result<()> {
+        let commit = self.commit(record)?;
+        if self.repo.git(&["rev-parse", "HEAD"])? != commit {
+            self.repo.git(&["checkout", "--quiet", "--detach", &commit])?;
+        }
+        let command = GateCommand::new(&self.config.gate_command);
+        let limit = Duration::from_secs(self.config.gate_seconds());
+        let heavy = crate::config::heavy_gate(command.text());
+        let _lane = crate::exclusive::Permit::cut_gate(self.repo, command.text(), heavy)?;
+        match crate::gate::gated(self.repo, &command, self.host, now, limit, None)? {
+            Gated::Green { .. } => Ok(()),
+            Gated::Red { ran, excerpt, termination } => {
+                let how = match termination {
+                    Some(termination) => termination.description(),
+                    None if ran.timed_out => "it reached the gate limit".to_string(),
+                    None => format!("it exited {}", ran.exit_code),
+                };
+                let last = excerpt.iter().rev().find(|line| !line.trim().is_empty());
+                let said = last.map(|line| format!(", its last line `{}`", line.trim()));
+                bail!("the gate is red on {commit}: {how}{}", said.unwrap_or_default())
+            }
+        }
     }
 
-    fn subject(&self, commit: &str) -> Result<String> {
-        self.repo.git(&["log", "-1", "--format=%s", commit])
+    /// Tags the version's commit `v<version>` and pushes the tag; the PRs it
+    /// holds are read again, up to that commit. A patch that holds a PR
+    /// labelled `MINOR_LABEL` — one that landed while it ran — is tagged
+    /// nothing: cut again, the version is the next minor.
+    fn tag(&self, record: &mut Record) -> Result<()> {
+        let commit = self.commit(record)?;
+        let tag = format!("v{}", record.version);
+        let from = record.from.as_deref().map(|tag| self.tag_commit(tag)).transpose()?;
+        record.prs = prs_past(self.repo, from.as_deref(), &commit)?;
+        if record.from.is_some() && !record.minor {
+            let prs = prs_past(self.repo, from.as_deref(), &self.base()?)?;
+            let labelled = self.gh.merged_prs_labelled(MINOR_LABEL)?;
+            if let Some(pr) = prs.iter().find(|pr| labelled.contains(pr)) {
+                record.superseded = Some(format!(
+                    "#{pr}, labelled `{MINOR_LABEL}`, landed while the cut ran, and {tag} is a \
+                     patch: the next tick cuts the next minor"
+                ));
+                return Ok(());
+            }
+        }
+        let here =
+            self.repo.try_git(&["rev-parse", "-q", "--verify", &format!("{tag}^{{commit}}")])?;
+        if !here.ok {
+            let message = cut::title(&repo_name(self.repo)?, &record.version);
+            self.repo.git(&["tag", "-a", &tag, &commit, "-m", &message])?;
+        } else if here.stdout != commit {
+            bail!("{tag} is here on {}, not on {commit}, the version's commit", here.stdout);
+        }
+        let to = format!("refs/tags/{tag}");
+        if self.repo.remote().try_push(&Push::set(&to, &to))?.ok {
+            return Ok(());
+        }
+        match self.repo.remote().tags(Fresh::Process)?.into_iter().find(|(name, _)| *name == tag) {
+            Some((_, there)) if there == commit => Ok(()),
+            Some((_, there)) => bail!("the remote has {tag} on {there} already, not on {commit}"),
+            None => bail!("{tag} could not be pushed"),
+        }
     }
 
     /// The commit the version tag `name` is on, on the remote.
@@ -572,138 +668,6 @@ impl Cutting<'_> {
         let branch = &self.config.base_branch;
         let base = self.repo.remote().fetched(&format!("refs/heads/{branch}"), Fresh::Process)?;
         base.ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))
-    }
-
-    /// Pushes the version's commit to a branch of the cut's own and opens
-    /// its PR; one already open for that branch is the cut's.
-    fn pr(&self, record: &mut Record) -> Result<()> {
-        if record.landed.is_some() {
-            return Ok(());
-        }
-        let branch = branch(record);
-        self.repo.remote().push(&Push::set("HEAD", &format!("refs/heads/{branch}")))?;
-        let open = self.gh.open_prs()?;
-        if let Some(pr) = open.iter().find(|pr| pr.head_branch == branch) {
-            record.pr = Some(pr.number);
-            return Ok(());
-        }
-        let title = cut::title(&repo_name(self.repo)?, &record.version);
-        let body = cut::pr_body(record, self.host);
-        record.pr = Some(self.gh.open_pr(&self.config.base_branch, &branch, &title, &body)?);
-        Ok(())
-    }
-
-    /// Recovers the cut's commit from the base branch after its landing turn.
-    /// The set commit is not an ancestor of that branch. An interrupted cut
-    /// can take another turn if its PR has not landed.
-    fn land(&self, record: &mut Record, clock: &impl Fn() -> u64) -> Result<()> {
-        if record.landed.is_some() {
-            return Ok(());
-        }
-        let number = record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?;
-        let from = record.from.clone();
-        let head = self.repo.git(&["rev-parse", "HEAD"])?;
-        loop {
-            if let Some(join) = self.landed_pr(from.as_deref(), number)? {
-                record.landed = Some(join.commit);
-                return Ok(());
-            }
-            let base = self.base()?;
-            if self.repo.within(&head, &base)? {
-                bail!(
-                    "PR #{number} is on {} without a recorded landing commit: it was \
-                     merged outside a turn, and is no landing a cut tags",
-                    self.config.base_branch
-                );
-            }
-            self.join_turn(number, clock())?;
-            std::thread::sleep(self.second * LAND_POLL);
-        }
-    }
-
-    /// Puts PR `number` on the base branch, as the cut's on `host`. A landing
-    /// already there is the one this cut tags: taking the turn again would
-    /// add a second commit.
-    fn join(&self, from: Option<&str>, number: u64, now: u64) -> Result<()> {
-        if self.landed_pr(from, number)?.is_some() {
-            return Ok(());
-        }
-        self.join_turn(number, now)
-    }
-
-    /// Takes the cut's turn for PR `number`.
-    fn join_turn(&self, number: u64, now: u64) -> Result<()> {
-        let locks = crate::lock::standing_locks(self.gh, self.config)?;
-        if !locks.is_empty() {
-            let answer = crate::turn::locked(json!({}), &locks);
-            bail!("{}", answer["detail"].as_str().unwrap_or("a fleet lock stands"));
-        }
-        let open = self.gh.open_prs()?;
-        let pr = open.iter().find(|pr| pr.number == number);
-        let pr = pr.ok_or_else(|| anyhow!("PR #{number} is not open: it joins nothing"))?;
-        let of = Of::Cut(self.host.to_string());
-        let answer = crate::turn::join(
-            self.repo,
-            self.config,
-            &self.gh.tracker,
-            pr,
-            &of,
-            json!({}),
-            (self.host, now),
-        )?;
-        match answer["outcome"].as_str() {
-            Some("merged") => Ok(()),
-            _ => bail!(
-                "{} — go on from the step `gate` once it is committed",
-                answer["detail"].as_str().unwrap_or("it could not land in a turn")
-            ),
-        }
-    }
-
-    /// Tags the commit that landed it `v<version>` and pushes the tag; the
-    /// PRs it holds are read again, up to that commit, its own left out. A
-    /// patch that holds a PR labelled `MINOR_LABEL` — one that landed while
-    /// it ran — is tagged nothing: cut again, the version is the next minor.
-    fn tag(&self, record: &mut Record) -> Result<()> {
-        let landed =
-            record.landed.clone().ok_or_else(|| anyhow!("nothing says where it landed"))?;
-        let tag = format!("v{}", record.version);
-        let number = record.pr.ok_or_else(|| anyhow!("the cut opened no PR"))?;
-        if self.gh.open_prs()?.iter().any(|pr| pr.number == number) {
-            self.gh.close_pr(number, &format!("Cut landed as {landed}; version {tag}."))?;
-        }
-        let from = record.from.as_deref().map(|tag| self.tag_commit(tag)).transpose()?;
-        let mut prs = prs_past(self.repo, from.as_deref(), &landed)?;
-        prs.retain(|pr| Some(*pr) != record.pr);
-        record.prs = prs;
-        if record.from.is_some() && !record.minor {
-            let prs = prs_past(self.repo, from.as_deref(), &self.base()?)?;
-            let labelled = self.gh.merged_prs_labelled(MINOR_LABEL)?;
-            if let Some(pr) = prs.iter().find(|pr| labelled.contains(pr)) {
-                record.superseded = Some(format!(
-                    "#{pr}, labelled `{MINOR_LABEL}`, landed while the cut ran, and {tag} is a \
-                     patch: the next tick cuts the next minor"
-                ));
-                return Ok(());
-            }
-        }
-        let here =
-            self.repo.try_git(&["rev-parse", "-q", "--verify", &format!("{tag}^{{commit}}")])?;
-        if !here.ok {
-            let message = cut::title(&repo_name(self.repo)?, &record.version);
-            self.repo.git(&["tag", "-a", &tag, &landed, "-m", &message])?;
-        } else if here.stdout != landed {
-            bail!("{tag} is here on {}, not on {landed}, which landed the cut", here.stdout);
-        }
-        let to = format!("refs/tags/{tag}");
-        if self.repo.remote().try_push(&Push::set(&to, &to))?.ok {
-            return Ok(());
-        }
-        match self.repo.remote().tags(Fresh::Process)?.into_iter().find(|(name, _)| *name == tag) {
-            Some((_, commit)) if commit == landed => Ok(()),
-            Some((_, commit)) => bail!("the remote has {tag} on {commit} already, not on {landed}"),
-            None => bail!("{tag} could not be pushed"),
-        }
     }
 
     /// With the tag checked out, runs the repo's `publish` lines.
@@ -782,9 +746,10 @@ impl Cutting<'_> {
     }
 }
 
-/// The branch a cut's PR is pushed to: its own, of its version and its start.
+/// The branch a cut commits its version on: its own, of its version and its
+/// start (`cut::branch`).
 fn branch(record: &Record) -> String {
-    format!("{CHECKOUT}/v{}-{}", record.version, record.started)
+    cut::branch(&record.version, record.started)
 }
 
 /// The repo's name, as its remote `origin` names it: `afkconvoy`.
