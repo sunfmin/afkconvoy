@@ -295,6 +295,32 @@ impl Harness {
         }
     }
 
+    /// Where it reads its user's global instructions, under the user's home:
+    /// where the agent setup's instructions are linked (sunfmin/control#528).
+    pub const fn instructions(self) -> &'static str {
+        match self {
+            Harness::ClaudeCode => claude_code::INSTRUCTIONS,
+            Harness::Pi => pi::INSTRUCTIONS,
+            Harness::Codex => codex::INSTRUCTIONS,
+            Harness::Dsh => dsh::INSTRUCTIONS,
+            Harness::Kimi => kimi::INSTRUCTIONS,
+            Harness::Grok => grok::INSTRUCTIONS,
+        }
+    }
+
+    /// The agent `npx skills` installs the agent setup's skills for (`-a`);
+    /// `None` where it names none, and the harness reads the shared copies.
+    pub const fn skills_agent(self) -> Option<&'static str> {
+        match self {
+            Harness::ClaudeCode => claude_code::SKILLS_AGENT,
+            Harness::Pi => pi::SKILLS_AGENT,
+            Harness::Codex => codex::SKILLS_AGENT,
+            Harness::Dsh => dsh::SKILLS_AGENT,
+            Harness::Kimi => kimi::SKILLS_AGENT,
+            Harness::Grok => grok::SKILLS_AGENT,
+        }
+    }
+
     /// The worker launch command its workers are started with where nobody
     /// said another.
     pub const fn stock(self) -> &'static str {

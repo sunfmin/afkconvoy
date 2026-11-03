@@ -23,6 +23,10 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const NAME: &str = "Claude Code";
 pub(super) const KEY: &str = "claude-code";
 pub(super) const PROGRAM: &str = "claude";
+/// Where it reads its user's global instructions, under the user's home.
+pub(super) const INSTRUCTIONS: &str = ".claude/CLAUDE.md";
+/// The agent `npx skills` installs its user's skills for.
+pub(super) const SKILLS_AGENT: Option<&str> = Some("claude-code");
 /// The setting that answers the warning Claude Code opens with when it is
 /// started to work with nobody at its terminal: a worker has nobody to accept
 /// it, and stops there. On a host whose user accepted it once, their settings

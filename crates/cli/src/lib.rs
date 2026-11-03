@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 
 pub mod account;
 pub mod accounts;
+pub mod agent_setup;
 pub mod acting;
 pub mod admission;
 pub mod advance;
@@ -150,7 +151,7 @@ use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
     EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV,
-    JEV_KEY_COMMAND_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
+    AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, JEV_KEY_COMMAND_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
     jev_key_command_or_default, notify_command_or_default, port_or_default, thousandths_or_default,
     watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
@@ -432,6 +433,10 @@ enum Command {
     /// ## It stays current
     ///
     /// A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a newly listed model waits for the watch, and a model no longer listed is dropped. A harness that cannot be found or listed is kept, and a pause leaves it out, as above. An operator removal survives this refresh and every other relisting. A harness merely left out by a hand edit is read as absent, but only `kit --remove` records the removal that survives a refresh; the next relisting may add a hand-omitted installed harness back. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its cache: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
+    ///
+    /// ## The agent setup
+    ///
+    /// The operator's global instructions and skills, declared once outside afkconvoy and named by two host settings, `run --agent-instructions <FILE>` and `run --agent-skills <FILE>` (`afkconvoy run --help`). The skill list holds one line per source, `<source> <skill>...`, or `<source> *` for every skill the source ships; blank and `#` lines say nothing. Writing the host kit gives every harness it holds the setup: the instructions file is linked at the harness's global instructions location (Claude Code `~/.claude/CLAUDE.md`, Codex `~/.codex/AGENTS.md`, pi `~/.pi/agent/AGENTS.md`, Kimi Code `~/.kimi-code/AGENTS.md`, Grok `~/.grok/rules/AGENTS.md`, DSH `~/.dsh/AGENTS.md`), with what stood there and was no link to it kept beside it as `<name>.before-agent-setup`; the list is installed through `npx skills add <source> -g -y -a <agent>...` for each harness's `npx skills` agent (DSH has none, and reads the shared copies), and a skill installed for one of those agents that the list does not name is removed. The copies, in the shared `~/.agents/skills`, are read-only between syncs: no harness and no shell command edits one in place; a sync opens them for its own writes and closes them again. A tick gives the setup to a harness held since it was last given — found by a refresh, a switch or a launch — with no step by the operator; one whose giving failed is tried again an hour later. A `run` that changes either setting gives it to every held harness again. What was given is recorded beside the host kit, in `agent-setup.json`. `doctor` names each held harness that differs from the declaration (`differs from the agent setup`), with `afkconvoy kit` as its fix. With neither setting said, nothing is given and nothing is reported.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Kit {
         /// Refused: automatic casting is gone. An old kit `cast` key is ignored
@@ -1483,7 +1488,7 @@ enum Command {
     ///
     /// The checkout's tracker, with its entry, read at each tick as its concurrency is: the repo its fleet reads and writes its issues in — the issues, their labels, comments, blockers, escalations and closing — while PRs, branches, the gate and their landing turns stay the checkout's own repo's. `--tracker me/issues` says it, and `--tracker default`, or the checkout's own repo, says none; a `run` that names none leaves it as it is. Until the checkout says one, its tracker is its own repo. A tracker another repo than the checkout's holds the issues of many repos: the fleet works the open issues there that carry its repo's repo label, `repo:<owner>/<repo>`, and the ready label — in a bound repo, a flow label; every issue it or a worker opens there carries the repo label, and `intake` and `lock` give it to one that lacks it; and a PR or a landing commit names its issue `me/issues#7`, never `#7`, which is the checkout's own repo's. `run` makes the repo label, and the ready, escalate and lock labels of the repo config, in the tracker where it lacks them. It refuses to change the tracker while the checkout's fleet holds a claim on an issue of the tracker it had, or a legacy line still carries a PR of one, naming them, and changes nothing: run it again once they are done. The issues of the tracker it had stay there. A tracker GitHub says is public is refused, and nothing is made in it or changed: whoever can comment on an issue there writes what the fleet reads as its state and what a worker reads as its task. So is the checkout's own repo, where it is public and the checkout says no tracker, or `default`: every start of its fleet is refused until it says a private one, `--tracker <owner>/<private repo>`. A `run` that starts the host runner — where none runs, or where it moves one of an older release (below) — says the tracker of a checkout on the list with its entry before it starts it, as that host runner starts every checkout on the list, as its entry has it, before it is handed this one: it asks GitHub and makes the labels before an older host runner is stopped, which changes nothing where it refuses, and keeps the tracker once that host runner has let the host go. So its checkout's fleet instance starts under the tracker this `run` names, never under the one its entry had, and a checkout of a public repo is taken at the first `run --tracker <owner>/<private repo>`, whichever host runner was there. `plan`, `doctor`, `checkouts` and the panel say the tracker.
     ///
-    /// The host settings, in the same file: what this host says for every fleet instance on it — the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`), the panel's port (`--panel`), the operator's directory a watch starts in and how often the host runner looks (`--watch-dir`, `--watch-every`; WATCH, below), and the command that prints the TypeSafe key Jev's worker-health judgments are asked with (`--jev-key-command`), and the shell command that sends human decisions (`--notify-command`; none by default). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER, AFKCONVOY_WATCH_DIR, AFKCONVOY_WATCH_EVERY, AFKCONVOY_JEV_KEY_COMMAND, AFKCONVOY_NOTIFY_COMMAND — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, the watch's before each look, the key command at each worker-health judgment — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `default` changes one back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
+    /// The host settings, in the same file: what this host says for every fleet instance on it — the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`), the panel's port (`--panel`), the operator's directory a watch starts in and how often the host runner looks (`--watch-dir`, `--watch-every`; WATCH, below), and the command that prints the TypeSafe key Jev's worker-health judgments are asked with (`--jev-key-command`), and the shell command that sends human decisions (`--notify-command`; none by default), and the agent setup given to every harness the host kit holds: its instructions file and its skill list (`--agent-instructions`, `--agent-skills`; none by default; `afkconvoy kit --help`, The agent setup). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER, AFKCONVOY_WATCH_DIR, AFKCONVOY_WATCH_EVERY, AFKCONVOY_JEV_KEY_COMMAND, AFKCONVOY_NOTIFY_COMMAND, AFKCONVOY_AGENT_INSTRUCTIONS, AFKCONVOY_AGENT_SKILLS — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, the watch's before each look, the key command at each worker-health judgment — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `default` changes one back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
     ///
     /// The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on its socket in the cache directory (host-runner.sock) — the one socket of the host: `stop`, `wake`, `panel --open`, `exclusive` and `doctor` ask it there too, each naming its checkout, and no fleet instance or repo has one of its own; one nobody listens on, which a host runner killed with no goodbye left, is removed by whoever finds it — and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
     ///
@@ -1745,6 +1750,16 @@ enum Command {
         /// Shell command receiving each human decision as JSON on stdin; `default` disables sending.
         #[arg(long, env = NOTIFY_COMMAND_ENV, value_name = "COMMAND", value_parser = notify_command_or_default)]
         notify_command: Option<To<String>>,
+        /// The agent setup's instructions file, linked to the global instructions of every
+        /// harness the host kit holds (Claude Code's `~/.claude/CLAUDE.md`, Codex's
+        /// `~/.codex/AGENTS.md`, …): a host setting; `default` removes it [default: none]
+        #[arg(long, env = AGENT_INSTRUCTIONS_ENV, value_name = "FILE", value_parser = boxed_file)]
+        agent_instructions: Option<Box<To<PathBuf>>>,
+        /// The agent setup's skill list, one line per source, `<source> <skill>...` or
+        /// `<source> *`, installed through `npx skills` for every harness the host kit holds: a
+        /// host setting; `default` removes it [default: none]
+        #[arg(long, env = AGENT_SKILLS_ENV, value_name = "FILE", value_parser = boxed_file)]
+        agent_skills: Option<Box<To<PathBuf>>>,
         /// The name this host goes by in the records it owns — candidates, claims, slots, logs —
         /// above the name the system gives it, which a network may change: a host renamed
         /// takes its own records for another host's. A `run` that finds none keeps the
@@ -4302,6 +4317,12 @@ fn boxed_lanes(said: &str) -> Result<Box<To<u64>>, String> {
     host_settings::watch_every_or_default(said).map(Box::new)
 }
 
+/// `--agent-instructions` and `--agent-skills`, boxed: `Run` is the largest
+/// command, and clippy bounds it.
+fn boxed_file(said: &str) -> Result<Box<To<PathBuf>>, String> {
+    host_settings::file_or_default(said).map(Box::new)
+}
+
 /// `--host-name`, boxed: `Run` is the largest command, and clippy bounds it.
 fn boxed_host_name(said: &str) -> Result<Box<To<String>>, String> {
     host_settings::host_name_or_default(said).map(Box::new)
@@ -4393,6 +4414,8 @@ fn start_of(
         exclusive_seconds,
         jev_key_command,
         notify_command,
+        agent_instructions,
+        agent_skills,
         host_name,
         gate_lanes,
         slow_gate_lanes,
@@ -4429,6 +4452,8 @@ fn start_of(
         jev_key_command,
         notify_command,
         host_name: host_name.map(|name| *name),
+        agent_instructions: agent_instructions.map(|file| *file),
+        agent_skills: agent_skills.map(|file| *file),
     };
     let ready_timeout = agent.ready_timeout;
     let panic_at = panic_at_tick;

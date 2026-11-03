@@ -1952,6 +1952,12 @@ pub fn run(
     // them, and every other on the host reads them as it goes.
     let changed = host_settings::change(&list, settings)?;
     host_settings::pin_host_name(&list)?;
+    // What it declares of the agent setup changed: every held harness is
+    // given it as it is declared now (sunfmin/control#528).
+    let agent_setup = ["agent_instructions", "agent_skills"]
+        .iter()
+        .any(|key| changed.contains_key(*key))
+        .then(|| kit::give_every_agent_setup(now));
     // Kept once no host runner runs: one of an older release would write the
     // list over it, knowing no tracker. One whose entry is gone meanwhile is
     // the host runner's to say, as it is handed the checkout.
@@ -1988,6 +1994,9 @@ pub fn run(
         about.insert("replaced".into(), json!(replaced));
     }
     answer["settings"] = Value::Object(changed);
+    if let Some(agent_setup) = agent_setup {
+        answer["agent_setup"] = agent_setup;
+    }
     if let Some(tracked) = tracked {
         answer["tracker"] = tracked;
     }
