@@ -779,7 +779,7 @@ fn turn_wait_seconds() -> u64 {
 /// How long a note typed at a worker waits for its harness to give it to
 /// its model: a harness that takes a line only at the end of its turn takes
 /// it once the step it is on ends. Tests set it short.
-fn note_wait_seconds() -> u64 {
+pub(crate) fn note_wait_seconds() -> u64 {
     std::env::var("AFKCONVOY_NOTE_WAIT_SECONDS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -796,6 +796,10 @@ pub(crate) enum Handed {
     Taken { seconds: u64 },
     /// Its session held it already: typed by an earlier run.
     Already,
+    /// The terminal took it, now or at an earlier tick, and its harness has
+    /// not given it to its model yet (`Worktree::hand_update`): a harness
+    /// running a tool hands over its queued input when that tool ends.
+    Queued,
 }
 
 /// A worker's worktree on this machine.
@@ -1631,7 +1635,10 @@ impl Worktree {
     }
 
     /// A tick polls briefly. Once accepted, keep the send receipt so a later
-    /// tick waits for the queued line rather than typing a duplicate.
+    /// tick waits for the queued line rather than typing a duplicate. A line
+    /// the terminal took but the harness has not given its model within the
+    /// poll is `Handed::Queued`, no failure: its caller bounds how long it
+    /// may stay queued. A refused line, or no harness at its input, fails.
     pub(crate) fn hand_update(
         &self,
         terminal: &str,
@@ -1716,6 +1723,9 @@ impl Worktree {
                 }
             }
             if typed.elapsed() >= bound {
+                if receipt.is_some() {
+                    return Ok(Handed::Queued);
+                }
                 return Err(self.prompt_failure(
                     terminal,
                     &format!(

@@ -3414,7 +3414,7 @@ enum Command {
     ///
     /// ## What trips you up
     ///
-    /// - It never edits the issue's body. Each tick tells later body edits and issue comments to the worker under this host's claim, with session proof, and retries failed deliveries. Three consecutive failed ticks make a doctor finding naming the issue and comment. Fleet comments carrying a `<!--convoy:` marker and comments the worker itself posted (identified by its session's write receipts) are skipped. With no worker here, the next worker reads the issue at its start. PR comments are not told, and closed issues stay closed.
+    /// - It never edits the issue's body. Each tick tells later body edits and issue comments to the worker under this host's claim, with session proof, and retries failed deliveries. A line the worker's terminal took but its harness has not given the model yet (a harness running a tool hands over queued input when the tool ends) is recorded queued, no failure, and told by the tick that finds the session holding it; still not taken past tell's bound (600 seconds), it fails each tick. A refused line, or a harness at no input, fails at once. Three consecutive failed ticks make a doctor finding naming the issue and comment. Fleet comments carrying a `<!--convoy:` marker and comments the worker itself posted (identified by its session's write receipts) are skipped. With no worker here, the next worker reads the issue at its start. PR comments are not told, and closed issues stay closed.
     /// - It takes no `--instance`: the claim says whose worker it is, and only a worker on this host can be typed at.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Tell {

@@ -1026,6 +1026,8 @@ impl Ticked {
             let comment = update["comment"].as_str().unwrap_or("issue updates");
             parts.push(if update["outcome"] == "failed" {
                 format!("FAILED tell #{issue}: {}", update["error"].as_str().unwrap_or_default())
+            } else if update["outcome"] == "queued" {
+                format!("queued at #{issue}'s worker, not yet taken: {comment}")
             } else {
                 format!("told #{issue}: {comment}")
             });

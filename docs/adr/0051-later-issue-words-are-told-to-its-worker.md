@@ -31,7 +31,12 @@ session. A read result or a user's quoted command proves no write.
 
 An accepted terminal send is kept beside the worktree so later ticks poll
 for session proof without retyping queued input. A tick waits briefly, then
-retries an untold update next tick without failing the pass. Each update
+retries an untold update next tick without failing the pass. An accepted
+line its harness has not given the model yet — a harness running a tool
+hands over its queued input when the tool ends — is recorded queued, not
+failed, until the bound a typed note has to reach the model; past it, each
+tick it is still not taken fails (sunfmin/control#525). A refused line, or
+a harness at no input, fails at once. Each update
 has its own failure identity in the tick log: three consecutive failures
 produce a doctor finding naming the issue and its link. A recorded user
 message, rather than a terminal receipt or queue entry, proves delivery.
