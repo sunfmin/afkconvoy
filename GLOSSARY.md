@@ -442,7 +442,7 @@ One run of the slow gate on a candidate chain's tip, once every PR that asked to
 _Avoid_: batch (a tick's), bisection, merge train, rollup
 
 **Land**:
-Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker, watches and cuts all land in a turn; watches and cuts retain the configured base branch.
+Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker and watches all land in a turn; watches retain the configured base branch. A cut lands nothing.
 _Avoid_: join, enqueue
 
 **Repair**:
@@ -450,5 +450,5 @@ A change the fleet starts to restore a red target tip or finish retained work fr
 _Avoid_: manual repair
 
 **Cut**:
-The run that makes a new version of a repo from its base branch: it sets the version, lands one commit on that branch, tags that commit, and publishes and installs it. The commit that set the version stays on the cut's branch. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. A repo may declare cut needs: host checks that must pass before a host claims a cut. A due cut whose check fails is reported by the tick, plan and doctor, leaving another host free to cut. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut.
+The run that makes a new version of a repo from its base branch: it commits the version on a branch of its own from the base tip, gates it, tags that commit, and publishes and installs it. The base branch never receives that commit, and turns keep landing while a cut runs; the version's home is its tag. Landed work past the newest version tag starts one when the fleet goes idle or the oldest landing reaches the repo's age bound; an untagged repo's declared initial version starts one when idle. A repo may declare cut needs: host checks that must pass before a host claims a cut. A due cut whose check fails is reported by the tick, plan and doctor, leaving another host free to cut. Each cut belongs to one host; a failed cut holds later cuts back until answered, while a patch overtaken by a minor landing ends without tagging and gives way to the minor cut.
 _Avoid_: release (a claim's last step, and `afkconvoy release`), publish (a heartbeat's), deploy

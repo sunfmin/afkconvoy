@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::{RepoDir, RepoName};
@@ -2231,7 +2231,7 @@ enum Command {
     ///
     /// {const:REMOTE_READS}
     ///
-    /// A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. A gate-record push that does not end within 30 seconds is killed with its process group: `not_recorded` says so, the candidate is not green, and queued work can take its lane. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. A candidate holds a worker lane only while it builds and runs its gate; the window has no bound of its own, but for barriers and unconfirmed cancellation. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree. Once the landing is published, a failure to close the issue or write its work account does not turn the answer into an error: it is `merged`, with the failure in `settle_error`, and the tick settles the issue; a close GitHub refuses while it closes the issue itself, as a merged PR that says `Closes` it, is a close.
+    /// A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. A gate-record push that does not end within 30 seconds is killed with its process group: `not_recorded` says so, the candidate is not green, and queued work can take its lane. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. A candidate holds a worker lane only while it builds and runs its gate; the window has no bound of its own, but for barriers and unconfirmed cancellation. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue or watch. Landing closes the issue; the tick settles its claim and source worktree. Once the landing is published, a failure to close the issue or write its work account does not turn the answer into an error: it is `merged`, with the failure in `settle_error`, and the tick settles the issue; a close GitHub refuses while it closes the issue itself, as a merged PR that says `Closes` it, is a close.
     ///
     /// Where the candidate's commit declares a ```yaml gates block (`afkconvoy config --help`), the candidate runs the fast gate, not `gate_command`, and waits fast-green for a round. A round is as big as the PRs that are ready: a turn that asks to land is on the candidate record as pending while it waits for a worker lane, and a fast-green candidate frees its lane. When no turn is pending and every candidate of the chain is fast-green, the turn of the chain's last candidate, the round's tip, takes a slow lane and runs the slow gate once on its commit, in its worktree; a PR that asks meanwhile waits for the next round. Green, the whole gate is put on record for the tip's tree from its fast and slow runs, and one atomic push lands every candidate up to the tip; each of their turns answers `merged` and closes its own issue. Red is not split to find whose change failed: the tip's turn answers `gate_red` with `gate` slow and `round`, the round's PRs and issues, and merges the round's tip into its branch, so its worker fixes the round from those issues and the failing tests and asks again; every other candidate of the round answers `round_red` and stops, its change carried by the tip's PR, and its issue is settled from the merge commits on the target branch once that lands. A merge onto the candidate ahead that conflicts is left in the worker's worktree to resolve, as `speculative_conflict`: the worker's branch then carries that candidate. If a fast-green candidate's owner exits on this host after its gate processes are confirmed stopped, the next turn of the same PR and original head adopts it with its recorded evidence and successors intact; a running gate is never adopted.
     ///
@@ -2996,50 +2996,48 @@ enum Command {
     ///
     /// Its steps, in order, each timed:
     ///
-    /// 1. `set` — runs the `set` lines on the base branch as it stood, and commits what they changed, titled `<repo> <version>`. Lines that change nothing find the version set: by a cut whose end was cut short after its PR landed. Where a cut's PR of that title landed past the tag (anywhere on the base branch for an initial cut), that landing is the one tagged, and the steps up to `tag` are passed by. An initial version already set gets an empty commit and follows the same PR, gate and landing turns steps; otherwise lines that change nothing fail.
-    /// 2. `pr` — pushes the commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`, and opens its PR.
-    /// 3. `gate` — takes the cut's turn: build one commit on the base tip as it stands, whose diff against that tip is what the set lines wrote, gate that commit, record green and land it by a fast-forward. The commit has one parent. Where the base moved while the cut ran, that parent is the base tip at land time and the landings already on it stay. The commit that set the version stays on the cut's branch.
-    /// 4. `land` — find that commit on the base branch. Its message says `By a cut on <host>` and names the cut's PR. It is that commit the cut tags.
-    /// 5. `tag` — closes the landed cut's open PR with a comment naming its commit and version, then tags the commit `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit. A patch also checks landings up to the current base branch: where one landed while it ran and carries `{const:CUT_MINOR_LABEL}`, it stops at `tag` without tagging or publishing, and opens no failure issue. The next tick releases its claim and starts the minor cut, unless a fleet lock stands. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
-    /// 6. `publish` — with the tag checked out, runs the `publish` lines.
+    /// 1. `set` — on the snapshot, the base tip the checkout was cut at, runs the `set` lines and commits what they changed, titled `<repo> <version>`: the version's commit, whose one parent is the snapshot. Lines that change nothing still make that commit, empty. Where the remote has the tag `v<version>` already, or a branch a cut of this version pushed, the cut takes up that commit instead, and makes no second.
+    /// 2. `push` — pushes that commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`. It opens no PR.
+    /// 3. `gate` — gates that commit in the checkout: the whole gate, the fast gate and the slow gate, in a worker lane as any heavy command is (`afkconvoy exclusive --help`); a green run on record for its tree answers. It takes no landing turn, is no candidate and reserves no barrier: turns land on the base branch while it runs, whether it passes, fails or hangs.
+    /// 4. `tag` — tags that commit `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit. A patch also checks landings up to the current base branch: where one landed while it ran and carries `{const:CUT_MINOR_LABEL}`, it stops at `tag` without tagging or publishing, and opens no failure issue. The next tick releases its claim and starts the minor cut, unless a fleet lock stands. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
+    /// 5. `publish` — with the tag checked out, runs the `publish` lines.
     ///
-    /// Its PR lands only through its gated turn. It pushes its own branch and version tag; only the turn pushes the base branch.
+    /// The base branch never receives the version commit: it pushes its own branch and its version tag, and nothing to the base branch. The version's home is the tag; version files on the base branch stay as they are, and the next cut's `set` lines write its version on its own snapshot. The tag's parent is a base commit, so the landings past the tag are still those on the base branch past that parent.
     ///
     /// ## What it reads and writes
     ///
-    /// It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its PR, where it landed, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: three hours beside the two gate limits (`gate_seconds`) — five hours at the default.
+    /// It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its branch and its commit, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: three hours beside the two gate limits (`gate_seconds`), for its gate and its wait for a worker lane — five hours at the default.
     ///
-    /// A cut's turn and exclusive commands go ahead of waiting worker commands, keeping request order among cuts. They never interrupt a running command. Queue waits count toward the cut's time limit; the gate's own limit starts after its turn is granted. The tick line that starts a cut says whether the fleet was `idle` or `busy`.
+    /// A cut's gate and exclusive commands go ahead of waiting worker commands, keeping request order among cuts. They never interrupt a running command. Queue waits count toward the cut's time limit; the gate's own limit starts once its worker lane is granted. The tick line that starts a cut says whether the fleet was `idle` or `busy`.
     ///
-    /// A cut that took every step is a line of the tick log — `cut v0.5.17 (past v0.5.16, holding #451, #452) · its PR #470 · landed as 0123456789 · set 3s, pr 2s, gate 270s, land 610s, tag 1s, publish 95s` — `afkconvoy doctor` lists it among its events, and the panel shows it; its checkout is removed.
+    /// A cut that took every step is a line of the tick log — `cut v0.5.17 (past v0.5.16, holding #451, #452) · its commit 0123456789 on afkconvoy-cut/v0.5.17-1793666786 · set 3s, push 2s, gate 610s, tag 1s, publish 95s` — `afkconvoy doctor` lists it among its events, and the panel shows it; its checkout is removed.
     ///
-    /// A cut that failed, ran out of time or was ended from outside opens one issue under the escalate label, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there. The tick log, `doctor` and the panel say it too. Its checkout is kept, its terminal closed. No cut starts while that issue is open (`afkconvoy help humans`).
+    /// A cut that failed, ran out of time, was ended from outside, whose checkout is gone, or whose host went silent opens one issue under the escalate label, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there. The tick log, `doctor` and the panel say it too. Its checkout is kept, its terminal closed. No cut starts while that issue is open (`afkconvoy help humans`).
     ///
     /// With `--from <step>` it takes that step and those after it, the record kept as it was; without, the step after the last it took. Once it took its last, it closes the open issue that said this version's cut failed.
     ///
     /// ## What it answers
     ///
-    /// {"version", "tag", "prs", "pr", "landed", "took", "closed", "said"} — the cut took every step: `took` is each step with its seconds, `closed` the issues it closed. {"version", "stopped": "tag", "why", "said"} — a minor landing superseded the patch; nothing was tagged or published, and the fleet cuts the minor next. {"version", "failed", "why", "said", "log"} — it failed at the step `failed`.
+    /// {"version", "tag", "prs", "branch", "commit", "took", "closed", "said"} — the cut took every step: `took` is each step with its seconds, `closed` the issues it closed. {"version", "stopped": "tag", "why", "said"} — a minor landing superseded the patch; nothing was tagged or published, and the fleet cuts the minor next. {"version", "failed", "why", "said", "log"} — it failed at the step `failed`.
     ///
     /// Errors: the checkout is no cut's, or keeps no cut's record; the repo names no cut steps; `--from` names no step.
     ///
     /// ## What trips you up
     ///
-    /// - One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, and a new one starts when idle or past the age bound. A fleet lock and an open cut failure still hold it back.
-    /// - A cut interrupted after landing finds that commit — its message says `By a cut on <host>` — and tags it. A commit with one parent whose subject ends ` (#n)` and whose message has no such line is not a landing.
+    /// - One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, which opens the failure issue for it: no cut of that version starts again on its own. A fleet lock and an open cut failure hold a new one back.
+    /// - A cut interrupted after tagging goes on from the tag; one interrupted before, from its branch. A cut started again for the same version takes up that commit, and pushes no second branch.
+    /// - Cut records and serial barriers that earlier versions left on the remote candidate chain are read as before, and drain: nothing new names a cut there.
     /// - `sh -e` fails a step at a line whose command fails, not at one whose command it tests: a command of an `if` or `while` test, on the left of `&&` or `||`, after `!`, or before the last of a pipe fails nothing. `./packaging/release.sh publish "$VERSION" | tee published` passes whatever `release.sh` did.
     /// - The cut's commit is made in the checkout's name, by its git config: a repo whose base branch is protected against pushes is as good as any other here, for the cut pushes nothing to it.
+    /// - Turns keep landing while a cut runs. A cut that hangs costs only its own version: its time limit ends it, and its failure issue holds the next cut back.
     #[command(next_help_heading = WORKER, verbatim_doc_comment)]
     Cut {
-        /// Go on from this step: set, pr, gate, land, tag or publish [default: the step after the last it took]
+        /// Go on from this step: set, push, gate, tag or publish [default: the step after the last it took]
         #[arg(long, value_name = "STEP", value_parser = cut_step)]
         from: Option<afkconvoy_core::cut::Step>,
-        /// The host its PR lands in a turn as cut on [default: this machine's name]
+        /// The host its gate runs and is recorded as on [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
-        /// Milliseconds one second of sleep takes
-        #[arg(long, hide = true, default_value_t = 1000)]
-        second_ms: u64,
         #[command(flatten)]
         at: At,
     },
@@ -3067,7 +3065,7 @@ enum Command {
     ///
     /// A worker's fast gate, run by `afkconvoy gate --fast`, takes the fast lane instead: `gate --fast` tells its command's `exclusive` that it runs the fast gate, through `AFKCONVOY_GATE`, which `exclusive` does not pass on to its command. Fast gates contend only with each other, up to the host setting `fast_lanes`, {const:FAST_LANES} by default (`run --fast-lanes N`); no slow gate, turn or other command holds a place they need, and fast gates of one repo run side by side, each in its own worktree. A slow gate run alone, `gate --slow`, keeps the worker lanes.
     ///
-    /// A cut's turn and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
+    /// A cut's gate and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
     ///
     /// The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
     ///
@@ -5159,12 +5157,11 @@ fn run(
             }
             claims::declare_over(&checkout?, run.trim())
         }
-        Command::Cut { from, host, second_ms, .. } => {
+        Command::Cut { from, host, .. } => {
             let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let host = host.unwrap_or_else(this_host);
-            let second = Duration::from_millis(second_ms);
-            cut::run(&repo, &config, from, &host, second, clock)
+            cut::run(&repo, &config, from, &host, clock)
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard { .. } => anyhow::bail!("guard answers with its exit code"),

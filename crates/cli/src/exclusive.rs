@@ -187,6 +187,14 @@ impl Permit {
         Self::acquire(repo, command, heavy, true, true, false)
     }
 
+    /// A cut's gate of its own commit (docs/adr/0028), in a worker lane. Its
+    /// worktree holds one commit nothing moves while it runs, as a
+    /// candidate's does: it shares its repo with candidates, and so holds no
+    /// turn of that repo up. It is no turn and no candidate on any chain.
+    pub(crate) fn cut_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, false, true, false)
+    }
+
     /// A round's slow gate, in the host's slow lanes, not its worker lanes.
     pub(crate) fn slow_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
         Self::acquire(repo, command, heavy, true, true, true)

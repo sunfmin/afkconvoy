@@ -1,6 +1,8 @@
 //! A cut (docs/adr/0028): the run that makes a new version of a repo from
-//! its base branch — it sets the version, lands it, tags it, and publishes
-//! and installs it. An idle tick, or one past the landed work's age bound, starts one in a repo that names its
+//! its base branch — it commits the version on a branch of its own from the
+//! base tip, gates that commit, tags it, and publishes and installs it. The
+//! base branch never receives the version commit, and no landing turn waits
+//! on a cut. An idle tick, or one past the landed work's age bound, starts one in a repo that names its
 //! cut steps, once the base branch holds landed commits past the newest
 //! version tag, or the repo declares its initial version on an untagged
 //! remote; it is claimed on the remote as a run is, so one host cuts each
@@ -38,9 +40,9 @@ pub const VERSION_ENV: &str = "VERSION";
 /// The word of the marker of the issue a failed cut opens.
 pub const FAILED: &str = "convoy:cut-failed";
 
-/// What a cut is given beside two gate limits — base certification and its
-/// merge's gate — for the rest of its steps, publishing and installing among
-/// them, in seconds: three hours.
+/// What a cut is given beside two gate limits — its own gate and the queue
+/// it waits in for a worker lane — for the rest of its steps, publishing and
+/// installing among them, in seconds: three hours.
 pub const BESIDE_THE_GATES: u64 = 3 * 3600;
 
 /// The default age of the oldest landing past the newest tag at which a
@@ -53,7 +55,7 @@ fn busy_after_seconds() -> u64 {
 }
 
 /// How long, in seconds, a cut is given in a repo whose gate limit is
-/// `gate_seconds`: base certification and the gate of its own merge, each to the
+/// `gate_seconds`: its own gate and the wait for its worker lane, each to the
 /// limit, and `BESIDE_THE_GATES` for the rest. One still going then is ended,
 /// and has failed.
 pub fn time_limit(gate_seconds: u64) -> u64 {
@@ -74,8 +76,8 @@ pub struct Steps {
     /// Left out, an untagged repo is not cut; after a tag, this is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial: Option<String>,
-    /// Run on the base branch as it stood: what it changes is the version's
-    /// commit, which lands through a landing turn.
+    /// Run on the base branch as it stood, the cut's snapshot: what it changes
+    /// is the version's commit, on the cut's own branch, never the base's.
     pub set: String,
     /// Run with the version's tag checked out, once it is pushed.
     pub publish: String,
@@ -228,7 +230,8 @@ pub enum Standing {
     Untagged,
     /// The base branch holds no commit past the newest version tag.
     Tagged,
-    /// A fleet lock stands: no cut starts, for its PR could not join.
+    /// A fleet lock stands: no cut starts, for the base it would snapshot may
+    /// be red.
     Locked,
     /// A tick that ends idle starts one.
     Due,
@@ -370,33 +373,37 @@ pub fn starts(row: &Row, held: usize, frontier: usize, held_back: bool) -> bool 
 }
 
 /// One step of a cut, in the order it takes them.
+///
+/// A record an earlier afkconvoy kept names steps it no longer takes: `pr`
+/// reads as `push`, and `land` as `gate`, so a cut it left goes on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Step {
-    /// Run the repo's `set` lines, and commit what they changed.
+    /// On the snapshot `S`, the base tip as it stood: run the repo's `set`
+    /// lines, and commit what they changed — or take up the commit a cut of
+    /// the same version already tagged or pushed.
     Set,
-    /// Push the commit on the checkout's branch, and open its PR.
-    Pr,
-    /// Build one commit on the base tip, gate it, record green and land it.
+    /// Push that commit to the cut's own branch, `afkconvoy-cut/v<version>-<stamp>`.
+    #[serde(alias = "pr")]
+    Push,
+    /// Gate that commit, the fast gate and the slow gate, in a worker lane: no
+    /// landing turn, no candidate, no barrier.
+    #[serde(alias = "land")]
     Gate,
-    /// Recover that landed commit on the base branch.
-    Land,
-    /// Tag the landed commit `v<version>`, and push the tag.
+    /// Tag that commit `v<version>`, and push the tag.
     Tag,
     /// With the tag checked out, run the repo's `publish` lines.
     Publish,
 }
 
 impl Step {
-    pub const ALL: [Step; 6] =
-        [Step::Set, Step::Pr, Step::Gate, Step::Land, Step::Tag, Step::Publish];
+    pub const ALL: [Step; 5] = [Step::Set, Step::Push, Step::Gate, Step::Tag, Step::Publish];
 
     pub fn word(self) -> &'static str {
         match self {
             Step::Set => "set",
-            Step::Pr => "pr",
+            Step::Push => "push",
             Step::Gate => "gate",
-            Step::Land => "land",
             Step::Tag => "tag",
             Step::Publish => "publish",
         }
@@ -446,11 +453,14 @@ pub struct Record {
     pub minor: bool,
     /// When the fleet started it, in epoch seconds.
     pub started: u64,
-    /// Its own PR, once it opened it, and the commit that landed it, once it did.
+    /// Its own branch, once it pushed it, and the version's commit, once it
+    /// made it: the commit it gates and tags, whose one parent is the
+    /// snapshot. An earlier afkconvoy's record names the commit its turn
+    /// landed, `landed`: that is the commit it tags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pr: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub landed: Option<String>,
+    pub branch: Option<String>,
+    #[serde(default, alias = "landed", skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
     /// The step it is taking now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Step>,
@@ -502,11 +512,11 @@ impl Record {
             said.push_str(&format!(", holding {}", numbered(&self.prs)));
         }
         said.push(')');
-        if let Some(pr) = self.pr {
-            said.push_str(&format!(" · its PR #{pr}"));
+        if let Some(commit) = &self.commit {
+            said.push_str(&format!(" · its commit {}", short(commit)));
         }
-        if let Some(landed) = &self.landed {
-            said.push_str(&format!(" · landed as {}", short(landed)));
+        if let Some(branch) = &self.branch {
+            said.push_str(&format!(" on {branch}"));
         }
         if !self.took.is_empty() {
             let took: Vec<String> = self
@@ -658,32 +668,46 @@ pub fn failure_report(
     said
 }
 
-/// The title of a cut's commit and of its PR: the repo's name and the
+/// The branch a cut of `version` started at `started` commits on: its own,
+/// never the base branch. Its name begins `branch_prefix(version)`.
+pub fn branch(version: &str, started: u64) -> String {
+    format!("{}{started}", branch_prefix(version))
+}
+
+/// What the name of every branch a cut of `version` commits on begins with.
+pub fn branch_prefix(version: &str) -> String {
+    format!("{CHECKOUT}/v{version}-")
+}
+
+/// The branch among `heads` — each a branch's name and its commit — that a
+/// cut of `version` pushed, and its commit: the one whose stamp is latest,
+/// where more than one is. A later cut of that version goes on from it,
+/// rather than pushing a second.
+pub fn pushed(heads: &[(String, String)], version: &str) -> Option<(String, String)> {
+    let prefix = branch_prefix(version);
+    let stamped = heads.iter().filter_map(|(name, commit)| {
+        let stamp = fleet_number(name.strip_prefix(&prefix)?)?;
+        Some((stamp, name, commit))
+    });
+    let latest = stamped.max_by_key(|(stamp, _, _)| *stamp)?;
+    Some((latest.1.clone(), latest.2.clone()))
+}
+
+/// The version of the cut started at `started` that pushed one of
+/// `heads`' branches, where one did: what a cut whose own record is out of
+/// reach is known by.
+pub fn version_started(heads: &[(String, String)], started: u64) -> Option<String> {
+    let suffix = format!("-{started}");
+    heads.iter().find_map(|(name, _)| {
+        let version = name.strip_prefix(&format!("{CHECKOUT}/v"))?.strip_suffix(&suffix)?;
+        Version::parse(version).map(|version| version.to_string())
+    })
+}
+
+/// The title of a cut's commit and of its tag: the repo's name and the
 /// version, `afkconvoy 0.5.17`.
 pub fn title(repo: &str, version: &str) -> String {
     format!("{repo} {version}")
-}
-
-/// The body of a cut's PR.
-pub fn pr_body(record: &Record, host: &str) -> String {
-    let why = match (&record.from, record.minor) {
-        (None, _) => "the repo's declared initial version".to_string(),
-        (Some(tag), true) => {
-            format!("the next minor past {tag}: a PR it holds is labelled `{MINOR_LABEL}`")
-        }
-        (Some(tag), false) => format!("the next patch past {tag}"),
-    };
-    let since = if record.from.is_some() { "since the tag" } else { "on the base branch" };
-    let holds = match record.prs.is_empty() {
-        true => format!("It holds no PR: the commits {since} name none."),
-        false => format!("It holds the PRs that landed {since}: {}.", numbered(&record.prs)),
-    };
-    format!(
-        "A cut by the fleet on `{host}` (`afkconvoy cut --help`): v{}, {why}. {holds}\n\nIt \
-         lands through a landing turn on no issue; the cut then tags the commit that landed \
-         it `v{}` and publishes and installs it as the repo's cut steps say.\n",
-        record.version, record.version
-    )
 }
 
 #[cfg(test)]
@@ -873,8 +897,8 @@ mod tests {
             prs: vec![451, 452],
             minor: false,
             started: 1000,
-            pr: None,
-            landed: None,
+            branch: None,
+            commit: None,
             at: None,
             took: vec![],
             failed: None,
@@ -893,17 +917,17 @@ mod tests {
         let failure = Failure { step: Step::Gate, why: "red".into() };
         let failed = Record { failed: Some(failure.clone()), at: Some(Step::Gate), ..record() };
         assert_eq!(ending(Some(&failed), 1000, false, 1001, limit), Some(Ending::Failed(failure)));
-        let landing = Record { at: Some(Step::Land), ..record() };
+        let landing = Record { at: Some(Step::Gate), ..record() };
         assert_eq!(
             ending(Some(&landing), 1000, false, 1000 + limit, limit),
-            Some(Ending::OutOfTime(Step::Land))
+            Some(Ending::OutOfTime(Step::Gate))
         );
-        assert_eq!(ending(Some(&landing), 1000, true, 1001, limit), Some(Ending::Gone(Step::Land)));
+        assert_eq!(ending(Some(&landing), 1000, true, 1001, limit), Some(Ending::Gone(Step::Gate)));
         // A record that cannot be read is a cut that said nothing.
         assert_eq!(ending(None, 1000, true, 1001, limit), Some(Ending::Gone(Step::Set)));
         assert_eq!(ending(None, 1000, false, 1001, limit), None);
-        let out = Ending::OutOfTime(Step::Land).failure(limit).unwrap();
-        assert_eq!(out.step, Step::Land);
+        let out = Ending::OutOfTime(Step::Gate).failure(limit).unwrap();
+        assert_eq!(out.step, Step::Gate);
         assert!(out.why.contains("its time ran out"), "{}", out.why);
         assert!(out.why.contains("200 minutes"), "{}", out.why);
         let said = failure_report(
@@ -920,7 +944,7 @@ mod tests {
     fn a_cut_goes_on_from_the_step_after_the_last_it_took() {
         assert_eq!(record().step(), Step::Set);
         let set = Record { took: vec![Took { step: Step::Set, seconds: 3 }], ..record() };
-        assert_eq!(set.step(), Step::Pr);
+        assert_eq!(set.step(), Step::Push);
         assert_eq!(Step::Tag.from(), [Step::Tag, Step::Publish]);
         assert_eq!(Step::named("publish"), Some(Step::Publish));
         assert_eq!(Step::named("deploy"), None);
@@ -929,8 +953,8 @@ mod tests {
     #[test]
     fn what_a_cut_did_is_said_in_one_line_with_each_step_and_its_seconds() {
         let did = Record {
-            pr: Some(470),
-            landed: Some("0123456789abcdef".into()),
+            branch: Some("afkconvoy-cut/v0.5.17-1000".into()),
+            commit: Some("0123456789abcdef".into()),
             took: vec![
                 Took { step: Step::Set, seconds: 3 },
                 Took { step: Step::Gate, seconds: 270 },
@@ -939,8 +963,8 @@ mod tests {
         };
         assert_eq!(
             did.line(),
-            "v0.5.17 (past v0.5.16, holding #451, #452) · its PR #470 · landed as 0123456789 \
-             · set 3s, gate 270s"
+            "v0.5.17 (past v0.5.16, holding #451, #452) · its commit 0123456789 on \
+             afkconvoy-cut/v0.5.17-1000 · set 3s, gate 270s"
         );
         let minor = Record { minor: true, prs: vec![], ..record() };
         assert_eq!(
@@ -953,9 +977,6 @@ mod tests {
     fn an_initial_cuts_record_names_no_previous_tag() {
         let first = Record { version: "1.2.3".into(), from: None, ..record() };
         assert!(first.line().starts_with("v1.2.3 (the initial version, holding #451"));
-        let body = pr_body(&first, "h1");
-        assert!(body.contains("the repo's declared initial version"), "{body}");
-        assert!(body.contains("on the base branch: #451, #452"), "{body}");
         let old = serde_json::to_value(record()).unwrap();
         assert_eq!(old["from"], "v0.5.16");
         let read: Record = serde_json::from_value(old).unwrap();
@@ -998,6 +1019,38 @@ mod tests {
         let failure = Failure { step: Step::Gate, why: "red".into() };
         let said = failure_report(&record(), &failure, "h1", "/w/cut", "x");
         assert!(!said.contains("Its tag is pushed"), "{said}");
+    }
+
+    #[test]
+    fn a_record_an_earlier_afkconvoy_kept_goes_on_at_the_step_it_names_now() {
+        let old = serde_json::json!({"version": "0.5.17", "from": "v0.5.16", "started": 1000,
+            "pr": 470, "landed": "abc", "at": "land",
+            "took": [{"step": "set", "seconds": 1}, {"step": "pr", "seconds": 2}]});
+        let read: Record = serde_json::from_value(old).unwrap();
+        assert_eq!(read.commit.as_deref(), Some("abc"), "the commit its turn landed is tagged");
+        assert_eq!(read.step(), Step::Gate);
+        assert_eq!(read.took[1].step, Step::Push);
+        assert_eq!(serde_json::to_value(Step::Push).unwrap(), "push");
+    }
+
+    #[test]
+    fn a_cut_s_branch_is_its_own_and_a_later_cut_of_the_version_finds_it() {
+        assert_eq!(branch("0.5.64", 1793666786), "afkconvoy-cut/v0.5.64-1793666786");
+        let heads = tags(&[
+            ("main", "m"),
+            ("afkconvoy-cut/v0.5.64-1793666786", "a"),
+            ("afkconvoy-cut/v0.5.64-1793672283", "d"),
+            ("afkconvoy-cut/v0.5.640-1793672999", "x"),
+            ("afkconvoy-cut/v0.5.63-1793600000", "o"),
+        ]);
+        assert_eq!(
+            pushed(&heads, "0.5.64"),
+            Some(("afkconvoy-cut/v0.5.64-1793672283".into(), "d".into())),
+            "the latest of the version, not another version's"
+        );
+        assert_eq!(pushed(&heads, "0.5.65"), None);
+        assert_eq!(version_started(&heads, 1793666786).as_deref(), Some("0.5.64"));
+        assert_eq!(version_started(&heads, 1), None);
     }
 
     #[test]

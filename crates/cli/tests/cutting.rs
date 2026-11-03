@@ -122,16 +122,22 @@ fn logged(world: &World) -> Vec<String> {
     text.lines().map(entry).collect()
 }
 
-/// The cut's PR lands: the train puts `widgets 0.1.1` on the base branch, and
-/// the cut's record in `checkout` says so → the commit that landed it.
-fn its_pr_lands(world: &World, checkout: &Path) -> String {
-    land(world, "widgets 0.1.1");
-    let landed = git(&world.clone, &["rev-parse", "HEAD"]).trim().to_string();
+/// The cut makes its version's commit in `checkout`, on the snapshot, and
+/// its record says so → that commit.
+fn its_commit_is_made(checkout: &Path) -> String {
+    common::commit(checkout, "VERSION", "0.1.1\n");
+    let made = git(checkout, &["rev-parse", "HEAD"]).trim().to_string();
     let mut record = record(checkout);
-    record["pr"] = json!(8);
-    record["landed"] = json!(landed);
+    record["commit"] = json!(made);
     std::fs::write(record_file(checkout), record.to_string()).unwrap();
-    landed
+    made
+}
+
+/// Every branch a cut pushed on the remote.
+fn cut_branches(world: &World) -> Vec<String> {
+    let listed =
+        world.remote(&["for-each-ref", "--format=%(refname:short)", "refs/heads/afkconvoy-cut"]);
+    listed.lines().map(str::to_string).collect()
 }
 
 /// The checkout the cut was started in.
@@ -265,28 +271,56 @@ fn initial(preset: bool) -> World {
     world
 }
 
-/// The real cut command takes its own landing turn; no auxiliary worker runs.
-fn finish_in_turn(world: &World, checkout: &Path) -> Value {
-    let answer = world.afk_in(checkout, &["cut", "--host", "h1", "--second-ms", "10"]).ok();
-    let landed = answer["landed"].as_str().unwrap();
-    let pr_number = answer["pr"].as_u64().unwrap();
-    world.with_gh(|gh| {
-        let pr = gh["prs"].as_array().unwrap().iter().find(|pr| pr["number"] == pr_number).unwrap();
-        assert_eq!(pr["state"], "closed");
-        let comments = gh["comments"][pr_number.to_string()].as_array().unwrap();
-        assert!(comments.iter().any(|c| c["body"].as_str().unwrap().contains(landed)
-            && c["body"].as_str().unwrap().contains("v1.2.3")));
-    });
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), landed);
-    let tree = world.remote(&["rev-parse", &format!("{landed}^{{tree}}")]);
+/// The real cut command takes every step: it gates its own commit, takes no
+/// landing turn, and the base branch gains nothing from it.
+fn finish(world: &World, checkout: &Path) -> Value {
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let answer = world.afk_in(checkout, &["cut", "--host", "h1"]).ok();
+    let commit = answer["commit"].as_str().unwrap_or_else(|| panic!("{answer}"));
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base, "the base gained nothing");
+    assert!(!ancestor(world, commit, &base), "the version's commit stays off the base");
+    assert_eq!(
+        world.remote(&[
+            "rev-parse",
+            &format!("v{}^{{commit}}", answer["version"].as_str().unwrap())
+        ]),
+        commit
+    );
+    let branch = answer["branch"].as_str().unwrap();
+    assert!(branch.starts_with("afkconvoy-cut/v"), "{answer}");
+    assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), commit);
+    let tree = world.remote(&["rev-parse", &format!("{commit}^{{tree}}")]);
     assert!(
         !world
             .remote(&["for-each-ref", "--format=%(refname)", &format!("refs/convoy/gate/{tree}-*")])
-            .is_empty()
+            .is_empty(),
+        "its gate run is on record"
     );
-    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/train"]).is_empty());
-    common::stopped_candidates_gone(world, checkout);
+    no_cut_on_the_chain(world);
+    assert!(
+        world.gh()["prs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|pr| !pr["headRefName"].as_str().unwrap_or("").starts_with("afkconvoy-cut/")),
+        "a cut opens no PR"
+    );
     answer
+}
+
+/// Nothing on the remote's candidate chain names a cut: no candidate, no
+/// barrier, no pending entry.
+fn no_cut_on_the_chain(world: &World) {
+    let chains = world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]);
+    for chain in chains.lines() {
+        let record = world.remote(&["log", "-1", "--format=%B", chain]);
+        assert!(!record.contains("afkconvoy-cut/"), "{record}");
+    }
+    let refs = world.remote(&["for-each-ref", "--format=%(refname)"]);
+    assert!(
+        !refs.lines().any(|name| name.contains("barrier") || name.contains("pending")),
+        "{refs}"
+    );
 }
 
 #[test]
@@ -319,7 +353,7 @@ fn a_watch_s_landed_fix_reaches_the_published_version_through_a_cut() {
     world.afk(&["wake"]).ok();
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let cut_checkout = self::checkout(&world);
-    let released = finish_in_turn(&world, &cut_checkout);
+    let released = finish(&world, &cut_checkout);
     assert_eq!(released["version"], "1.2.3");
     assert!(released["prs"].as_array().unwrap().contains(&json!(90)));
     let published = std::fs::read_to_string(world.root.join("published")).unwrap();
@@ -345,68 +379,227 @@ fn ancestor(world: &World, commit: &str, tip: &str) -> bool {
 }
 
 #[test]
-fn a_cut_adds_one_commit_and_leaves_the_set_commit_off_the_base() {
+fn a_cut_tags_a_commit_whose_one_parent_is_its_snapshot_and_leaves_the_base_alone() {
     let world = initial(false);
+    let snapshot = world.remote(&["rev-parse", BASE]);
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let checkout = checkout(&world);
-    // The base tip is certified while the gate still passes. A red file after
-    // that fails the cut's own turn, and the turn returns, instead of waiting
-    // on a base tip that was never green.
-    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true, "the base tip is gated first");
     std::fs::write(world.root.join("red"), "red").unwrap();
-    let failed = world.afk_in(&checkout, &["cut", "--host", "h1", "--second-ms", "10"]).ok();
+    let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
     assert_eq!(failed["failed"], "gate", "{failed}");
-    let set = git(&checkout, &["rev-parse", "HEAD"]);
+    let made = record(&checkout)["commit"].as_str().unwrap().to_string();
     std::fs::remove_file(world.root.join("red")).unwrap();
     land(&world, "Add a gadget (#9)");
     let tip = world.remote(&["rev-parse", BASE]);
 
-    let answer = finish_in_turn(&world, &checkout);
-    let landed = answer["landed"].as_str().unwrap();
-    assert_eq!(world.remote(&["rev-parse", "v1.2.3^{commit}"]), landed);
-    assert_eq!(parents(&world, landed), vec![tip], "one parent, the base tip at land time");
-    assert!(!ancestor(&world, &set, landed), "the set commit stays off the base");
+    let answer = finish(&world, &checkout);
+    let tagged = answer["commit"].as_str().unwrap();
+    assert_eq!(tagged, made, "the commit it made is the one it gated and tagged");
+    assert_eq!(parents(&world, tagged), vec![snapshot.clone()], "one parent, the snapshot");
     assert_eq!(
-        world.remote(&["diff", "--name-only", &format!("{landed}^"), landed]),
+        world.remote(&["diff", "--name-only", &snapshot, tagged]),
         "VERSION",
-        "the diff against the parent is the version"
+        "its diff against the snapshot is what the set lines wrote"
     );
-    assert_eq!(world.remote(&["show", &format!("{landed}:VERSION")]), "1.2.3");
-    assert!(
-        world.remote(&["show", &format!("{landed}:widget.txt")]).contains("Add a gadget"),
-        "a landing already on the tip stays"
+    assert_eq!(world.remote(&["show", &format!("{tagged}:VERSION")]), "1.2.3");
+    assert_eq!(world.remote(&["rev-parse", BASE]), tip, "the base gained no commit");
+    assert!(ancestor(&world, &snapshot, &tip), "the tag's parent is on the base");
+    assert_eq!(
+        world.remote(&["log", "-1", "--format=%s", tagged]),
+        "remote.git 1.2.3",
+        "titled `<repo> <version>`"
     );
-    let message = world.remote(&["log", "-1", "--format=%B", landed]);
-    assert!(message.contains("By a cut on h1"), "{message}");
-    assert!(message.contains("(#"), "{message}");
-    assert!(message.lines().next().unwrap().ends_with(')'), "{message}");
+
+    // The landing after the snapshot is past the tag; the next cut picks its
+    // version from the tag.
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    let plan = planned(&world, "alpha", 10_200);
+    assert_eq!(plan["cut"]["newest_tag"], "v1.2.3", "{plan}");
+    assert_eq!(plan["cut"]["past"], 1, "{plan}");
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), ["cut done"]);
+    let next = record(&self::checkout(&world));
+    assert_eq!(
+        (&next["version"], &next["from"], &next["prs"]),
+        (&json!("1.2.4"), &json!("v1.2.3"), &json!([9]))
+    );
 }
 
 #[test]
-fn a_cut_that_landed_and_stopped_before_tagging_tags_that_commit() {
+fn a_cut_interrupted_after_tagging_goes_on_from_the_tag_and_pushes_no_second_branch() {
     let world = initial(false);
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let checkout = checkout(&world);
-    let answer = finish_in_turn(&world, &checkout);
-    let landed = answer["landed"].as_str().unwrap().to_string();
-    let pr = answer["pr"].clone();
-    git(&checkout, &["tag", "-d", "v1.2.3"]);
-    git(&world.bare, &["tag", "-d", "v1.2.3"]);
+    let answer = finish(&world, &checkout);
+    let tagged = answer["commit"].as_str().unwrap().to_string();
+    let branches = cut_branches(&world);
+    assert_eq!(branches.len(), 1, "{branches:?}");
+    // Its record and its checkout's commit lost: it starts again from `set`.
+    let snapshot = parents(&world, &tagged).pop().unwrap();
+    git(&checkout, &["reset", "-q", "--hard", &snapshot]);
     let mut record = record(&checkout);
-    record["landed"] = Value::Null;
-    record["pr"] = Value::Null;
+    for key in ["commit", "branch", "at"] {
+        record[key] = Value::Null;
+    }
     record["took"] = json!([]);
-    record["at"] = Value::Null;
     std::fs::write(record_file(&checkout), record.to_string()).unwrap();
 
-    let again = world.afk_in(&checkout, &["cut", "--host", "h1", "--second-ms", "10"]).ok();
-    assert_eq!(again["landed"], landed, "{again}");
-    assert_eq!(again["pr"], pr, "{again}");
-    assert_eq!(world.remote(&["rev-parse", "v1.2.3^{commit}"]), landed);
-    assert_eq!(world.remote(&["rev-parse", BASE]), landed, "tagged the commit it had");
-    assert_eq!(parents(&world, &landed).len(), 1);
-    let message = world.remote(&["log", "-1", "--format=%B", &landed]);
-    assert!(message.contains("By a cut on h1"), "{message}");
+    let again = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    assert_eq!(again["commit"], tagged, "{again}");
+    assert_eq!(world.remote(&["rev-parse", "v1.2.3^{commit}"]), tagged);
+    assert_eq!(cut_branches(&world), branches, "no second branch");
+}
+
+/// A cut whose checkout is gone from its host while it holds the claim —
+/// how the FelixMBP14 cut of v0.5.64 started again four times — opens the
+/// one failure issue, and no cut of that version starts on its own. Once a
+/// human closes it, the next cut takes up the branch the first pushed.
+#[test]
+fn a_cut_whose_checkout_is_gone_opens_its_issue_and_the_next_takes_up_its_branch() {
+    let world = initial(false);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let first = checkout(&world);
+    std::fs::write(world.root.join("red"), "red").unwrap();
+    let failed = world.afk_in(&first, &["cut", "--host", "h1"]).ok();
+    assert_eq!(failed["failed"], "gate", "{failed}");
+    std::fs::remove_file(world.root.join("red")).unwrap();
+    let pushed = cut_branches(&world);
+    assert_eq!(pushed.len(), 1, "{pushed:?}");
+    let made = world.remote(&["rev-parse", &format!("refs/heads/{}", pushed[0])]);
+    // Taken from outside before the tick read it.
+    std::fs::remove_dir_all(&first).unwrap();
+    git(&world.clone, &["worktree", "prune"]);
+
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    let failed = failures(&world);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    let issues = world.gh()["issues"].as_array().unwrap().clone();
+    let opened = issues.iter().find(|issue| issue["number"] == failed[0].0).unwrap();
+    assert_eq!(opened["title"], "afkconvoy: the cut of v1.2.3 failed", "{opened}");
+    assert!(opened["body"].as_str().unwrap().contains("its checkout is gone"), "{opened}");
+    assert!(!claimed(&world));
+    for now in [10_200, 10_300 + 1800 + 60] {
+        assert_eq!(standing(&world, "alpha", now), "failed");
+        assert_eq!(cut(&tick_as(&world, "alpha", now)), Vec::<String>::new(), "no restart");
+    }
+    assert_eq!(failures(&world).len(), 1, "one issue");
+
+    world.close_issue(failed[0].0);
+    assert_eq!(cut(&tick_as(&world, "alpha", 20_000)), ["cut done"]);
+    let answer = finish(&world, &self::checkout(&world));
+    assert_eq!(answer["commit"], made, "{answer}");
+    assert_eq!(cut_branches(&world), pushed, "no second branch for the same version");
+}
+
+/// A peer's cut whose host went silent is a failed cut too: the tick that
+/// unclaims it opens the one issue, named by the version its branch says,
+/// and no cut of that version starts on its own.
+#[test]
+fn a_silent_peer_s_cut_opens_its_issue_and_starts_no_cut_on_its_own() {
+    let world = cutting();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    git(&checkout, &["push", "-q", "origin", "HEAD:refs/heads/afkconvoy-cut/v0.1.1-10000"]);
+    let late = 10_000 + 1801 + 60;
+    assert_eq!(standing(&world, "beta", late), "stale_run");
+    assert_eq!(cut(&tick_as(&world, "beta", late)), ["end_cut done"]);
+    let failed = failures(&world);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    let issues = world.gh()["issues"].as_array().unwrap().clone();
+    let opened = issues.iter().find(|issue| issue["number"] == failed[0].0).unwrap();
+    assert_eq!(opened["title"], "afkconvoy: the cut of v0.1.1 failed", "{opened}");
+    assert!(opened["body"].as_str().unwrap().contains("h1, went silent"), "{opened}");
+    assert!(!claimed(&world));
+    assert_eq!(standing(&world, "beta", late + 10), "failed");
+    assert_eq!(cut(&tick_as(&world, "beta", late + 10)), Vec::<String>::new());
+}
+
+/// A cut takes no turn: while its gate hangs, a turn on the same repo lands.
+#[test]
+fn a_turn_lands_while_a_cut_s_gate_hangs() {
+    let world = World::new();
+    let go = world.root.join("go");
+    let started = world.root.join("cut-gate-started");
+    // The cut's commit alone holds VERSION: only its gate waits. A heavy
+    // gate, as this repo's own is, in the host's worker lanes.
+    let script = world.root.join("gate-or-wait.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "if test -f VERSION; then touch '{}'; while test ! -f '{}'; do sleep 0.05; done; fi\n",
+            started.display(),
+            go.display()
+        ),
+    )
+    .unwrap();
+    let gate = format!("afkconvoy exclusive -- sh '{}'", script.display());
+    // A lane for the cut's gate and one for the turn: capacity is the
+    // host's, and what this shows is that the cut holds no barrier and
+    // shares its repo as a candidate does.
+    world.say_host_settings(json!({"gate_lanes": 2}));
+    tag(&world, "v0.1.0");
+    commit_config(
+        &world,
+        &format!("{}\n{}", CONFIG.replace("./gate.sh", &gate), cut_block(&says_published(&world))),
+        "Turn cutting on (#7)",
+    );
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    // The base tip is on record: no certification waits on the cut's lane.
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let cutting = checkout(&world);
+    let mut child = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &cutting)
+        .args(["cut", "--host", "h1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(60);
+    while !started.exists() {
+        assert!(child.try_wait().unwrap().is_none(), "the cut ended before its gate");
+        assert!(Instant::now() < until, "the cut's gate never started");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // An issue's turn: a candidate, as the five PRs held behind the
+    // FelixMBP14 cut's barrier were.
+    let fix = world.worker(41, "fixed.txt", "landed meanwhile");
+    let said = world.root.join("landing-said");
+    let mut landing = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &fix)
+        .args(["land", "--issue", "41", "--host", "h1"])
+        .stdout(Stdio::piped())
+        .stderr(std::fs::File::create(&said).unwrap())
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(60);
+    while landing.try_wait().unwrap().is_none() {
+        if Instant::now() >= until {
+            let _ = landing.kill();
+            let _ = child.kill();
+            panic!("the turn waited on the cut: {}", std::fs::read_to_string(&said).unwrap());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let joined: Value =
+        serde_json::from_slice(&landing.wait_with_output().unwrap().stdout).unwrap();
+    assert_eq!(joined["outcome"], "merged", "{joined}");
+    let landed = joined["commit"].as_str().unwrap().to_string();
+    assert_eq!(world.remote(&["rev-parse", BASE]), landed);
+    assert!(child.try_wait().unwrap().is_none(), "the cut's gate still hangs");
+    no_cut_on_the_chain(&world);
+
+    std::fs::write(&go, "go").unwrap();
+    let output = child.wait_with_output().unwrap();
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(answer["tag"], "v0.1.1", "{answer}");
+    assert_eq!(world.remote(&["rev-parse", BASE]), landed, "the cut added nothing to the base");
+    let tagged = answer["commit"].as_str().unwrap();
+    assert!(!ancestor(&world, tagged, &landed));
+    let snapshot = parents(&world, tagged).pop().unwrap();
+    let since = world.remote(&["rev-list", "--count", &format!("{snapshot}..{landed}")]);
+    let past = planned(&world, "alpha", 10_100)["cut"]["past"].clone();
+    assert_eq!(past.to_string(), since, "past the tag is past its parent, the snapshot");
+    assert_eq!(since, "2", "the turn's merge commit and its PR's commit");
 }
 
 /// The first version takes every release step, whether setting it changes
@@ -431,7 +624,6 @@ fn first_cut(preset: bool) {
 
     // Failure at gate leaves one PR and a record that resumes at gate. A
     // peer still starts no cut, and the retry closes the reported failure.
-    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true, "the cut starts on a green base");
     std::fs::write(world.root.join("red"), "red").unwrap();
     let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]);
     let screen = failed.stderr.clone();
@@ -442,9 +634,7 @@ fn first_cut(preset: bool) {
     let ended = screen.lines().last().unwrap();
     assert!(ended.starts_with("[afkconvoy] cut: gate failed after "), "{screen}");
     assert!(ended.contains("s: "), "{screen}");
-    assert!(!screen.contains("[afkconvoy] cut: land started"), "{screen}");
-    let failed_record = record(&checkout);
-    let pr = failed_record["pr"].as_u64().unwrap();
+    assert!(!screen.contains("[afkconvoy] cut: tag started"), "{screen}");
     assert_ne!(git(&checkout, &["rev-parse", "HEAD"]), git(&world.clone, &["rev-parse", "HEAD"]));
     let same_tree = git(&checkout, &["rev-parse", "HEAD^{tree}"])
         == git(&world.clone, &["rev-parse", "HEAD^{tree}"]);
@@ -454,10 +644,9 @@ fn first_cut(preset: bool) {
     assert_eq!(cut(&tick_as(&world, "beta", 10_110)), Vec::<String>::new());
     std::fs::remove_file(world.root.join("red")).unwrap();
 
-    let answer = finish_in_turn(&world, &checkout);
+    let answer = finish(&world, &checkout);
     assert_eq!(answer["tag"], "v1.2.3", "{answer}");
-    assert_eq!(answer["pr"], pr);
-    assert_eq!(answer["prs"], json!([7]), "the cut's own PR is excluded");
+    assert_eq!(answer["prs"], json!([7]));
     assert_eq!(answer["closed"].as_array().unwrap().len(), 1);
     let steps: Vec<_> = answer["took"]
         .as_array()
@@ -465,12 +654,12 @@ fn first_cut(preset: bool) {
         .iter()
         .map(|step| step["step"].as_str().unwrap())
         .collect();
-    assert_eq!(steps, ["set", "pr", "gate", "land", "tag", "publish"]);
+    assert_eq!(steps, ["set", "push", "gate", "tag", "publish"]);
     let tagged = world.remote(&["rev-parse", "v1.2.3^{commit}"]);
-    assert_eq!(answer["landed"], tagged);
-    assert_eq!(world.remote(&["rev-parse", BASE]), tagged);
+    assert_eq!(answer["commit"], tagged);
+    assert_eq!(parents(&world, &tagged), vec![world.remote(&["rev-parse", BASE])]);
     assert_eq!(std::fs::read_to_string(world.root.join("published")).unwrap(), "1.2.3 v1.2.3\n");
-    assert_eq!(world.gh()["prs"].as_array().unwrap().len(), 2, "one old PR and one cut PR");
+    assert_eq!(world.gh()["prs"].as_array().unwrap().len(), 1, "the cut opened no PR");
     assert!(failures(&world).is_empty());
     // The failed run already gave its claim back; the manual continuation
     // closed its failure and left no run for the tick to end again.
@@ -503,7 +692,7 @@ fn an_untagged_repo_cuts_its_declared_initial_version_and_then_the_next_patch() 
 }
 
 #[test]
-fn an_initial_version_already_set_is_gated_landed_and_cut_then_the_next_minor() {
+fn an_initial_version_already_set_is_gated_tagged_and_cut_then_the_next_minor() {
     first_cut(true);
 }
 
@@ -623,7 +812,7 @@ fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
     let screen_file = world.root.join("cut-screen");
     let mut child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &checkout)
-        .args(["cut", "--host", "h1", "--second-ms", "10"])
+        .args(["cut", "--host", "h1"])
         .stdout(Stdio::piped())
         .stderr(std::fs::File::create(&screen_file).unwrap())
         .spawn()
@@ -652,10 +841,10 @@ fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
     assert!(output.status.success(), "{screen}");
     let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(answer["tag"], "v0.1.1", "{answer}");
-    assert_eq!(answer["took"].as_array().unwrap().len(), 6, "{answer}");
+    assert_eq!(answer["took"].as_array().unwrap().len(), 5, "{answer}");
     let first = screen.lines().next().unwrap();
     assert!(first.contains("v0.1.1 (past v0.1.0, holding #7)"), "{first}");
-    assert!(first.contains("steps: set, pr, gate, land, tag, publish"), "{first}");
+    assert!(first.contains("steps: set, push, gate, tag, publish"), "{first}");
     assert!(first.contains(&format!("record: {}", record_file(&checkout).display())), "{first}");
     let log_file = record_file(&checkout).with_file_name("convoy-cut.log");
     assert!(first.contains(&format!("log: {}", log_file.display())), "{first}");
@@ -735,11 +924,12 @@ fn a_cut_whose_terminal_is_gone_opens_one_issue_and_no_cut_starts_while_it_is_op
 }
 
 #[test]
-fn a_cut_tags_the_commit_that_landed_it_and_publishes_with_the_tag_checked_out() {
+fn a_cut_tags_its_commit_and_publishes_with_the_tag_checked_out() {
     let world = cutting();
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let checkout = checkout(&world);
-    let landed = its_pr_lands(&world, &checkout);
+    let base = world.remote(&["rev-parse", BASE]);
+    let landed = its_commit_is_made(&checkout);
 
     let cut_answer = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]);
     let screen = cut_answer.stderr.clone();
@@ -757,7 +947,7 @@ fn a_cut_tags_the_commit_that_landed_it_and_publishes_with_the_tag_checked_out()
     assert_eq!(tagged.trim(), landed);
     let published = std::fs::read_to_string(world.root.join("published")).unwrap();
     assert_eq!(published, "0.1.1 v0.1.1\n");
-    assert_eq!(git(&world.bare, &["rev-parse", BASE]).trim(), landed, "pushed nothing to the base");
+    assert_eq!(git(&world.bare, &["rev-parse", BASE]).trim(), base, "pushed nothing to the base");
 
     // The next tick finds it over: says so, and takes its checkout down.
     let ticked = tick_as(&world, "alpha", 10_100);
@@ -773,14 +963,14 @@ fn a_cut_tags_the_commit_that_landed_it_and_publishes_with_the_tag_checked_out()
 }
 
 #[test]
-fn a_minor_landing_before_or_after_the_cuts_own_landing_supersedes_the_patch() {
+fn a_minor_landing_before_or_after_the_cuts_own_commit_supersedes_the_patch() {
     for minor_after_cut in [false, true] {
         let world = cutting();
         assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
         let checkout = checkout(&world);
         // A minor may land on either side of the cut's own landing.
         if minor_after_cut {
-            its_pr_lands(&world, &checkout);
+            its_commit_is_made(&checkout);
         }
         land(&world, "Add a gadget (#9)");
         world.with_gh(|gh| {
@@ -789,7 +979,7 @@ fn a_minor_landing_before_or_after_the_cuts_own_landing_supersedes_the_patch() {
             gh["prs"].as_array_mut().unwrap().push(pr);
         });
         if !minor_after_cut {
-            its_pr_lands(&world, &checkout);
+            its_commit_is_made(&checkout);
         }
 
         let stopped = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
@@ -824,7 +1014,7 @@ fn a_line_that_fails_fails_its_step_and_the_lines_after_it_are_not_run() {
         });
         assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
         let checkout = checkout(&world);
-        its_pr_lands(&world, &checkout);
+        its_commit_is_made(&checkout);
 
         let failed = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
         assert_eq!(failed["failed"], "publish", "{first:?}: {failed}");
