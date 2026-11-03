@@ -1301,7 +1301,7 @@ enum Command {
     ///
     /// With `--all`:
     ///
-    /// {"host": {"host_kit", "exclusive", "watch", "notify", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
+    /// {"host": {"host_kit", "exclusive", "watch", "notify", "daybook", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
     ///
     /// - `host`: what of `host` is the host's alone, as above, said once
     /// - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy, a worker health observation overdue by the pace of every fleet instance on the host. A checkout's own findings add, under `--all`, its fleet instance not alive, and, with `--since`, each tick of the interval that failed with what no unrecovered step's finding says
