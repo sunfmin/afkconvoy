@@ -499,6 +499,14 @@ fn give(home: &Path, declared: &Declared, targets: &[Harness], now: u64) -> Done
     Done { outcomes, linked, wired, synced }
 }
 
+/// The guards this host's settings declare: none where they name no guard
+/// list; an error where the list they name cannot be read as one, so no
+/// session is started without a guard its operator declared.
+pub fn guards_of_host() -> Result<Vec<crate::agent_guards::Guard>> {
+    let Some(list) = crate::host_settings::of_host()?.agent_guards else { return Ok(vec![]) };
+    read_guards(&list).map_err(anyhow::Error::msg)
+}
+
 /// The guards the list at `list` declares; an error says why it cannot be
 /// read as one.
 fn read_guards(list: &Path) -> Result<Vec<crate::agent_guards::Guard>, String> {

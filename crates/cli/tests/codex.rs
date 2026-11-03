@@ -1667,3 +1667,95 @@ fn a_codex_worker_takes_fresh_user_effort_and_casting_starts_nothing() {
     world.issue(8, &["ready-for-agent"]);
     assert_selection(&launch(&world, 8, 1100), "fleet-first", Some("high"));
 }
+
+/// Declares, in `world`'s host settings, one guard (sunfmin/control#529)
+/// that refuses deleting a branch, saying which harness asked.
+fn declare_guard(world: &World) {
+    let guard = world.root.join("dotfiles/no-delete.sh");
+    std::fs::create_dir_all(guard.parent().unwrap()).unwrap();
+    std::fs::write(
+        &guard,
+        "#!/bin/sh\ncase \"$(cat)\" in *'push origin --delete'*) echo \"no deleting, said to $AFKCONVOY_HARNESS\" >&2; exit 2 ;; esac\n",
+    )
+    .unwrap();
+    let list = world.root.join("dotfiles/guards.txt");
+    std::fs::write(&list, format!("shell sh '{}'\n", guard.display())).unwrap();
+    world.say_host_settings(json!({"agent_guards": list}));
+}
+
+/// What the shell line `command` answers when run as Codex runs a hook, for
+/// a shell call of `line`: its exit code and what it said on standard error.
+fn guard_answers(command: &str, line: &str) -> (i32, String) {
+    use std::io::Write;
+    let call = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": line}, "cwd": "/tmp"});
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", command])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(call.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+#[test]
+fn an_unbound_codex_worker_is_given_the_declared_guards_in_its_kept_home_and_nothing_else() {
+    let world = unbound_codex();
+    declare_guard(&world);
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    // The host user's own hooks, orca's among them, are not the worker's.
+    write(
+        &world.home(),
+        ".codex/hooks.json",
+        "{\"hooks\": {\"PreToolUse\": [{\"matcher\": \"\", \"hooks\": [{\"type\": \"command\", \"command\": \"orca-hook\", \"timeout\": 5}]}]}}\n",
+    );
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    let ran = under_codex(&world, &format!("cd '{}' && {}", dir.display(), started(&world, &dir)));
+    let kept = Path::new(&ran[1]);
+    assert!(kept.starts_with(dir.join(".afkconvoy-tmp")), "{ran:?}");
+    assert!(ran.iter().any(|word| word == "--dangerously-bypass-hook-trust"), "{ran:?}");
+
+    let hooks: Value =
+        serde_json::from_str(&std::fs::read_to_string(kept.join("hooks.json")).unwrap()).unwrap();
+    let groups = hooks["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(groups.len(), 1, "the guard alone, none of the user's: {hooks}");
+    assert_eq!(groups[0]["matcher"], "Bash");
+    let command = groups[0]["hooks"][0]["command"].as_str().unwrap();
+    let (code, said) = guard_answers(command, "git push origin --delete topic");
+    assert_eq!((code, said.trim()), (2, "no deleting, said to codex"));
+    assert_eq!(guard_answers(command, "git status").0, 0);
+}
+
+#[test]
+fn an_unbound_codex_worker_with_no_guards_declared_has_no_hook_settings_in_its_kept_home() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    write(&world.home(), ".codex/hooks.json", "{\"hooks\": {}}\n");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    let ran = under_codex(&world, &format!("cd '{}' && {}", dir.display(), started(&world, &dir)));
+    assert!(!Path::new(&ran[1]).join("hooks.json").exists(), "{ran:?}");
+}
+
+#[test]
+fn a_codex_worker_in_a_role_is_given_none_of_the_declared_guards() {
+    let world = bound_alone();
+    declare_guard(&world);
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.issue(7, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+    let dir = worktree(&world, 7);
+    let kept = PathBuf::from(&under_codex(&world, &started(&world, &dir))[1]);
+    let held: Vec<String> = std::fs::read_dir(&kept)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(held, ["auth.json"]);
+}
