@@ -186,9 +186,11 @@ fn wired_text(text: Option<&str>, harness: Harness, guards: &[Guard]) -> Result<
     let mut top: Vec<(String, Node)> =
         top.0.into_iter().map(|(key, raw)| (key, Node::Raw(raw))).collect();
     let table = match top.iter().find(|(key, _)| key == hooks.table) {
-        Some((_, Node::Raw(raw))) => serde_json::from_str::<Ordered<Box<RawValue>>>(raw.get())
-            .with_context(|| format!("its `{}` is not a JSON object", hooks.table))?
-            .0,
+        Some((_, Node::Raw(raw))) => {
+            serde_json::from_str::<Ordered<Box<RawValue>>>(raw.get())
+                .with_context(|| format!("its `{}` is not a JSON object", hooks.table))?
+                .0
+        }
         _ => vec![],
     };
     let mut table: Vec<(String, Node)> =
@@ -340,7 +342,9 @@ mod tests {
         assert!(after.find("\"zeta\"").unwrap() < after.find("\"hooks\"").unwrap(), "{after}");
         assert!(after.contains("{\"b\": 1, \"a\": 2}"), "{after}");
         assert!(after.contains("[{\"hooks\": []}]"), "{after}");
-        assert!(after.contains("{\"matcher\": \"*\", \"hooks\": [{\"type\": \"command\", \"command\": \"orca\"}]}"));
+        assert!(after.contains(
+            "{\"matcher\": \"*\", \"hooks\": [{\"type\": \"command\", \"command\": \"orca\"}]}"
+        ));
         let value: Value = serde_json::from_str(&after).unwrap();
         let groups = value["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(groups.len(), 2);
