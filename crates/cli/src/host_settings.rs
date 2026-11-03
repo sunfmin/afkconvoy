@@ -83,6 +83,9 @@ pub struct Settings {
     /// `--agent-skills`: the agent setup's skill list, installed for every
     /// held harness.
     pub agent_skills: Option<PathBuf>,
+    /// `--agent-guards`: the agent setup's guard list, wired into every held
+    /// harness's hook settings (sunfmin/control#529).
+    pub agent_guards: Option<PathBuf>,
     /// What another afkconvoy says beside them, kept as it is: an older one's
     /// `no_host_sleep` among them, which keeps that one from putting the
     /// host to sleep (docs/adr/0050).
@@ -122,6 +125,7 @@ pub struct Named {
     pub host_name: Option<To<String>>,
     pub agent_instructions: Option<To<PathBuf>>,
     pub agent_skills: Option<To<PathBuf>>,
+    pub agent_guards: Option<To<PathBuf>>,
 }
 
 /// What a `run` sets one setting to: a value of its own, or back to its
@@ -184,7 +188,7 @@ pub fn watch_dir_or_default(said: &str) -> Result<To<PathBuf>, String> {
     })
 }
 
-/// `--agent-instructions` and `--agent-skills` as said: an existing file,
+/// `--agent-instructions`, `--agent-skills` and `--agent-guards` as said: an existing file,
 /// kept by its whole path, or `default` for none.
 pub fn file_or_default(said: &str) -> Result<To<PathBuf>, String> {
     To::parse(said, |said| {
@@ -261,6 +265,7 @@ impl Settings {
         lay(&mut self.host_name, named.host_name.as_ref());
         lay(&mut self.agent_instructions, named.agent_instructions.as_ref());
         lay(&mut self.agent_skills, named.agent_skills.as_ref());
+        lay(&mut self.agent_guards, named.agent_guards.as_ref());
         self
     }
 
@@ -371,6 +376,7 @@ impl Settings {
             "host_name": self.host_name.clone().unwrap_or_else(system_host_name),
             "agent_instructions": self.agent_instructions,
             "agent_skills": self.agent_skills,
+            "agent_guards": self.agent_guards,
         });
         match in_force {
             Value::Object(in_force) => in_force,
@@ -480,6 +486,7 @@ pub const NOTIFY_COMMAND_ENV: &str = "AFKCONVOY_NOTIFY_COMMAND";
 pub const HOST_NAME_ENV: &str = "AFKCONVOY_HOST_NAME";
 pub const AGENT_INSTRUCTIONS_ENV: &str = "AFKCONVOY_AGENT_INSTRUCTIONS";
 pub const AGENT_SKILLS_ENV: &str = "AFKCONVOY_AGENT_SKILLS";
+pub const AGENT_GUARDS_ENV: &str = "AFKCONVOY_AGENT_GUARDS";
 
 /// A number of cores or GiB as the file keeps it — the number, whole or not
 /// — and as a setting holds it, in thousandths of it.

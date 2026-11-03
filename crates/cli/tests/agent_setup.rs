@@ -200,3 +200,160 @@ fn a_run_says_where_the_agent_setup_is_declared_and_default_removes_it() {
     assert_eq!(world.checkout_list()["settings"]["agent_skills"], Value::Null);
     let _ = world.afk(&["stop", "--all"]);
 }
+
+/// Claude Code's settings as orca and the operator leave them: orca's hook
+/// at every call, one of the operator's own, and keys beside the hooks.
+const CLAUDE_SETTINGS: &str = r#"{
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline.sh"
+  },
+  "permissions": {
+    "deny": ["Read(./.env)"],
+    "allow": ["Bash(git status)"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"${HOME-}/.orca/agent-hooks/claude-hook.sh\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [{"type": "command", "command": "bash notify.sh ask", "timeout": 20}]
+      }
+    ],
+    "Stop": [{"hooks": [{"type": "command", "command": "orca stop", "timeout": 10}]}]
+  },
+  "model": "opus"
+}
+"#;
+
+/// Codex's hooks as orca writes them.
+const CODEX_HOOKS: &str = r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ": orca-agent-hook-form=1; /bin/sh \"${HOME-}/.orca/agent-hooks/codex-hook.sh\" || :",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ": orca-agent-hook-form=1; /bin/sh \"${HOME-}/.orca/agent-hooks/codex-hook.sh\" || :",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+"#;
+
+/// Runs `command`, a wired hook's, as its harness does: with the call on its
+/// standard input → its exit code and what it wrote on standard error.
+fn ask_hook(command: &str, call: &Value) -> (i32, String) {
+    use std::io::Write;
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", command])
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(call.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+#[test]
+fn the_guards_are_wired_into_both_harnesses_hook_settings_leaving_the_rest_as_it_was() {
+    let world = World::new();
+    world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
+    // A guard that refuses deleting a branch, whichever harness asks.
+    let guard = world.root.join("dotfiles/no-delete.sh");
+    std::fs::create_dir_all(guard.parent().unwrap()).unwrap();
+    std::fs::write(
+        &guard,
+        "#!/bin/sh\ncase \"$(cat)\" in *'push origin --delete'*) echo \"no deleting, said to $AFKCONVOY_HARNESS\" >&2; exit 2 ;; esac\n",
+    )
+    .unwrap();
+    let list = world.root.join("dotfiles/guards.txt");
+    std::fs::write(&list, format!("# the operator's guards\nshell sh '{}'\n", guard.display()))
+        .unwrap();
+    world.say_host_settings(json!({"agent_guards": list}));
+    let claude = world.home().join(".claude/settings.json");
+    let codex = world.home().join(".codex/hooks.json");
+    std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+    std::fs::write(&claude, CLAUDE_SETTINGS).unwrap();
+    std::fs::write(&codex, CODEX_HOOKS).unwrap();
+
+    // Before anything wired them, doctor names each harness missing one.
+    let doctor = world.afk(&["doctor", "--all"]).ok();
+    let found = drifted(&doctor);
+    assert_eq!(found.len(), 2, "{found:?}");
+    for finding in &found {
+        assert!(finding["evidence"].as_str().unwrap().contains("is missing guards: sh '"));
+    }
+
+    world.afk(&TICK).ok();
+    for (file, before, harness) in
+        [(&claude, CLAUDE_SETTINGS, "claude-code"), (&codex, CODEX_HOOKS, "codex")]
+    {
+        let after = std::fs::read_to_string(file).unwrap();
+        // Every entry and key of another's is as it was, in its place: the
+        // file up to the end of the last group before the kit's is the same.
+        let theirs = before.rfind("}\n    ]").unwrap() + 1;
+        assert_eq!(&after[..theirs], &before[..theirs], "{after}");
+        let was: Value = serde_json::from_str(before).unwrap();
+        let mut now: Value = serde_json::from_str(&after).unwrap();
+        let groups = now["hooks"]["PreToolUse"].as_array_mut().unwrap();
+        let ours = groups.pop().unwrap();
+        assert_eq!(was, now, "nothing else changed in {}", file.display());
+        assert_eq!(ours["matcher"], "Bash");
+        // The command wired refuses the call as its harness sends it, and
+        // lets another through.
+        let command = ours["hooks"][0]["command"].as_str().unwrap();
+        let call = |line: &str| json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": line}, "cwd": "/tmp"});
+        let (code, said) = ask_hook(command, &call("git push origin --delete topic"));
+        assert_eq!((code, said.trim()), (2, format!("no deleting, said to {harness}").as_str()));
+        assert_eq!(ask_hook(command, &call("git status")).0, 0);
+    }
+    assert!(drifted(&world.afk(&["doctor", "--all"]).ok()).is_empty());
+
+    // Writing the kit again changes neither file.
+    let (claude_was, codex_was) = (std::fs::read(&claude).unwrap(), std::fs::read(&codex).unwrap());
+    world.shell_claude_models(&["opus"]);
+    world.shell_server_models(&["gpt-5.5"]);
+    for program in ["pi", "dsh-tui", "kimi", "grok"] {
+        world.shell_knows(program, None);
+    }
+    let written = world.afk(&["kit"]).ok();
+    assert_eq!(written["agent_setup"]["wired"], json!([]), "{written}");
+    assert_eq!(std::fs::read(&claude).unwrap(), claude_was);
+    assert_eq!(std::fs::read(&codex).unwrap(), codex_was);
+
+    // An entry of the kit's taken out by hand is a finding, and the kit
+    // puts it back.
+    std::fs::write(&codex, CODEX_HOOKS).unwrap();
+    let found = drifted(&world.afk(&["doctor", "--all"]).ok());
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0]["what"].as_str().unwrap().contains("`codex`"));
+    let written = world.afk(&["kit"]).ok();
+    assert_eq!(written["agent_setup"]["wired"], json!(["codex"]), "{written}");
+}

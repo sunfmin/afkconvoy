@@ -36,6 +36,16 @@ macro_rules! warning_accepted {
         "\"skipDangerousModePermissionPrompt\":true"
     };
 }
+/// Where Claude Code reads its user's hooks: their settings, which a
+/// session they start by hand, and a worker outside a role, loads. Its tools
+/// that edit a file are each named.
+pub(super) const USER_HOOKS: super::UserHooks = super::UserHooks {
+    settings: ".claude/settings.json",
+    table: "hooks",
+    event: "PreToolUse",
+    shell: "Bash",
+    edits: "Edit|Write|MultiEdit|NotebookEdit",
+};
 /// Claude Code with the flag that lets it work with nobody at its terminal,
 /// and the warning it opens with under that flag answered. Each worker adds
 /// native session trust as well. Of two `--settings` Claude Code takes

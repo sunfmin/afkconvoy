@@ -176,6 +176,7 @@ kinds! {
     WatchUnavailable: Critical, "no harness can start this host's watch";
     WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotifyFailed: Warning, "human decision sending has failed repeatedly";
+    DaybookUnwritten: Warning, "a watch round's daybook entry is not written";
     NotMoved: Warning, "the host runner did not move onto";
     NotUpgraded: Warning, "is published, newer than the host runner's";
     PathStale: Warning, "is first on PATH";
@@ -241,6 +242,7 @@ impl Kind {
                 | Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotifyFailed
+                | Kind::DaybookUnwritten
                 | Kind::NotMoved
                 | Kind::NotUpgraded
                 | Kind::PathStale
@@ -263,6 +265,7 @@ impl Kind {
             Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotifyFailed
+                | Kind::DaybookUnwritten
                 | Kind::PathStale
                 | Kind::NotUpgraded
         )
@@ -2615,6 +2618,7 @@ fn host_once(
         ("watch".to_string(), crate::host_watch::json(watch.as_ref(), rounds)),
         ("asking".to_string(), crate::host_asking::json()),
         ("notify".to_string(), crate::watch_notify::json()),
+        ("daybook".to_string(), crate::watch_daybook::json()),
         ("other_accounts".to_string(), crate::machine::json(others)),
     ])
 }
@@ -2630,6 +2634,7 @@ impl Look {
         findings.extend(crate::kit_research::findings());
         findings.extend(crate::agent_setup::findings());
         findings.extend(crate::watch_notify::findings());
+        findings.extend(crate::watch_daybook::findings());
         Look { readings, host, findings, trackers: crate::tracker::Public::default() }
     }
 }

@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::{RepoDir, RepoName};
@@ -29,6 +29,7 @@ pub mod accounts;
 pub mod acting;
 pub mod admission;
 pub mod advance;
+pub mod agent_guards;
 pub mod agent_setup;
 mod asking_report;
 mod asking_terminal;
@@ -137,6 +138,7 @@ mod unbound_issue;
 mod unworked;
 pub mod wake;
 pub mod watch;
+mod watch_daybook;
 pub mod watch_landing;
 mod watch_notify;
 mod watch_report;
@@ -150,7 +152,7 @@ use dispatch::Agent;
 use fleet::Fleet;
 use git::Repo;
 use host_settings::{
-    ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
+    ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV, AGENT_GUARDS_ENV,
     AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOT_CORES_ENV,
     HOT_MEMORY_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV,
     WATCH_EVERY_ENV, jev_key_command_or_default, notify_command_or_default, port_or_default,
@@ -437,7 +439,7 @@ enum Command {
     ///
     /// ## The agent setup
     ///
-    /// The operator's global instructions and skills, declared once in the operator's own files and named by two host settings, `run --agent-instructions <FILE>` and `run --agent-skills <FILE>` (`afkconvoy run --help`). The skill list holds one line per source, `<source> <skill>...`, or `<source> *` for every skill the source ships; blank and `#` lines say nothing. Writing the host kit gives every harness it holds the setup: the instructions file is linked at the harness's global instructions location (Claude Code `~/.claude/CLAUDE.md`, Codex `~/.codex/AGENTS.md`, pi `~/.pi/agent/AGENTS.md`, Kimi Code `~/.kimi-code/AGENTS.md`, Grok `~/.grok/rules/AGENTS.md`, DSH `~/.dsh/AGENTS.md`), with what stood there and was no link to it kept beside it as `<name>.before-agent-setup`; the list is installed through `npx skills add <source> -g -y -a <agent>...` for each harness's `npx skills` agent (DSH has none, and reads the shared copies), and a skill installed for one of those agents that the list does not name is removed. The copies, in the shared `~/.agents/skills`, are read-only between syncs: no harness and no shell command edits one in place; a sync opens them for its own writes and closes them again. A tick gives the setup to a harness held since it was last given — found by a refresh, a switch or a launch — with no step by the operator; one whose giving failed is tried again an hour later. A `run` that changes either setting gives it to every held harness again. What was given is recorded beside the host kit, in `agent-setup.json`. `doctor` names each held harness that differs from the declaration (`differs from the agent setup`), with `afkconvoy kit` as its fix. With neither setting said, nothing is given and nothing is reported.
+    /// The operator's global instructions, skills and guards, declared once in the operator's own files and named by three host settings, `run --agent-instructions <FILE>`, `run --agent-skills <FILE>` and `run --agent-guards <FILE>` (`afkconvoy run --help`). The skill list holds one line per source, `<source> <skill>...`, or `<source> *` for every skill the source ships; blank and `#` lines say nothing. Writing the host kit gives every harness it holds the setup: the instructions file is linked at the harness's global instructions location (Claude Code `~/.claude/CLAUDE.md`, Codex `~/.codex/AGENTS.md`, pi `~/.pi/agent/AGENTS.md`, Kimi Code `~/.kimi-code/AGENTS.md`, Grok `~/.grok/rules/AGENTS.md`, DSH `~/.dsh/AGENTS.md`), with what stood there and was no link to it kept beside it as `<name>.before-agent-setup`; the list is installed through `npx skills add <source> -g -y -a <agent>...` for each harness's `npx skills` agent (DSH has none, and reads the shared copies), and a skill installed for one of those agents that the list does not name is removed. The copies, in the shared `~/.agents/skills`, are read-only between syncs: no harness and no shell command edits one in place; a sync opens them for its own writes and closes them again. The guard list holds one line per guard, `shell <command>` or `edits <command>`; blank and `#` lines say nothing. Each guard is wired before the tool calls it applies to into the hook settings of every held harness that has some: Claude Code `~/.claude/settings.json` (matchers `Bash`, and `Edit|Write|MultiEdit|NotebookEdit`), Codex `~/.codex/hooks.json` (`Bash`, and `apply_patch`); pi, Kimi Code, Grok and DSH are given none. Wiring merges and owns nothing else: an entry of the kit's is one whose command opens with `: afkconvoy-agent-guard;`; those are replaced by the declared ones, after every other entry at `PreToolUse`, and every other key and entry is written back as it was; a file already as declared is not written. Codex asks its user to review a new hook once (`/hooks`). A guard reads its harness's call as JSON on standard input: a shell call is `tool_name` `Bash` with the line in `tool_input.command` on both harnesses, with `cwd`; an edit is Claude Code's `Edit`, `Write`, `MultiEdit` or `NotebookEdit` with `tool_input.file_path` (or `notebook_path`), and Codex's `apply_patch` with the patch in `tool_input.command`, whose `*** Add File: `, `*** Update File: ` and `*** Delete File: ` lines name the files; `AFKCONVOY_HARNESS` names the harness. It refuses by exiting 2 with why on standard error, or by printing `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"<why>"}}`: both harnesses take either. A tick gives the setup to a harness held since it was last given — found by a refresh, a switch or a launch — with no step by the operator; one whose giving failed is tried again an hour later. A `run` that changes either setting gives it to every held harness again. What was given is recorded beside the host kit, in `agent-setup.json`. `doctor` names each held harness that differs from the declaration (`differs from the agent setup`), with `afkconvoy kit` as its fix. With none of the settings said, nothing is given and nothing is reported.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Kit {
         /// Refused: automatic casting is gone. An old kit `cast` key is ignored
@@ -1337,7 +1339,7 @@ enum Command {
     ///
     /// With `--all`:
     ///
-    /// {"host": {"host_kit", "exclusive", "watch", "notify", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
+    /// {"host": {"host_kit", "exclusive", "watch", "notify", "daybook", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
     ///
     /// - `host`: what of `host` is the host's alone, as above, said once
     /// - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy, a worker health observation overdue by the pace of every fleet instance on the host. A checkout's own findings add, under `--all`, its fleet instance not alive, and, with `--since`, each tick of the interval that failed with what no unrecovered step's finding says
@@ -1520,7 +1522,7 @@ enum Command {
     ///
     /// The checkout's tracker, with its entry, read at each tick as its concurrency is: the repo its fleet reads and writes its issues in — the issues, their labels, comments, blockers, escalations and closing — while PRs, branches, the gate and their landing turns stay the checkout's own repo's. `--tracker me/issues` says it, and `--tracker default`, or the checkout's own repo, says none; a `run` that names none leaves it as it is. Until the checkout says one, its tracker is its own repo. A tracker another repo than the checkout's holds the issues of many repos: the fleet works the open issues there that carry its repo's repo label, `repo:<owner>/<repo>`, and the ready label — in a bound repo, a flow label; every issue it or a worker opens there carries the repo label, and `intake` and `lock` give it to one that lacks it; and a PR or a landing commit names its issue `me/issues#7`, never `#7`, which is the checkout's own repo's. `run` makes the repo label, and the ready, escalate and lock labels of the repo config, in the tracker where it lacks them. It refuses to change the tracker while the checkout's fleet holds a claim on an issue of the tracker it had, or a legacy line still carries a PR of one, naming them, and changes nothing: run it again once they are done. The issues of the tracker it had stay there. A tracker GitHub says is public is refused, and nothing is made in it or changed: whoever can comment on an issue there writes what the fleet reads as its state and what a worker reads as its task. So is the checkout's own repo, where it is public and the checkout says no tracker, or `default`: every start of its fleet is refused until it says a private one, `--tracker <owner>/<private repo>`. A `run` that starts the host runner — where none runs, or where it moves one of an older release (below) — says the tracker of a checkout on the list with its entry before it starts it, as that host runner starts every checkout on the list, as its entry has it, before it is handed this one: it asks GitHub and makes the labels before an older host runner is stopped, which changes nothing where it refuses, and keeps the tracker once that host runner has let the host go. So its checkout's fleet instance starts under the tracker this `run` names, never under the one its entry had, and a checkout of a public repo is taken at the first `run --tracker <owner>/<private repo>`, whichever host runner was there. `plan`, `doctor`, `checkouts` and the panel say the tracker.
     ///
-    /// The host settings, in the same file: what this host says for every fleet instance on it — the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`), the panel's port (`--panel`), the operator's directory a watch starts in and how often the host runner looks (`--watch-dir`, `--watch-every`; WATCH, below), and the command that prints the TypeSafe key Jev's worker-health judgments are asked with (`--jev-key-command`), and the shell command that sends human decisions (`--notify-command`; none by default), and the agent setup given to every harness the host kit holds: its instructions file and its skill list (`--agent-instructions`, `--agent-skills`; none by default; `afkconvoy kit --help`, The agent setup). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER, AFKCONVOY_WATCH_DIR, AFKCONVOY_WATCH_EVERY, AFKCONVOY_JEV_KEY_COMMAND, AFKCONVOY_NOTIFY_COMMAND, AFKCONVOY_AGENT_INSTRUCTIONS, AFKCONVOY_AGENT_SKILLS — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, the watch's before each look, the key command at each worker-health judgment — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `default` changes one back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
+    /// The host settings, in the same file: what this host says for every fleet instance on it — the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`), the panel's port (`--panel`), the operator's directory a watch starts in and how often the host runner looks (`--watch-dir`, `--watch-every`; WATCH, below), and the command that prints the TypeSafe key Jev's worker-health judgments are asked with (`--jev-key-command`), and the shell command that sends human decisions (`--notify-command`; none by default), and the agent setup given to every harness the host kit holds: its instructions file, its skill list and its guard list (`--agent-instructions`, `--agent-skills`, `--agent-guards`; none by default; `afkconvoy kit --help`, The agent setup). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER, AFKCONVOY_WATCH_DIR, AFKCONVOY_WATCH_EVERY, AFKCONVOY_JEV_KEY_COMMAND, AFKCONVOY_NOTIFY_COMMAND, AFKCONVOY_AGENT_INSTRUCTIONS, AFKCONVOY_AGENT_SKILLS, AFKCONVOY_AGENT_GUARDS — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, the watch's before each look, the key command at each worker-health judgment — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `default` changes one back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
     ///
     /// The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on its socket in the cache directory (host-runner.sock) — the one socket of the host: `stop`, `wake`, `panel --open`, `exclusive` and `doctor` ask it there too, each naming its checkout, and no fleet instance or repo has one of its own; one nobody listens on, which a host runner killed with no goodbye left, is removed by whoever finds it — and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
     ///
@@ -1792,6 +1794,12 @@ enum Command {
         /// host setting; `default` removes it [default: none]
         #[arg(long, env = AGENT_SKILLS_ENV, value_name = "FILE", value_parser = boxed_file)]
         agent_skills: Option<Box<To<PathBuf>>>,
+        /// The agent setup's guard list, one line per guard, `shell <command>` or `edits
+        /// <command>`, wired before each matching tool call into the hook settings of every
+        /// harness the host kit holds that has some (Claude Code's `~/.claude/settings.json`,
+        /// Codex's `~/.codex/hooks.json`): a host setting; `default` removes it [default: none]
+        #[arg(long, env = AGENT_GUARDS_ENV, value_name = "FILE", value_parser = boxed_file)]
+        agent_guards: Option<Box<To<PathBuf>>>,
         /// The name this host goes by in the records it owns — candidates, claims, slots, logs —
         /// above the name the system gives it, which a network may change: a host renamed
         /// takes its own records for another host's. A `run` that finds none keeps the
@@ -2243,7 +2251,7 @@ enum Command {
     ///
     /// {const:REMOTE_READS}
     ///
-    /// A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. A gate-record push that does not end within 30 seconds is killed with its process group: `not_recorded` says so, the candidate is not green, and queued work can take its lane. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. A candidate holds a worker lane only while it builds and runs its gate; the window has no bound of its own, but for barriers and unconfirmed cancellation. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue, watch or cut. Landing closes the issue; the tick settles its claim and source worktree. Once the landing is published, a failure to close the issue or write its work account does not turn the answer into an error: it is `merged`, with the failure in `settle_error`, and the tick settles the issue; a close GitHub refuses while it closes the issue itself, as a merged PR that says `Closes` it, is a close.
+    /// A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. A gate-record push that does not end within 30 seconds is killed with its process group: `not_recorded` says so, the candidate is not green, and queued work can take its lane. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. A candidate holds a worker lane only while it builds and runs its gate; the window has no bound of its own, but for barriers and unconfirmed cancellation. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue or watch. Landing closes the issue; the tick settles its claim and source worktree. Once the landing is published, a failure to close the issue or write its work account does not turn the answer into an error: it is `merged`, with the failure in `settle_error`, and the tick settles the issue; a close GitHub refuses while it closes the issue itself, as a merged PR that says `Closes` it, is a close.
     ///
     /// Where the candidate's commit declares a ```yaml gates block (`afkconvoy config --help`), the candidate runs the fast gate, not `gate_command`, and waits fast-green for a round. A round is as big as the PRs that are ready: a turn that asks to land is on the candidate record as pending while it waits for a worker lane, and a fast-green candidate frees its lane. When no turn is pending and every candidate of the chain is fast-green, the turn of the chain's last candidate, the round's tip, takes a slow lane and runs the slow gate once on its commit, in its worktree; a PR that asks meanwhile waits for the next round. Green, the whole gate is put on record for the tip's tree from its fast and slow runs, and one atomic push lands every candidate up to the tip; each of their turns answers `merged` and closes its own issue. Red is not split to find whose change failed: the tip's turn answers `gate_red` with `gate` slow and `round`, the round's PRs and issues, and merges the round's tip into its branch, so its worker fixes the round from those issues and the failing tests and asks again; every other candidate of the round answers `round_red` and stops, its change carried by the tip's PR, and its issue is settled from the merge commits on the target branch once that lands. A merge onto the candidate ahead that conflicts is left in the worker's worktree to resolve, as `speculative_conflict`: the worker's branch then carries that candidate. If a fast-green candidate's owner exits on this host after its gate processes are confirmed stopped, the next turn of the same PR and original head adopts it with its recorded evidence and successors intact; a running gate is never adopted.
     ///
@@ -2363,6 +2371,8 @@ enum Command {
     /// ## What it reads and writes
     ///
     /// It reads the running watch on this host and the report file, and atomically keeps the report in the host cache. It needs no repo or GitHub login. The same report may be submitted again; a different report cannot replace it. A missing part, unknown key, empty entry, wrong watch or expired hour is refused with {error} and nonzero exit; fix the JSON or use the running watch's brief.
+    ///
+    /// Once the host runner reads the report, it appends one entry for the round to the daybook (`afkconvoy daybook --help`), of session kind `watch`: what held work back under `Why`; the actions, what was verified and what was left under `Did`; and the issues and PRs the report links under `Links`. Each human question still goes to the asking session; the entry notes only that it was raised, with its link, and asks nothing. The entry is written later and retried until it is: it never holds the round, or the next one, back; one not written is a `doctor` finding.
     ///
     /// Recording completes only the named round and keeps the healthy resident Agent and Terminal available for later rounds. It does not finish queued work or another active round. `doctor.host.watch` and later briefs show the report; an ended watch with no report says `reported: false`.
     ///
@@ -3006,50 +3016,48 @@ enum Command {
     ///
     /// Its steps, in order, each timed:
     ///
-    /// 1. `set` — runs the `set` lines on the base branch as it stood, and commits what they changed, titled `<repo> <version>`. Lines that change nothing find the version set: by a cut whose end was cut short after its PR landed. Where a cut's PR of that title landed past the tag (anywhere on the base branch for an initial cut), that landing is the one tagged, and the steps up to `tag` are passed by. An initial version already set gets an empty commit and follows the same PR, gate and landing turns steps; otherwise lines that change nothing fail.
-    /// 2. `pr` — pushes the commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`, and opens its PR.
-    /// 3. `gate` — takes the cut's turn: build one commit on the base tip as it stands, whose diff against that tip is what the set lines wrote, gate that commit, record green and land it by a fast-forward. The commit has one parent. Where the base moved while the cut ran, that parent is the base tip at land time and the landings already on it stay. The commit that set the version stays on the cut's branch.
-    /// 4. `land` — find that commit on the base branch. Its message says `By a cut on <host>` and names the cut's PR. It is that commit the cut tags.
-    /// 5. `tag` — closes the landed cut's open PR with a comment naming its commit and version, then tags the commit `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit. A patch also checks landings up to the current base branch: where one landed while it ran and carries `{const:CUT_MINOR_LABEL}`, it stops at `tag` without tagging or publishing, and opens no failure issue. The next tick releases its claim and starts the minor cut, unless a fleet lock stands. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
-    /// 6. `publish` — with the tag checked out, runs the `publish` lines.
+    /// 1. `set` — on the snapshot, the base tip the checkout was cut at, runs the `set` lines and commits what they changed, titled `<repo> <version>`: the version's commit, whose one parent is the snapshot. Lines that change nothing still make that commit, empty. Where the remote has the tag `v<version>` already, or a branch a cut of this version pushed, the cut takes up that commit instead, and makes no second.
+    /// 2. `push` — pushes that commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`. It opens no PR.
+    /// 3. `gate` — gates that commit in the checkout: the whole gate, the fast gate and the slow gate, in a worker lane as any heavy command is (`afkconvoy exclusive --help`); a green run on record for its tree answers. It takes no landing turn, is no candidate and reserves no barrier: turns land on the base branch while it runs, whether it passes, fails or hangs.
+    /// 4. `tag` — tags that commit `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit. A patch also checks landings up to the current base branch: where one landed while it ran and carries `{const:CUT_MINOR_LABEL}`, it stops at `tag` without tagging or publishing, and opens no failure issue. The next tick releases its claim and starts the minor cut, unless a fleet lock stands. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
+    /// 5. `publish` — with the tag checked out, runs the `publish` lines.
     ///
-    /// Its PR lands only through its gated turn. It pushes its own branch and version tag; only the turn pushes the base branch.
+    /// The base branch never receives the version commit: it pushes its own branch and its version tag, and nothing to the base branch. The version's home is the tag; version files on the base branch stay as they are, and the next cut's `set` lines write its version on its own snapshot. The tag's parent is a base commit, so the landings past the tag are still those on the base branch past that parent.
     ///
     /// ## What it reads and writes
     ///
-    /// It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its PR, where it landed, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: three hours beside the two gate limits (`gate_seconds`) — five hours at the default.
+    /// It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its branch and its commit, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: three hours beside the two gate limits (`gate_seconds`), for its gate and its wait for a worker lane — five hours at the default.
     ///
-    /// A cut's turn and exclusive commands go ahead of waiting worker commands, keeping request order among cuts. They never interrupt a running command. Queue waits count toward the cut's time limit; the gate's own limit starts after its turn is granted. The tick line that starts a cut says whether the fleet was `idle` or `busy`.
+    /// A cut's gate and exclusive commands go ahead of waiting worker commands, keeping request order among cuts. They never interrupt a running command. Queue waits count toward the cut's time limit; the gate's own limit starts once its worker lane is granted. The tick line that starts a cut says whether the fleet was `idle` or `busy`.
     ///
-    /// A cut that took every step is a line of the tick log — `cut v0.5.17 (past v0.5.16, holding #451, #452) · its PR #470 · landed as 0123456789 · set 3s, pr 2s, gate 270s, land 610s, tag 1s, publish 95s` — `afkconvoy doctor` lists it among its events, and the panel shows it; its checkout is removed.
+    /// A cut that took every step is a line of the tick log — `cut v0.5.17 (past v0.5.16, holding #451, #452) · its commit 0123456789 on afkconvoy-cut/v0.5.17-1793666786 · set 3s, push 2s, gate 610s, tag 1s, publish 95s` — `afkconvoy doctor` lists it among its events, and the panel shows it; its checkout is removed.
     ///
-    /// A cut that failed, ran out of time or was ended from outside opens one issue under the escalate label, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there. The tick log, `doctor` and the panel say it too. Its checkout is kept, its terminal closed. No cut starts while that issue is open (`afkconvoy help humans`).
+    /// A cut that failed, ran out of time, was ended from outside, whose checkout is gone, or whose host went silent opens one issue under the escalate label, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there. The tick log, `doctor` and the panel say it too. Its checkout is kept, its terminal closed. No cut starts while that issue is open (`afkconvoy help humans`).
     ///
     /// With `--from <step>` it takes that step and those after it, the record kept as it was; without, the step after the last it took. Once it took its last, it closes the open issue that said this version's cut failed.
     ///
     /// ## What it answers
     ///
-    /// {"version", "tag", "prs", "pr", "landed", "took", "closed", "said"} — the cut took every step: `took` is each step with its seconds, `closed` the issues it closed. {"version", "stopped": "tag", "why", "said"} — a minor landing superseded the patch; nothing was tagged or published, and the fleet cuts the minor next. {"version", "failed", "why", "said", "log"} — it failed at the step `failed`.
+    /// {"version", "tag", "prs", "branch", "commit", "took", "closed", "said"} — the cut took every step: `took` is each step with its seconds, `closed` the issues it closed. {"version", "stopped": "tag", "why", "said"} — a minor landing superseded the patch; nothing was tagged or published, and the fleet cuts the minor next. {"version", "failed", "why", "said", "log"} — it failed at the step `failed`.
     ///
     /// Errors: the checkout is no cut's, or keeps no cut's record; the repo names no cut steps; `--from` names no step.
     ///
     /// ## What trips you up
     ///
-    /// - One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, and a new one starts when idle or past the age bound. A fleet lock and an open cut failure still hold it back.
-    /// - A cut interrupted after landing finds that commit — its message says `By a cut on <host>` — and tags it. A commit with one parent whose subject ends ` (#n)` and whose message has no such line is not a landing.
+    /// - One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, which opens the failure issue for it: no cut of that version starts again on its own. A fleet lock and an open cut failure hold a new one back.
+    /// - A cut interrupted after tagging goes on from the tag; one interrupted before, from its branch. A cut started again for the same version takes up that commit, and pushes no second branch.
+    /// - Cut records and serial barriers that earlier versions left on the remote candidate chain are read as before, and drain: nothing new names a cut there.
     /// - `sh -e` fails a step at a line whose command fails, not at one whose command it tests: a command of an `if` or `while` test, on the left of `&&` or `||`, after `!`, or before the last of a pipe fails nothing. `./packaging/release.sh publish "$VERSION" | tee published` passes whatever `release.sh` did.
     /// - The cut's commit is made in the checkout's name, by its git config: a repo whose base branch is protected against pushes is as good as any other here, for the cut pushes nothing to it.
+    /// - Turns keep landing while a cut runs. A cut that hangs costs only its own version: its time limit ends it, and its failure issue holds the next cut back.
     #[command(next_help_heading = WORKER, verbatim_doc_comment)]
     Cut {
-        /// Go on from this step: set, pr, gate, land, tag or publish [default: the step after the last it took]
+        /// Go on from this step: set, push, gate, tag or publish [default: the step after the last it took]
         #[arg(long, value_name = "STEP", value_parser = cut_step)]
         from: Option<afkconvoy_core::cut::Step>,
-        /// The host its PR lands in a turn as cut on [default: this machine's name]
+        /// The host its gate runs and is recorded as on [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
-        /// Milliseconds one second of sleep takes
-        #[arg(long, hide = true, default_value_t = 1000)]
-        second_ms: u64,
         #[command(flatten)]
         at: At,
     },
@@ -3077,7 +3085,7 @@ enum Command {
     ///
     /// A worker's fast gate, run by `afkconvoy gate --fast`, takes the fast lane instead: `gate --fast` tells its command's `exclusive` that it runs the fast gate, through `AFKCONVOY_GATE`, which `exclusive` does not pass on to its command. Fast gates contend only with each other, up to the host setting `fast_lanes`, {const:FAST_LANES} by default (`run --fast-lanes N`); no slow gate, turn or other command holds a place they need, and fast gates of one repo run side by side, each in its own worktree. A slow gate run alone, `gate --slow`, keeps the worker lanes.
     ///
-    /// A cut's turn and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
+    /// A cut's gate and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
     ///
     /// The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
     ///
@@ -4156,6 +4164,7 @@ pub fn manual() -> agent_help::Help {
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("NOTIFY_SECONDS", watch_notify::SECONDS)
         .constant("NOTIFY_FAILURES", watch_notify::FAILURES)
+        .constant("DAYBOOK_RETRY_MAX", watch_daybook::RETRY_MAX)
         .constant("WATCH_EVERY", host_settings::WATCH_EVERY)
         .constant("WATCH_TITLE", watch_terminal::TITLE)
         .constant("WATCH_CHECKOUT", host_watch::CHECKOUT)
@@ -4349,7 +4358,7 @@ fn boxed_lanes(said: &str) -> Result<Box<To<u64>>, String> {
     host_settings::watch_every_or_default(said).map(Box::new)
 }
 
-/// `--agent-instructions` and `--agent-skills`, boxed: `Run` is the largest
+/// `--agent-instructions`, `--agent-skills` and `--agent-guards`, boxed: `Run` is the largest
 /// command, and clippy bounds it.
 fn boxed_file(said: &str) -> Result<Box<To<PathBuf>>, String> {
     host_settings::file_or_default(said).map(Box::new)
@@ -4453,6 +4462,7 @@ fn start_of(
         notify_command,
         agent_instructions,
         agent_skills,
+        agent_guards,
         host_name,
         gate_lanes,
         slow_gate_lanes,
@@ -4491,6 +4501,7 @@ fn start_of(
         host_name: host_name.map(|name| *name),
         agent_instructions: agent_instructions.map(|file| *file),
         agent_skills: agent_skills.map(|file| *file),
+        agent_guards: agent_guards.map(|file| *file),
     };
     let ready_timeout = agent.ready_timeout;
     let panic_at = panic_at_tick;
@@ -5172,12 +5183,11 @@ fn run(
             }
             claims::declare_over(&checkout?, run.trim())
         }
-        Command::Cut { from, host, second_ms, .. } => {
+        Command::Cut { from, host, .. } => {
             let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let host = host.unwrap_or_else(this_host);
-            let second = Duration::from_millis(second_ms);
-            cut::run(&repo, &config, from, &host, second, clock)
+            cut::run(&repo, &config, from, &host, clock)
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard { .. } => anyhow::bail!("guard answers with its exit code"),

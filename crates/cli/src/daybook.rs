@@ -29,7 +29,7 @@ use afkconvoy_core::host_watch::WATCH_ENV;
 use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::role::{ISSUE_ENV, ROLE_ENV};
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::gh::{GitHub, Tracker};
@@ -44,7 +44,8 @@ pub const ASKING_ENV: &str = "AFKCONVOY_ASKING";
 
 /// What the caller says of one entry. Each heading holds what was said for
 /// it; one said of nothing is left out of the entry.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Said {
     pub did: Option<String>,
     pub why: Option<String>,
@@ -232,30 +233,60 @@ pub fn daybook(checkout: Result<Repo>, asked: Asked) -> Result<Value> {
              `--lesson`, `--link`"
         );
     }
-    // Why it is about no checkout, where it is about none.
-    let (checkout, none) = match checkout {
-        Ok(checkout) => (Some(checkout), String::new()),
-        Err(error) => (None, format!("{error:#}")),
-    };
-    let repo = match (repo, &checkout) {
-        (Some(repo), _) => repo,
-        (None, Some(checkout)) => crate::checkout_list::named_repo(checkout)?,
-        (None, None) => {
-            bail!("{none}: name the repo the entry is of with `--repo`")
-        }
-    };
-    let tracker = match (tracker, &checkout) {
-        (Some(tracker), _) => tracker,
-        (None, Some(checkout)) => {
-            let list = crate::checkout_list::List::of_host()?;
-            crate::checkout_list::said_tracker(&list, checkout)?.unwrap_or_else(|| repo.clone())
-        }
-        (None, None) => bail!("{none}: name the tracker whose daybook it is with `--tracker`"),
-    };
-    let dir = checkout.map_or_else(std::env::temp_dir, |checkout| checkout.dir);
+    let whose = Whose::of(checkout, repo, tracker)?;
     let kind = Kind::of(|name| std::env::var(name).ok());
-    let body = entry(repo.as_str(), kind, &said);
-    append(&Discussions::new(dir, &tracker), &today(), &body)
+    whose.append(&today(), kind, &said)
+}
+
+/// Whose daybook an entry goes to, and of which repo it is.
+pub struct Whose {
+    /// Where `gh` runs.
+    pub dir: PathBuf,
+    pub repo: RepoName,
+    pub tracker: RepoName,
+}
+
+impl Whose {
+    /// The repo `repo` names, else the checkout's; the tracker `tracker`
+    /// names, else the one this host's checkout list says for the checkout,
+    /// else its own repo.
+    pub fn of(
+        checkout: Result<Repo>,
+        repo: Option<RepoName>,
+        tracker: Option<RepoName>,
+    ) -> Result<Whose> {
+        // Why it is about no checkout, where it is about none.
+        let (checkout, none) = match checkout {
+            Ok(checkout) => (Some(checkout), String::new()),
+            Err(error) => (None, format!("{error:#}")),
+        };
+        let repo = match (repo, &checkout) {
+            (Some(repo), _) => repo,
+            (None, Some(checkout)) => crate::checkout_list::named_repo(checkout)?,
+            (None, None) => {
+                bail!("{none}: name the repo the entry is of with `--repo`")
+            }
+        };
+        let tracker = match (tracker, &checkout) {
+            (Some(tracker), _) => tracker,
+            (None, Some(checkout)) => {
+                let list = crate::checkout_list::List::of_host()?;
+                crate::checkout_list::said_tracker(&list, checkout)?.unwrap_or_else(|| repo.clone())
+            }
+            (None, None) => {
+                bail!("{none}: name the tracker whose daybook it is with `--tracker`")
+            }
+        };
+        let dir = checkout.map_or_else(std::env::temp_dir, |checkout| checkout.dir);
+        Ok(Whose { dir, repo, tracker })
+    }
+
+    /// Appends the entry `said` by a session of `kind` to the discussion of
+    /// `day` → {url, discussion, day, created}.
+    pub fn append(&self, day: &str, kind: Kind, said: &Said) -> Result<Value> {
+        let body = entry(self.repo.as_str(), kind, said);
+        append(&Discussions::new(self.dir.clone(), &self.tracker), day, &body)
+    }
 }
 
 /// A day, `YYYY-MM-DD`, as a flag says it.

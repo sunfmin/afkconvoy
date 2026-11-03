@@ -1954,7 +1954,7 @@ pub fn run(
     host_settings::pin_host_name(&list)?;
     // What it declares of the agent setup changed: every held harness is
     // given it as it is declared now (sunfmin/control#528).
-    let agent_setup = ["agent_instructions", "agent_skills"]
+    let agent_setup = ["agent_instructions", "agent_skills", "agent_guards"]
         .iter()
         .any(|key| changed.contains_key(*key))
         .then(|| kit::give_every_agent_setup(now));
