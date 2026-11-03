@@ -297,8 +297,11 @@ pub(crate) fn check_cut_needs(
             need(repo, check, CUT_NEEDS, now)?.0
         } else {
             let (stderr, _, _) = need_files(repo, &check.name, CUT_NEEDS)?;
-            run_private(repo, &check.command, check.seconds, &stderr)?
-                .map(|reason| Failed { reason, stderr, install: None })
+            run_private(repo, &check.command, check.seconds, &stderr)?.map(|reason| Failed {
+                reason,
+                stderr,
+                install: None,
+            })
         };
         if let Some(failed) = failed {
             return Ok(Some(NeedFailed {
