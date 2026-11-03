@@ -904,7 +904,11 @@ enum Command {
     ///
     /// One comment on today's discussion of the tracker, in its discussion category `Daybook`: one discussion a day, titled with the host's local date, `YYYY-MM-DD`, created by the first entry of the day. Two entries that both find no discussion of the day both still go to one: the discussion of the day with the lowest number is the day's, and a run that created a second deletes its own.
     ///
-    /// Every entry has one shape: the repo it is of and the kind of session that wrote it — `interactive`, `watch`, `asking session` or `worker`, told by its environment — then the headings `Did`, `Why`, `Undo` and `Links`, each holding what was said for it. A heading said of nothing is left out. The text given alone goes under `Did`.
+    /// Every entry has one shape: the repo it is of and the kind of session that wrote it — `interactive`, `watch`, `asking session` or `worker`, told by its environment — then the headings `Did`, `Why`, `Undo`, `Lesson` and `Links`, each holding what was said for it. A heading said of nothing is left out. The text given alone goes under `Did`.
+    ///
+    /// A **lesson** (`--lesson`) is one sentence the agent, at the moment, thinks should outlast the day: "the gate on this host needs X", "this kind of edit breaks Y". Writing it does not interrupt the work: it is raw material for the weekly distillation, which carries each lesson to its lasting home — a check, a hook, a rule, a doc. An entry with a lesson also rebuilds the lesson index at the foot of the day's discussion body — each lesson of the day and its entry's link — from the day's entries, so `--lessons` lists a span's lessons from the days' bodies without fetching an entry.
+    ///
+    /// `--lessons --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]` writes nothing: it lists the lessons of the days from `--since` to `--until`, both included (to today where `--until` is not given), from the days' indexes.
     ///
     /// The repo is the one the checkout's remote names, or `--repo`. The tracker is the one this host's checkout list says for the checkout, its own repo where it says none, or `--tracker`. Run in no checkout, both flags are needed.
     ///
@@ -919,12 +923,15 @@ enum Command {
     /// - `day`: its title, the host's local date
     /// - `created`: whether this run created it
     ///
+    /// With `--lessons`: {"lessons": [{"day", "url", "lesson"}], "since", "until"}, oldest day first.
+    ///
     /// Errors, as {"error": …} with a non-zero exit, each before anything is written but the last: an entry that says nothing; no repo or tracker to name, run in no checkout; the tracker has no `Daybook` category — the error names the page that creates one, as GitHub creates no category through its API, and the line that turns its discussions on where they are off; GitHub refused to read or create the discussion, or to add the comment.
     ///
     /// ## What trips you up
     ///
     /// - The category is created by hand, once, in the tracker: https://github.com/<owner>/<tracker>/discussions/categories/new, named `Daybook`.
-    /// - An entry is written once: a second run writes a second entry. To correct one, edit its comment on GitHub.
+    /// - An entry is written once: a second run writes a second entry. To correct one, edit its comment on GitHub; to correct its lesson in the index too, edit the index line in the day's discussion body, or write the day's next lesson, which rebuilds the index from the entries.
+    /// - Two lessons written at once can each rebuild an index the other's is missing from. Each run checks the index holds its own lesson and rebuilds it until it does, and the day's next lesson restores any other; an index that still lacks a run's lesson is an error naming the entry, which was written.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Daybook {
         /// What was done, put under `Did`; or say each heading with its flag
@@ -939,9 +946,21 @@ enum Command {
         /// How to undo it
         #[arg(long)]
         undo: Option<String>,
+        /// One sentence that should outlast the day: raw material for the weekly distillation
+        #[arg(long, value_name = "SENTENCE")]
+        lesson: Option<String>,
         /// A link to what it touched: an issue, a PR, a commit; give it again for more
         #[arg(long = "link", value_name = "URL")]
         links: Vec<String>,
+        /// List the lessons of a span of days instead of writing an entry
+        #[arg(long, requires = "since", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links"])]
+        lessons: bool,
+        /// The first day of the span `--lessons` lists
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "lessons", value_parser = daybook::day_named)]
+        since: Option<String>,
+        /// The last day of the span `--lessons` lists [default: none, to today]
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "lessons", value_parser = daybook::day_named)]
+        until: Option<String>,
         /// The repo the entry is of [default: the one the checkout's remote names]
         #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_named)]
         repo: Option<RepoName>,
@@ -4806,8 +4825,14 @@ fn run(
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
         }
-        Command::Daybook { text, did, why, undo, links, repo, tracker, .. } => {
-            let said = daybook::Said { did: did.or(text), why, undo, links };
+        Command::Daybook { lessons: true, since, until, tracker, .. } => daybook::lessons(
+            checkout,
+            tracker,
+            since.as_deref().unwrap_or_default(),
+            until.as_deref(),
+        ),
+        Command::Daybook { text, did, why, undo, lesson, links, repo, tracker, .. } => {
+            let said = daybook::Said { did: did.or(text), why, undo, lesson, links };
             daybook::daybook(checkout, daybook::Asked { said, repo, tracker })
         }
         Command::Skill => Ok(Value::String(SKILL.to_string())),
