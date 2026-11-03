@@ -2470,11 +2470,8 @@ fn started_and_asked(add: &Request) -> Result<Reached> {
 fn start_detached(program: &Path) -> Result<Child> {
     let dir = cache()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
-    let env = launch::login_environment()
+    let env = host_environment()
         .context("the host runner starts with the environment of a fresh login shell")?;
-    let kit = kit::path()?;
-    let config = kit.parent().and_then(Path::parent).unwrap_or(Path::new("/"));
-    let env = pinned(env, &dir, config);
     let log = opened_log(&dir.join(LOG))?;
     crate::process::spawn(
         crate::process::inheriting_nothing(&mut Command::new(program))
@@ -2488,6 +2485,18 @@ fn start_detached(program: &Path) -> Result<Child> {
             .process_group(0),
     )
     .context("the host runner could not be started")
+}
+
+/// The host's own environment, as the host runner has it: a fresh login
+/// shell's (`launch::login_environment`), but for the cache and config
+/// directories of this process (`pinned`). Nothing a session set for itself
+/// is in it — no worker sandbox's proxy, `TMPDIR` or tool homes — whichever
+/// process asks.
+pub(crate) fn host_environment() -> Result<Vec<(OsString, OsString)>> {
+    let env = launch::login_environment()?;
+    let kit = kit::path()?;
+    let config = kit.parent().and_then(Path::parent).unwrap_or(Path::new("/"));
+    Ok(pinned(env, &cache()?, config))
 }
 
 /// `env` with XDG_CACHE_HOME and XDG_CONFIG_HOME set to those of this
