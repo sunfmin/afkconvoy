@@ -16,6 +16,12 @@ pub const SAMPLE_EVERY: u64 = 10;
 /// for it to turn hot: two minutes.
 pub const CPU_HELD: u64 = 120;
 
+/// How long, in seconds, the host's memory pressure must stay at level 2 or
+/// above, sample after sample, for a worker's memory under its exclusive
+/// commands to count against the memory limit: two minutes, as `CPU_HELD`. A
+/// gated build that fills the host for a moment starts no watch.
+pub const PRESSURE_HELD: u64 = CPU_HELD;
+
 /// The window, in seconds, the bytes a worker's processes wrote are counted
 /// over: ten minutes.
 pub const WRITTEN_WITHIN: u64 = 600;
@@ -71,10 +77,11 @@ pub struct Sample {
     pub resident: u64,
     /// The bytes of `resident` held under an `afkconvoy exclusive` command:
     /// the exclusive queue bounds that heavy work, and it counts against the
-    /// memory limit only while the host is `pressed`.
+    /// memory limit only once the host's pressure has held (`PRESSURE_HELD`).
     pub exclusive: u64,
-    /// Whether the host's memory pressure was at level 2 or above.
-    pub pressed: bool,
+    /// The host's memory pressure level (`kern.memorystatus_vm_pressure_level`);
+    /// `None` where it cannot be read, which counts as low.
+    pub pressure: Option<u64>,
     /// The bytes they wrote to disk since the sample before; `None` at the
     /// first.
     pub written: Option<u64>,
@@ -83,11 +90,26 @@ pub struct Sample {
     pub held: Option<Built>,
 }
 
-impl Sample {
-    /// The bytes resident that count against the memory limit: those outside
-    /// its exclusive commands, or every one while the host is pressed.
-    pub fn counted(&self) -> u64 {
-        if self.pressed { self.resident } else { self.resident.saturating_sub(self.exclusive) }
+/// A run of samples with the host's memory pressure at level 2 or above,
+/// sample after sample: the readings that, held `PRESSURE_HELD`, count a
+/// worker's memory under its exclusive commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pressed {
+    /// Since when, counted from the start of its first sample.
+    pub since: u64,
+    /// When its last reading was taken.
+    pub at: u64,
+    /// How many readings it holds.
+    pub readings: u32,
+    /// The lowest and the highest level read in it.
+    pub lowest: u64,
+    pub highest: u64,
+}
+
+impl Pressed {
+    /// Whether it has held for `PRESSURE_HELD`.
+    pub fn held(&self) -> bool {
+        self.at.saturating_sub(self.since) >= PRESSURE_HELD
     }
 }
 
@@ -133,6 +155,10 @@ pub struct Episode {
     /// The most its worktree held of what git ignores, in bytes.
     #[serde(default)]
     pub held: u64,
+    /// The held pressure that counted its memory under its exclusive
+    /// commands, the last such run while it lasted; `None` when none did.
+    #[serde(default)]
+    pub pressed: Option<Pressed>,
 }
 
 /// A worker turning hot, or stopping being one.
@@ -151,6 +177,9 @@ pub enum Turned {
 pub struct Watch {
     /// Since when its CPU has been past the limit, sample after sample.
     cpu_since: Option<u64>,
+    /// The host's pressure at level 2 or above, sample after sample.
+    #[serde(default)]
+    pressed: Option<Pressed>,
     /// The bytes written in each sample within `WRITTEN_WITHIN`, by when it
     /// was taken.
     written: Vec<(u64, u64)>,
@@ -168,8 +197,9 @@ impl Watch {
     ///
     /// It turns hot when its CPU has been past the limit for `CPU_HELD`,
     /// counted from the start of the first sample past it; when it holds more
-    /// memory than the limit — outside its exclusive commands, but for while
-    /// the host is pressed (`Sample::counted`); when it wrote more than the limit within
+    /// memory than the limit — outside its exclusive commands, but for once
+    /// the host's pressure has held at level 2 or above for `PRESSURE_HELD`,
+    /// counted from the start of the first sample at it; when it wrote more than the limit within
     /// `WRITTEN_WITHIN`, counted from the start of the oldest sample in it; or
     /// when its worktree, as last measured, has outgrown its fresh build
     /// (`Built::outgrown`). Hot, it is hot once only: it stops being hot once
@@ -185,7 +215,33 @@ impl Watch {
         };
         let cpu_held =
             self.cpu_since.is_some_and(|since| sample.at.saturating_sub(since) >= CPU_HELD);
-        let memory_over = sample.counted() > limits.resident;
+        let level = sample.pressure.filter(|level| *level >= 2);
+        self.pressed = match (self.pressed, level) {
+            (_, None) => None,
+            (Some(run), Some(level)) => Some(Pressed {
+                at: sample.at,
+                readings: run.readings.saturating_add(1),
+                lowest: run.lowest.min(level),
+                highest: run.highest.max(level),
+                ..run
+            }),
+            (None, Some(level)) => Some(Pressed {
+                since: sample.at.saturating_sub(every),
+                at: sample.at,
+                readings: 1,
+                lowest: level,
+                highest: level,
+            }),
+        };
+        // Held pressure counts what runs under `exclusive` too: these readings
+        // counted it, where it held any.
+        let counting = self.pressed.filter(|run| run.held() && sample.exclusive > 0);
+        let counted = if self.pressed.is_some_and(|run| run.held()) {
+            sample.resident
+        } else {
+            sample.resident.saturating_sub(sample.exclusive)
+        };
+        let memory_over = counted > limits.resident;
         // A sample counts what was written from the one before it on.
         let within = sample.at.saturating_sub(WRITTEN_WITHIN.saturating_sub(every));
         self.written.retain(|(at, _)| *at >= within);
@@ -221,6 +277,7 @@ impl Watch {
                 resident: sample.resident,
                 written,
                 held,
+                pressed: counting.filter(|_| why == Why::Memory),
             };
             self.hot = Some(started);
             self.under_since = None;
@@ -230,6 +287,9 @@ impl Watch {
         episode.resident = episode.resident.max(sample.resident);
         episode.written = episode.written.max(written);
         episode.held = episode.held.max(held);
+        if memory_over && counting.is_some() {
+            episode.pressed = counting;
+        }
         self.hot = Some(episode);
         let under = !cpu_over && !memory_over && !written_over && !outgrown;
         if !under {
@@ -259,7 +319,7 @@ mod tests {
             millicores: Some(millicores),
             resident,
             exclusive: 0,
-            pressed: false,
+            pressure: None,
             written: Some(0),
             held: None,
         }
@@ -325,7 +385,8 @@ mod tests {
                 millicores: 6000,
                 resident: GIB,
                 written: 0,
-                held: 0
+                held: 0,
+                pressed: None
             }
         );
 
@@ -351,7 +412,7 @@ mod tests {
             millicores: None,
             resident: GIB,
             exclusive: 0,
-            pressed: false,
+            pressure: None,
             written: None,
             held: None,
         };
@@ -373,7 +434,8 @@ mod tests {
                     millicores: 100,
                     resident: 9 * GIB,
                     written: 0,
-                    held: 0
+                    held: 0,
+                    pressed: None
                 })
             )]
         );
@@ -398,23 +460,24 @@ mod tests {
         ));
     }
 
+    /// A worker over the limit only through what runs under `exclusive`,
+    /// sampled at `at` with the host's pressure at `level`.
+    fn under_exclusive(at: u64, level: u64) -> Sample {
+        Sample { exclusive: 2 * GIB, pressure: Some(level), ..sample(at, 100, 9 * GIB) }
+    }
+
     #[test]
     fn memory_under_an_exclusive_command_makes_a_worker_hot_only_under_pressure() {
-        let under =
-            |exclusive, pressed| Sample { exclusive, pressed, ..sample(1000, 100, 9 * GIB) };
         let turned = |sample: Sample| Watch::default().sampled(&sample, &LIMITS, SAMPLE_EVERY);
         // Over the limit only through what runs under `exclusive`, pressure low.
-        assert_eq!(turned(under(2 * GIB, false)), None);
-        // The same worker with the host pressed.
+        assert_eq!(turned(under_exclusive(1000, 1)), None);
+        // Over the limit outside `exclusive`, pressure low: hot on its first sample.
         assert!(matches!(
-            turned(under(2 * GIB, true)),
-            Some(Turned::Hot(Episode { why: Why::Memory, resident, .. })) if resident == 9 * GIB
+            turned(Sample { exclusive: GIB / 2, ..under_exclusive(1000, 1) }),
+            Some(Turned::Hot(Episode { why: Why::Memory, pressed: None, .. }))
         ));
-        // Over the limit outside `exclusive`, pressure low.
-        assert!(matches!(
-            turned(under(GIB / 2, false)),
-            Some(Turned::Hot(Episode { why: Why::Memory, .. }))
-        ));
+        // Where pressure cannot be read, it counts as low.
+        assert_eq!(turned(Sample { pressure: None, ..under_exclusive(1000, 1) }), None);
         // Hot, it cools once what counts is back under, though its exclusive
         // work still holds the memory.
         let mut watch = Watch::default();
@@ -425,6 +488,61 @@ mod tests {
             cooled = cooled.or(watch.sampled(&sample, &LIMITS, SAMPLE_EVERY));
         }
         assert!(matches!(cooled, Some(Turned::Cooled { at: 1310, .. })), "{cooled:?}");
+    }
+
+    #[test]
+    fn one_pressure_reading_between_low_ones_never_counts_exclusive_memory() {
+        let mut watch = Watch::default();
+        for (at, level) in [(1000, 1), (1010, 2), (1020, 1), (1030, 1), (1040, 2), (1050, 1)] {
+            assert_eq!(watch.sampled(&under_exclusive(at, level), &LIMITS, SAMPLE_EVERY), None);
+        }
+        // Pressure broken off starts its span over: eleven readings at 2 are
+        // still short of it.
+        for at in (1060..1170).step_by(SAMPLE_EVERY as usize) {
+            assert_eq!(watch.sampled(&under_exclusive(at, 2), &LIMITS, SAMPLE_EVERY), None);
+        }
+        assert_eq!(watch.sampled(&under_exclusive(1170, 1), &LIMITS, SAMPLE_EVERY), None);
+    }
+
+    #[test]
+    fn pressure_held_for_its_span_counts_exclusive_memory_and_names_its_readings() {
+        let mut watch = Watch::default();
+        // At 2 from 1000, counted from 990: held at 1110, its twelfth reading.
+        for at in (1000..1110).step_by(SAMPLE_EVERY as usize) {
+            let level = if at == 1050 { 3 } else { 2 };
+            assert_eq!(watch.sampled(&under_exclusive(at, level), &LIMITS, SAMPLE_EVERY), None);
+        }
+        let turned = watch.sampled(&under_exclusive(1110, 2), &LIMITS, SAMPLE_EVERY);
+        let pressed = Pressed { since: 990, at: 1110, readings: 12, lowest: 2, highest: 3 };
+        assert!(
+            matches!(
+                turned,
+                Some(Turned::Hot(Episode { why: Why::Memory, resident, pressed: Some(run), .. }))
+                    if resident == 9 * GIB && run == pressed
+            ),
+            "{turned:?}"
+        );
+        // Hot, the readings that went on counting it are the episode's.
+        watch.sampled(&under_exclusive(1120, 2), &LIMITS, SAMPLE_EVERY);
+        let episode = watch.hot.expect("hot");
+        assert_eq!(episode.pressed, Some(Pressed { at: 1120, readings: 13, ..pressed }));
+        // Pressure gone, what counts is back under: the pressed run stands.
+        watch.sampled(&under_exclusive(1130, 1), &LIMITS, SAMPLE_EVERY);
+        assert_eq!(watch.hot.expect("hot").pressed, episode.pressed);
+    }
+
+    #[test]
+    fn held_pressure_names_no_readings_where_nothing_ran_under_exclusive() {
+        let mut watch = Watch::default();
+        let mut turned = None;
+        for at in (1000..=1110).step_by(SAMPLE_EVERY as usize) {
+            let sample = Sample { pressure: Some(2), ..sample(at, 100, 9 * GIB) };
+            turned = turned.or(watch.sampled(&sample, &LIMITS, SAMPLE_EVERY));
+        }
+        assert!(matches!(
+            turned,
+            Some(Turned::Hot(Episode { since: 1000, why: Why::Memory, pressed: None, .. }))
+        ));
     }
 
     #[test]
@@ -442,6 +560,7 @@ mod tests {
             resident: 10 * GIB,
             written: 0,
             held: 0,
+            pressed: None,
         };
         assert_eq!(turned, [(1410, Turned::Cooled { episode, at: 1410 })]);
         assert_eq!(watch.hot, None);

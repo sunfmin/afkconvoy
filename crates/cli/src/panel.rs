@@ -1992,6 +1992,7 @@ mod tests {
             resident: 3 << 29,
             written: 0,
             held: 5 << 30,
+            pressed: None,
         };
         let mut part = part_of("acme", 1000);
         part.hot = vec![Hot::from(&HotNow {

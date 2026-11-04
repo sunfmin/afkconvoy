@@ -555,8 +555,8 @@ struct Sampler {
 impl Sampler {
     /// Takes one sample of every worker, `every` seconds after the one before
     /// on the run's clock and `wall_ms` on the wall's, at `at`, `running` the
-    /// processes of the exclusive queue's running tickets and `pressed`
-    /// whether the host's memory pressure is at 2 or above → each turn,
+    /// processes of the exclusive queue's running tickets and `pressure` the
+    /// host's memory pressure level, where it can be read → each turn,
     /// as a line of the log, and what is to be taken down of each worker that
     /// turned hot.
     fn sample(
@@ -565,7 +565,7 @@ impl Sampler {
         at: u64,
         every: u64,
         wall_ms: u64,
-        (running, pressed): (&[u32], bool),
+        (running, pressure): (&[u32], Option<u64>),
     ) -> (Vec<What>, Vec<(Worktree, Taken)>) {
         let measuring = self.samples.is_multiple_of(LISTED_FOR);
         if measuring {
@@ -623,7 +623,7 @@ impl Sampler {
                 millicores: took.cpu_ms.map(|cpu| millicores(cpu, wall_ms)),
                 resident: took.resident,
                 exclusive: took.exclusive,
-                pressed,
+                pressure,
                 written: took.written,
                 held,
             };
@@ -685,7 +685,8 @@ pub fn why_said(why: Why, limits: &Limits) -> String {
 }
 
 /// What an episode took at the most, in words: what its worktree held only
-/// once it was measured.
+/// once it was measured, and the held pressure readings that counted its
+/// memory under `afkconvoy exclusive` only where they did.
 pub fn held_said(episode: &Episode) -> String {
     let mut said = format!(
         "{}, {} resident, {} written in {} minutes",
@@ -696,6 +697,18 @@ pub fn held_said(episode: &Episode) -> String {
     );
     if episode.held > 0 {
         said += &format!(", {} held in its worktree", measure::said(episode.held));
+    }
+    if let Some(pressed) = episode.pressed {
+        let levels = if pressed.lowest == pressed.highest {
+            format!("level {}", pressed.lowest)
+        } else {
+            format!("levels {} to {}", pressed.lowest, pressed.highest)
+        };
+        said += &format!(
+            ", its memory under exclusive counted for memory pressure at {levels} in {} readings over {}s",
+            pressed.readings,
+            pressed.at.saturating_sub(pressed.since)
+        );
     }
     said
 }
@@ -784,9 +797,9 @@ pub fn watch(
                     tickets.iter().filter(|ticket| ticket.ran.is_some()).map(|t| t.pid).collect()
                 },
             );
-            let pressed = crate::resources::pressure_level().is_some_and(|level| level >= 2);
+            let pressure = crate::resources::pressure_level();
             let (turned, to_take) =
-                sampler.sample(source, at, SAMPLE_EVERY, wall_ms, (&running, pressed));
+                sampler.sample(source, at, SAMPLE_EVERY, wall_ms, (&running, pressure));
             for turned in turned {
                 hears.turned(at, turned);
             }
@@ -1015,6 +1028,7 @@ mod tests {
             resident: 3 << 29,
             written: 300 << 20,
             held: 0,
+            pressed: None,
         };
         assert_eq!(
             held_said(&episode),
@@ -1026,6 +1040,26 @@ mod tests {
             "{}",
             held_said(&held)
         );
+        let pressed = afkconvoy_core::hot::Pressed {
+            since: 990,
+            at: 1110,
+            readings: 12,
+            lowest: 2,
+            highest: 3,
+        };
+        let counted = Episode { why: Why::Memory, pressed: Some(pressed), ..episode };
+        assert!(
+            held_said(&counted).ends_with(
+                ", its memory under exclusive counted for memory pressure at levels 2 to 3 in 12 readings over 120s"
+            ),
+            "{}",
+            held_said(&counted)
+        );
+        let one = Episode {
+            pressed: Some(afkconvoy_core::hot::Pressed { highest: 2, ..pressed }),
+            ..counted
+        };
+        assert!(held_said(&one).contains("pressure at level 2 in 12"), "{}", held_said(&one));
     }
 
     #[test]
