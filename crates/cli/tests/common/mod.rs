@@ -453,6 +453,9 @@ impl World {
         env.push(("AFKCONVOY_TURN_WAIT_SECONDS".to_string(), "0".to_string()));
         // The same for a note typed at a worker (`afkconvoy tell`).
         env.push(("AFKCONVOY_NOTE_WAIT_SECONDS".to_string(), "0".to_string()));
+        // A cut's gate red only on TIMEOUTs it cannot classify under
+        // overload runs again at once.
+        env.push(("AFKCONVOY_CUT_GATE_RETRY_SECONDS".to_string(), "0".to_string()));
         env
     }
 

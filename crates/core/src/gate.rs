@@ -573,6 +573,55 @@ pub fn failing_tests(lines: &[String]) -> Vec<String> {
     failing
 }
 
+/// The status a line of nextest's output names its failing test by — `FAIL`,
+/// `TIMEOUT`, a retry's (`TRY 2 FAIL`) — where it names one.
+fn failed_status_of(line: &str) -> Option<&str> {
+    failed_test(line)?;
+    let mut rest = line.trim_start();
+    if let Some(retry) = rest.strip_prefix("TRY ") {
+        rest = retry.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start();
+    }
+    rest.split_once(' ').map(|(status, _)| status)
+}
+
+/// What a gate says of a TIMEOUT it cannot tell from load: a line of its
+/// own that says the host is overloaded and that it cannot classify the
+/// tests — `gate: host overloaded or load unavailable (load 12.71, CPUs 12);
+/// cannot classify TIMEOUT tests.` — or one of them, naming it — `gate: host
+/// overloaded (load 13, CPUs 12); cannot classify afkconvoy cutting::a_test.`
+fn cannot_classify(line: &str, test: &str) -> bool {
+    let line = line.trim();
+    let Some((before, after)) = line.split_once("cannot classify ") else {
+        return false;
+    };
+    if !before.contains("host overloaded") {
+        return false;
+    }
+    after.starts_with("TIMEOUT tests")
+        || after.strip_prefix(test).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
+/// Whether a red gate's output `lines` is red only on TIMEOUTs it said it
+/// cannot classify because the host is overloaded: it names a failing test
+/// (`failing_tests`), every one of them failed by `TIMEOUT` alone, and for
+/// each the gate said so (`cannot_classify`). Such a run says nothing of the
+/// tree: a quieter host may pass it. A FAIL beside them, a TIMEOUT the gate
+/// did not say it cannot classify — it ran on a host not overloaded — or a
+/// red that names no test is a red gate.
+pub fn overloaded_timeouts(lines: &[String]) -> bool {
+    let failing = failing_tests(lines);
+    if failing.is_empty() {
+        return false;
+    }
+    failing.iter().all(|test| {
+        let timed_out = lines.iter().all(|line| match failed_test(line) {
+            Some(name) if name == test => failed_status_of(line) == Some("TIMEOUT"),
+            _ => true,
+        });
+        timed_out && lines.iter().any(|line| cannot_classify(line, test))
+    })
+}
+
 /// What a red gate's output `lines` is quoted by: `QUOTE_LINES` from the
 /// line that names its first failing test — nextest prints what the test
 /// printed after it — or, where no line names one, its last `QUOTE_LINES`.
@@ -614,6 +663,35 @@ mod tests {
         assert!(failing_tests(&built).is_empty());
         let quote = quoted(&built);
         assert_eq!((quote.len(), quote[0].as_str()), (QUOTE_LINES, "line 40"));
+    }
+
+    fn said(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| line.to_string()).collect()
+    }
+
+    #[test]
+    fn a_red_gate_only_of_timeouts_it_cannot_classify_under_overload_is_told_apart() {
+        let timeout = "     TIMEOUT [   6.004s] (40/669) afkconvoy::cli dsh::the_line";
+        let all = "gate: host overloaded or load unavailable (load 12.71, CPUs 12); cannot \
+                   classify TIMEOUT tests. Retry on a quiet host.";
+        let one = "gate: host overloaded (load 13, CPUs 12); cannot classify afkconvoy::cli \
+                   dsh::the_line. Retry on a quiet host.";
+        assert!(overloaded_timeouts(&said(&[timeout, timeout, all])));
+        assert!(overloaded_timeouts(&said(&[timeout, one])));
+        // A TIMEOUT on a host the gate did not say is overloaded is red.
+        let quiet = "gate: afkconvoy::cli dsh::the_line was still TIMEOUT at 2s on a quiet host.";
+        assert!(!overloaded_timeouts(&said(&[timeout, quiet])));
+        assert!(!overloaded_timeouts(&said(&[timeout])));
+        // A FAIL beside it is red, and so is a red that names no test.
+        let fail = "        FAIL [   0.208s] (2/3) afkconvoy cutting::a_named_test";
+        assert!(!overloaded_timeouts(&said(&[timeout, fail, all])));
+        assert!(!overloaded_timeouts(&said(&["error: could not compile", all])));
+        // The one test named is not another's line, nor a TIMEOUT retried as FAIL.
+        let other = "gate: host overloaded (load 13, CPUs 12); cannot classify afkconvoy::cli \
+                     dsh::the_line_too.";
+        assert!(!overloaded_timeouts(&said(&[timeout, other])));
+        let retried = "    TRY 2 FAIL [   1.000s] (40/669) afkconvoy::cli dsh::the_line";
+        assert!(!overloaded_timeouts(&said(&[timeout, retried, all])));
     }
 
     fn tree() -> Tree {

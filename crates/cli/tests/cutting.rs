@@ -1383,3 +1383,101 @@ fn a_cut_whose_gate_goes_red_names_the_failing_test_and_keeps_that_run_s_output(
         .collect();
     assert_eq!(runs.len(), 2, "each run keeps its own: {runs:?}");
 }
+
+/// A world whose cut's gate is a script: while `overloaded` holds a run,
+/// each run takes one off and is red only on a TIMEOUT it says it cannot
+/// classify on an overloaded host; while `quiet` exists, red on a TIMEOUT
+/// on a host it does not say is overloaded; then green.
+fn cutting_overloaded() -> World {
+    let world = World::new();
+    tag(&world, "v0.1.0");
+    let script = world.root.join("overloaded-gate");
+    std::fs::write(
+        &script,
+        format!(
+            "runs=$(cat '{overloaded}' 2>/dev/null || echo 0)\n\
+             echo run >> '{ran}'\n\
+             if [ \"$runs\" -gt 0 ]; then\n\
+             echo $((runs - 1)) > '{overloaded}'\n\
+             echo '     TIMEOUT [   6.004s] (40/669) afkconvoy::cli dsh::the_line'\n\
+             echo 'gate: host overloaded or load unavailable (load 12.71, CPUs 12); cannot classify TIMEOUT tests. Retry on a quiet host.' >&2\n\
+             exit 100\n\
+             fi\n\
+             if [ -f '{quiet}' ]; then\n\
+             echo '     TIMEOUT [   6.004s] (40/669) afkconvoy::cli dsh::the_line'\n\
+             echo 'gate: afkconvoy::cli dsh::the_line was still TIMEOUT at 2s on a quiet host.' >&2\n\
+             exit 100\n\
+             fi\n",
+            overloaded = world.root.join("overloaded").display(),
+            quiet = world.root.join("quiet").display(),
+            ran = world.root.join("ran").display(),
+        ),
+    )
+    .unwrap();
+    let config = CONFIG.replace("./gate.sh", &format!("sh '{}'", script.display()));
+    commit_config(
+        &world,
+        &format!("{config}\n{}", cut_block(&says_published(&world))),
+        "Turn cutting on (#7)",
+    );
+    world
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+fn gate_runs(world: &World) -> usize {
+    std::fs::read_to_string(world.root.join("ran")).map_or(0, |ran| ran.lines().count())
+}
+
+#[test]
+fn a_cut_s_gate_red_only_on_timeouts_it_cannot_classify_under_overload_gates_again() {
+    let world = cutting_overloaded();
+    let started = now();
+    assert_eq!(cut(&tick_as(&world, "alpha", started)), ["cut done"]);
+    let checkout = checkout(&world);
+    std::fs::write(world.root.join("overloaded"), "2").unwrap();
+    let answer = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    assert!(answer.get("failed").is_none(), "{answer}");
+    assert_eq!(gate_runs(&world), 3, "two overloaded runs, then a green one");
+    assert_eq!(cut(&tick_as(&world, "alpha", now()))[0], "end_cut done");
+    assert!(failures(&world).is_empty(), "no failure issue opens");
+    let help = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
+        .args(["cut", "--help"])
+        .output()
+        .unwrap();
+    let help =
+        String::from_utf8_lossy(&help.stdout).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(help.contains("cannot classify because the host is overloaded"), "{help}");
+    assert!(help.contains("gates again in its place"), "{help}");
+}
+
+#[test]
+fn a_cut_s_gate_red_on_a_timeout_on_a_quiet_host_fails_the_step_and_opens_its_issue() {
+    let world = cutting_overloaded();
+    assert_eq!(cut(&tick_as(&world, "alpha", now())), ["cut done"]);
+    let checkout = checkout(&world);
+    std::fs::write(world.root.join("quiet"), "quiet").unwrap();
+    let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    assert_eq!(failed["failed"], "gate", "{failed}");
+    assert_eq!(gate_runs(&world), 1, "it is not gated again");
+    let why = failed["why"].as_str().unwrap();
+    assert!(why.contains("failing: afkconvoy::cli dsh::the_line"), "{why}");
+    assert_eq!(cut(&tick_as(&world, "alpha", now()))[0], "end_cut done");
+    assert_eq!(failures(&world).len(), 1);
+}
+
+#[test]
+fn a_cut_whose_time_holds_no_other_gate_run_fails_on_an_overloaded_timeout() {
+    let world = cutting_overloaded();
+    // Started long ago: its time holds no wait and whole gate run more.
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    std::fs::write(world.root.join("overloaded"), "5").unwrap();
+    let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    assert_eq!(failed["failed"], "gate", "{failed}");
+    assert_eq!(gate_runs(&world), 1);
+    let why = failed["why"].as_str().unwrap();
+    assert!(why.contains("cannot classify on an overloaded host, gated again 0 times"), "{why}");
+}
