@@ -15,7 +15,7 @@ use afkconvoy_core::cut::{
     self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, RedGate, Row, Seen, Standing, Step,
     Tag, Took,
 };
-use afkconvoy_core::gate::{GateCommand, failing_tests, quoted};
+use afkconvoy_core::gate::{GateCommand, failing_tests, overloaded_timeouts, quoted};
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::line::Line;
 use afkconvoy_core::plan::Issue;
@@ -584,7 +584,7 @@ impl Cutting<'_> {
         match step {
             Step::Set => self.set(record),
             Step::Push => self.push(record),
-            Step::Gate => self.gate(record, clock()),
+            Step::Gate => self.gate(record, clock),
             Step::Tag => self.tag(record),
             Step::Publish => self.publish(record),
         }
@@ -655,7 +655,14 @@ impl Cutting<'_> {
     /// whether it passes, fails or hangs. A run made now writes its whole
     /// output to a file of its own in the checkout's git dir, which no later
     /// run writes; a red one fails with what it named (`RedGate`).
-    fn gate(&mut self, record: &mut Record, now: u64) -> Result<()> {
+    ///
+    /// A run red only on TIMEOUTs the gate said it cannot classify because
+    /// the host is overloaded (`gate::overloaded_timeouts`) says nothing of
+    /// the commit: the step gives its lane back, waits `retry_seconds` and
+    /// gates again, its place kept, while that wait and a whole gate run fit
+    /// in the cut's time limit (`cut::gate_again`). Past it, that red run
+    /// fails the step.
+    fn gate(&mut self, record: &mut Record, clock: &impl Fn() -> u64) -> Result<()> {
         let commit = self.commit(record)?;
         // An earlier afkconvoy's record names the commit its turn landed:
         // the base branch brings it here.
@@ -666,32 +673,59 @@ impl Cutting<'_> {
             self.repo.git(&["checkout", "--quiet", "--detach", &commit])?;
         }
         let command = GateCommand::new(&self.config.gate_command);
-        let limit = Duration::from_secs(self.config.gate_seconds());
+        let gate_seconds = self.config.gate_seconds();
+        let limit = Duration::from_secs(gate_seconds);
         let heavy = crate::config::heavy_gate(command.text());
-        let _lane = crate::exclusive::Permit::cut_gate(self.repo, command.text(), heavy)?;
-        let output = self.gate_output(now)?;
-        match crate::gate::gated(self.repo, &command, self.host, now, limit, None, Some(&output))? {
-            Gated::Green { .. } => Ok(()),
-            Gated::Red { ran, excerpt, termination } => {
-                let how = match termination {
-                    Some(termination) => termination.description(),
-                    None if ran.timed_out => "it reached the gate limit".to_string(),
-                    None => format!("it exited {}", ran.exit_code),
-                };
-                // The whole run, as it kept it; its excerpt where it kept none.
-                let lines: Vec<String> = match std::fs::read_to_string(&output) {
-                    Ok(text) => text.lines().map(str::to_string).collect(),
-                    Err(_) => excerpt,
-                };
-                let tests = failing_tests(&lines);
-                let named = match tests.as_slice() {
-                    [] => "; its output names no failing test".to_string(),
-                    tests => format!("; failing: {}", tests.join(", ")),
-                };
-                let output = output.display().to_string();
-                self.red = Some(RedGate { tests, quote: quoted(&lines), output: output.clone() });
-                bail!("the gate is red on {commit}: {how}{named}; its output is in {output}")
+        let pause = retry_seconds();
+        let mut retried = 0;
+        loop {
+            let now = clock();
+            let output = self.gate_output(now)?;
+            let gated = {
+                let _lane = crate::exclusive::Permit::cut_gate(self.repo, command.text(), heavy)?;
+                crate::gate::gated(self.repo, &command, self.host, now, limit, None, Some(&output))?
+            };
+            let Gated::Red { ran, excerpt, termination } = gated else {
+                return Ok(());
+            };
+            let how = match termination {
+                Some(termination) => termination.description(),
+                None if ran.timed_out => "it reached the gate limit".to_string(),
+                None => format!("it exited {}", ran.exit_code),
+            };
+            // The whole run, as it kept it; its excerpt where it kept none.
+            let lines: Vec<String> = match std::fs::read_to_string(&output) {
+                Ok(text) => text.lines().map(str::to_string).collect(),
+                Err(_) => excerpt,
+            };
+            let tests = failing_tests(&lines);
+            let output = output.display().to_string();
+            let overloaded = !ran.timed_out && overloaded_timeouts(&lines);
+            let time = cut::time_limit(gate_seconds);
+            if overloaded && cut::gate_again(record.started, clock(), pause, gate_seconds, time) {
+                retried += 1;
+                eprintln!(
+                    "[afkconvoy] cut: the gate is red on {commit} only on TIMEOUTs it cannot \
+                     classify on an overloaded host ({}); its output is in {output}. It gates \
+                     again in {pause}s, within the cut's time (retry {retried})",
+                    tests.join(", ")
+                );
+                std::thread::sleep(Duration::from_secs(pause));
+                continue;
             }
+            let mut named = match tests.as_slice() {
+                [] => "; its output names no failing test".to_string(),
+                tests => format!("; failing: {}", tests.join(", ")),
+            };
+            if overloaded {
+                named.push_str(&format!(
+                    ", TIMEOUTs it cannot classify on an overloaded host, gated again {retried} \
+                     times: no time is left in the cut's {} minutes for another run",
+                    time / 60
+                ));
+            }
+            self.red = Some(RedGate { tests, quote: quoted(&lines), output: output.clone() });
+            bail!("the gate is red on {commit}: {how}{named}; its output is in {output}")
         }
     }
 
@@ -844,6 +878,16 @@ impl Cutting<'_> {
         }
         Ok(())
     }
+}
+
+/// How long a cut's gate waits before it runs again after a run red only on
+/// TIMEOUTs it cannot classify under overload: `cut::GATE_RETRY_SECONDS`, or
+/// what `AFKCONVOY_CUT_GATE_RETRY_SECONDS` says. Tests set it to zero.
+fn retry_seconds() -> u64 {
+    std::env::var("AFKCONVOY_CUT_GATE_RETRY_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(cut::GATE_RETRY_SECONDS)
 }
 
 /// The branch a cut commits its version on: its own, of its version and its

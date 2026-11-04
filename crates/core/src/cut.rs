@@ -77,6 +77,18 @@ pub fn time_limit(gate_seconds: u64) -> u64 {
     gate_seconds.saturating_mul(2).saturating_add(BESIDE_THE_GATES)
 }
 
+/// How long a cut's gate waits, in seconds, before it runs again after a
+/// run red only on TIMEOUTs it said it cannot classify on an overloaded host
+/// (`gate::overloaded_timeouts`): five minutes, its worker lane given back.
+pub const GATE_RETRY_SECONDS: u64 = 300;
+
+/// Whether a cut started at `started`, given `limit` seconds, can at `now`
+/// wait `pause` and run its gate again — to its limit, `gate_seconds` —
+/// before its time runs out. Where it cannot, the red run fails the step.
+pub fn gate_again(started: u64, now: u64, pause: u64, gate_seconds: u64, limit: u64) -> bool {
+    now.saturating_add(pause).saturating_add(gate_seconds) < started.saturating_add(limit)
+}
+
 /// A repo's cut steps: the lines that set the version, and the lines that
 /// publish and install it, each run by `sh -e` in the cut's checkout with the
 /// version in `VERSION_ENV`: the first line that fails fails the step.
@@ -966,6 +978,16 @@ mod tests {
         assert_eq!((early.oldest_landing_age_seconds, early.busy_in_seconds), (Some(119), Some(1)));
         assert!(!starts(&early, 8, 4, true));
         assert!(starts(&row(&kept, None, &[], 1120, false), 8, 4, true));
+    }
+
+    #[test]
+    fn a_cut_gates_again_only_where_the_pause_and_a_whole_gate_fit_its_time() {
+        let limit = time_limit(600);
+        assert!(gate_again(1000, 1000, GATE_RETRY_SECONDS, 600, limit));
+        let last = 1000 + limit - GATE_RETRY_SECONDS - 600;
+        assert!(gate_again(1000, last - 1, GATE_RETRY_SECONDS, 600, limit));
+        assert!(!gate_again(1000, last, GATE_RETRY_SECONDS, 600, limit));
+        assert!(!gate_again(1000, u64::MAX, GATE_RETRY_SECONDS, 600, limit));
     }
 
     #[test]
