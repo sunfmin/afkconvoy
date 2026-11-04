@@ -496,11 +496,21 @@ fn connection_failure(said: &str) -> bool {
 }
 
 /// A push the remote refused for a fault of its own, not of the push: it
-/// could not write the pack (`remote unpack failed`), or another push held
-/// the ref's lock at that moment (`lock_failure`). Nothing was written, so
-/// the push is safe to try again.
+/// could not write the pack (`remote unpack failed`), another push held
+/// the ref's lock at that moment (`lock_failure`), or it failed to update
+/// the ref at all (`server_error`). Nothing was written, so the push is
+/// safe to try again.
 pub(crate) fn remote_fault(stderr: &str) -> bool {
-    stderr.contains("remote unpack failed") || lock_failure(stderr)
+    stderr.contains("remote unpack failed") || lock_failure(stderr) || server_error(stderr)
+}
+
+/// A ref update GitHub refused with a 5xx of its own:
+/// `! [remote rejected] … (Internal Server Error)` (sunfmin/control#593).
+fn server_error(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("! [remote rejected]") && line.ends_with("(Internal Server Error)")
+    })
 }
 
 /// A push the remote rejected because another push held the ref's lock:
@@ -534,7 +544,7 @@ fn ls_remote_limit() -> Duration {
 
 pub(crate) fn reads_help() -> String {
     format!(
-        "Every git call that reads the remote ends within a limit: an ls-remote within {} seconds and a fetch within {} minutes. At the limit its process group is ended. A read of the remote's refs that meets a connection-level failure — a TLS connect error or unexpected EOF, SSL_ERROR_SYSCALL, a connection reset or refusal, an unresolvable host, a timeout or that limit — is asked again five seconds later, up to three attempts in all. Authentication, a missing repository and every other failure end the read at once. When every attempt fails, the error says how many were made and gives the last failure's text. A push the remote refuses for a fault of its own — another push held the ref's lock (`(failed)`, `cannot lock ref`), or it could not write the pack (`remote unpack failed`) — is tried again after a growing pause, up to {} attempts in all; every other refusal ends it at once. Publications are not retried.",
+        "Every git call that reads the remote ends within a limit: an ls-remote within {} seconds and a fetch within {} minutes. At the limit its process group is ended. A read of the remote's refs that meets a connection-level failure — a TLS connect error or unexpected EOF, SSL_ERROR_SYSCALL, a connection reset or refusal, an unresolvable host, a timeout or that limit — is asked again five seconds later, up to three attempts in all. Authentication, a missing repository and every other failure end the read at once. When every attempt fails, the error says how many were made and gives the last failure's text. A push the remote refuses for a fault of its own — another push held the ref's lock (`(failed)`, `cannot lock ref`), it could not write the pack (`remote unpack failed`), or it failed with a server error of its own (`(Internal Server Error)`) — is tried again after a growing pause, up to {} attempts in all; every other refusal ends it at once. Publications are not retried.",
         crate::git::LS_REMOTE_LIMIT.as_secs(),
         crate::git::FETCH_LIMIT.as_secs() / 60,
         PUSH_ATTEMPTS,
@@ -996,6 +1006,27 @@ pub(crate) mod tests {
     /// lock, on 2026-11-03 (sunfmin/control#542).
     pub(crate) const HELD: &str = "To https://github.com/o/r.git\n ! [remote rejected]   31515b8c -> refs/convoy/heartbeat/h (failed)\nerror: failed to push some refs";
 
+    /// What GitHub said refusing a claim push during its incident of
+    /// 2026-11-04, tick 56 (sunfmin/control#593).
+    const SERVER_ERROR: &str = "To https://github.com/sunfmin/control.git\n ! [remote rejected]   4f2a9c1e -> refs/convoy/claim/sunfmin/control/589 (Internal Server Error)\nerror: failed to push some refs to 'https://github.com/sunfmin/control.git'";
+
+    #[test]
+    fn a_ref_update_refused_with_internal_server_error_is_the_remotes_fault() {
+        assert!(remote_fault(SERVER_ERROR));
+    }
+
+    #[test]
+    fn a_push_refused_with_internal_server_error_takes_on_a_later_attempt() {
+        let fake = Fake::with(&[]);
+        let name = "refs/convoy/claim/sunfmin/control/589";
+        fake.refuses(name, SERVER_ERROR);
+        let ran =
+            remote(&fake).try_push_retried(&Push::set("b", name), None, || Ok(false)).unwrap();
+        assert!(ran.ok, "{}", ran.stderr);
+        assert_eq!(fake.sha(name).as_deref(), Some("b"));
+        assert_eq!(fake.pushes(), 2);
+    }
+
     #[test]
     fn a_ref_lock_held_by_another_push_or_an_unwritten_pack_is_the_remotes_fault() {
         assert!(remote_fault(HELD));
@@ -1012,6 +1043,8 @@ pub(crate) mod tests {
             " ! [rejected]        HEAD -> main (non-fast-forward)",
             "fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host",
             "fatal: 'origin' does not appear to be a git repository",
+            "remote: Invalid username or token. Password authentication is not supported for Git operations.\n\
+             fatal: Authentication failed for 'https://github.com/o/r.git/'",
         ] {
             assert!(!remote_fault(refused), "{refused}");
         }
