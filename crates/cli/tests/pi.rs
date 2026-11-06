@@ -474,7 +474,7 @@ fn a_stage_that_names_no_harness_starts_its_worker_as_before() {
 /// by the second run: the first of pi's two in the directory it starts in,
 /// and whatever an extension added.
 const STAND_IN_PI: &str = r#"#!/usr/bin/env node
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs"
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -499,9 +499,15 @@ const handlers = { tool_call: [], before_agent_start: [] }
 const pi = { on: (name, handler) => handlers[name].push(handler) }
 for (const extension of started.extensions) {
   // An extension that is not there, or does not load, is no session.
-  const loadable = join(mkdtempSync(join(tmpdir(), "stand-in-pi-")), "extension.mjs")
-  copyFileSync(extension, loadable)
-  ;(await import(pathToFileURL(loadable).href)).default(pi)
+  // Loaded from a copy of its own, which leaves nothing behind once loaded.
+  const dir = mkdtempSync(join(tmpdir(), "stand-in-pi-"))
+  const loadable = join(dir, "extension.mjs")
+  try {
+    copyFileSync(extension, loadable)
+    ;(await import(pathToFileURL(loadable).href)).default(pi)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 const ctx = { cwd: started.cwd }
 const answers = []
