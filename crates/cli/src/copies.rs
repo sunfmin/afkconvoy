@@ -441,6 +441,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&outside);
         let nested = root.join("sealed/nested");
         std::fs::create_dir_all(&nested).unwrap();
+        // A new directory takes its parent's group, and the kernel clears a
+        // setgid bit its owner sets on a directory of a group it is not in:
+        // a checkout under /tmp (group wheel) would fail this test for that
+        // alone (sunfmin/control#611). The test's directories are put in the
+        // owner's own group.
+        // SAFETY: getegid has no preconditions and cannot fail.
+        let gid = unsafe { libc::getegid() };
+        for dir in [&root, &root.join("sealed"), &nested] {
+            std::os::unix::fs::chown(dir, None, Some(gid)).unwrap();
+        }
         std::fs::write(nested.join("f"), "role").unwrap();
         std::fs::set_permissions(nested.join("f"), std::fs::Permissions::from_mode(0o444)).unwrap();
         std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o2555)).unwrap();

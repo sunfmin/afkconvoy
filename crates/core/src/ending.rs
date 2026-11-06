@@ -79,7 +79,7 @@ impl Ending {
                 "the target tip has no recorded green run and gated red alone; nothing of this PR ran: ask for a turn again once the fleet's repair of that tip has landed"
             }
             Ending::BaseUncertified => {
-                "the target tip moved before a candidate was assigned and has no recorded green run yet; nothing ran: ask for a turn again, which gates that tip alone first"
+                "the target tip has no recorded green run yet: it moved before a candidate was assigned, or gated alone red only on TIMEOUTs it cannot classify on an overloaded host, which records it neither green nor red (`detail` says which); nothing of this PR ran: ask for a turn again, which gates that tip alone first"
             }
             Ending::TargetMoved => {
                 "the target branch moved outside the candidate chain before this candidate landed, and its fast-forward was rejected or the move invalidated it; nothing landed: ask for a turn again on the new base tip"
