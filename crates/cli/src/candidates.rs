@@ -944,20 +944,10 @@ fn candidate_directory(root: &Path, path: &Path, id: &str) -> bool {
     }
 }
 
-/// Drops `path` and, once the directory is gone, its process-scope file.
-///
-/// Directories are opened for removal first (`copies::removable`): git deletes
-/// the gitdir before the worktree, and stops on a directory the owner cannot
-/// write, leaving the registration gone and the directory behind.
+/// Drops `path` (`Repo::remove_worktree`) and, once the directory is gone,
+/// its process-scope file.
 fn remove_candidate_worktree(repo: &Repo, path: &Path, recorded: &str) {
-    crate::copies::removable(path);
-    let text = path.to_string_lossy();
-    let _ = repo.try_git(&["worktree", "remove", "--force", text.as_ref()]);
-    if path.exists() {
-        crate::copies::removable(path);
-        let _ = std::fs::remove_dir_all(path);
-    }
-    if path.exists() {
+    if repo.remove_worktree(path).is_err() && path.exists() {
         eprintln!(
             "warning: candidate worktree {} is still there and will be removed on a later tick",
             path.display()

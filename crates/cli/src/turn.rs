@@ -28,8 +28,17 @@ pub(crate) fn tip_config(repo: &Repo, tip: &str) -> Result<Config> {
     crate::config::parse(&repo.git_raw(&["show", &format!("{tip}:{}", crate::config::FILE)])?)
 }
 
+/// What gating a base tip alone found.
+pub struct Certified {
+    /// The tip gated green and its run was recorded.
+    pub green: bool,
+    /// Why the tip's own worktree could not be removed. Its verdict stands
+    /// regardless (sunfmin/control#610).
+    pub unremoved: Option<String>,
+}
+
 /// An unrecorded base tip is gated alone, with no worker's changes present.
-pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) -> Result<bool> {
+pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) -> Result<Certified> {
     let command = GateCommand::new(&config.gate_command);
     let _permit = Permit::take(
         repo,
@@ -39,7 +48,7 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
     )?;
     let tree = Tree::named(&repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?);
     if crate::gate::recorded(repo, &tree, &command, now)?.is_some() {
-        return Ok(true);
+        return Ok(Certified { green: true, unremoved: None });
     }
     let path = std::env::temp_dir().join(format!("afkconvoy-base-tip-{}", crate::unique()));
     std::fs::create_dir_all(path.parent().unwrap())?;
@@ -54,9 +63,11 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
         None,
         None,
     );
-    let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
+    let unremoved = repo.remove_worktree(&path).err().map(|error| format!("{error:#}"));
+    if let Some(error) = &unremoved {
+        eprintln!("warning: {error}");
+    }
     let run = run?;
-    removed?;
     if run.ran.green() && (run.green.is_none() || run.not_recorded.is_some()) {
         bail!(
             "the base tip gated green without a record: {}; run this again",
@@ -72,7 +83,7 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
             format!("base tip {tip} is red; worker turns wait for its repair"),
         );
     }
-    Ok(run.green.is_some() && run.not_recorded.is_none())
+    Ok(Certified { green: run.green.is_some() && run.not_recorded.is_none(), unremoved })
 }
 
 /// Acquires one repo's turn on its current certified base tip. A repair
@@ -90,6 +101,7 @@ fn take(
     host: &str,
     now: u64,
     on_red: OnRedBase,
+    unremoved: &mut Vec<String>,
 ) -> Result<Option<String>> {
     let mut tried = None;
     loop {
@@ -112,9 +124,10 @@ fn take(
         };
         if !repairing && crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
             if tried.as_deref() != Some(tip.as_str()) {
-                let green = certify(repo, &declared, &tip, host, now)?;
+                let certified = certify(repo, &declared, &tip, host, now)?;
+                unremoved.extend(certified.unremoved);
                 tried = Some(tip);
-                if green {
+                if certified.green {
                     continue;
                 }
                 let _ = crate::wake::wake(repo, "red base tip");
@@ -424,7 +437,12 @@ fn run(
         answer["commit"] = json!(current);
         return Ok(answer);
     }
-    let Some(_tip) = take(repo, config, issue, host, now, on_red)? else {
+    let mut unremoved = vec![];
+    let taken = take(repo, config, issue, host, now, on_red, &mut unremoved)?;
+    if !unremoved.is_empty() {
+        answer["unremoved"] = json!(unremoved);
+    }
+    let Some(_tip) = taken else {
         answer["outcome"] = json!(Ending::BaseRed);
         return Ok(answer);
     };

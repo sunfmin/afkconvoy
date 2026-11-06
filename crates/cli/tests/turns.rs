@@ -11,7 +11,7 @@ fn quote(path: &Path) -> String {
     afkconvoy_core::line::Line::new().word(&path.to_string_lossy()).own()
 }
 
-fn until(done: impl Fn() -> bool) {
+fn until(mut done: impl FnMut() -> bool) {
     let began = Instant::now();
     while !done() {
         assert!(
@@ -578,4 +578,42 @@ fn an_escalated_repair_stays_with_a_human_while_its_tip_stays_red() {
             .contains("--add-label ready-for-agent --remove-label ready-for-human"),
         "{wait}"
     );
+}
+
+/// A cancelled test leaves read-only files in the base tip's own worktree
+/// (sunfmin/control#610). The worktree is still removed, and the tip's red
+/// verdict is recorded: worker turns wait for its repair.
+#[test]
+fn a_red_base_tip_whose_gate_left_read_only_files_removes_its_worktree_and_records_red() {
+    let world = World::new();
+    let certified = world.root.join("certified-red");
+    world.set_gate(&format!(
+        "if test -f broken.txt; then pwd > {}; left=.afkconvoy-tmp/cancelled/.tmp1/home/.agents/skills/fake; \
+         mkdir -p $left && echo skill > $left/SKILL.md && chmod -R a-w .afkconvoy-tmp/cancelled; exit 1; fi",
+        quote(&certified)
+    ));
+    seed(&world);
+    let worker = world.worker(1, "worker.txt", "normal work");
+    crate::common::commit(&world.clone, "broken.txt", "outside change");
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    let mut child = start(&world, &worker, &world.cache(), 1);
+    until(|| {
+        !world
+            .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/base/red/main"])
+            .is_empty()
+            || child.try_wait().unwrap().is_some()
+    });
+    let exited = child.try_wait().unwrap();
+    if exited.is_some() {
+        let out = child.wait_with_output().unwrap();
+        panic!("the turn ended instead of waiting: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    let _ = child.kill();
+    let out = child.wait_with_output().unwrap();
+    let path = std::path::PathBuf::from(std::fs::read_to_string(&certified).unwrap().trim());
+    assert!(!path.exists(), "{} is still there", path.display());
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!crate::common::worktree_listed(&listed, &path), "{listed}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("cannot remove worktree"), "{stderr}");
 }
