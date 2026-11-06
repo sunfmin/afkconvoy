@@ -37,7 +37,10 @@ pub enum Certified {
     /// overloaded host (`gate::overloaded_timeouts`): it says nothing of the
     /// tip, which is recorded neither green nor red, and is gated alone again
     /// by the next turn. `output` keeps the run's whole log.
-    Unsettled { tests: Vec<String>, output: std::path::PathBuf },
+    Unsettled {
+        tests: Vec<String>,
+        output: std::path::PathBuf,
+    },
 }
 
 /// An unrecorded base tip is gated alone, with no worker's changes present.
@@ -107,7 +110,9 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
         repo.remote().push(&Push::set(tip, &red).force())?;
         Acting::new("gate").in_checkout(Some(repo.clone())).say(
             crate::clock(),
-            format!("base tip {tip} is red; worker turns wait for its repair; its output is in {shown}"),
+            format!(
+                "base tip {tip} is red; worker turns wait for its repair; its output is in {shown}"
+            ),
         );
         return Ok(Certified::Red);
     }
@@ -122,16 +127,8 @@ enum OnRedBase {
     Return,
 }
 
-/// What a turn takes: the certified base tip, or why there is none.
-enum Taken {
-    Tip,
-    /// The tip gated red alone, and is recorded red.
-    Red,
-    /// The tip gated alone, red only on TIMEOUTs it cannot classify on an
-    /// overloaded host: neither green nor red is on record.
-    Unsettled { tests: Vec<String>, output: std::path::PathBuf },
-}
-
+/// Takes the turn on a tip that is green on record (`Certified::Green`), or
+/// answers why there is none.
 fn take(
     repo: &Repo,
     config: &Config,
@@ -139,7 +136,7 @@ fn take(
     host: &str,
     now: u64,
     on_red: OnRedBase,
-) -> Result<Taken> {
+) -> Result<Certified> {
     let mut tried = None;
     loop {
         let gh = GitHub::of(repo)?;
@@ -168,9 +165,7 @@ fn take(
                     }
                     // A tip no run settled is not waited on as red: the
                     // turn ends, and the next one gates it alone again.
-                    Certified::Unsettled { tests, output } => {
-                        return Ok(Taken::Unsettled { tests, output });
-                    }
+                    unsettled @ Certified::Unsettled { .. } => return Ok(unsettled),
                     Certified::Red => {
                         tried = Some(tip);
                         let _ = crate::wake::wake(repo, "red base tip");
@@ -178,12 +173,12 @@ fn take(
                 }
             }
             if matches!(on_red, OnRedBase::Return) {
-                return Ok(Taken::Red);
+                return Ok(Certified::Red);
             }
             std::thread::sleep(Duration::from_secs(2));
             continue;
         }
-        return Ok(Taken::Tip);
+        return Ok(Certified::Green);
     }
 }
 /// The files a merge in progress in a worktree has left conflicted.
@@ -483,12 +478,12 @@ fn run(
         return Ok(answer);
     }
     match take(repo, config, issue, host, now, on_red)? {
-        Taken::Tip => {}
-        Taken::Red => {
+        Certified::Green => {}
+        Certified::Red => {
             answer["outcome"] = json!(Ending::BaseRed);
             return Ok(answer);
         }
-        Taken::Unsettled { tests, output } => {
+        Certified::Unsettled { tests, output } => {
             answer["outcome"] = json!(Ending::BaseUncertified);
             answer["detail"] = json!(format!(
                 "the base tip gated alone red only on TIMEOUTs it cannot classify on an \
