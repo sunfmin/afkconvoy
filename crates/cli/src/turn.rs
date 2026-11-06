@@ -8,7 +8,7 @@ use crate::remote::{Fresh, Push};
 use afkconvoy_core::account::End;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
-use afkconvoy_core::gate::{GateCommand, Tree, failing_tests, overloaded_timeouts};
+use afkconvoy_core::gate::{GateCommand, Tree};
 use afkconvoy_core::landing::Of;
 use afkconvoy_core::lock::{keeps_off, named};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
@@ -87,14 +87,9 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
         );
     }
     if !run.ran.green() {
-        // The whole run, as it kept it; its excerpt where it kept none.
-        let lines: Vec<String> = match std::fs::read_to_string(&output) {
-            Ok(text) => text.lines().map(str::to_string).collect(),
-            Err(_) => run.excerpt.clone(),
-        };
         let shown = output.display();
-        if !run.ran.timed_out && overloaded_timeouts(&lines) {
-            let tests = failing_tests(&lines);
+        if let Some(unsettled) = run.unsettled {
+            let tests = unsettled.tests;
             Acting::new("gate").in_checkout(Some(repo.clone())).say(
                 crate::clock(),
                 format!(
