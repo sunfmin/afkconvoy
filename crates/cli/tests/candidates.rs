@@ -1755,10 +1755,7 @@ fn a_candidate_red_only_on_timeouts_under_overload_is_unsettled_not_red() {
     assert_eq!(cancelled["cause"], "predecessor_unsettled");
     assert_eq!(cancelled["cancelled_by"], unsettled["candidate"]);
     let candidates = chain(&world)["candidates"].clone();
-    assert!(
-        candidates.as_array().unwrap().iter().all(|c| c["phase"] != "red"),
-        "{candidates}"
-    );
+    assert!(candidates.as_array().unwrap().iter().all(|c| c["phase"] != "red"), "{candidates}");
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base, "nothing landed");
     assert!(
         !world

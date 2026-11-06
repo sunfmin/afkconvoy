@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use afkconvoy_core::config::{Config, Which};
 use afkconvoy_core::gate::{
-    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, believed_among, failing_tests,
-    overload_said, overloaded_timeouts, record_ref, red_ref, red_subject,
+    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, believed_among,
+    failing_tests, overload_said, overloaded_timeouts, record_ref, red_ref, red_subject,
 };
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::lock::named;
