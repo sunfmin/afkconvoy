@@ -476,6 +476,46 @@ fn an_old_stored_train_lanes_key_loads_and_a_run_drops_it() {
     assert_eq!(file["settings"]["admit_load"], 400);
 }
 
+/// A base tip gated alone red only on TIMEOUTs the gate says it cannot
+/// classify on an overloaded host is not recorded red: no repair waits on it,
+/// the turn answers `base_uncertified` and keeps the run's whole output, and
+/// the next turn gates the tip alone again (sunfmin/control#611).
+#[test]
+fn a_base_tip_red_only_on_timeouts_under_overload_is_not_recorded_red() {
+    let world = World::new();
+    let quiet = world.root.join("quiet");
+    world.set_gate(&format!(
+        "if test ! -f worker.txt && test ! -f {}; then \
+         echo '     TIMEOUT [   6.004s] (40/669) afkconvoy::cli dsh::the_line'; \
+         echo 'gate: host overloaded or load unavailable (load 13.51, CPUs 12); cannot classify TIMEOUT tests. Retry on a quiet host.' >&2; \
+         exit 100; fi",
+        quote(&quiet)
+    ));
+    std::fs::write(&quiet, "").unwrap();
+    seed(&world);
+    std::fs::remove_file(&quiet).unwrap();
+    let worker = world.worker(1, "worker.txt", "work");
+    crate::common::commit(&world.clone, "outside.txt", "outside change");
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    let unsettled = world.afk_in(&worker, &["land", "--issue", "1"]).ok();
+    assert_eq!(unsettled["outcome"], "base_uncertified", "{unsettled}");
+    let detail = unsettled["detail"].as_str().unwrap();
+    assert!(detail.contains("afkconvoy::cli dsh::the_line"), "{detail}");
+    let output = detail.rsplit("its output is in ").next().unwrap();
+    let kept = std::fs::read_to_string(output).unwrap();
+    assert!(kept.contains("cannot classify TIMEOUT tests"), "{kept}");
+    assert!(
+        world
+            .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/base/red/main"])
+            .is_empty(),
+        "an unsettled tip is not recorded red"
+    );
+    assert_eq!(world.state(1), "open");
+    std::fs::write(&quiet, "").unwrap();
+    let landed = world.afk_in(&worker, &["land", "--issue", "1"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+}
+
 #[test]
 fn an_outside_red_base_is_certified_alone_and_its_fleet_repair_lands_in_a_turn() {
     red_base_repair(false, None);
