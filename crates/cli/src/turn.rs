@@ -8,7 +8,7 @@ use crate::remote::{Fresh, Push};
 use afkconvoy_core::account::End;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
-use afkconvoy_core::gate::{GateCommand, Tree};
+use afkconvoy_core::gate::{GateCommand, Tree, failing_tests, overloaded_timeouts};
 use afkconvoy_core::landing::Of;
 use afkconvoy_core::lock::{keeps_off, named};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
@@ -28,8 +28,25 @@ pub(crate) fn tip_config(repo: &Repo, tip: &str) -> Result<Config> {
     crate::config::parse(&repo.git_raw(&["show", &format!("{tip}:{}", crate::config::FILE)])?)
 }
 
+/// How the base tip's gate run alone came out.
+pub enum Certified {
+    Green,
+    /// Red, and recorded red: worker turns wait for its repair.
+    Red,
+    /// Red only on TIMEOUTs the gate said it cannot classify on an
+    /// overloaded host (`gate::overloaded_timeouts`): it says nothing of the
+    /// tip, which is recorded neither green nor red, and is gated alone again
+    /// by the next turn. `output` keeps the run's whole log.
+    Unsettled {
+        tests: Vec<String>,
+        output: std::path::PathBuf,
+    },
+}
+
 /// An unrecorded base tip is gated alone, with no worker's changes present.
-pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) -> Result<bool> {
+/// The run's whole log is kept in the checkout's git dir, in a file of its
+/// own, unless it is green: what a red tip's repair reads.
+pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) -> Result<Certified> {
     let command = GateCommand::new(&config.gate_command);
     let _permit = Permit::take(
         repo,
@@ -39,10 +56,12 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
     )?;
     let tree = Tree::named(&repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?);
     if crate::gate::recorded(repo, &tree, &command, now)?.is_some() {
-        return Ok(true);
+        return Ok(Certified::Green);
     }
-    let path = std::env::temp_dir().join(format!("afkconvoy-base-tip-{}", crate::unique()));
+    let unique = crate::unique();
+    let path = std::env::temp_dir().join(format!("afkconvoy-base-tip-{unique}"));
     std::fs::create_dir_all(path.parent().unwrap())?;
+    let output = repo.common_dir()?.join(format!("convoy-base-tip-gate-{now}-{unique}.log"));
     repo.git(&["worktree", "add", "--quiet", "--detach", &path.to_string_lossy(), tip])?;
     let checkout = Repo::new(path.clone());
     let run = crate::gate::run_and_record(
@@ -52,11 +71,14 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
         now,
         Duration::from_secs(config.gate_seconds()),
         None,
-        None,
+        Some(&output),
     );
     let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
     let run = run?;
     removed?;
+    if run.ran.green() {
+        let _ = std::fs::remove_file(&output);
+    }
     if run.ran.green() && (run.green.is_none() || run.not_recorded.is_some()) {
         bail!(
             "the base tip gated green without a record: {}; run this again",
@@ -65,14 +87,36 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
         );
     }
     if !run.ran.green() {
+        // The whole run, as it kept it; its excerpt where it kept none.
+        let lines: Vec<String> = match std::fs::read_to_string(&output) {
+            Ok(text) => text.lines().map(str::to_string).collect(),
+            Err(_) => run.excerpt.clone(),
+        };
+        let shown = output.display();
+        if !run.ran.timed_out && overloaded_timeouts(&lines) {
+            let tests = failing_tests(&lines);
+            Acting::new("gate").in_checkout(Some(repo.clone())).say(
+                crate::clock(),
+                format!(
+                    "base tip {tip} is unsettled: red only on TIMEOUTs it cannot classify on an \
+                     overloaded host ({}); not recorded red, the next turn gates it again; its \
+                     output is in {shown}",
+                    tests.join(", ")
+                ),
+            );
+            return Ok(Certified::Unsettled { tests, output });
+        }
         let red = crate::repair::red_ref(repo, &config.base_branch);
         repo.remote().push(&Push::set(tip, &red).force())?;
         Acting::new("gate").in_checkout(Some(repo.clone())).say(
             crate::clock(),
-            format!("base tip {tip} is red; worker turns wait for its repair"),
+            format!(
+                "base tip {tip} is red; worker turns wait for its repair; its output is in {shown}"
+            ),
         );
+        return Ok(Certified::Red);
     }
-    Ok(run.green.is_some() && run.not_recorded.is_none())
+    Ok(Certified::Green)
 }
 
 /// Acquires one repo's turn on its current certified base tip. A repair
@@ -83,6 +127,8 @@ enum OnRedBase {
     Return,
 }
 
+/// Takes the turn on a tip that is green on record (`Certified::Green`), or
+/// answers why there is none.
 fn take(
     repo: &Repo,
     config: &Config,
@@ -90,7 +136,7 @@ fn take(
     host: &str,
     now: u64,
     on_red: OnRedBase,
-) -> Result<Option<String>> {
+) -> Result<Certified> {
     let mut tried = None;
     loop {
         let gh = GitHub::of(repo)?;
@@ -112,20 +158,27 @@ fn take(
         };
         if !repairing && crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
             if tried.as_deref() != Some(tip.as_str()) {
-                let green = certify(repo, &declared, &tip, host, now)?;
-                tried = Some(tip);
-                if green {
-                    continue;
+                match certify(repo, &declared, &tip, host, now)? {
+                    Certified::Green => {
+                        tried = Some(tip);
+                        continue;
+                    }
+                    // A tip no run settled is not waited on as red: the
+                    // turn ends, and the next one gates it alone again.
+                    unsettled @ Certified::Unsettled { .. } => return Ok(unsettled),
+                    Certified::Red => {
+                        tried = Some(tip);
+                        let _ = crate::wake::wake(repo, "red base tip");
+                    }
                 }
-                let _ = crate::wake::wake(repo, "red base tip");
             }
             if matches!(on_red, OnRedBase::Return) {
-                return Ok(None);
+                return Ok(Certified::Red);
             }
             std::thread::sleep(Duration::from_secs(2));
             continue;
         }
-        return Ok(Some(tip));
+        return Ok(Certified::Green);
     }
 }
 /// The files a merge in progress in a worktree has left conflicted.
@@ -424,10 +477,24 @@ fn run(
         answer["commit"] = json!(current);
         return Ok(answer);
     }
-    let Some(_tip) = take(repo, config, issue, host, now, on_red)? else {
-        answer["outcome"] = json!(Ending::BaseRed);
-        return Ok(answer);
-    };
+    match take(repo, config, issue, host, now, on_red)? {
+        Certified::Green => {}
+        Certified::Red => {
+            answer["outcome"] = json!(Ending::BaseRed);
+            return Ok(answer);
+        }
+        Certified::Unsettled { tests, output } => {
+            answer["outcome"] = json!(Ending::BaseUncertified);
+            answer["detail"] = json!(format!(
+                "the base tip gated alone red only on TIMEOUTs it cannot classify on an \
+                 overloaded host ({}): it is recorded neither green nor red, and the next turn \
+                 gates it alone again; its output is in {}",
+                tests.join(", "),
+                output.display()
+            ));
+            return Ok(answer);
+        }
+    }
     let head = repo.git(&["rev-parse", "HEAD"])?;
     repo.remote().push(&Push::set(&head, &format!("refs/heads/{}", pr.head_branch)))?;
     crate::candidates::run(
