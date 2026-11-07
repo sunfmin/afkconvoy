@@ -83,9 +83,14 @@ pub struct Work {
 /// The work `queue`'s running tickets run, by the reading `table` of the
 /// process table: each process's pid and its parent's.
 pub fn running_work(queue: &[Ticket], table: &[(u32, u32)]) -> Work {
-    let roots: Vec<u32> =
-        queue.iter().filter(|ticket| ticket.running()).map(|ticket| ticket.pid).collect();
-    let whole = roots.iter().all(|root| table.iter().any(|(pid, _)| pid == root));
+    let mut roots: Vec<u32> = Vec::new();
+    let mut whole = true;
+    for ticket in queue {
+        if ticket.running() {
+            roots.push(ticket.pid);
+            whole = whole && table.iter().any(|(pid, _)| *pid == ticket.pid);
+        }
+    }
     Work { pids: under(&roots, table), whole }
 }
 
