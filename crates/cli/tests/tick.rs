@@ -182,6 +182,22 @@ fn a_readiness_wait_timeout_is_still_a_failed_start() {
     assert!(world.comments(3).iter().any(|body| body.contains("worker start failed again")));
 }
 
+/// A start that failed again escalates its claim, then fails its step: the
+/// tick's line says both, the escalation before the failure.
+#[test]
+fn a_step_that_fails_after_it_escalated_still_says_the_escalation() {
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["timeout_on_waits"] = json!([1]));
+    tick(&world, "1000");
+    let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1090"]);
+    assert_eq!(world.claims(), []);
+    let line = &lines[0];
+    let escalated = line.find("escalated #3 (").unwrap_or_else(|| panic!("{lines:?}"));
+    let failed = line.find("FAILED ").unwrap_or_else(|| panic!("{lines:?}"));
+    assert!(escalated < failed, "{lines:?}");
+    assert!(line.contains("the claim was escalated"), "{lines:?}");
+}
+
 #[test]
 fn a_brief_waits_for_the_harness_to_end_its_quiet_startup_working_episode() {
     let world = backlog(&[3]);

@@ -36,6 +36,7 @@ use crate::copies::Copies;
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::exclusive;
 use crate::fleet::Fleet;
+use crate::found::Found;
 use crate::git::Repo;
 use crate::orca::{Source, Worktree};
 use crate::park::{park_claim, routed};
@@ -203,12 +204,18 @@ pub(crate) fn worktree_and_work(
 /// so it can be run again from wherever it was cut, and posts one comment.
 /// The PR and the branch are kept, and so is the worktree when it holds what
 /// the remote does not; the terminal of its worker is closed.
-pub fn escalate(fleet: &mut Fleet, me: &Me, issue: u64, reason: &str) -> Result<Value> {
+pub fn escalate(
+    fleet: &mut Fleet,
+    found: &mut Found,
+    me: &Me,
+    issue: u64,
+    reason: &str,
+) -> Result<Value> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
     let worktree = worktree_of(fleet, issue)?;
     let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
     let why = Handed::new("by hand", reason.to_string());
-    let left = escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
+    let left = escalate_claim(fleet, found, &claim, &why, pr, worktree.as_ref())?;
     let answer = json!({"issue": issue, "action": "escalated", "released": true});
     Ok(with_left(answer, left.as_ref()))
 }
@@ -259,12 +266,13 @@ impl Handed {
 /// Escalates `claim`, for `why`. `pr` is the issue's open PR, when it has
 /// one: the status board keeps how far the claim got. The comment and the
 /// status board end with the lines that answer the escalation
-/// (`waiting::Waits::answer_lines`), and the fleet's view notes it, for the
-/// tick's line. `worktree` is the issue's on this host, when it has one: it
+/// (`waiting::Waits::answer_lines`), and `found` notes it, for the tick's
+/// line. `worktree` is the issue's on this host, when it has one: it
 /// is removed when it holds nothing the remote does not, and kept otherwise —
 /// the comment then names what only it holds → what became of it.
 pub(crate) fn escalate_claim(
     fleet: &mut Fleet,
+    found: &mut Found,
     claim: &Claim,
     why: &Handed,
     pr: Option<u64>,
@@ -361,7 +369,7 @@ pub(crate) fn escalate_claim(
         }
         Ok::<(), anyhow::Error>(())
     })?;
-    fleet.escalated.push((issue, why.brief.clone()));
+    found.escalated.push((issue, why.brief.clone()));
     Ok(leaving.map(|leaving| leaving.left))
 }
 
@@ -787,28 +795,29 @@ pub fn nudge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
 /// for a later tick, as `Nothing`.
 pub fn judge(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     issue: u64,
     start: bool,
 ) -> Result<Outcome> {
-    let found = match ask_after(fleet, me, issue, Look::Acting)? {
+    let stopped = match ask_after(fleet, me, issue, Look::Acting)? {
         None | Some(Asked::Settled(Route::Leave)) => return Ok(Outcome::Nothing),
         Some(Asked::Settled(_)) if !start => return Ok(Outcome::Nothing),
         Some(Asked::Settled(_)) => {
-            dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
             return Ok(Outcome::Continued);
         }
-        Some(Asked::Stopped(found)) => *found,
+        Some(Asked::Stopped(stopped)) => *stopped,
     };
-    let Stopped { claim, worktree, verdict, said, route } = found;
+    let Stopped { claim, worktree, verdict, said, route } = stopped;
     let said = said.as_deref();
     let reason = match route {
         Route::Leave => return Ok(Outcome::Nothing),
         Route::Waiting(since) => return Ok(Outcome::Waiting(since)),
         Route::Continue if !start => return Ok(Outcome::Nothing),
         Route::Continue => {
-            dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
             return Ok(Outcome::Continued);
         }
         Route::Nudge(unnudged) => {
@@ -829,7 +838,7 @@ pub fn judge(
                 Blocked::Redispatch if !start => return Ok(Outcome::Nothing),
                 Blocked::Redispatch => {
                     // Every blocker closed: the issue is worked again, from what is here.
-                    dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+                    dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
                     return Ok(Outcome::Continued);
                 }
                 Blocked::Escalate(reason) => Handed::new(
@@ -851,7 +860,7 @@ pub fn judge(
         ),
     };
     // A claim the tick judges has no PR.
-    escalate_claim(fleet, &claim, &reason, None, Some(&worktree))?;
+    escalate_claim(fleet, found, &claim, &reason, None, Some(&worktree))?;
     Ok(Outcome::Done)
 }
 

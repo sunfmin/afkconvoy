@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use crate::claims::{Me, Take, take};
 use crate::fleet::Fleet;
 use crate::forget::forget;
+use crate::found::Found;
 use crate::gh::{IssueRead, Tracker, gone};
 use crate::git::Repo;
 use crate::launch::Launches;
@@ -260,12 +261,13 @@ pub enum StartFrom {
 /// `from` is `Fresh`.
 pub fn dispatch(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     number: u64,
     from: StartFrom,
 ) -> Result<Value> {
-    dispatch_continuing(fleet, me, agent, number, from, None)
+    dispatch_continuing(fleet, found, me, agent, number, from, None)
 }
 
 /// `dispatch`, whose brief also says what of the work of the worker before
@@ -273,6 +275,7 @@ pub fn dispatch(
 /// (`switch`).
 pub(crate) fn dispatch_continuing(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     number: u64,
@@ -292,25 +295,25 @@ pub(crate) fn dispatch_continuing(
             }
             Err(error) if error.is::<crate::paused::Held>() || error.is::<Closed>() => Err(error),
             Err(error) if error.is::<crate::orca::StillClosing>() => {
-                wait_for_close(fleet, me, number, previous, error)
+                wait_for_close(fleet, found, me, number, previous, error)
             }
             Err(error) => {
                 // Waiting to hand a ready worker its brief is no failed
                 // start, even if it subsequently disappears or refuses it.
                 // Nor is waiting for the previous worker's terminal to close.
                 let previous = previous.filter(|p| p.ready.is_none() && p.closing_since.is_none());
-                start_failed(fleet, me, number, previous, error)
+                start_failed(fleet, found, me, number, previous, error)
             }
         };
     };
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
-    let released = held && forget(fleet, me, number)? == Outcome::Done;
+    let released = held && forget(fleet, found, me, number)? == Outcome::Done;
     if held && !released {
         // GitHub has it after all: the failure is as it was.
         return started;
     }
     if !released {
-        fleet.forgotten.push((how.clone(), false));
+        found.forgotten.push((how.clone(), false));
     }
     let said = how.word();
     forget_starting(fleet, number)?;
@@ -322,6 +325,7 @@ pub(crate) fn dispatch_continuing(
 /// for continuation; a second hands it on with both startup errors.
 fn start_failed(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     number: u64,
     previous: Option<Starting>,
@@ -353,7 +357,7 @@ fn start_failed(
     };
     let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
-    crate::judge::escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
+    crate::judge::escalate_claim(fleet, found, &claim, &why, pr, worktree.as_ref())?;
     forget_starting(fleet, number)?;
     let context = if trust_gap {
         "worker start found a worktree trust gap; the claim was escalated"
@@ -370,6 +374,7 @@ fn start_failed(
 /// start again, and escalates saying how long it was waited for.
 fn wait_for_close(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     number: u64,
     previous: Option<Starting>,
@@ -403,7 +408,7 @@ fn wait_for_close(
     );
     let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
-    crate::judge::escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
+    crate::judge::escalate_claim(fleet, found, &claim, &why, pr, worktree.as_ref())?;
     forget_starting(fleet, number)?;
     // No longer a wait: this start failed.
     Err(anyhow!(

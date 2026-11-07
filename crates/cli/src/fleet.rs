@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow};
 use std::thread;
 
 use crate::claims::Scan;
-use crate::gh::{GitHub, Gone, Open, OpenIssues, beside, gone};
+use crate::gh::{GitHub, Open, OpenIssues, beside, gone};
 use crate::git::Repo;
 use crate::orca::{Source, Worktree};
 use crate::patrol;
@@ -58,32 +58,12 @@ pub struct Fleet {
     /// `Fresh::Opened` read answers.
     pub remote: Remote,
     pub now: u64,
-    /// The issues this view escalated, each with why in a few words: what a
-    /// tick's line says of them. Every escalation is made through
-    /// `judge::escalate_claim`, which is what adds to it.
-    pub escalated: Vec<(u64, String)>,
-    /// The issues this view found gone — deleted, transferred or never
-    /// issued — as a step
-    /// met them, each with whether a claim on it was released: what a tick's
-    /// line says of them.
-    pub forgotten: Vec<(Gone, bool)>,
     /// The claimed issues the last rebuild could not read, each with why: the
     /// pass goes on with them as open, and its tick reports each.
     pub unread: Vec<(u64, anyhow::Error)>,
     /// The closed claimed issues the last rebuild read, each with the login of
     /// whoever closed it, where GitHub says: what a tick's line names.
     pub closers: Vec<(u64, String)>,
-    /// What this view's start and end of a cut said: what a tick's line says
-    /// of them, and its log keeps.
-    pub cut_said: Vec<crate::log::What>,
-    /// The cut needs as the pass's start of a cut evaluated them, where it
-    /// did: what the tick then says in place of its rebuild's look, so no
-    /// tick both names a failed need and starts the cut (`cut::start`).
-    pub cut_needs: Option<Option<afkconvoy_core::cut::Held>>,
-    /// The landings this view asked a turn for again that had stopped at a
-    /// fleet lock, each with the locks that turn named, closed since: what a
-    /// tick's line names.
-    pub after_locks: Vec<(u64, Vec<u64>)>,
     /// A startup probe that still stands already checked every harness.
     /// `runnable` then keeps the kit `running` built and starts none again.
     trust_launches: bool,
@@ -136,13 +116,8 @@ impl Fleet {
             scan,
             remote,
             now,
-            escalated: vec![],
-            forgotten: vec![],
             unread: vec![],
             closers: vec![],
-            cut_said: vec![],
-            cut_needs: None,
-            after_locks: vec![],
             trust_launches: false,
             patrol_landings: None,
         })

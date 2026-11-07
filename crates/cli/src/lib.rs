@@ -60,6 +60,7 @@ pub mod fleet;
 pub mod fleet_report;
 pub mod flows;
 pub mod forget;
+pub mod found;
 pub mod gate;
 pub mod gh;
 mod gh_equivalent;
@@ -5272,8 +5273,10 @@ fn run(
             let repo = checkout?;
             let agent = agent.agent(&repo)?;
             let mut fleet = Fleet::open(&repo, now)?;
+            let found = &mut found::Found::default();
+            let me = who.me(now);
             let dispatched =
-                dispatch::dispatch(&mut fleet, &who.me(now), &agent, issue.number(), start);
+                dispatch::dispatch(&mut fleet, found, &me, &agent, issue.number(), start);
             probe::announce(&agent.launches.warned());
             dispatched
         }
@@ -5285,7 +5288,8 @@ fn run(
         }
         Command::Escalate { issue, who, reason, .. } => {
             let mut fleet = Fleet::open(&checkout?, now)?;
-            judge::escalate(&mut fleet, &who.me(now), issue.number(), &reason)
+            let found = &mut found::Found::default();
+            judge::escalate(&mut fleet, found, &who.me(now), issue.number(), &reason)
         }
         Command::Park { issue, who, .. } => {
             park::park(&mut Fleet::open(&checkout?, now)?, &who.me(now), issue.number())

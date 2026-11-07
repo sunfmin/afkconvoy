@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::claims::Me;
 use crate::dispatch::{Agent, Continuing, StartFrom, dispatch_continuing};
 use crate::fleet::Fleet;
+use crate::found::Found;
 use crate::judge::mine;
 use crate::orca::{Source, Worktree};
 
@@ -192,10 +193,12 @@ pub fn switch(fleet: &mut Fleet, me: &Me, agent: &Agent, which: Which) -> Result
         Which::Nothing | Which::All => {}
     }
     *fleet = Fleet::open(&fleet.repo, fleet.now)?;
+    // A command run by hand has no tick's line to say what it found.
+    let found = &mut Found::default();
     let one = |moved: Value| moved;
     Ok(match which {
         Which::Nothing => json!({"switched": []}),
-        Which::Issue(issue) => one(switch_issue(fleet, me, agent, issue, before)?),
+        Which::Issue(issue) => one(switch_issue(fleet, found, me, agent, issue, before)?),
         Which::Patrol(name) => {
             let said = |checkout: &Worktree| continuing(Some(checkout), before);
             one(crate::patrol::switch(fleet, me, agent, &name, said)?)
@@ -204,7 +207,7 @@ pub fn switch(fleet: &mut Fleet, me: &Me, agent: &Agent, which: Which) -> Result
             let (mut switched, mut failed) = (vec![], vec![]);
             let issues: Vec<u64> = mine_all(fleet, me).iter().map(|claim| claim.number).collect();
             for issue in issues {
-                match switch_issue(fleet, me, agent, issue, before) {
+                match switch_issue(fleet, found, me, agent, issue, before) {
                     Ok(moved) => switched.push(moved),
                     Err(e) => failed.push(json!({"issue": issue, "error": format!("{e:#}")})),
                 }
@@ -290,6 +293,7 @@ pub(crate) fn auxiliary(fleet: &Fleet, agent: &Agent, worktree: &Worktree) -> Re
 /// switch is recorded on the issue's open PR, beside its join's record.
 pub(crate) fn switch_issue(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     issue: u64,
@@ -305,7 +309,8 @@ pub(crate) fn switch_issue(
     if let Some(worktree) = &worktree {
         worktree.stop_for_continuation()?;
     }
-    let started = dispatch_continuing(fleet, me, agent, issue, StartFrom::Auto, Some(&continued))?;
+    let started =
+        dispatch_continuing(fleet, found, me, agent, issue, StartFrom::Auto, Some(&continued))?;
     if started["started"] != true {
         bail!("issue #{issue}: no worker was started: {started}");
     }
@@ -332,7 +337,13 @@ pub(crate) fn switch_issue(
 /// whether every worker that needed to move did. The fleet must already
 /// select `target`: a checkout that names one is pinned to it, and one that
 /// names none selects the host kit's first.
-pub(crate) fn onto(fleet: &mut Fleet, me: &Me, agent: &Agent, target: Harness) -> Result<bool> {
+pub(crate) fn onto(
+    fleet: &mut Fleet,
+    found: &mut Found,
+    me: &Me,
+    agent: &Agent,
+    target: Harness,
+) -> Result<bool> {
     let mut landed = true;
     let source = Source::of(&fleet.repo)?;
     let issues: Vec<u64> = mine_all(fleet, me).iter().map(|claim| claim.number).collect();
@@ -342,7 +353,7 @@ pub(crate) fn onto(fleet: &mut Fleet, me: &Me, agent: &Agent, target: Harness) -
             continue;
         }
         let on = worktree.harness()?.unwrap_or(target);
-        if switch_issue(fleet, me, agent, issue, on).is_err() {
+        if switch_issue(fleet, found, me, agent, issue, on).is_err() {
             landed = false;
         }
     }

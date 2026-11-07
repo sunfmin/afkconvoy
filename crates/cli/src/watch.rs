@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use crate::claims::Me;
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
+use crate::found::Found;
 use crate::gh::Comment;
 use crate::judge::{
     Handed, Look, escalate_claim, mine, nudge_worker, own_background, progress, where_it_stopped,
@@ -86,6 +87,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
 /// `None` leaves ordinary harness recovery to the tick.
 pub(crate) fn answer_turn(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     issue: u64,
@@ -109,7 +111,7 @@ pub(crate) fn answer_turn(
         if worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Gone
             || crate::dispatch::incomplete(fleet, issue)?
         {
-            let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            let started = dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
             if started["started"] != true {
                 return Ok(Some(Outcome::Nothing));
             }
@@ -136,7 +138,7 @@ pub(crate) fn answer_turn(
     let locks = crate::turn_answer::stopped_at_locks(&worktree)?;
     crate::turn_answer::ask_again(&worktree, issue)?;
     if matches!(&answered, Answered::Said(outcome) if outcome == Ending::Locked.word()) {
-        fleet.after_locks.push((issue, locks));
+        found.after_locks.push((issue, locks));
     }
     Ok(Some(Outcome::Asked))
 }
@@ -167,21 +169,22 @@ pub(crate) fn record_join(
 /// session — briefed only to land the PR.
 fn restart_worker(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     issue: u64,
-    found: &Stopped,
+    stopped: &Stopped,
     unrestarted: Unrestarted,
 ) -> Result<Value> {
     let mut started = Value::Null;
     afkconvoy_core::landing_worker::restart(unrestarted, |step| {
         match step {
             RestartStep::Record => {
-                let record = LandingRecord { restarted: Some(fleet.now), ..found.record.clone() };
-                record_join(fleet, found.pr, &record, &found.comments)?;
+                let record = LandingRecord { restarted: Some(fleet.now), ..stopped.record.clone() };
+                record_join(fleet, stopped.pr, &record, &stopped.comments)?;
             }
             RestartStep::Replace => {
-                started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+                started = dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
             }
         }
         Ok::<(), anyhow::Error>(())
@@ -194,16 +197,16 @@ fn restart_worker(
 /// — at work, heard from within grace, not nudged yet — and for a PR whose
 /// join already had its restart.
 pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Value> {
-    let Some(Asked::Stopped(found)) = ask_after(fleet, me, issue)? else {
+    let Some(Asked::Stopped(stopped)) = ask_after(fleet, me, issue)? else {
         bail!(
             "issue #{issue} has no stopped worker of {} on this host with a PR joining the \
              train; nothing was restarted",
             me.instance
         );
     };
-    let mut found = *found;
-    let pr = found.pr;
-    let route = std::mem::replace(&mut found.route, LandingRoute::Leave);
+    let mut stopped = *stopped;
+    let pr = stopped.pr;
+    let route = std::mem::replace(&mut stopped.route, LandingRoute::Leave);
     let LandingRoute::Restart(unrestarted) = route else {
         bail!(
             "the worker on issue #{issue} is not restarted: {}; nothing was changed",
@@ -216,7 +219,9 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
             }
         );
     };
-    let started = restart_worker(fleet, me, agent, issue, &found, unrestarted)?;
+    // A command run by hand has no tick's line to say what it found.
+    let found = &mut Found::default();
+    let started = restart_worker(fleet, found, me, agent, issue, &stopped, unrestarted)?;
     Ok(json!({"issue": issue, "pr": pr, "action": "restarted", "restarted": fleet.now,
         "terminal": started["terminal"], "prompt": started["prompt"]}))
 }
@@ -230,43 +235,44 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
 /// remote holds all of it.
 pub fn watch(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     issue: u64,
     start: bool,
 ) -> Result<Outcome> {
-    let found = match ask_after(fleet, me, issue)? {
+    let stopped = match ask_after(fleet, me, issue)? {
         None | Some(Asked::AtWork | Asked::NoPr) => return Ok(Outcome::Nothing),
         Some(Asked::Gone) if !start => return Ok(Outcome::Nothing),
         Some(Asked::Gone) => {
-            dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
             return Ok(Outcome::Continued);
         }
-        Some(Asked::Stopped(found)) => *found,
+        Some(Asked::Stopped(stopped)) => *stopped,
     };
-    let mut found = found;
-    match std::mem::replace(&mut found.route, LandingRoute::Leave) {
+    let mut stopped = stopped;
+    match std::mem::replace(&mut stopped.route, LandingRoute::Leave) {
         LandingRoute::Leave => Ok(Outcome::Nothing),
         LandingRoute::Waiting(since) => Ok(Outcome::Waiting(since)),
         LandingRoute::Continue | LandingRoute::Restart(_) if !start => Ok(Outcome::Nothing),
         LandingRoute::Continue => {
-            dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
             Ok(Outcome::Continued)
         }
         LandingRoute::Nudge(unnudged) => {
-            nudge_worker(&found.worktree, unnudged, nudge_line, fleet.now)?;
+            nudge_worker(&stopped.worktree, unnudged, nudge_line, fleet.now)?;
             Ok(Outcome::Nudged)
         }
         LandingRoute::Restart(unrestarted) => {
-            restart_worker(fleet, me, agent, issue, &found, unrestarted)?;
+            restart_worker(fleet, found, me, agent, issue, &stopped, unrestarted)?;
             Ok(Outcome::Restarted)
         }
         LandingRoute::Stalled(silent) => {
-            let tail = where_it_stopped(&found.worktree, &silent);
-            let reason = stalled_reason(found.pr, &silent, &tail);
+            let tail = where_it_stopped(&stopped.worktree, &silent);
+            let reason = stalled_reason(stopped.pr, &silent, &tail);
             let reason = Handed::new("its worker went silent waiting to land", reason);
-            let pr = Some(found.pr);
-            escalate_claim(fleet, &found.claim, &reason, pr, Some(&found.worktree))?;
+            let pr = Some(stopped.pr);
+            escalate_claim(fleet, found, &stopped.claim, &reason, pr, Some(&stopped.worktree))?;
             Ok(Outcome::Done)
         }
     }

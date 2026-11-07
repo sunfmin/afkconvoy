@@ -25,7 +25,8 @@ use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::fleet_report::FleetReport;
 use crate::forget::forget;
-use crate::gh::{Gone, unreached};
+use crate::found::Found;
+use crate::gh::unreached;
 use crate::git::Repo;
 use crate::host_runner::Shared;
 use crate::hot::{self, Hot};
@@ -91,15 +92,11 @@ pub struct Ticked {
     pub pass: Pass,
     updates: Vec<Value>,
     failures: Vec<Failure>,
-    /// The issues the pass escalated, each with why in a few words
-    /// (`Fleet::escalated`): whichever step did.
-    escalated: Vec<(u64, String)>,
-    /// The issues a dispatch skipped, each with the open blockers it read
-    /// just before the claim.
-    blocked: Vec<(u64, Vec<u64>)>,
-    /// The issues the pass found gone, each with whether it released a claim
-    /// on it (`Fleet::forgotten`).
-    forgotten: Vec<(Gone, bool)>,
+    /// What the tick found before its pass and in each of its steps: whom
+    /// it escalated, what it found gone, which landings it asked a turn for
+    /// again past a lock, which issues a dispatch skipped as blocked, and
+    /// what its start and end of a cut said.
+    found: Found,
     /// What the tick before saw, when this `run` made one: what the line
     /// names an outside change against.
     before: Option<Before>,
@@ -109,11 +106,6 @@ pub struct Ticked {
     stopped_taken: Vec<u64>,
     /// The closed claimed issues, each with who closed it (`Fleet::closers`).
     closers: Vec<(u64, String)>,
-    /// The landings asked a turn again once the locks they stopped at closed
-    /// (`Fleet::after_locks`).
-    after_locks: Vec<(u64, Vec<u64>)>,
-    /// What the pass's start and end of a cut said (`Fleet::cut_said`).
-    cut_said: Vec<log::What>,
     /// The open issues, each with the label that hands it to the fleet
     /// (`plan::handed_by`).
     handed: Vec<(u64, String)>,
@@ -250,12 +242,16 @@ pub fn tick(
         let _ = agent.discover_casting(&issue.labels);
     }
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
-    let _health_events = crate::health::reconcile(&mut fleet, me, agent, &open, &flows, &set)?;
+    // What the tick found, before its pass and in each step of it: what
+    // its line says.
+    let mut found = Found::default();
+    let _health_events =
+        crate::health::reconcile(&mut fleet, &mut found, me, agent, &open, &flows, &set)?;
     fleet.invalidate_selection();
     // A checkout that names a harness, or that just cleared one, continues
     // a worker still on another harness. A harness that cannot start, or a
     // continuation that does not land, waits for the next tick.
-    let _ = crate::named_harness::converge(&mut fleet, me, agent);
+    let _ = crate::named_harness::converge(&mut fleet, &mut found, me, agent);
     // A roster entry that names no model the host kit holds is the team's to
     // correct: one issue is opened for it in the team's repo. One that cannot
     // be opened costs the tick nothing; the next tries again.
@@ -289,13 +285,16 @@ pub fn tick(
         failures.push(Failure::of(Failed::Delivery, &error));
     }
     failures.extend(taken_failures);
-    let mut blocked = vec![];
     let read = Read { set: &set, flows: &flows, issues: &open.issues };
     let pass = run_pass(&set, bound, set.held(), |step| {
+        // What the step found is the tick's whichever way it ended: one that
+        // failed after it escalated an issue or ended a cut still did that.
+        let mut stepped = Found::default();
         let made = match stop.told() {
             true => Err(anyhow!("this run was told to stop before it made the step")),
-            false => carry_out(&mut fleet, (me, agent), &read, step, &mut blocked),
+            false => carry_out(&mut fleet, &mut stepped, (me, agent), &read, step),
         };
+        found.extend(stepped);
         // Whatever a step raised, the rest of the tick is still owed.
         made.unwrap_or_else(|error| {
             // A start waiting for its predecessor's terminal to close
@@ -320,15 +319,7 @@ pub fn tick(
             Outcome::Failed
         })
     });
-    let escalated = std::mem::take(&mut fleet.escalated);
-    let forgotten = std::mem::take(&mut fleet.forgotten);
     let closers = std::mem::take(&mut fleet.closers);
-    let after_locks = std::mem::take(&mut fleet.after_locks);
-    let cut_said = std::mem::take(&mut fleet.cut_said);
-    // A start of a cut evaluated its needs again, last: the tick says that.
-    if let (Some(checked), Some(row)) = (fleet.cut_needs.take(), set.cut.as_mut()) {
-        row.not_cutting_here = checked;
-    }
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
     let issues = &open.issues.rows;
     let config = &fleet.config;
@@ -349,15 +340,11 @@ pub fn tick(
         pass,
         updates,
         failures,
-        escalated,
-        blocked,
-        forgotten,
+        found,
         before: before.cloned(),
         lost,
         stopped_taken,
         closers,
-        after_locks,
-        cut_said,
         handed,
         saw,
         blockers: issues
@@ -391,14 +378,14 @@ struct Read<'r> {
     issues: &'r crate::gh::OpenIssues,
 }
 
-/// Carries out `step` → how it ended. A dispatch that read an open blocker
-/// adds the issue and its blockers to `blocked`.
+/// Carries out `step` → how it ended, and what it found besides in `found`.
+/// A dispatch that read an open blocker adds the issue and its blockers.
 fn carry_out(
     fleet: &mut Fleet,
+    found: &mut Found,
     (me, agent): (&Me, &Agent),
     read: &Read,
     step: TickStep,
-    blocked: &mut Vec<(u64, Vec<u64>)>,
 ) -> Result<Outcome> {
     // Handle the last turn first: ask a wait again without a harness, or
     // hand an answer needing tree changes to its worker without waiting for
@@ -407,7 +394,7 @@ fn carry_out(
         let dependencies =
             read.issues.blockers.get(&issue).map_or(&[][..], |edges| edges.as_slice());
         if let Some(outcome) =
-            crate::watch::answer_turn(fleet, me, agent, issue, start, dependencies)?
+            crate::watch::answer_turn(fleet, found, me, agent, issue, start, dependencies)?
         {
             return Ok(outcome);
         }
@@ -424,7 +411,7 @@ fn carry_out(
     if let Some(issue) = retry
         && crate::dispatch::incomplete(fleet, issue)?
     {
-        dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+        dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
         return Ok(Outcome::Continued);
     }
     // A shared harness outage is no worker's silence. Keep the claim and
@@ -469,10 +456,10 @@ fn carry_out(
             Some(since) => Outcome::Waiting(since),
             None => Outcome::Done,
         }),
-        TickStep::Forget { issue } => forget(fleet, me, issue),
-        TickStep::Judge { issue, start } => judge(fleet, me, agent, issue, start),
-        TickStep::Watch { issue, start } => watch(fleet, me, agent, issue, start),
-        TickStep::Advance { issue } => advance(fleet, me, agent, read.flows, issue),
+        TickStep::Forget { issue } => forget(fleet, found, me, issue),
+        TickStep::Judge { issue, start } => judge(fleet, found, me, agent, issue, start),
+        TickStep::Watch { issue, start } => watch(fleet, found, me, agent, issue, start),
+        TickStep::Advance { issue } => advance(fleet, found, me, agent, read.flows, issue),
         TickStep::Escalate { issue } => {
             let calling = read.set.escalating.iter().find(|calling| calling.number == issue);
             match calling {
@@ -481,7 +468,7 @@ fn carry_out(
                 Some(calling) => {
                     let rounds = read.flows.rounds(issue);
                     let why = (read.flows.brief(issue), calling.reason.as_str());
-                    hand_to_human(fleet, me, issue, (&why.0, why.1), rounds.as_deref())
+                    hand_to_human(fleet, found, me, issue, (&why.0, why.1), rounds.as_deref())
                 }
                 None => Ok(Outcome::Nothing),
             }
@@ -495,9 +482,9 @@ fn carry_out(
             None => Ok(Outcome::Nothing),
         },
         TickStep::Unlock { issue } => unlock(fleet, me, issue),
-        TickStep::Reclaim { issue } => reclaim(fleet, me, agent, read.flows, issue),
+        TickStep::Reclaim { issue } => reclaim(fleet, found, me, agent, read.flows, issue),
         TickStep::Dispatch { issue } => {
-            let started = match dispatch(fleet, me, agent, issue, StartFrom::Auto) {
+            let started = match dispatch(fleet, found, me, agent, issue, StartFrom::Auto) {
                 // Closed since the frontier was read: it left the frontier
                 // meanwhile, which fails nothing (sunfmin/control#569).
                 Err(error) if error.is::<crate::dispatch::Closed>() => return Ok(Outcome::Closed),
@@ -507,16 +494,16 @@ fn carry_out(
                 return Ok(Outcome::Gone);
             }
             if let Some(blockers) = started["blocked_by"].as_array() {
-                blocked.push((issue, blockers.iter().filter_map(Value::as_u64).collect()));
+                found.blocked.push((issue, blockers.iter().filter_map(Value::as_u64).collect()));
                 return Ok(Outcome::Blocked);
             }
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
         }
         TickStep::EndCut => match &read.set.cut {
-            Some(row) => crate::cut::end(fleet, me, read.flows, row),
+            Some(row) => crate::cut::end(fleet, found, me, read.flows, row),
             None => Ok(Outcome::Nothing),
         },
-        TickStep::Cut { busy } => crate::cut::start(fleet, me, agent, busy),
+        TickStep::Cut { busy } => crate::cut::start(fleet, found, me, agent, busy),
         TickStep::SlowGate => match &read.set.slow_gate {
             Some(slow) => slow_gate::open(fleet, me, slow),
             None => Ok(Outcome::Nothing),
@@ -581,19 +568,22 @@ impl Ticked {
                 | TickStep::Escalate { .. }
         );
         let issue = words(step).1.filter(|_| ends && outcome == Outcome::Done)?;
-        self.escalated.iter().find(|(number, _)| *number == issue).map(|(_, why)| why.as_str())
+        let escalated = &self.found.escalated;
+        escalated.iter().find(|(number, _)| *number == issue).map(|(_, why)| why.as_str())
     }
 
     /// The locks the landing of `issue` stopped at, when this pass asked its
     /// turn again once they closed.
     fn after_lock(&self, issue: u64) -> Option<&[u64]> {
-        self.after_locks.iter().find(|(number, _)| *number == issue).map(|(_, by)| by.as_slice())
+        let after_locks = &self.found.after_locks;
+        after_locks.iter().find(|(number, _)| *number == issue).map(|(_, by)| by.as_slice())
     }
 
     /// The open blockers a dispatch of `issue` read just before its claim,
     /// when it skipped the issue for them.
     fn blocked_by(&self, issue: u64) -> Option<&[u64]> {
-        self.blocked.iter().find(|(number, _)| *number == issue).map(|(_, by)| by.as_slice())
+        let blocked = &self.found.blocked;
+        blocked.iter().find(|(number, _)| *number == issue).map(|(_, by)| by.as_slice())
     }
 
     /// Why `issue` was dispatched, when the cause changed on GitHub since the
@@ -713,7 +703,29 @@ impl Ticked {
         panel.bound = self.bound - panel.declared;
         panel.frontier = self.pass.frontier_remaining;
         panel.idle = self.idle();
+        if let Some(row) = self.cut_said_here() {
+            panel.cut = crate::cut::says(&fleet.repo, &row);
+        }
         panel
+    }
+
+    /// The repo's cut row with the needs the pass's start of a cut evaluated,
+    /// where it evaluated them: what the tick says in place of its
+    /// rebuild's look. `None` where no start evaluated them.
+    fn cut_said_here(&self) -> Option<afkconvoy_core::cut::Row> {
+        let checked = self.found.cut_needs.clone()?;
+        let row = self.set.cut.as_ref()?;
+        Some(afkconvoy_core::cut::Row { not_cutting_here: checked, ..row.clone() })
+    }
+
+    /// Why no cut starts on this host, as the tick says it: a need that
+    /// failed, by the pass's start of a cut where it evaluated them again,
+    /// by the rebuild's look else.
+    fn not_cutting_here(&self) -> Option<afkconvoy_core::cut::Held> {
+        match &self.found.cut_needs {
+            Some(checked) if self.set.cut.is_some() => checked.clone(),
+            _ => self.set.cut.as_ref().and_then(|cut| cut.not_cutting_here.clone()),
+        }
     }
 
     /// The claims whose worker declared a verdict that the pass left held:
@@ -739,7 +751,7 @@ impl Ticked {
 
     /// What the pass's start and end of a cut said, for the log to keep.
     pub fn cut_said(&self) -> &[log::What] {
-        &self.cut_said
+        &self.found.cut_said
     }
 
     /// Appends what the pass's start and end of a cut said to the log of
@@ -747,7 +759,7 @@ impl Ticked {
     /// command's line is.
     pub fn log_cut_said(&self, repo: &Repo, me: &Me) {
         let log = Log::of(repo);
-        for what in &self.cut_said {
+        for what in &self.found.cut_said {
             let (instance, host) = (me.instance.as_str().to_string(), me.host.clone());
             let entry = log::Entry { at: me.now, instance, host, what: what.clone() };
             let appended = log.as_ref().map_err(|error| anyhow!("{error:#}"));
@@ -857,7 +869,7 @@ impl Ticked {
         let mut answer = json!({"did": did, "errors": errors, "held": self.pass.held,
             "frontier_remaining": self.pass.frontier_remaining, "idle": self.idle(),
             "locks": self.set.locks});
-        if let Some(reason) = self.set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+        if let Some(reason) = self.not_cutting_here() {
             answer["not_cutting_here"] = json!(reason.said());
         }
         if self.pass.held_back(&self.set) {
@@ -895,13 +907,14 @@ impl Ticked {
         }
         // An issue that left the fleet for a human says so, whichever step
         // handed it over: none of them names it as anything else.
+        let escalated = self.found.escalated.iter();
         let escalated: Vec<String> =
-            self.escalated.iter().map(|(issue, why)| format!("#{issue} ({why})")).collect();
+            escalated.map(|(issue, why)| format!("#{issue} ({why})")).collect();
         if !escalated.is_empty() {
             parts.push(format!("escalated {}", escalated.join(", ")));
         }
         // An issue that is gone says so, whichever step found it.
-        for (gone, released) in &self.forgotten {
+        for (gone, released) in &self.found.forgotten {
             let verb = if *released { "released" } else { "skipped" };
             parts.push(format!("{verb} #{} ({})", gone.issue, gone.said()));
         }
@@ -948,6 +961,7 @@ impl Ticked {
             }
         }
         let skipped: Vec<String> = self
+            .found
             .blocked
             .iter()
             .map(|(issue, by)| {
@@ -1048,10 +1062,10 @@ impl Ticked {
                 .unwrap_or_default();
             parts.push(format!("opened an issue for the slow gate: {evidence}"));
         }
-        if let Some(failed) = self.set.cut.as_ref().and_then(|cut| cut.not_cutting_here.as_ref()) {
+        if let Some(failed) = self.not_cutting_here() {
             parts.push(failed.said());
         }
-        parts.extend(self.cut_said.iter().filter_map(log::cut_said));
+        parts.extend(self.found.cut_said.iter().filter_map(log::cut_said));
         for update in &self.updates {
             let issue = &update["issue"];
             let comment = update["comment"].as_str().unwrap_or("issue updates");
