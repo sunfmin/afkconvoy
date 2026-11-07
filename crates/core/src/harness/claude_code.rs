@@ -23,6 +23,22 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const NAME: &str = "Claude Code";
 pub(super) const KEY: &str = "claude-code";
 pub(super) const PROGRAM: &str = "claude";
+/// The line that installs it: its native installer, which keeps it up to date.
+pub(super) const INSTALL: &str = "curl -fsSL https://claude.ai/install.sh | bash";
+/// How it is asked whether it is logged in, and logged in.
+pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
+    question: "claude auth status",
+    logged_out: "is not logged in",
+    line: "claude auth login",
+});
+
+/// Whether the answer to its login question says it is logged in: by the
+/// `loggedIn` field of the JSON it prints — whatever else the shell printed
+/// around it — not by the exit status.
+pub(super) fn logged_in(_succeeded: bool, printed: &str) -> bool {
+    let dense: String = printed.split_whitespace().collect();
+    dense.contains("\"loggedIn\":true")
+}
 /// Where it reads its user's global instructions, under the user's home.
 pub(super) const INSTRUCTIONS: &str = ".claude/CLAUDE.md";
 /// The agent `npx skills` installs its user's skills for.
@@ -1011,5 +1027,23 @@ mod tests {
             assert!(!Harness::ClaudeCode.knows(&listed, unknown), "{unknown}");
             assert!(!Harness::ClaudeCode.names(&listed, unknown), "{unknown}");
         }
+    }
+
+    #[test]
+    fn claude_code_installs_natively_and_is_logged_in_when_its_json_says_so() {
+        let claude = Harness::ClaudeCode;
+        assert_eq!(claude.install(), "curl -fsSL https://claude.ai/install.sh | bash");
+        let login = claude.login().unwrap();
+        assert_eq!((login.question, login.line), ("claude auth status", "claude auth login"));
+        assert_eq!(login.logged_out, "is not logged in");
+        let json = "{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}\n";
+        assert!(claude.logged_in(true, json));
+        assert!(claude.logged_in(false, json), "the field is read, not the exit status");
+        assert!(claude.logged_in(true, &format!("a banner from the rc file\n{json}")));
+        for out in ["{\"loggedIn\": false, \"authMethod\": \"none\"}", "", "Not logged in"] {
+            assert!(!claude.logged_in(true, out), "{out:?}");
+        }
+        assert!(!claude.own_home_outside_role());
+        assert_eq!(claude.no_proxy(), None);
     }
 }
