@@ -12,9 +12,8 @@ mod data;
 mod goal;
 pub mod rewrite;
 mod tokens;
-pub use tokens::parse as parse_tokens;
-pub use tokens::parse_between as parse_tokens_between;
-pub use tokens::{Counts, Tokens};
+pub(crate) use tokens::Keys;
+pub use tokens::{Counts, Tokens, Usage, fold as fold_tokens};
 
 pub use data::{Gate, Host, Record, SCHEMA_VERSION, Worker, read, render};
 pub use goal::{CLEARED, WorkerGoal};

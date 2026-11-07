@@ -56,20 +56,27 @@ pub fn look(repo: &Repo, launch: Option<&Proposed>) -> Looked {
 }
 
 /// What this host has of the harness `launch` starts, when it runs that
-/// harness by its own name (`Tool::of`): there where a worker is started,
+/// harness by its own name (`Harness::runs_itself`): there where a worker is started,
 /// and logged in there — asked in the checkout `launch` is for. `None`: a
 /// wrapper, which is asked nothing.
 pub fn harness(launch: &Proposed) -> Option<(Tool, Found)> {
-    let tool = Tool::of(launch.harness(), launch.as_str())?;
+    let harness = launch.harness();
+    if !harness.runs_itself(launch.as_str()) {
+        return None;
+    }
+    let tool = Tool::Harness(harness);
     let state = match tool.login_question(None) {
         _ if !launch.resolves() => Found::Missing,
         None => Found::Ready,
         Some(question) => asked(launch.dir(), tool, &question),
     };
-    if tool == Tool::DshTui && state == Found::Ready {
-        let (ok, _) = ask_login_shell(launch.dir(), "command -v dsh").unwrap_or_default();
+    if state == Found::Ready
+        && let Some(needed) = harness.needs()
+    {
+        let question = format!("command -v {}", needed.name());
+        let (ok, _) = ask_login_shell(launch.dir(), &question).unwrap_or_default();
         if !ok {
-            return Some((Tool::Dsh, Found::Missing));
+            return Some((needed, Found::Missing));
         }
     }
     Some((tool, state))
