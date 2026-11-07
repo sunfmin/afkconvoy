@@ -1,9 +1,12 @@
 use crate::common;
 
+use std::path::Path;
+
 use common::{Answer, World};
 use serde_json::json;
 
-const ORCA: &str = "  orca is not installed: brew install --cask stablyai/orca/orca";
+const ORCA: &str = "  orca is not installed: brew install --cask stablyai/orca/orca, or connect to \
+     this host from Orca over SSH, whose remote runtime puts its CLI at ~/.orca/cli/bin/orca";
 const CLAUDE: &str = "  claude is not installed: curl -fsSL https://claude.ai/install.sh | bash";
 
 /// The three starts → the answer of each.
@@ -87,6 +90,54 @@ fn a_start_with_a_command_missing_refuses_naming_the_line_that_installs_it() {
         std::fs::remove_dir_all(world.root.join("path")).unwrap();
         nothing_was_done(&world);
     }
+}
+
+/// Puts the stand-in orca where Orca's SSH remote runtime puts its CLI, in
+/// the home directory → that file.
+fn remote_cli(world: &World) -> std::path::PathBuf {
+    let dir = world.home().join(".orca/cli/bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let built = Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap().join("examples");
+    // a wrapper of absolute paths, as the runtime's is: a file of its own
+    let wrapper = format!("#!/bin/sh\nexec '{}' \"$@\"\n", built.join("fake_orca").display());
+    std::fs::write(dir.join("orca"), wrapper).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir.join("orca"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    dir.join("orca")
+}
+
+/// The orca `doctor` says it found: {name, state, path, from}.
+fn doctor_orca(world: &World) -> serde_json::Value {
+    let answer = world.afk(&["doctor"]).ok();
+    let tools = answer["host"]["tools"].as_array().unwrap().clone();
+    tools.into_iter().find(|tool| tool["name"] == "orca").unwrap()
+}
+
+#[test]
+fn an_orca_only_where_the_ssh_remote_runtime_puts_its_cli_is_found_and_called() {
+    let world = backlog();
+    world.take_off_path("orca");
+    let remote = remote_cli(&world);
+    let orca = doctor_orca(&world);
+    assert_eq!(orca["state"], "ready", "{orca}");
+    assert_eq!(orca["from"], "remote_cli", "{orca}");
+    assert_eq!(orca["path"], remote.to_str().unwrap(), "{orca}");
+    // every start goes to work, its orca calls to that CLI
+    for start in starts(&world) {
+        start.ok();
+    }
+    assert_eq!(world.orca()["terminals"].as_array().unwrap().len(), 1, "a worker started");
+}
+
+#[test]
+fn an_orca_on_the_path_wins_over_the_ssh_remote_runtimes_cli() {
+    let world = backlog();
+    remote_cli(&world);
+    let orca = doctor_orca(&world);
+    assert_eq!(orca["state"], "ready", "{orca}");
+    assert_eq!(orca["from"], "path", "{orca}");
+    let on_path = orca["path"].as_str().unwrap();
+    assert!(!on_path.contains(".orca/cli/bin"), "{orca}");
 }
 
 #[test]
@@ -296,11 +347,12 @@ fn the_commands_that_make_one_transition_by_hand_check_no_tool() {
 /// start: each must be the line a refusal gives (the formula's: `release.rs`).
 #[test]
 fn the_readme_gives_the_install_lines_a_refusal_gives() {
+    use afkconvoy_core::harness::Harness;
     use afkconvoy_core::tools::Tool;
     let readme = include_str!("../../../README.md");
     assert!(readme.contains(&format!("`{}`", Tool::Orca.install())));
-    assert!(readme.contains(&format!("`{}`", Tool::Claude.install())));
-    assert!(readme.contains(&format!("`{}`", Tool::Pi.install())));
+    assert!(readme.contains(&format!("`{}`", Tool::Harness(Harness::ClaudeCode).install())));
+    assert!(readme.contains(&format!("`{}`", Tool::Harness(Harness::Pi).install())));
     assert!(!readme.contains("Homebrew does not"), "orca has an install line now");
     // …and the two an installed orca is refused with.
     let said = afkconvoy_core::tools::refusal(

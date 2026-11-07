@@ -15,6 +15,7 @@ use serde::{Deserialize, Deserializer};
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Link, SessionFile, SessionLayout};
+use crate::account::{Counts, Keys, Usage};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
@@ -23,6 +24,22 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const NAME: &str = "Claude Code";
 pub(super) const KEY: &str = "claude-code";
 pub(super) const PROGRAM: &str = "claude";
+/// The line that installs it: its native installer, which keeps it up to date.
+pub(super) const INSTALL: &str = "curl -fsSL https://claude.ai/install.sh | bash";
+/// How it is asked whether it is logged in, and logged in.
+pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
+    question: "claude auth status",
+    logged_out: "is not logged in",
+    line: "claude auth login",
+});
+
+/// Whether the answer to its login question says it is logged in: by the
+/// `loggedIn` field of the JSON it prints — whatever else the shell printed
+/// around it — not by the exit status.
+pub(super) fn logged_in(_succeeded: bool, printed: &str) -> bool {
+    let dense: String = printed.split_whitespace().collect();
+    dense.contains("\"loggedIn\":true")
+}
 /// Where it reads its user's global instructions, under the user's home.
 pub(super) const INSTRUCTIONS: &str = ".claude/CLAUDE.md";
 /// The agent `npx skills` installs its user's skills for.
@@ -678,6 +695,48 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
     }]
 }
 
+/// The names Claude Code gives the counts of a message's usage.
+const USAGE_KEYS: Keys = Keys {
+    input: "input_tokens",
+    cache_read: "cache_read_input_tokens",
+    cache_write: "cache_creation_input_tokens",
+    output: "output_tokens",
+    reasoning: "reasoning_tokens",
+};
+
+/// What one Claude Code session line says of usage: each assistant message,
+/// keyed by its id, as a streamed message repeats it. Thinking, where stated,
+/// is its reasoning.
+pub(super) fn usage(value: &serde_json::Value, line: usize) -> Option<Usage> {
+    let message = &value["message"];
+    if value["type"] != "assistant" || message["role"] != "assistant" {
+        return None;
+    }
+    let usage = &message["usage"];
+    if !usage.is_object() {
+        return None;
+    }
+    let Some(mut counts) = Counts::read(usage, &USAGE_KEYS, false) else {
+        return Some(Usage::Uncounted);
+    };
+    counts.reasoning =
+        usage["output_tokens_details"]["thinking_tokens"].as_u64().or(counts.reasoning);
+    Some(Usage::Message {
+        key: message_key(value, line),
+        model: message["model"].as_str().unwrap_or("").to_string(),
+        counts,
+    })
+}
+
+/// The message's id, else the line's, else its line number.
+pub(super) fn message_key(value: &serde_json::Value, line: usize) -> String {
+    value["message"]["id"]
+        .as_str()
+        .or_else(|| value["id"].as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("line:{line}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1011,5 +1070,57 @@ mod tests {
             assert!(!Harness::ClaudeCode.knows(&listed, unknown), "{unknown}");
             assert!(!Harness::ClaudeCode.names(&listed, unknown), "{unknown}");
         }
+    }
+
+    #[test]
+    fn claude_code_installs_natively_and_is_logged_in_when_its_json_says_so() {
+        let claude = Harness::ClaudeCode;
+        assert_eq!(claude.install(), "curl -fsSL https://claude.ai/install.sh | bash");
+        let login = claude.login().unwrap();
+        assert_eq!((login.question, login.line), ("claude auth status", "claude auth login"));
+        assert_eq!(login.logged_out, "is not logged in");
+        let json = "{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}\n";
+        assert!(claude.logged_in(true, json));
+        assert!(claude.logged_in(false, json), "the field is read, not the exit status");
+        assert!(claude.logged_in(true, &format!("a banner from the rc file\n{json}")));
+        for out in ["{\"loggedIn\": false, \"authMethod\": \"none\"}", "", "Not logged in"] {
+            assert!(!claude.logged_in(true, out), "{out:?}");
+        }
+        assert!(!claude.own_home_outside_role());
+        assert_eq!(claude.no_proxy(), None);
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use crate::account::Counts;
+    use crate::harness::Harness;
+
+    #[test]
+    fn a_streamed_message_is_counted_once() {
+        let text = r#"{"type":"assistant","message":{"id":"1","role":"assistant","model":"a","usage":{"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":3,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"1","role":"assistant","model":"a","usage":{"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":3,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"2","role":"assistant","model":"b","usage":{"input_tokens":6,"cache_read_input_tokens":7,"cache_creation_input_tokens":1,"output_tokens":2}}}"#;
+        let tokens = Harness::ClaudeCode.tokens(text, None).unwrap();
+        assert_eq!(
+            tokens["a"],
+            Counts { input: 10, cache_read: 20, cache_write: 3, output: 5, reasoning: None }
+        );
+        assert_eq!(
+            tokens["b"],
+            Counts { input: 6, cache_read: 7, cache_write: 1, output: 2, reasoning: None }
+        );
+    }
+
+    #[test]
+    fn a_round_window_counts_only_its_messages() {
+        let claude = r#"{"timestamp":"1970-01-01T00:01:35Z","type":"assistant","message":{"id":"before","role":"assistant","model":"claude","usage":{"input_tokens":10,"cache_read_input_tokens":2,"output_tokens":3}}}
+{"timestamp":"1970-01-01T00:01:45Z","type":"assistant","message":{"id":"round","role":"assistant","model":"claude","usage":{"input_tokens":7,"cache_read_input_tokens":5,"cache_creation_input_tokens":1,"output_tokens":4}}}
+{"timestamp":"1970-01-01T00:01:55Z","type":"assistant","message":{"id":"after","role":"assistant","model":"claude","usage":{"input_tokens":20,"cache_read_input_tokens":8,"output_tokens":9}}}"#;
+        let tokens = Harness::ClaudeCode.tokens(claude, Some((100, 110))).unwrap();
+        assert_eq!(
+            tokens["claude"],
+            Counts { input: 7, cache_read: 5, cache_write: 1, output: 4, reasoning: None }
+        );
     }
 }

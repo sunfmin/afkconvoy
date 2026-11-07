@@ -117,9 +117,9 @@ pub struct Observed {
     pub recorded_harness: Option<String>,
     #[serde(default)]
     pub harness_mismatch: bool,
-    /// Orca's record of the worker's terminal, as Orca answered it.
+    /// Orca's facts of the worker's agent, as Orca answered them.
     #[serde(default)]
-    pub orca: Value,
+    pub orca: Option<crate::orca::Agent>,
     #[serde(default)]
     command_key: Option<String>,
     model: Option<String>,
@@ -867,7 +867,7 @@ pub fn reconcile(
             book.observations_failed.retain(|failed| failed.path != worktree.path);
             continue;
         }
-        let busy_without_fault = worktree.agent_report()?.is_null()
+        let busy_without_fault = worktree.agent_report()?.is_none()
             && state == WorkerState::Busy
             && classified(&worktree.health_report()?).is_none()
             && error_of(&worktree)?.is_empty();
@@ -1022,7 +1022,7 @@ fn observe(
             harness,
             recorded_harness: None,
             harness_mismatch: false,
-            orca: Value::Null,
+            orca: None,
             model: model.clone(),
             command_key: binding.clone(),
             snapshots: vec![],
@@ -1064,11 +1064,7 @@ fn observe(
     // A failed turn is actionable at its first observation, including a
     // worker previously held until its next check. Repeated identical
     // failures still obey the existing retry and recovery bounds.
-    let newly_failed = orca["state"] == "done"
-        && orca["outcome"] == "failure"
-        && ["state", "outcome", "stateStartedAt", "agentType"]
-            .iter()
-            .any(|key| observed.orca[*key] != orca[*key]);
+    let newly_failed = orca.as_ref().is_some_and(|orca| orca.failed()) && observed.orca != orca;
     let needs_observation = observed.action == "healthy" && !working;
     if newly_failed || needs_observation {
         observed.next_check = fleet.now;
@@ -1313,7 +1309,7 @@ fn decide(
     let rule = terminal.map(|rule| ("terminal rule", rule)).or_else(|| {
         classified_for(Some(observed.harness), raw_error).map(|rule| ("structured rule", rule))
     });
-    let failed = observed.orca["state"] == "done" && observed.orca["outcome"] == "failure";
+    let failed = observed.orca.as_ref().is_some_and(|orca| orca.failed());
     if !failed && rule.is_none() {
         // One read stamps the since the tick line and a later tick name.
         if crate::judge::own_background(fleet, worktree, true, crate::judge::Look::Acting)?

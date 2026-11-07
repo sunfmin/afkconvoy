@@ -72,8 +72,9 @@ pub fn note_at(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Result<O
 }
 
 /// Reads the harness's message files once for a question about this worker.
-/// Global session trees must identify this worktree; project message stores
-/// already have its directory in their layout.
+/// A tree of sessions holds every worktree's, so a session in one must
+/// record this worktree's turn; a project message store already has its
+/// directory in its layout.
 fn notes_match(
     cwd: &Path,
     harness: Harness,
@@ -83,41 +84,20 @@ fn notes_match(
     let cwd_text = cwd_str(cwd);
     let place = harness.note_place(&cwd_text);
     let brief = brief(cwd);
-    let holds = |text: &str| {
-        let belongs = !matches!(place.layout, SessionLayout::Tree { .. })
-            || harness.recorded_turn(&cwd_text, text, Some(since), brief.as_deref()).is_some();
-        (belongs && matches(text)).then_some(())
-    };
     for root in &roots(cwd, harness)? {
         if !root.exists() {
             continue;
         }
-        let since = Some(since);
-        let held = match harness.note_place(&cwd_text).layout {
-            SessionLayout::Files { dir, extension } => {
-                read_files(&root.join(dir), extension, since, holds)?
-            }
-            SessionLayout::Tree { dir, extension } => {
-                read_tree(&root.join(dir), extension, since, holds)?
-            }
-            SessionLayout::Named { dir, name, compressed } => {
-                read_named(&root.join(dir), name, compressed, since, holds)?
-            }
-            SessionLayout::Index { file } => {
-                read_index(root, &file, harness, &cwd_text, since, holds)?
-            }
-        };
-        if !held.is_empty() {
-            return Ok(true);
-        }
-        // A bound Claude starts in its role copy and records the worktree
-        // in that session. Its project directory is not the worktree's.
-        if harness == Harness::ClaudeCode {
-            let held = read_tree(&root.join("projects"), "jsonl", since, |text| {
-                (harness.recorded_turn(&cwd_text, text, since, brief.as_deref()).is_some()
-                    && matches(text))
-                .then_some(())
-            })?;
+        for layout in std::iter::once(&place.layout).chain(&place.also) {
+            let tree = matches!(layout, SessionLayout::Tree { .. });
+            let holds = |text: &str| {
+                let belongs = !tree
+                    || harness
+                        .recorded_turn(&cwd_text, text, Some(since), brief.as_deref())
+                        .is_some();
+                (belongs && matches(text)).then_some(())
+            };
+            let held = read_layout(root, harness, &cwd_text, layout.clone(), Some(since), holds)?;
             if !held.is_empty() {
                 return Ok(true);
             }
@@ -237,6 +217,12 @@ fn user_home() -> Option<PathBuf> {
     std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from)
 }
 
+/// The names of the directories the fleet keeps for `harness`: the fleet's
+/// own and the host user's.
+fn kept_names(harness: Harness) -> [String; 2] {
+    [harness.key().to_string(), format!("{}-host-user", harness.key())]
+}
+
 /// Directories the fleet keeps for `harness`, including a role's own home.
 /// Each is already the harness directory.
 fn kept_roots(harness: Harness) -> Result<Vec<PathBuf>> {
@@ -245,7 +231,7 @@ fn kept_roots(harness: Harness) -> Result<Vec<PathBuf>> {
     };
     let base = cache.join("harness");
     let mut roots = Vec::new();
-    for name in [harness.key().to_string(), format!("{}-host-user", harness.key())] {
+    for name in kept_names(harness) {
         let dir = base.join(name);
         if !dir.is_dir() {
             continue;
@@ -309,28 +295,34 @@ fn read_root(
     }
     let brief = brief(cwd);
     let cwd = cwd_str(cwd);
-    let place = harness.session_place(&cwd);
-    let turns = match place.layout {
+    let layout = harness.session_place(&cwd).layout;
+    let turns = read_layout(root, harness, &cwd, layout, since, |text| {
+        harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
+    })?;
+    Ok(prefer(&turns))
+}
+
+/// What `read` makes of each session file `layout` names under `root`.
+fn read_layout<T>(
+    root: &Path,
+    harness: Harness,
+    cwd: &str,
+    layout: SessionLayout,
+    since: Option<u64>,
+    read: impl FnMut(&str) -> Option<T>,
+) -> Result<Vec<T>> {
+    match layout {
         SessionLayout::Files { dir, extension } => {
-            read_files(&root.join(dir), extension, since, |text| {
-                harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
-            })?
+            read_files(&root.join(dir), extension, since, read)
         }
         SessionLayout::Tree { dir, extension } => {
-            read_tree(&root.join(dir), extension, since, |text| {
-                harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
-            })?
+            read_tree(&root.join(dir), extension, since, read)
         }
-        SessionLayout::Named { dir, name, compressed } => {
-            read_named(&root.join(dir), name, compressed, since, |text| {
-                harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
-            })?
+        SessionLayout::Named { dir, name, compressed, .. } => {
+            read_named(&root.join(dir), name, compressed, since, read)
         }
-        SessionLayout::Index { file } => read_index(root, &file, harness, &cwd, since, |text| {
-            harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
-        })?,
-    };
-    Ok(prefer(&turns))
+        SessionLayout::Index { file } => read_index(root, &file, harness, cwd, since, read),
+    }
 }
 
 fn read_files<T>(
@@ -1113,16 +1105,17 @@ mod tests {
 }
 
 /// Every directory `harness` may keep a worker's sessions under in `cwd`
-/// (`roots`), with each earlier launch's home: Codex uses a new private home
-/// for each launch, and the note names only the latest. Earlier homes remain
-/// in the worktree until it is removed.
+/// (`roots`), with each earlier launch's home: a harness that keeps each
+/// session apart (`Harness::session`) makes a fresh home for each launch,
+/// and the note names only the latest. Earlier homes remain in the worktree
+/// until it is removed.
 fn worker_homes(cwd: &Path, harness: Harness) -> Result<Vec<PathBuf>> {
     let mut homes = roots(cwd, harness)?;
-    if harness == Harness::Codex
+    if harness.session().is_some()
         && let Some(entries) = list_dir(&cwd.join(crate::worker_tmp::TMP_DIR))?
     {
         for entry in entries {
-            for name in ["codex", "codex-host-user"] {
+            for name in kept_names(harness) {
                 let home = entry.join("harness").join(name);
                 if home.is_dir() {
                     homes.push(home);
@@ -1184,67 +1177,14 @@ pub(crate) fn tokens(
     start: u64,
     before: Option<u64>,
 ) -> Result<Option<afkconvoy_core::account::Tokens>> {
-    use afkconvoy_core::account::{Tokens, parse_tokens};
     let cwd_text = cwd_str(cwd);
     let brief = brief(cwd);
-    let homes = worker_homes(cwd, harness)?;
-    let mut total = Tokens::new();
-    let mut found = false;
-    for root in homes {
-        let place = harness.session_place(&cwd_text);
-        let accepts = |text: &str| {
-            let at = session_first_at(text)?;
-            if at < start.saturating_sub(60)
-                || before.is_some_and(|end| at >= end.saturating_sub(2))
-            {
-                return None;
-            }
-            harness.recorded_turn(&cwd_text, text, None, brief.as_deref())?;
-            Some(text.to_owned())
-        };
-        let mut sessions = match place.layout {
-            SessionLayout::Files { dir, extension } => {
-                read_files(&root.join(dir), extension, Some(start), accepts)?
-            }
-            SessionLayout::Tree { dir, extension } => {
-                read_tree(&root.join(dir), extension, Some(start), accepts)?
-            }
-            SessionLayout::Index { file } => {
-                read_index(&root, &file, harness, &cwd_text, Some(start), accepts)?
-            }
-            SessionLayout::Named { dir, name, compressed: _ } if harness == Harness::Grok => {
-                let mut texts = Vec::new();
-                if let Some(entries) = list_dir(&root.join(dir))? {
-                    for entry in entries {
-                        let Some(events) = read_text(&entry.join(name))? else { continue };
-                        if accepts(&events).is_some()
-                            && let Some(updates) = read_text(&entry.join("updates.jsonl"))?
-                        {
-                            texts.push(updates);
-                        }
-                    }
-                }
-                texts
-            }
-            SessionLayout::Named { dir, name, compressed } => {
-                read_named(&root.join(dir), name, compressed, Some(start), accepts)?
-            }
-        };
-        if harness == Harness::ClaudeCode {
-            sessions.extend(read_tree(&root.join("projects"), "jsonl", Some(start), accepts)?);
-            sessions.sort();
-            sessions.dedup();
-        }
-        for text in sessions {
-            if let Some(tokens) = parse_tokens(harness, &text) {
-                found = true;
-                for (model, counts) in tokens {
-                    total.entry(model).or_default().add(&counts);
-                }
-            }
-        }
-    }
-    Ok(found.then_some(total))
+    usage(&worker_homes(cwd, harness)?, harness, &cwd_text, start, None, |text| {
+        let Some(at) = session_first_at(text) else { return false };
+        at >= start.saturating_sub(60)
+            && !before.is_some_and(|end| at >= end.saturating_sub(2))
+            && harness.recorded_turn(&cwd_text, text, None, brief.as_deref()).is_some()
+    })
 }
 
 /// Read one resident session's usage between delivery and report. The brief
@@ -1258,55 +1198,47 @@ pub(crate) fn tokens_between(
     end: u64,
     brief_root: &Path,
 ) -> Result<Option<afkconvoy_core::account::Tokens>> {
-    use afkconvoy_core::account::{Tokens, parse_tokens_between};
     let cwd_text = cwd_str(cwd);
     let brief_root = cwd_str(brief_root);
-    let mut total = Tokens::new();
+    usage(&roots(cwd, harness)?, harness, &cwd_text, start, Some((start, end)), |text| {
+        text.contains(&brief_root) && harness.recorded_turn(&cwd_text, text, None, None).is_some()
+    })
+}
+
+/// The usage `harness` recorded in the sessions under `homes` that `accepts`
+/// takes, over `window` or the whole session (`Harness::tokens`). A session
+/// that keeps its usage in a file beside it is read from that file. Files
+/// last written before `since` are not opened.
+fn usage(
+    homes: &[PathBuf],
+    harness: Harness,
+    cwd: &str,
+    since: u64,
+    window: Option<(u64, u64)>,
+    accepts: impl Fn(&str) -> bool,
+) -> Result<Option<afkconvoy_core::account::Tokens>> {
+    let mut total = afkconvoy_core::account::Tokens::new();
     let mut found = false;
-    for root in roots(cwd, harness)? {
-        let place = harness.session_place(&cwd_text);
-        let accepts = |text: &str| {
-            if !text.contains(&brief_root) {
-                return None;
-            }
-            harness.recorded_turn(&cwd_text, text, None, None)?;
-            Some(text.to_owned())
-        };
-        let mut sessions = match place.layout {
-            SessionLayout::Files { dir, extension } => {
-                read_files(&root.join(dir), extension, Some(start), accepts)?
-            }
-            SessionLayout::Tree { dir, extension } => {
-                read_tree(&root.join(dir), extension, Some(start), accepts)?
-            }
-            SessionLayout::Index { file } => {
-                read_index(&root, &file, harness, &cwd_text, Some(start), accepts)?
-            }
-            SessionLayout::Named { dir, name, compressed: _ } if harness == Harness::Grok => {
-                let mut texts = Vec::new();
-                if let Some(entries) = list_dir(&root.join(dir))? {
-                    for entry in entries {
-                        let Some(events) = read_text(&entry.join(name))? else { continue };
-                        if accepts(&events).is_some()
-                            && let Some(updates) = read_text(&entry.join("updates.jsonl"))?
-                        {
-                            texts.push(updates);
-                        }
-                    }
+    let layout = harness.session_place(cwd).layout;
+    for root in homes {
+        let mut texts = Vec::new();
+        if let SessionLayout::Named { dir, name, compressed, usage: Some(beside) } = &layout {
+            for entry in list_dir(&root.join(dir))?.unwrap_or_default() {
+                let path = entry.join(name);
+                let text = if *compressed { read_zstd(&path)? } else { read_text(&path)? };
+                if text.is_some_and(|text| accepts(&text))
+                    && let Some(usage) = read_text(&entry.join(beside))?
+                {
+                    texts.push(usage);
                 }
-                texts
             }
-            SessionLayout::Named { dir, name, compressed } => {
-                read_named(&root.join(dir), name, compressed, Some(start), accepts)?
-            }
-        };
-        if harness == Harness::ClaudeCode {
-            sessions.extend(read_tree(&root.join("projects"), "jsonl", Some(start), accepts)?);
-            sessions.sort();
-            sessions.dedup();
+        } else {
+            texts = read_layout(root, harness, cwd, layout.clone(), Some(since), |text| {
+                accepts(text).then(|| text.to_owned())
+            })?;
         }
-        for text in sessions {
-            if let Some(tokens) = parse_tokens_between(harness, &text, start, end) {
+        for text in texts {
+            if let Some(tokens) = harness.tokens(&text, window) {
                 found = true;
                 for (model, counts) in tokens {
                     total.entry(model).or_default().add(&counts);
@@ -1365,5 +1297,31 @@ mod token_tests {
         std::fs::remove_dir(home.join("sessions")).unwrap();
         std::fs::write(home.join("sessions"), "not a directory").unwrap();
         assert!(tokens(&cwd, Harness::Codex, at, None).is_err());
+    }
+
+    #[test]
+    fn a_session_keeping_its_usage_beside_it_is_read_from_that_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("work");
+        let home = cwd.join(crate::worker_tmp::TMP_DIR).join("guard-1");
+        std::fs::create_dir_all(&home).unwrap();
+        let at = 1_793_106_373;
+        let harness = Harness::Grok;
+        let files = harness.session_files(&cwd_str(&cwd), false, at);
+        for file in &files {
+            write_text(&home.join(&file.path), &file.body, at).unwrap();
+        }
+        assert_eq!(tokens(&cwd, harness, at, None).unwrap(), None);
+        let SessionLayout::Named { usage: Some(beside), name, .. } =
+            harness.session_place(&cwd_str(&cwd)).layout
+        else {
+            panic!("grok keeps its usage beside its events");
+        };
+        let events = files.iter().find(|file| file.path.ends_with(name)).unwrap();
+        let updates = home.join(&events.path).with_file_name(beside);
+        let usage = json!({"params":{"update":{"usage":{"modelUsage":{"g":{"inputTokens":50,"cachedReadTokens":20,"outputTokens":5}}}}}});
+        std::fs::write(&updates, format!("{usage}\n")).unwrap();
+        let counts = tokens(&cwd, harness, at, None).unwrap().unwrap();
+        assert_eq!((counts["g"].input, counts["g"].cache_read, counts["g"].output), (30, 20, 5));
     }
 }

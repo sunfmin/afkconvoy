@@ -29,6 +29,7 @@ use serde::{Deserialize, Deserializer};
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Link, SessionFile, SessionLayout};
+use crate::account::{Counts, Keys, Usage};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::{Rules, Start, Told};
@@ -72,6 +73,24 @@ pub(super) fn account_quota(output: &[String]) -> Option<String> {
 pub(super) const NAME: &str = "Codex";
 pub(super) const KEY: &str = "codex";
 pub(super) const PROGRAM: &str = "codex";
+/// The line that installs it.
+pub(super) const INSTALL: &str = "brew install --cask codex";
+/// What asks whether Codex holds a login a worker can use: the file a worker
+/// is given a link to, and that Codex takes what it holds for a login. A
+/// login Codex keeps in a keyring is in no file, and is no worker's: its
+/// words say where a worker reads its login.
+pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
+    question: "test -f \"$HOME/.codex/auth.json\" && codex login status",
+    logged_out: "is not logged in where a worker reads its login, `~/.codex/auth.json` (a login \
+                 kept in a keyring is in no file)",
+    line: "codex login",
+});
+
+/// Whether the answer to its login question says it is logged in: by its
+/// exit status.
+pub(super) fn logged_in(succeeded: bool, _printed: &str) -> bool {
+    succeeded
+}
 /// Where it reads its user's global instructions, under the user's home.
 pub(super) const INSTRUCTIONS: &str = ".codex/AGENTS.md";
 /// The agent `npx skills` installs its user's skills for.
@@ -1042,6 +1061,32 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
     }]
 }
 
+/// The names Codex gives the counts of a token count. Its input includes
+/// the cached input.
+const USAGE_KEYS: Keys = Keys {
+    input: "input_tokens",
+    cache_read: "cached_input_tokens",
+    cache_write: "cache_write_input_tokens",
+    output: "output_tokens",
+    reasoning: "reasoning_output_tokens",
+};
+
+/// What one Codex session line says of usage: a turn's context names the
+/// model, and a token count is the session's running total.
+pub(super) fn usage(value: &serde_json::Value, _line: usize) -> Option<Usage> {
+    if value["type"] == "turn_context" {
+        return value["payload"]["model"].as_str().map(|model| Usage::Model(model.to_string()));
+    }
+    if value["type"] != "event_msg" || value["payload"]["type"] != "token_count" {
+        return None;
+    }
+    let usage = &value["payload"]["info"]["total_token_usage"];
+    if !usage.is_object() {
+        return None;
+    }
+    Some(Counts::read(usage, &USAGE_KEYS, true).map_or(Usage::Uncounted, Usage::Running))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1590,5 +1635,59 @@ mod tests {
         assert_eq!(Harness::Codex.goal_row("done|1|2"), None);
         assert_eq!(Harness::Codex.goal_row("complete|many|2"), None);
         assert_eq!(Harness::Kimi.goal_row("complete|1|2"), None);
+    }
+
+    #[test]
+    fn codex_is_logged_in_when_the_file_a_worker_is_linked_to_holds_a_login() {
+        let codex = Harness::Codex;
+        assert_eq!(codex.install(), "brew install --cask codex");
+        let login = codex.login().unwrap();
+        assert_eq!(login.question, "test -f \"$HOME/.codex/auth.json\" && codex login status");
+        assert_eq!(login.line, "codex login");
+        assert!(login.logged_out.contains("`~/.codex/auth.json`"), "{}", login.logged_out);
+        assert!(codex.logged_in(true, "Logged in using ChatGPT"));
+        assert!(!codex.logged_in(false, ""));
+        assert!(!codex.logged_in(false, "Not logged in"));
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use crate::account::Counts;
+    use crate::harness::Harness;
+
+    #[test]
+    fn a_running_token_count_is_counted_once_by_the_model_it_ran_on() {
+        let text = r#"{"type":"turn_context","payload":{"model":"a"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":10,"reasoning_output_tokens":4}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":10,"reasoning_output_tokens":4}}}}
+{"type":"turn_context","payload":{"model":"b"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":50,"output_tokens":15,"reasoning_output_tokens":6}}}}"#;
+        let tokens = Harness::Codex.tokens(text, None).unwrap();
+        assert_eq!(
+            tokens["a"],
+            Counts { input: 70, cache_read: 30, cache_write: 0, output: 10, reasoning: Some(4) }
+        );
+        assert_eq!(
+            tokens["b"],
+            Counts { input: 30, cache_read: 20, cache_write: 0, output: 5, reasoning: Some(2) }
+        );
+        assert_eq!(Harness::Codex.tokens("{}", None), None);
+    }
+
+    #[test]
+    fn a_round_window_subtracts_the_count_before_it() {
+        let codex = r#"{"timestamp":90,"type":"turn_context","payload":{"model":"codex"}}
+{"timestamp":95,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":10,"reasoning_output_tokens":4}}}}
+{"timestamp":105,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":45,"output_tokens":18,"reasoning_output_tokens":7}}}}
+{"timestamp":115,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":55,"output_tokens":25,"reasoning_output_tokens":9}}}}"#;
+        let tokens = Harness::Codex.tokens(codex, Some((100, 110))).unwrap();
+        assert_eq!(
+            tokens["codex"],
+            Counts { input: 45, cache_read: 15, cache_write: 0, output: 8, reasoning: Some(3) }
+        );
+        assert_eq!(Harness::Codex.tokens(codex, Some((200, 210))), None);
+        let untimed = codex.replace("\"timestamp\":105", "\"at\":105");
+        assert_eq!(Harness::Codex.tokens(&untimed, Some((100, 110))), None);
     }
 }

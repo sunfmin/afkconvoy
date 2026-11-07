@@ -319,9 +319,68 @@ fn main_agent(row: &Value) -> Value {
 }
 
 pub(crate) fn agent_harness(agent: &Value) -> Option<Harness> {
-    match agent["agentType"].as_str()? {
+    harness_of(agent["agentType"].as_str()?)
+}
+
+fn harness_of(agent_type: &str) -> Option<Harness> {
+    match agent_type {
         "claude" => Some(Harness::ClaudeCode),
         key => Harness::read(key),
+    }
+}
+
+/// An agent's state by orca: its `programStatus` speaks first, its own
+/// `state` only when that is absent. The one place this rule lives.
+fn agent_state(agent: &Value) -> Option<&str> {
+    agent["programStatus"]["state"].as_str().or(agent["state"].as_str())
+}
+
+/// What orca says of a worker's agent, as typed facts. Every caller judges
+/// a worker from these, never from orca's wire shape. Kept and answered
+/// under orca's own field names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Agent {
+    /// Its state, `programStatus.state` else `state`.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Since when it has been in that state, in epoch milliseconds.
+    #[serde(default, rename = "stateStartedAt")]
+    pub since_ms: Option<u64>,
+    /// How its main agent's last turn ended, such as `success` or `failure`.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default, rename = "agentType")]
+    pub agent_type: Option<String>,
+}
+
+impl Agent {
+    /// Reads one runtime agent row; `None` where there is no agent.
+    pub(crate) fn of(agent: &Value) -> Option<Agent> {
+        if agent.is_null() {
+            return None;
+        }
+        Some(Agent {
+            state: agent_state(agent).map(str::to_string),
+            since_ms: agent["stateStartedAt"].as_u64(),
+            outcome: agent["mainAgent"]["outcome"].as_str().map(str::to_string),
+            agent_type: agent["agentType"].as_str().map(str::to_string),
+        })
+    }
+
+    /// Since when orca has had its turn over, in epoch seconds: `done`, or
+    /// `error` for a turn that failed. A working agent's turn is not over.
+    pub fn over_since(&self) -> Option<u64> {
+        matches!(self.state.as_deref(), Some("done" | "error"))
+            .then(|| self.since_ms.unwrap_or(0) / 1000)
+    }
+
+    /// Whether its turn is over and ended in failure.
+    pub fn failed(&self) -> bool {
+        self.over_since().is_some() && self.outcome.as_deref() == Some("failure")
+    }
+
+    pub fn harness(&self) -> Option<Harness> {
+        harness_of(self.agent_type.as_deref()?)
     }
 }
 
@@ -1067,15 +1126,9 @@ impl Worktree {
         Ok(runtime_row(&runtime()?, &self.path))
     }
 
-    /// Orca's state, outcome, agent type and timestamps for this worker.
-    pub fn agent_report(&self) -> Result<Value> {
-        let agent = main_agent(&self.health_report()?);
-        if agent.is_null() {
-            return Ok(Value::Null);
-        }
-        Ok(serde_json::json!({"state": agent["state"],
-            "outcome": agent["mainAgent"]["outcome"], "agentType": agent["agentType"],
-            "stateStartedAt": agent["stateStartedAt"], "programStatus": agent["programStatus"]}))
+    /// Orca's facts of this worker's main agent; `None` where it has none.
+    pub fn agent_report(&self) -> Result<Option<Agent>> {
+        Ok(Agent::of(&main_agent(&self.health_report()?)))
     }
 
     /// A terminal just created or confirmed closed supersedes this tick's
@@ -1408,7 +1461,7 @@ impl Worktree {
 
     /// The harness actually running: Orca's agent type wins over the record.
     pub fn harness(&self) -> Result<Option<Harness>> {
-        Ok(agent_harness(&self.agent_report()?).or(self.recorded_harness()?))
+        Ok(self.agent_report()?.and_then(|agent| agent.harness()).or(self.recorded_harness()?))
     }
 
     /// Keeps the harness the worker here is started on.
@@ -1717,7 +1770,7 @@ impl Worktree {
         } else {
             main_agent(&row)
         };
-        let state = agent["programStatus"]["state"].as_str().or(agent["state"].as_str());
+        let state = agent_state(&agent);
         // A harness at work has no idle prompt to wait for: its input takes
         // the line, and the harness hands it over mid-turn or after it.
         if state != Some("working") {
@@ -1984,7 +2037,7 @@ impl Worktree {
             } else {
                 main_agent(&row)
             };
-            let state = agent["programStatus"]["state"].as_str().or(agent["state"].as_str());
+            let state = agent_state(&agent);
             if state != Some("working") {
                 return Ok((Waited::Ready, agent));
             }
