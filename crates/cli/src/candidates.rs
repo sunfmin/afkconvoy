@@ -2,7 +2,9 @@
 //! writer's child cannot fast-forward it. Publishing the base and the next
 //! record is one atomic push, so invalidation and publication cannot both win.
 use afkconvoy_core::account::End;
-use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publication, Slow};
+use afkconvoy_core::candidate::{
+    Barrier, Candidate, Chain, Evidence, Phase, Process, Publication, Slow,
+};
 use afkconvoy_core::claims::{HEARTBEAT_KIND, read_heartbeat};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
@@ -228,9 +230,9 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
         "round": chain.round_of(&c.id).map(|tip| &tip.id),
     });
     if matches!(c.phase, Phase::Validating | Phase::Slow)
-        && let Some(excerpt) = c.result.as_ref().and_then(|result| result.get("excerpt"))
+        && let Some(result) = &c.result
     {
-        row["excerpt"] = excerpt.clone();
+        row["excerpt"] = json!(result.excerpt);
     }
     row
 }
@@ -722,9 +724,9 @@ impl Gate<'_> {
         seconds: u64,
         termination: Option<afkconvoy_core::gate::Termination>,
     ) -> Result<()> {
-        let evidence = json!({"status":"red", "exit_code":exit_code, "timed_out":timed_out, "seconds":seconds, "termination":termination});
+        let evidence = Evidence::red(exit_code, timed_out, seconds, termination);
         let chain =
-            change(self.repo, self.config, |chain| chain.finish(self.id, false, evidence.clone()))?;
+            change(self.repo, self.config, |chain| chain.finish(self.id, evidence.clone()))?;
         cleanup(self.repo, self.config, &chain)
     }
     pub fn process_marker(&self) -> &str {
@@ -774,16 +776,14 @@ fn settle(repo: &Repo, gh: &GitHub, issue: Option<u64>, now: u64, answer: &mut V
     }
 }
 
-/// Puts a candidate's gate `result` on the chain: green or red
-/// (`Chain::finish`), or unsettled (`Chain::unsettle`) where the run was red
-/// only on TIMEOUTs it cannot classify on an overloaded host.
-fn settled(chain: &mut Chain, id: &str, result: &Value) {
-    if result["unsettled"].is_null() {
-        let green = result["status"] == "green" && result["recorded"] == true;
-        chain.finish(id, green, result.clone());
-    } else {
-        chain.unsettle(id, result.clone());
+/// A turn's answer of a candidate's gate `evidence`: the evidence's keys,
+/// then the turn's own, `answer`'s, beside and over them.
+fn answered(evidence: &Evidence, answer: &Value) -> Value {
+    let mut result = json!(evidence);
+    for (key, value) in answer.as_object().into_iter().flatten() {
+        result[key] = value.clone();
     }
+    result
 }
 
 /// Whether `c` left the chain unsettled by its own gate run, `id`'s.
@@ -1110,7 +1110,16 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             chain.candidates.iter().rev().find(|c| c.pr == pr.number && c.original_head == original)
         {
             if c.phase == Phase::Landed {
-                let mut result = c.result.clone().unwrap_or(answer);
+                let mut result = match &c.result {
+                    Some(evidence) => {
+                        let mut answer = answer;
+                        answer["candidate"] = json!(c.id);
+                        answer["merged"] = json!(c.predecessor);
+                        answer["predecessor"] = json!(c.predecessor);
+                        answered(evidence, &answer)
+                    }
+                    None => answer,
+                };
                 settle(repo, &gh, issue, clock(), &mut result);
                 result["outcome"] = json!(Ending::Merged);
                 result["commit"] = json!(c.commit);
@@ -1281,7 +1290,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     answer["merged"] = json!(candidate.predecessor);
     answer["predecessor"] = json!(candidate.predecessor);
     // A recovered candidate is fast-green: what its run said is not kept.
-    let (mut result, judged) = if recovering {
+    let (evidence, judged) = if recovering {
         (candidate.result.clone().expect("a fast-green candidate has its gate result"), None)
     } else {
         std::fs::create_dir_all(path.parent().expect("candidate parent"))?;
@@ -1306,20 +1315,18 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             &hook,
         );
         match result {
-            Ok((result, judged)) => (result, Some(judged)),
+            Ok((evidence, judged)) => (evidence, Some(judged)),
             Err(error) => {
                 invalidate(repo, config, &id, "gate_interrupted")?;
                 return Err(error);
             }
         }
     };
-    for (key, value) in answer.as_object().into_iter().flatten() {
-        result[key] = value.clone();
-    }
+    let mut result = answered(&evidence, &answer);
     let chain = if recovering {
         read(repo, config)?.chain
     } else {
-        let chain = change(repo, config, |chain| settled(chain, &id, &result))?;
+        let chain = change(repo, config, |chain| chain.finish(&id, evidence.clone()))?;
         cleanup(repo, config, &chain)?;
         stop_candidate(repo, config, &id)?;
         chain
@@ -1518,24 +1525,25 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
         issue,
         &hook,
     );
-    let (mut result, judged) = match result {
+    let (mut evidence, judged) = match result {
         Ok(ran) => ran,
         Err(error) => {
             invalidate(repo, config, id, "gate_interrupted")?;
             return Err(error);
         }
     };
-    if result["status"] == "green" && result["recorded"] == true {
+    if evidence.green() {
         let tree = Tree::named(&tip.tree);
         let parts = (&GateCommand::new(&slow.whole), &GateCommand::new(&tip.command), &command);
         if let Some(why) =
             crate::gate::record_whole(repo, &tree, &tip.commit, parts, issue, clock())?
         {
-            result["recorded"] = json!(false);
-            result["not_recorded"] = json!(why);
+            evidence.recorded = false;
+            evidence.not_recorded = Some(why);
         }
     }
-    let chain = change(repo, config, |chain| settled(chain, id, &result))?;
+    let chain = change(repo, config, |chain| chain.finish(id, evidence.clone()))?;
+    let mut result = json!(evidence);
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
     if let Judged::Unsettled(said) = &judged

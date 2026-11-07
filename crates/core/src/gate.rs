@@ -637,11 +637,13 @@ pub fn quoted(lines: &[String]) -> Vec<String> {
 /// What wait status proves about a gate command ended by a signal. The pid
 /// also names its process group, created by the gate. Wait status identifies
 /// no sender and proves nothing about which repository checks started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+/// Its fields are in the order a JSON object's keys are written, so a
+/// candidate's evidence kept with it reads as it did untyped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Termination {
+    pub core_dumped: bool,
     pub pid: u32,
     pub signal: i32,
-    pub core_dumped: bool,
 }
 
 impl Termination {

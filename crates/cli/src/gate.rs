@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use afkconvoy_core::candidate::{Evidence, Overloaded, Status};
 use afkconvoy_core::config::{Config, Which};
 pub use afkconvoy_core::gate::Termination;
 use afkconvoy_core::gate::{
@@ -433,18 +434,33 @@ pub(crate) fn candidate_gate(
     limit: Duration,
     issue: Option<u64>,
     candidate: &crate::candidates::Gate<'_>,
-) -> Result<(Value, Judged)> {
+) -> Result<(Evidence, Judged)> {
     let run = controlled_run(repo, command, host, now, limit, issue, Some(candidate), None)?;
     let unsettled = match &run.judged {
-        Judged::Unsettled(unsettled) => json!({"tests": unsettled.tests(), "said": unsettled.said}),
-        _ => Value::Null,
+        Judged::Unsettled(unsettled) => {
+            Some(Overloaded { said: unsettled.said.clone(), tests: unsettled.tests().to_vec() })
+        }
+        Judged::Green | Judged::Red(_) => None,
     };
-    let evidence = json!({"status": if run.cancelled { "cancelled" } else if run.ran.green() { "green" } else { "red" },
-        "recorded": run.green.is_some() && run.not_recorded.is_none(), "head": run.head,
-        "command": command.text(), "seconds": run.ran.seconds, "exit_code": run.ran.exit_code,
-        "timed_out": run.ran.timed_out, "termination": run.termination, "excerpt": run.excerpt,
-        "not_recorded": run.not_recorded, "uncommitted": run.strays,
-        "unsettled": unsettled});
+    let status = match () {
+        _ if run.cancelled => Status::Cancelled,
+        _ if run.ran.green() => Status::Green,
+        _ => Status::Red,
+    };
+    let evidence = Evidence {
+        command: Some(command.text().to_string()),
+        exit_code: run.ran.exit_code,
+        excerpt: run.excerpt,
+        head: Some(run.head),
+        recorded: run.green.is_some() && run.not_recorded.is_none(),
+        not_recorded: run.not_recorded,
+        seconds: run.ran.seconds,
+        status,
+        termination: run.termination,
+        timed_out: run.ran.timed_out,
+        uncommitted: run.strays,
+        unsettled,
+    };
     Ok((evidence, run.judged))
 }
 

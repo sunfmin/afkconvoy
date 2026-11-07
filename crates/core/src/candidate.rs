@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
+use crate::gate::Termination;
 use crate::lease::{stamp_due, stamp_stale};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,7 +72,7 @@ pub struct Candidate {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub abandoned: bool,
     /// Actual gate evidence survives invalidation and owner death.
-    pub result: Option<serde_json::Value>,
+    pub result: Option<Evidence>,
     /// The slow gate its commit declares, which a round at this candidate
     /// runs; `None` where it declares no gates and `command` is the whole gate.
     #[serde(default)]
@@ -79,6 +80,73 @@ pub struct Candidate {
     /// The round at this candidate gated green.
     #[serde(default)]
     pub slowed: bool,
+}
+
+/// How a candidate's gate run ended, as its evidence says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Green,
+    #[default]
+    Red,
+    /// The candidate was cancelled while its gate ran.
+    Cancelled,
+}
+
+/// A run red only on TIMEOUTs the gate said it cannot classify on an
+/// overloaded host (`gate::Unsettled`), as the chain keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Overloaded {
+    /// The gate's line that says the host is overloaded, with its load.
+    pub said: String,
+    /// The TIMEOUT tests.
+    pub tests: Vec<String>,
+}
+
+/// A candidate's gate evidence: what its run, fast or a round's slow one,
+/// said of its tree and what became of its record. The chain decides from
+/// it (`Chain::finish`). Its keys are in the order a JSON object's are
+/// written, so a record reads as it did when the chain kept it untyped. A
+/// key a record lacks reads as red's: nothing kept is no green.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Evidence {
+    pub command: Option<String>,
+    pub excerpt: Vec<String>,
+    pub exit_code: i32,
+    /// The commit the run was of.
+    pub head: Option<String>,
+    /// Why a green run is not on record, where it is not.
+    pub not_recorded: Option<String>,
+    /// A green run of the committed tree is on record on the remote.
+    pub recorded: bool,
+    pub seconds: u64,
+    pub status: Status,
+    pub termination: Option<Termination>,
+    pub timed_out: bool,
+    /// What kept the run from being of the committed tree.
+    pub uncommitted: Vec<String>,
+    /// The run says nothing of its tree (`Overloaded`).
+    pub unsettled: Option<Overloaded>,
+}
+
+impl Evidence {
+    /// What the chain hears at a red run's first observed exit or limit,
+    /// before its log is drained or its record settled: how it ended. Its
+    /// owner adds the rest (`Chain::finish`).
+    pub fn red(
+        exit_code: i32,
+        timed_out: bool,
+        seconds: u64,
+        termination: Option<Termination>,
+    ) -> Evidence {
+        Evidence { exit_code, seconds, termination, timed_out, ..Evidence::default() }
+    }
+
+    /// The run passes its candidate: green, and on record.
+    pub fn green(&self) -> bool {
+        self.status == Status::Green && self.recorded
+    }
 }
 
 /// The slow gate a candidate's commit declares, and its whole gate.
@@ -293,9 +361,20 @@ impl Chain {
         }
     }
 
-    /// A candidate's gate result. For the round's tip in `Slow`, the round's:
-    /// green passes the whole gate at it; red fails the round.
-    pub fn finish(&mut self, id: &str, green: bool, result: serde_json::Value) {
+    /// A candidate's gate evidence, which decides it: a run that says
+    /// nothing of its tree leaves it unsettled (`unsettle`); one green and
+    /// on record is green; any other is red. For the round's tip in `Slow`,
+    /// the round's: green passes the whole gate at it; red fails the round.
+    pub fn finish(&mut self, id: &str, result: Evidence) {
+        if result.unsettled.is_some() {
+            self.unsettle(id, result);
+        } else {
+            let green = result.green();
+            self.green_or_red(id, green, result);
+        }
+    }
+
+    fn green_or_red(&mut self, id: &str, green: bool, result: Evidence) {
         let mut failed = false;
         let mut round = false;
         for c in &mut self.candidates {
@@ -329,7 +408,7 @@ impl Chain {
     /// commit goes with it, `predecessor_unsettled`, as no successor can land
     /// without it. Its round is not failed: the members before it stay
     /// fast-green, and the last of them is the round's tip now.
-    pub fn unsettle(&mut self, id: &str, result: serde_json::Value) {
+    fn unsettle(&mut self, id: &str, result: Evidence) {
         if !self.candidates.iter().any(|c| c.id == id && c.valid()) {
             return;
         }
@@ -573,6 +652,70 @@ mod rejected {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run's evidence: green and on record, or red.
+    fn ran(green: bool) -> Evidence {
+        let mut evidence = Evidence::red(if green { 0 } else { 1 }, false, 1, None);
+        if green {
+            evidence.status = Status::Green;
+            evidence.recorded = true;
+        }
+        evidence
+    }
+
+    /// A run red only on a TIMEOUT the gate cannot classify under overload.
+    fn unsettled() -> Evidence {
+        let said = "gate: host overloaded (load 13, CPUs 12); cannot classify TIMEOUT tests.";
+        let overloaded = Overloaded { tests: vec!["nx a_test".into()], said: said.into() };
+        Evidence { unsettled: Some(overloaded), ..Evidence::red(100, false, 1, None) }
+    }
+
+    /// The chain decides a candidate from its typed evidence
+    /// (sunfmin/control#620): green only where the run was green and is on
+    /// record; a green not on record, a cancelled run and a red are red; a
+    /// run that says nothing of its tree is unsettled, never red.
+    #[test]
+    fn the_chain_decides_a_candidate_from_its_gate_evidence() {
+        let decided = |evidence: Evidence| {
+            let mut chain = Chain { candidates: vec![candidate(0)], ..Chain::default() };
+            chain.finish("c0", evidence.clone());
+            assert_eq!(chain.candidates[0].result, Some(evidence));
+            (chain.candidates[0].phase, chain.candidates[0].cause.clone())
+        };
+        let red = (Phase::Red, Some("predecessor_failed".to_string()));
+        assert_eq!(decided(ran(true)), (Phase::Green, None));
+        assert_eq!(decided(ran(false)), red);
+        let unrecorded = Evidence { recorded: false, ..ran(true) };
+        assert_eq!(decided(unrecorded), red, "a green not on record");
+        let cancelled = Evidence { status: Status::Cancelled, ..ran(false) };
+        assert_eq!(decided(cancelled), red);
+        let (phase, cause) = decided(unsettled());
+        assert_ne!(phase, Phase::Red);
+        assert_eq!(cause.as_deref(), Some("gate_unsettled"));
+    }
+
+    /// Evidence an earlier afkconvoy kept untyped reads back: the run's keys,
+    /// its nulls, the keys of the turn's answer it carried beside them, and
+    /// a red's first, shorter evidence. Its own keys are written in the
+    /// order an untyped record wrote them.
+    #[test]
+    fn evidence_kept_untyped_reads_back_typed() {
+        let kept = r#"{"candidate":"c1","command":"./gate.sh fast","exit_code":100,
+            "excerpt":["x"],"head":"abc","merged":"base","not_recorded":null,
+            "predecessor":"base","recorded":false,"seconds":12,"status":"red",
+            "termination":null,"timed_out":false,"uncommitted":[],
+            "unsettled":{"said":"gate: host overloaded","tests":["nx a_test"]}}"#;
+        let evidence: Evidence = serde_json::from_str(kept).unwrap();
+        assert_eq!(evidence.unsettled.as_ref().map(|u| u.tests.len()), Some(1));
+        assert_eq!(evidence.head.as_deref(), Some("abc"));
+        let written = serde_json::to_string(&evidence).unwrap();
+        let untyped = serde_json::to_string(&serde_json::to_value(&evidence).unwrap()).unwrap();
+        assert_eq!(written, untyped, "keys in the order an untyped record writes them");
+        let first = r#"{"status":"red","exit_code":1,"timed_out":true,"seconds":3,
+            "termination":null}"#;
+        let first: Evidence = serde_json::from_str(first).unwrap();
+        assert_eq!(first, Evidence::red(1, true, 3, None));
+    }
     use std::collections::{HashSet, VecDeque};
 
     fn candidate(n: usize) -> Candidate {
@@ -706,11 +849,11 @@ mod tests {
     #[test]
     fn a_round_runs_once_at_the_tip_when_every_candidate_is_fast_green() {
         let mut chain = Chain { candidates: (0..3).map(split).collect(), ..Chain::default() };
-        chain.finish("c0", true, serde_json::json!({}));
-        chain.finish("c2", true, serde_json::json!({}));
+        chain.finish("c0", ran(true));
+        chain.finish("c2", ran(true));
         assert!(chain.round_tip().is_none(), "c1 is still fast-gating");
         assert!(!chain.ripe("c0", "base"), "a fast-green candidate does not land alone");
-        chain.finish("c1", true, serde_json::json!({}));
+        chain.finish("c1", ran(true));
         assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c2"));
         assert!(!chain.start_round("c1"), "only the tip's turn runs the round");
         assert!(chain.start_round("c2"));
@@ -725,7 +868,7 @@ mod tests {
         chain.candidates.push(later);
         assert!(chain.round_tip().is_none());
         assert_eq!(round(&chain, "c3"), None, "it waits for the next round");
-        chain.finish("c2", true, serde_json::json!({}));
+        chain.finish("c2", ran(true));
         assert!(chain.candidates[2].slowed);
         assert!(chain.ripe("c2", "base"));
         assert!(!chain.ripe("c2", "m0"), "the round's first candidate stands on the base");
@@ -738,8 +881,8 @@ mod tests {
     #[test]
     fn a_round_waits_for_every_turn_that_asked_to_land() {
         let mut chain = Chain { candidates: (0..2).map(split).collect(), ..Chain::default() };
-        chain.finish("c0", true, serde_json::json!({}));
-        chain.finish("c1", true, serde_json::json!({}));
+        chain.finish("c0", ran(true));
+        chain.finish("c1", ran(true));
         let owner = chain.candidates[0].owner.clone();
         chain.pending.push(Barrier { id: "waiting".into(), owner });
         assert!(chain.round_tip().is_none(), "a PR still waiting for a lane is in the round");
@@ -752,7 +895,7 @@ mod tests {
     fn a_red_round_is_not_bisected_its_tip_keeps_the_failure() {
         let mut chain = Chain { candidates: (0..4).map(split).collect(), ..Chain::default() };
         for c in ["c0", "c1", "c2"] {
-            chain.finish(c, true, serde_json::json!({}));
+            chain.finish(c, ran(true));
             chain.candidates.iter_mut().for_each(|c| c.stopped = c.phase == Phase::Green);
         }
         chain.candidates.pop();
@@ -760,7 +903,7 @@ mod tests {
         let mut later = split(3);
         later.phase = Phase::Validating;
         chain.candidates.push(later);
-        chain.finish("c2", false, serde_json::json!({"exit_code": 1}));
+        chain.finish("c2", ran(false));
         let phases: Vec<_> = chain.candidates.iter().map(|c| c.phase).collect();
         assert_eq!(phases, [Phase::Cancelled, Phase::Cancelled, Phase::Red, Phase::Cancelling]);
         let causes: Vec<_> = chain.candidates.iter().map(|c| c.cause.as_deref()).collect();
@@ -779,7 +922,7 @@ mod tests {
     fn an_unsettled_gate_fails_no_round_and_its_suffix_goes_unsettled() {
         let mut chain = Chain { candidates: (0..4).map(split).collect(), ..Chain::default() };
         for c in ["c0", "c1", "c2"] {
-            chain.finish(c, true, serde_json::json!({}));
+            chain.finish(c, ran(true));
             chain.candidates.iter_mut().for_each(|c| c.stopped = c.phase == Phase::Green);
         }
         chain.candidates.pop();
@@ -787,16 +930,16 @@ mod tests {
         let mut later = split(3);
         later.phase = Phase::Validating;
         chain.candidates.push(later);
-        chain.unsettle("c2", serde_json::json!({"exit_code": 100}));
+        chain.finish("c2", unsettled());
         let phases: Vec<_> = chain.candidates.iter().map(|c| c.phase).collect();
         assert_eq!(phases, [Phase::Green, Phase::Green, Phase::Cancelling, Phase::Cancelling]);
         let causes: Vec<_> = chain.candidates.iter().map(|c| c.cause.as_deref()).collect();
         assert_eq!(causes, [None, None, Some("gate_unsettled"), Some("predecessor_unsettled")]);
-        assert_eq!(chain.candidates[2].result, Some(serde_json::json!({"exit_code": 100})));
+        assert_eq!(chain.candidates[2].result, Some(unsettled()));
         assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c1"), "the round runs again");
         // A fast gate unsettled cancels its successor unsettled, not failed.
         let mut chain = Chain { candidates: vec![candidate(0), candidate(1)], ..Chain::default() };
-        chain.unsettle("c0", serde_json::json!({}));
+        chain.finish("c0", unsettled());
         let causes: Vec<_> = chain.candidates.iter().map(|c| c.cause.as_deref()).collect();
         assert_eq!(causes, [Some("gate_unsettled"), Some("predecessor_unsettled")]);
         assert!(chain.candidates.iter().all(|c| c.phase != Phase::Red));
@@ -805,15 +948,15 @@ mod tests {
     #[test]
     fn a_whole_gated_candidate_lands_the_fast_green_ones_before_it() {
         let mut chain = Chain { candidates: vec![split(0), candidate(1)], ..Chain::default() };
-        chain.finish("c0", true, serde_json::json!({}));
-        chain.finish("c1", true, serde_json::json!({}));
+        chain.finish("c0", ran(true));
+        chain.finish("c1", ran(true));
         assert!(chain.round_tip().is_none(), "its gate was the whole gate");
         assert!(chain.ripe("c1", "base"));
         chain.land("c1");
         assert!(chain.candidates.iter().all(|c| c.phase == Phase::Landed));
         let mut chain = Chain { candidates: vec![candidate(0), candidate(1)], ..Chain::default() };
-        chain.finish("c0", true, serde_json::json!({}));
-        chain.finish("c1", true, serde_json::json!({}));
+        chain.finish("c0", ran(true));
+        chain.finish("c1", ran(true));
         assert!(!chain.ripe("c1", "base"), "a whole-gated one ahead lands by its own turn");
         assert!(chain.ripe("c0", "base"));
     }
@@ -821,11 +964,11 @@ mod tests {
     #[test]
     fn late_completion_never_resurrects_an_invalidated_suffix_or_erases_the_root_failure() {
         let mut chain = Chain { candidates: (0..3).map(candidate).collect(), ..Chain::default() };
-        chain.finish("c0", false, serde_json::json!({"exit_code": 9}));
+        chain.finish("c0", ran(false));
         let invalidated = chain.clone();
         for c in ["c1", "c2"] {
-            chain.finish(c, true, serde_json::json!({"late": "green"}));
-            chain.finish(c, false, serde_json::json!({"late": "red"}));
+            chain.finish(c, ran(true));
+            chain.finish(c, ran(false));
         }
         assert_eq!(chain, invalidated);
         assert_eq!(chain.candidates[0].phase, Phase::Red);
@@ -849,7 +992,7 @@ mod tests {
         let mut chain = Chain { candidates: vec![split(0)], ..Chain::default() };
         let owner = chain.candidates[0].owner.clone();
         chain.pending.push(Barrier { id: "waiting".into(), owner: owner.clone() });
-        chain.finish("c0", true, serde_json::json!({"fast": "green"}));
+        chain.finish("c0", ran(true));
         assert!(chain.round_tip().is_none(), "a pending turn may still join");
         chain.candidates[0].barrier = true;
         assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c0"));
@@ -861,7 +1004,7 @@ mod tests {
     #[test]
     fn an_external_push_of_an_unfinished_candidate_does_not_settle_its_prefix() {
         let mut chain = Chain { candidates: (0..3).map(candidate).collect(), ..Chain::default() };
-        chain.finish("c1", true, serde_json::json!({"green": true}));
+        chain.finish("c1", ran(true));
         chain.observe_base("m1");
         assert!(chain.candidates.iter().all(|c| !c.valid() && c.phase != Phase::Landed));
         assert!(chain.candidates.iter().all(|c| c.cause.as_deref() == Some("base_moved")));
@@ -919,7 +1062,7 @@ mod tests {
                 if matches!(c.phase, Phase::Validating | Phase::Slow) {
                     for green in [true, false] {
                         let mut next = chain.clone();
-                        next.finish(&c.id, green, serde_json::json!({"green": green}));
+                        next.finish(&c.id, ran(green));
                         pending.push_back((next, base.clone()));
                     }
                 }
