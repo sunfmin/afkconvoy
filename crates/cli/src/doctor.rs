@@ -2030,7 +2030,7 @@ fn finish_state(
         found: beats.len(),
         live: live.map(|(instance, _)| instance.clone()).collect(),
     };
-    let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+    let (mut set, flows, _) = fleet.rebuild(&open, instance.as_ref())?;
     // Tracker-wide reports have their own opening-host finding. Treating
     // them as ordinary escalations would wake every host serving this repo.
     set.waiting_on_human.retain(|wait| {

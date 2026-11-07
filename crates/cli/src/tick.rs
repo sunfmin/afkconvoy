@@ -104,7 +104,7 @@ pub struct Ticked {
     lost: Vec<Lost>,
     /// Local workers ended because another host holds their issue's claim.
     stopped_taken: Vec<u64>,
-    /// The closed claimed issues, each with who closed it (`Fleet::closers`).
+    /// The closed claimed issues, each with who closed it (`Claimed::closers`).
     closers: Vec<(u64, String)>,
     /// The open issues, each with the label that hands it to the fleet
     /// (`plan::handed_by`).
@@ -241,7 +241,7 @@ pub fn tick(
         // discovery must precede the choice of range.
         let _ = agent.discover_casting(&issue.labels);
     }
-    let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
+    let (mut set, mut flows, mut claimed) = fleet.rebuild(&open, Some(&me.instance))?;
     // What the tick found, before its pass and in each step of it: what
     // its line says.
     let mut found = Found::default();
@@ -267,7 +267,7 @@ pub fn tick(
     let put = crate::stage::put_to_consults(&fleet, &flows, &open.issues).unwrap_or_default();
     if !put.is_empty() {
         (fleet, open) = Fleet::read(repo, me.now)?;
-        (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
+        (set, flows, claimed) = fleet.rebuild(&open, Some(&me.instance))?;
     }
     // A busy host starts no new worker this tick (docs/adr/0019).
     let admission = Admission::read(&fleet.repo.dir)?;
@@ -277,7 +277,8 @@ pub fn tick(
     let bound = set.bound(fleet.config.concurrency());
     // A claimed issue the rebuild could not read is this tick's error, and
     // only its own.
-    let mut failures: Vec<Failure> = std::mem::take(&mut fleet.unread)
+    let mut failures: Vec<Failure> = claimed
+        .unread
         .into_iter()
         .map(|(issue, error)| Failure::of(Failed::Read(issue), &error))
         .collect();
@@ -319,7 +320,6 @@ pub fn tick(
             Outcome::Failed
         })
     });
-    let closers = std::mem::take(&mut fleet.closers);
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
     let issues = &open.issues.rows;
     let config = &fleet.config;
@@ -344,7 +344,7 @@ pub fn tick(
         before: before.cloned(),
         lost,
         stopped_taken,
-        closers,
+        closers: claimed.closers,
         handed,
         saw,
         blockers: issues

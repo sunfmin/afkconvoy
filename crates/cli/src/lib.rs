@@ -5022,8 +5022,8 @@ fn run(
             probe::announce(&warnings);
             // `plan` is one look: its host reading is the report's.
             let readings = admission::Readings::new();
-            let (mut fleet, open) = Fleet::read(&repo, now)?;
-            let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+            let (fleet, open) = Fleet::read(&repo, now)?;
+            let (mut set, flows, _) = fleet.rebuild(&open, instance.as_ref())?;
             let report = fleet_report::FleetReport::read(&fleet, &flows, &set, &readings);
             if let Ok(admission) = &report.admission {
                 set.held_back = admission.holds();

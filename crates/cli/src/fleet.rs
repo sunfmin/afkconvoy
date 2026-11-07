@@ -30,6 +30,18 @@ use crate::settle::cut_landing_of;
 use crate::slow_gate;
 use crate::stage::Flows;
 
+/// What a rebuild read of the claimed issues besides the working set: what
+/// the tick says of them.
+#[derive(Debug, Default)]
+pub struct Claimed {
+    /// The claimed issues it could not read, each with why: the pass goes on
+    /// with them as open, and its tick reports each.
+    pub unread: Vec<(u64, anyhow::Error)>,
+    /// The closed claimed issues it read, each with the login of whoever
+    /// closed it, where GitHub says: what a tick's line names.
+    pub closers: Vec<(u64, String)>,
+}
+
 struct Runnable {
     kit: crate::kit::Kit,
     skipped: Vec<(Harness, String)>,
@@ -58,12 +70,6 @@ pub struct Fleet {
     /// `Fresh::Opened` read answers.
     pub remote: Remote,
     pub now: u64,
-    /// The claimed issues the last rebuild could not read, each with why: the
-    /// pass goes on with them as open, and its tick reports each.
-    pub unread: Vec<(u64, anyhow::Error)>,
-    /// The closed claimed issues the last rebuild read, each with the login of
-    /// whoever closed it, where GitHub says: what a tick's line names.
-    pub closers: Vec<(u64, String)>,
     /// A startup probe that still stands already checked every harness.
     /// `runnable` then keeps the kit `running` built and starts none again.
     trust_launches: bool,
@@ -116,8 +122,7 @@ impl Fleet {
             scan,
             remote,
             now,
-            unread: vec![],
-            closers: vec![],
+
             trust_launches: false,
             patrol_landings: None,
         })
@@ -570,11 +575,15 @@ impl Fleet {
     }
 
     /// Rebuilds the working set of `me` from `open` and the remote as this
-    /// view was opened on it (`Fleet::read`) → it, and the read of the issues
-    /// that follow a workflow it was assembled from. Reads only. A claimed
-    /// issue that cannot be read costs only itself: it is taken for open,
-    /// and noted in `unread`.
-    pub fn rebuild(&mut self, open: &Open, me: Option<&InstanceId>) -> Result<(WorkingSet, Flows)> {
+    /// view was opened on it (`Fleet::read`) → it, the read of the issues
+    /// that follow a workflow it was assembled from, and what it read of the
+    /// claimed issues besides. Reads only. A claimed issue that cannot be
+    /// read costs only itself: it is taken for open, and noted in `unread`.
+    pub fn rebuild(
+        &self,
+        open: &Open,
+        me: Option<&InstanceId>,
+    ) -> Result<(WorkingSet, Flows, Claimed)> {
         for issue in &open.issues.rows {
             self.refusals.borrow_mut().insert(
                 issue.number,
@@ -598,8 +607,7 @@ impl Fleet {
         // about, and is closed, gone — deleted, transferred or never issued —
         // or unread.
         let (mut closed, mut vanished) = (vec![], vec![]);
-        self.unread.clear();
-        self.closers.clear();
+        let mut claimed = Claimed::default();
         for claim in &self.scan.claims {
             if issues.iter().any(|issue| issue.number == claim.number) {
                 continue;
@@ -607,11 +615,11 @@ impl Fleet {
             match self.gh.issue(claim.number) {
                 Ok(read) if read.is_closed() => {
                     closed.push(claim.number);
-                    self.closers.extend(read.closed_by.map(|by| (claim.number, by)));
+                    claimed.closers.extend(read.closed_by.map(|by| (claim.number, by)));
                 }
                 Ok(_) => {}
                 Err(error) if gone(&error).is_some() => vanished.push(claim.number),
-                Err(error) => self.unread.push((claim.number, error)),
+                Err(error) => claimed.unread.push((claim.number, error)),
             }
         }
         let base = self.base_tip()?;
@@ -623,7 +631,7 @@ impl Fleet {
             let tip = match self.task_tip_at_open(claim.number) {
                 Ok(tip) => tip,
                 Err(error) => {
-                    self.unread.push((claim.number, error));
+                    claimed.unread.push((claim.number, error));
                     continue;
                 }
             };
@@ -705,7 +713,7 @@ impl Fleet {
             None => self.cast_frontier(&mut set, &open.issues),
             Some(_) => self.cast_bound_frontier(&mut set, &open.issues, &stages),
         }
-        Ok((set, stages))
+        Ok((set, stages, claimed))
     }
 
     /// My claims whose PR is open and whose worker is not changing the tree

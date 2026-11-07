@@ -246,8 +246,8 @@ fn read(checkout: &Repo, instance: &InstanceId, now: u64) -> Result<Held> {
 
 /// The fleet's view, and what `instance` holds in it.
 fn read_fleet(checkout: &Repo, instance: &InstanceId, now: u64) -> Result<(Fleet, Held)> {
-    let (mut fleet, open) = Fleet::read(checkout, now)?;
-    let (set, _) = fleet.rebuild(&open, Some(instance))?;
+    let (fleet, open) = Fleet::read(checkout, now)?;
+    let (set, ..) = fleet.rebuild(&open, Some(instance))?;
     let layout = checkout.layout();
     let tracker = &fleet.scan.tracker;
     let mut held = Held { issues: vec![], runs: vec![], cut: None, kept: vec![] };
