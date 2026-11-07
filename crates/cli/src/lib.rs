@@ -199,7 +199,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
 /// - {const:FIRST_START_SETTINGS}
 /// - `gh` logged in as a user who may push to the repo.
-/// - `orca` on the PATH: every worker is started through it. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
+/// - `orca`: every worker is started through it. The desktop app's CLI on the PATH (`brew install --cask stablyai/orca/orca`), or Orca's SSH remote runtime as it is: where the desktop Orca on another machine reaches this host over SSH, its CLI at `~/.orca/cli/bin/orca` is found with no `orca` on the login shell's PATH, and every orca call of the fleet goes to it. An `orca` on the PATH wins over it; `doctor` says which it found and where (`host.tools`). It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
 /// - `claude` on the PATH and logged in, when it is what starts a worker.
 /// - `pi` there too, holding credentials for a provider (`/login` at its prompt), or `codex`, logged in (`codex login`): each when a stage or a patrol is on it, only then.
 ///
@@ -1296,7 +1296,7 @@ enum Command {
     ///
     /// - `host`: what this host has of what the fleet needs:
     ///
-    ///   - `tools`: each command needed — a harness only where a worker launch command the fleet could be asked for runs it by name: {name, state} — state is ready, missing or logged_out; of orca also not_running, knows_no_checkout (the checkout worktrees are cut from was never added to it) or unasked
+    ///   - `tools`: each command needed — a harness only where a worker launch command the fleet could be asked for runs it by name: {name, state} — state is ready, missing or logged_out; of orca also not_running, knows_no_checkout (the checkout worktrees are cut from was never added to it) or unasked, and, found, `path`, the orca every call goes to, and `from`: `path`, the first on the PATH, or `remote_cli`, the CLI of Orca's SSH remote runtime at `~/.orca/cli/bin/orca`
     ///   - `worker_commands`: the host kit commands and their callers. The first eligible kit harness is selected for each role. A worker's model is its model label where followed, otherwise that harness's user default.
     ///   - `host_kit`: {path, refreshed, harnesses, paused, worker_health}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command, its models in order as {model, names}; `default_model` (it has no placed model, so a worker runs its login's default, with no model flag) and `research_pending` (it holds a model awaiting research). good_at, settled, sources and researched_at stay on the kit and on `plan`'s `host_kit` (`afkconvoy plan --help`); a look does not repeat them. `paused` is each harness paused on this host: {harness, since, why, probed, said}. `worker_health` is the book a worker-health finding is read from. {path, error} when unreadable. `afkconvoy kit` writes it again.
     ///
@@ -4664,6 +4664,7 @@ fn show_checkout_hint(error: &clap::Error, args: &[OsString]) -> Option<String> 
 /// harness that asks it, in that harness's way: for Claude Code, a hook's,
 /// with its exit code and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
+    tools::reach_orca();
     let args: Vec<OsString> = args.into_iter().collect();
     if asks_for_index(&args) {
         return match help(None) {

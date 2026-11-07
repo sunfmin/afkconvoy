@@ -182,6 +182,11 @@ pub enum Found {
     KnowsNoCheckout(String),
 }
 
+/// Where Orca's SSH remote runtime puts its CLI, under the home directory:
+/// the desktop Orca on another machine installs it here, on the PATH only of
+/// the terminals Orca opens itself. An `orca` on the PATH wins over it.
+pub const ORCA_REMOTE_CLI: &str = ".orca/cli/bin";
+
 /// The line that starts orca.
 pub const START_ORCA: &str = "orca open";
 
@@ -238,13 +243,18 @@ impl Tool {
     }
 
     /// The line that installs it. Homebrew's own `orca` cask is another
-    /// program, so orca's names its tap; Claude Code's and pi's are their
+    /// program, so orca's names its tap, and Orca's SSH remote runtime, the
+    /// other way to have orca, is named with where its CLI is looked for
+    /// (`ORCA_REMOTE_CLI`); Claude Code's and pi's are their
     /// native installers, which keep them up to date.
     pub fn install(self) -> &'static str {
         match self {
             Tool::Git => "brew install git",
             Tool::Gh => "brew install gh",
-            Tool::Orca => "brew install --cask stablyai/orca/orca",
+            Tool::Orca => {
+                "brew install --cask stablyai/orca/orca, or connect to this host from Orca over \
+                 SSH, whose remote runtime puts its CLI at ~/.orca/cli/bin/orca"
+            }
             Tool::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
             Tool::Pi => "curl -fsSL https://pi.dev/install.sh | sh",
             Tool::Codex => "brew install --cask codex",
@@ -541,6 +551,13 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_orca_is_named_with_both_ways_to_have_it() {
+        let install = Tool::Orca.install();
+        assert!(install.starts_with("brew install --cask stablyai/orca/orca, "), "{install}");
+        assert!(install.contains(&format!("~/{ORCA_REMOTE_CLI}/orca")), "{install}");
+    }
+
+    #[test]
     fn every_fault_is_named_with_the_line_that_fixes_it() {
         let found = [
             (Tool::Git, Found::Missing),
@@ -555,7 +572,9 @@ mod tests {
             [
                 "  git is not installed: brew install git",
                 "  gh is not logged in: gh auth login",
-                "  orca is not installed: brew install --cask stablyai/orca/orca",
+                "  orca is not installed: brew install --cask stablyai/orca/orca, or connect to \
+                 this host from Orca over SSH, whose remote runtime puts its CLI at \
+                 ~/.orca/cli/bin/orca",
                 "  claude is not logged in: claude auth login",
             ]
         );
