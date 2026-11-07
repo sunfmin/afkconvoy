@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use afkconvoy_core::config::{Config, Which};
 use afkconvoy_core::gate::{
-    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, believed_among, record_ref,
-    red_ref, red_subject,
+    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, believed_among,
+    failing_tests, overload_said, overloaded_timeouts, record_ref, red_ref, red_subject,
 };
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::lock::named;
@@ -80,6 +80,38 @@ struct CommandRun {
     excerpt: Vec<String>,
     termination: Option<Termination>,
     cancelled: bool,
+    unsettled: Option<Unsettled>,
+}
+
+/// A red run that says nothing of its tree: it exited red, before the gate
+/// limit, only on TIMEOUTs the gate said it cannot classify because the host
+/// is overloaded (`gate::overloaded_timeouts`). A quieter host may pass it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Unsettled {
+    /// The TIMEOUT tests, as the run named them.
+    pub tests: Vec<String>,
+    /// The gate's line that says the host is overloaded, with its load.
+    pub said: String,
+}
+
+impl Unsettled {
+    /// Of a whole run's output `lines`, ended red before the gate limit.
+    fn of(lines: &[String]) -> Option<Unsettled> {
+        overloaded_timeouts(lines).then(|| Unsettled {
+            tests: failing_tests(lines),
+            said: overload_said(lines).unwrap_or_default().to_string(),
+        })
+    }
+}
+
+/// Keeps `line` at the end of the excerpt `tail`, and in the whole run's
+/// lines `all`.
+fn keep(tail: &mut VecDeque<String>, all: &mut Vec<String>, line: String) {
+    if tail.len() == EXCERPT_LINES {
+        tail.pop_front();
+    }
+    tail.push_back(line.clone());
+    all.push(line);
 }
 
 /// Gives a gate's tests their share of the host's cores where it runs beside
@@ -192,18 +224,21 @@ fn run_command(
         }
     });
     let mut tail: VecDeque<String> = VecDeque::new();
-    let mut keep = |line: String| {
-        if tail.len() == EXCERPT_LINES {
-            tail.pop_front();
+    let mut all: Vec<String> = vec![];
+    // What the command wrote before it ended; something it left running may
+    // hold the log open, and is not waited for.
+    let drain = |tail: &mut VecDeque<String>, all: &mut Vec<String>| {
+        while let Ok(line) = read.recv_timeout(Duration::from_millis(200)) {
+            keep(tail, all, line);
         }
-        tail.push_back(line);
     };
+    let mut unsettled = None;
     let started = Instant::now();
     let mut cancelled = false;
     let mut asked: Option<Instant> = None;
     let (exit_code, timed_out, termination) = loop {
         while let Ok(line) = read.try_recv() {
-            keep(line);
+            keep(&mut tail, &mut all, line);
         }
         let ask = candidate.filter(|_| asked.is_none_or(|at| at.elapsed() >= CANCELLED_EVERY));
         if ask.is_some() {
@@ -223,7 +258,16 @@ fn run_command(
                 signal,
                 core_dumped: status.core_dumped(),
             });
+            if !status.success() {
+                // Its whole output first: the gate's last line says whether
+                // the run says anything of the tree.
+                drain(&mut tail, &mut all);
+                unsettled = Unsettled::of(&all);
+            }
+            // An unsettled run is no red: it cancels no candidate behind
+            // this one, nor its round (sunfmin/control#617).
             if !status.success()
+                && unsettled.is_none()
                 && let Some(candidate) = candidate
             {
                 candidate.failed(
@@ -249,17 +293,21 @@ fn run_command(
         std::thread::sleep(Duration::from_millis(50));
     };
     let seconds = started.elapsed().as_secs();
-    // What the command wrote before it ended; something it left running may
-    // hold the log open, and is not waited for.
-    while let Ok(line) = read.recv_timeout(Duration::from_millis(200)) {
-        keep(line);
-    }
+    drain(&mut tail, &mut all);
     if let Some(termination) = termination {
         let line = format!("[afkconvoy] gate: {}", termination.description());
         eprintln!("{line}");
-        keep(line);
+        keep(&mut tail, &mut all, line);
     }
-    Ok(CommandRun { exit_code, timed_out, seconds, excerpt: tail.into(), termination, cancelled })
+    Ok(CommandRun {
+        exit_code,
+        timed_out,
+        seconds,
+        excerpt: tail.into(),
+        termination,
+        cancelled,
+        unsettled,
+    })
 }
 
 /// One run of the gate in a worktree, and what became of its record.
@@ -278,6 +326,9 @@ pub struct GateRun {
     /// Present only when wait status reported a signal, outside our timeout.
     pub termination: Option<Termination>,
     pub cancelled: bool,
+    /// The red run says nothing of its tree (`Unsettled`): it is recorded
+    /// neither green nor red.
+    pub unsettled: Option<Unsettled>,
 }
 
 /// The tree the worktree's commit holds.
@@ -354,6 +405,7 @@ fn controlled_run(
         excerpt: command_run.excerpt,
         termination: command_run.termination,
         cancelled: command_run.cancelled,
+        unsettled: command_run.unsettled,
     };
     if run.cancelled {
         return Ok(run);
@@ -363,7 +415,11 @@ fn controlled_run(
     if let Some(issue) = issue {
         crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name(), Fresh::Live)?;
     }
-    match after_run(&tree, command, ran, host, now) {
+    let recording = match run.unsettled {
+        Some(_) => Recording::Leave,
+        None => after_run(&tree, command, ran, host, now),
+    };
+    match recording {
         Recording::Write(green) => {
             let sha = repo.record_commit_on(
                 tree.name(),
@@ -419,7 +475,8 @@ pub(crate) fn candidate_gate(
         "recorded": run.green.is_some() && run.not_recorded.is_none(), "head": run.head,
         "command": command.text(), "seconds": run.ran.seconds, "exit_code": run.ran.exit_code,
         "timed_out": run.ran.timed_out, "termination": run.termination, "excerpt": run.excerpt,
-        "not_recorded": run.not_recorded, "uncommitted": run.strays}),
+        "not_recorded": run.not_recorded, "uncommitted": run.strays,
+        "unsettled": run.unsettled}),
     )
 }
 
