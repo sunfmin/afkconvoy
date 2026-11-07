@@ -429,7 +429,7 @@ pub(crate) fn issue_url(value: &Value, condition: &str) -> Option<String> {
     for seen in rows {
         let Some(report) = seen.reports.first() else { continue };
         let Some(finding) = finding_of(&seen, &report.report.host, 0) else { continue };
-        if crate::host_watch::scoped_finding_id("host", &finding.watch_id) == condition {
+        if crate::doctor::scoped("host", finding.kind, &finding.watch_id) == condition {
             return Some(format!("https://github.com/{}/issues/{}", seen.tracker, report.issue));
         }
     }
@@ -606,11 +606,10 @@ pub(crate) fn reconcile(look: &mut Value, host: &str, now: u64) -> Result<()> {
         .into_iter()
         .filter(|f| f["kind"] != "repo_unworked" && f["kind"] != "repo_unreadable")
         .collect();
-    found.extend(
-        findings(&look["host"]["unworked_repos"], host, now)
-            .iter()
-            .map(|f| serde_json::to_value(f).expect("finding")),
-    );
+    // Answered as doctor answers the host's findings: scoped to the host.
+    let unworked = findings(&look["host"]["unworked_repos"], host, now);
+    let unworked = crate::doctor::answered("host", unworked)?;
+    found.extend(unworked.as_array().cloned().unwrap_or_default());
     look["findings"] = json!(found);
     Ok(())
 }
