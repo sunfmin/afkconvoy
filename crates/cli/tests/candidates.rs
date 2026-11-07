@@ -1547,7 +1547,7 @@ fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
             c["id"] = json!(format!("ended-{n}"));
             c["owner"]["pid"] = json!(dead);
             c["worktree"] = json!(world.root.join(format!("gone-{n}")));
-            c["result"] = json!({"pad": pad});
+            c["result"]["excerpt"] = json!([pad]);
             c
         })
         .collect();

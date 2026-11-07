@@ -437,7 +437,7 @@ fn move_record(world: &World, from: &str, to: &str) {
 fn believes_recorded(gated_run: Gated) {
     match gated_run {
         Gated::Green { source, .. } => assert_eq!(source, "recorded"),
-        Gated::Red { .. } => panic!("the recorded run was not believed"),
+        Gated::Red { .. } | Gated::Unsettled { .. } => panic!("the recorded run was not believed"),
     }
 }
 
