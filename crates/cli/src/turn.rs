@@ -8,7 +8,7 @@ use crate::remote::{Fresh, Push};
 use afkconvoy_core::account::End;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
-use afkconvoy_core::gate::{GateCommand, Tree};
+use afkconvoy_core::gate::{GateCommand, Judged, Tree};
 use afkconvoy_core::landing::Of;
 use afkconvoy_core::lock::{keeps_off, named};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
@@ -34,11 +34,11 @@ pub enum Certified {
     /// Red, and recorded red: worker turns wait for its repair.
     Red,
     /// Red only on TIMEOUTs the gate said it cannot classify on an
-    /// overloaded host (`gate::overloaded_timeouts`): it says nothing of the
+    /// overloaded host (`gate::Judged::Unsettled`): it says nothing of the
     /// tip, which is recorded neither green nor red, and is gated alone again
     /// by the next turn. `output` keeps the run's whole log.
     Unsettled {
-        tests: Vec<String>,
+        unsettled: afkconvoy_core::gate::Unsettled,
         output: std::path::PathBuf,
     },
 }
@@ -65,62 +65,61 @@ pub fn certify(
     if crate::gate::recorded(repo, &tree, &command, now)?.is_some() {
         return Ok(Certified::Green);
     }
-    let unique = crate::unique();
-    let path = std::env::temp_dir().join(format!("afkconvoy-base-tip-{unique}"));
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    let output = repo.common_dir()?.join(format!("convoy-base-tip-gate-{now}-{unique}.log"));
-    repo.git(&["worktree", "add", "--quiet", "--detach", &path.to_string_lossy(), tip])?;
-    let checkout = Repo::new(path.clone());
-    let run = crate::gate::run_and_record(
-        &checkout,
-        &command,
-        host,
-        now,
-        Duration::from_secs(config.gate_seconds()),
-        None,
-        Some(&output),
-    );
+    let output =
+        repo.common_dir()?.join(format!("convoy-base-tip-gate-{now}-{}.log", crate::unique()));
+    let (run, removal) = crate::gate::detached(repo, tip, "base-tip", |checkout| {
+        crate::gate::run_and_record(
+            checkout,
+            &command,
+            host,
+            now,
+            Duration::from_secs(config.gate_seconds()),
+            None,
+            Some(&output),
+        )
+    })?;
     // A worktree that cannot be removed does not hide the verdict: why is
     // added to `unremoved`, beside it (sunfmin/control#610).
-    if let Err(error) = repo.remove_worktree(&path) {
+    if let Some(error) = removal {
         eprintln!("warning: {error:#}");
         unremoved.push(format!("{error:#}"));
     }
     let run = run?;
-    if run.ran.green() {
-        let _ = std::fs::remove_file(&output);
-    }
-    if run.ran.green() && (run.green.is_none() || run.not_recorded.is_some()) {
-        bail!(
-            "the base tip gated green without a record: {}; run this again",
-            run.not_recorded
-                .unwrap_or_else(|| format!("uncommitted files: {}", run.strays.join(", ")))
-        );
-    }
-    if !run.ran.green() {
-        let shown = output.display();
-        if let Some(unsettled) = run.unsettled {
-            let tests = unsettled.tests;
+    let shown = output.display();
+    match run.judged {
+        Judged::Green => {
+            let _ = std::fs::remove_file(&output);
+            if run.green.is_none() || run.not_recorded.is_some() {
+                bail!(
+                    "the base tip gated green without a record: {}; run this again",
+                    run.not_recorded
+                        .unwrap_or_else(|| format!("uncommitted files: {}", run.strays.join(", ")))
+                );
+            }
+        }
+        Judged::Unsettled(unsettled) => {
             Acting::new("gate").in_checkout(Some(repo.clone())).say(
                 crate::clock(),
                 format!(
-                    "base tip {tip} is unsettled: red only on TIMEOUTs it cannot classify on an \
-                     overloaded host ({}); not recorded red, the next turn gates it again; its \
-                     output is in {shown}",
-                    tests.join(", ")
+                    "base tip {tip} is unsettled: {}; not recorded red, the next turn gates it \
+                     again; its output is in {shown}",
+                    unsettled.how()
                 ),
             );
-            return Ok(Certified::Unsettled { tests, output });
+            return Ok(Certified::Unsettled { unsettled, output });
         }
-        let red = crate::repair::red_ref(repo, &config.base_branch);
-        repo.remote().push(&Push::set(tip, &red).force())?;
-        Acting::new("gate").in_checkout(Some(repo.clone())).say(
-            crate::clock(),
-            format!(
-                "base tip {tip} is red; worker turns wait for its repair; its output is in {shown}"
-            ),
-        );
-        return Ok(Certified::Red);
+        Judged::Red(red) => {
+            let red_ref = crate::repair::red_ref(repo, &config.base_branch);
+            repo.remote().push(&Push::set(tip, &red_ref).force())?;
+            Acting::new("gate").in_checkout(Some(repo.clone())).say(
+                crate::clock(),
+                format!(
+                    "{}; worker turns wait for its repair; its output is in {shown}",
+                    red.said(&format!("base tip {tip}"))
+                ),
+            );
+            return Ok(Certified::Red);
+        }
     }
     Ok(Certified::Green)
 }
@@ -495,13 +494,12 @@ fn run(
             answer["outcome"] = json!(Ending::BaseRed);
             return Ok(answer);
         }
-        Certified::Unsettled { tests, output } => {
+        Certified::Unsettled { unsettled, output } => {
             answer["outcome"] = json!(Ending::BaseUncertified);
             answer["detail"] = json!(format!(
-                "the base tip gated alone red only on TIMEOUTs it cannot classify on an \
-                 overloaded host ({}): it is recorded neither green nor red, and the next turn \
-                 gates it alone again; its output is in {}",
-                tests.join(", "),
+                "the base tip gated alone {}: it is recorded neither green nor red, and the next \
+                 turn gates it alone again; its output is in {}",
+                unsettled.how(),
                 output.display()
             ));
             return Ok(answer);

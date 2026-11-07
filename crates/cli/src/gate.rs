@@ -10,14 +10,14 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::config::{Config, Which};
+pub use afkconvoy_core::gate::Termination;
 use afkconvoy_core::gate::{
-    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, believed_among,
-    failing_tests, overload_said, overloaded_timeouts, record_ref, red_ref, red_subject,
+    Ended, GateCommand, GreenRun, Judged, Ran, Recording, Red, Tree, Unsettled, after_run,
+    believed_among, judge, record_ref, red_ref, red_subject,
 };
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::lock::named;
 use anyhow::{Context, Result, anyhow};
-use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
@@ -53,26 +53,6 @@ pub(crate) const TIMED_OUT_CODE: i32 = 124;
 /// its answer lists.
 pub(crate) const STRAYS_LISTED: usize = 20;
 
-/// What wait status proves about a gate command ended by a signal. The pid
-/// also names its process group, created by the gate. Wait status identifies
-/// no sender and proves nothing about which repository checks started.
-#[derive(Clone, Copy, Serialize)]
-pub struct Termination {
-    pid: u32,
-    signal: i32,
-    core_dumped: bool,
-}
-
-impl Termination {
-    pub(crate) fn description(&self) -> String {
-        format!(
-            "gate command pid {} (process group {}) ended by signal {} (core dumped: {}); \
-             signal sender unknown; repository checks may not have started",
-            self.pid, self.pid, self.signal, self.core_dumped
-        )
-    }
-}
-
 struct CommandRun {
     exit_code: i32,
     timed_out: bool,
@@ -80,28 +60,7 @@ struct CommandRun {
     excerpt: Vec<String>,
     termination: Option<Termination>,
     cancelled: bool,
-    unsettled: Option<Unsettled>,
-}
-
-/// A red run that says nothing of its tree: it exited red, before the gate
-/// limit, only on TIMEOUTs the gate said it cannot classify because the host
-/// is overloaded (`gate::overloaded_timeouts`). A quieter host may pass it.
-#[derive(Debug, Clone, Serialize)]
-pub struct Unsettled {
-    /// The TIMEOUT tests, as the run named them.
-    pub tests: Vec<String>,
-    /// The gate's line that says the host is overloaded, with its load.
-    pub said: String,
-}
-
-impl Unsettled {
-    /// Of a whole run's output `lines`, ended red before the gate limit.
-    fn of(lines: &[String]) -> Option<Unsettled> {
-        overloaded_timeouts(lines).then(|| Unsettled {
-            tests: failing_tests(lines),
-            said: overload_said(lines).unwrap_or_default().to_string(),
-        })
-    }
+    judged: Judged,
 }
 
 /// Keeps `line` at the end of the excerpt `tail`, and in the whole run's
@@ -232,7 +191,7 @@ fn run_command(
             keep(tail, all, line);
         }
     };
-    let mut unsettled = None;
+    let mut judged = None;
     let started = Instant::now();
     let mut cancelled = false;
     let mut asked: Option<Instant> = None;
@@ -258,16 +217,16 @@ fn run_command(
                 signal,
                 core_dumped: status.core_dumped(),
             });
+            let code = status.code().unwrap_or(-1);
             if !status.success() {
                 // Its whole output first: the gate's last line says whether
                 // the run says anything of the tree.
                 drain(&mut tail, &mut all);
-                unsettled = Unsettled::of(&all);
             }
+            let said = judge(code, false, limit.as_secs(), termination, &all);
             // An unsettled run is no red: it cancels no candidate behind
             // this one, nor its round (sunfmin/control#617).
-            if !status.success()
-                && unsettled.is_none()
+            if matches!(said, Judged::Red(_))
                 && let Some(candidate) = candidate
             {
                 candidate.failed(
@@ -277,7 +236,8 @@ fn run_command(
                     termination,
                 )?;
             }
-            break (status.code().unwrap_or(-1), false, termination);
+            judged = Some(said);
+            break (code, false, termination);
         }
         if started.elapsed() >= limit {
             if let Some(candidate) = candidate {
@@ -294,6 +254,10 @@ fn run_command(
     };
     let seconds = started.elapsed().as_secs();
     drain(&mut tail, &mut all);
+    // A run ended at the limit, or cancelled, is judged on what it wrote by
+    // then; a cancelled one's is read by nobody.
+    let judged =
+        judged.unwrap_or_else(|| judge(exit_code, timed_out, limit.as_secs(), termination, &all));
     if let Some(termination) = termination {
         let line = format!("[afkconvoy] gate: {}", termination.description());
         eprintln!("{line}");
@@ -306,7 +270,7 @@ fn run_command(
         excerpt: tail.into(),
         termination,
         cancelled,
-        unsettled,
+        judged,
     })
 }
 
@@ -326,9 +290,9 @@ pub struct GateRun {
     /// Present only when wait status reported a signal, outside our timeout.
     pub termination: Option<Termination>,
     pub cancelled: bool,
-    /// The red run says nothing of its tree (`Unsettled`): it is recorded
-    /// neither green nor red.
-    pub unsettled: Option<Unsettled>,
+    /// What the run says of its tree, judged from its whole output
+    /// (`gate::judge`); an unsettled one is recorded neither green nor red.
+    pub judged: Judged,
 }
 
 /// The tree the worktree's commit holds.
@@ -405,7 +369,7 @@ fn controlled_run(
         excerpt: command_run.excerpt,
         termination: command_run.termination,
         cancelled: command_run.cancelled,
-        unsettled: command_run.unsettled,
+        judged: command_run.judged,
     };
     if run.cancelled {
         return Ok(run);
@@ -415,9 +379,9 @@ fn controlled_run(
     if let Some(issue) = issue {
         crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name(), Fresh::Live)?;
     }
-    let recording = match run.unsettled {
-        Some(_) => Recording::Leave,
-        None => after_run(&tree, command, ran, host, now),
+    let recording = match run.judged {
+        Judged::Unsettled(_) => Recording::Leave,
+        _ => after_run(&tree, command, ran, host, now),
     };
     match recording {
         Recording::Write(green) => {
@@ -459,7 +423,8 @@ fn controlled_run(
 
 /// Every newly assigned candidate runs its gate, including a cut whose tree
 /// matches the certified base. Its own green result survives predecessor
-/// landing; another candidate's record does not replace this run.
+/// landing; another candidate's record does not replace this run. → the
+/// run's evidence, as the chain keeps it, and what the run says of its tree.
 pub(crate) fn candidate_gate(
     repo: &Repo,
     command: &GateCommand,
@@ -468,16 +433,40 @@ pub(crate) fn candidate_gate(
     limit: Duration,
     issue: Option<u64>,
     candidate: &crate::candidates::Gate<'_>,
-) -> Result<Value> {
+) -> Result<(Value, Judged)> {
     let run = controlled_run(repo, command, host, now, limit, issue, Some(candidate), None)?;
-    Ok(
-        json!({"status": if run.cancelled { "cancelled" } else if run.ran.green() { "green" } else { "red" },
+    let unsettled = match &run.judged {
+        Judged::Unsettled(unsettled) => json!({"tests": unsettled.tests(), "said": unsettled.said}),
+        _ => Value::Null,
+    };
+    let evidence = json!({"status": if run.cancelled { "cancelled" } else if run.ran.green() { "green" } else { "red" },
         "recorded": run.green.is_some() && run.not_recorded.is_none(), "head": run.head,
         "command": command.text(), "seconds": run.ran.seconds, "exit_code": run.ran.exit_code,
         "timed_out": run.ran.timed_out, "termination": run.termination, "excerpt": run.excerpt,
         "not_recorded": run.not_recorded, "uncommitted": run.strays,
-        "unsettled": run.unsettled}),
-    )
+        "unsettled": unsettled});
+    Ok((evidence, run.judged))
+}
+
+/// Runs `gate` in a worktree of its own, detached at `commit` beside
+/// `repo`'s and named for `name`, for a gate that no worker's changes may
+/// reach: a base tip's, a delivery's. The worktree is removed after
+/// (`Repo::remove_worktree`), whatever the run → what `gate` answered, and
+/// why the worktree is still there, where it is: the caller says whether
+/// that hides its answer.
+pub fn detached<T>(
+    repo: &Repo,
+    commit: &str,
+    name: &str,
+    gate: impl FnOnce(&Repo) -> Result<T>,
+) -> Result<(Result<T>, Option<anyhow::Error>)> {
+    let path = std::env::temp_dir().join(format!("afkconvoy-{name}-{}", crate::unique()));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    repo.git(&["worktree", "add", "--quiet", "--detach", &path.to_string_lossy(), commit])?;
+    let answered = gate(&Repo::new(path.clone()));
+    Ok((answered, repo.remove_worktree(&path).err()))
 }
 
 /// Puts the whole gate, `whole`, on record for `tree` from the records of its
@@ -597,15 +586,12 @@ pub fn recorded_among(
 pub enum Gated {
     /// It does: by the run the remote has on record for that tree, or by one
     /// made now (`source`).
-    Green {
-        run: GreenRun,
-        source: &'static str,
-    },
-    Red {
-        ran: Ran,
-        excerpt: Vec<String>,
-        termination: Option<Termination>,
-    },
+    Green { run: GreenRun, source: &'static str },
+    /// It does not, by a run made now.
+    Red { red: Red, excerpt: Vec<String> },
+    /// A run made now says nothing of it (`Unsettled`), and nothing is on
+    /// record.
+    Unsettled { unsettled: Unsettled, excerpt: Vec<String> },
 }
 
 /// Answers from the green run on record for the worktree's tree and the
@@ -649,7 +635,13 @@ pub fn gated(
         None if run.ran.green() => {
             Err(not_the_commit("the gate left it other than the commit it started on", &run.strays))
         }
-        None => Ok(Gated::Red { ran: run.ran, excerpt: run.excerpt, termination: run.termination }),
+        None => match run.judged {
+            Judged::Unsettled(unsettled) => {
+                Ok(Gated::Unsettled { unsettled, excerpt: run.excerpt })
+            }
+            Judged::Red(red) => Ok(Gated::Red { red, excerpt: run.excerpt }),
+            Judged::Green => unreachable!("a green run is answered above"),
+        },
     }
 }
 
@@ -691,9 +683,9 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     if run.ran.green() && measure::fresh(repo).is_ok_and(|fresh| fresh.is_none()) {
         let _ = measure::built(repo).and_then(|built| measure::record_fresh(repo, built));
     }
-    let red = match run.termination {
-        Some(termination) => format!("the gate is red — {}", termination.description()),
-        None => format!("the gate is red{}", at_limit(run.ran, limit)),
+    let red = match &run.judged {
+        Judged::Red(red) | Judged::Unsettled(Unsettled { red, .. }) => red.said("the gate"),
+        Judged::Green => String::new(),
     };
     let status = if run.ran.green() { "green" } else { "red" };
     let mut answer = json!({"status": status, "exit_code": run.ran.exit_code,
@@ -765,23 +757,22 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
         Some(which),
         None,
     )?;
-    let green = run.exit_code == 0 && !run.timed_out && run.termination.is_none();
+    let green = run.judged == Judged::Green;
     let over_budget = run.seconds > gate.budget_seconds;
-    let detail = match (green, &run.termination) {
-        (true, _) if over_budget => format!(
+    let detail = match &run.judged {
+        Judged::Green if over_budget => format!(
             "green, but slow: the {name} gate took {}s, past its budget of {}s — it is not red; \
              say so on the issue if your change made it slower",
             run.seconds, gate.budget_seconds
         ),
-        (true, _) => format!("green in {}s; nothing is on record", run.seconds),
-        (false, Some(termination)) => {
-            format!("the {name} gate is red — {}", termination.description())
+        Judged::Green => format!("green in {}s; nothing is on record", run.seconds),
+        Judged::Red(red) | Judged::Unsettled(Unsettled { red, .. }) => {
+            let said = red.said(&format!("the {name} gate"));
+            match red.ended {
+                Ended::Exited(_) => format!("{said} — fix it, commit, and run this again"),
+                Ended::AtLimit(_) | Ended::Signalled(_) => said,
+            }
         }
-        (false, None) if run.timed_out => format!(
-            "the {name} gate is red: its run reached its limit of {}s and was ended",
-            gate.seconds
-        ),
-        (false, None) => format!("the {name} gate is red — fix it, commit, and run this again"),
     };
     Ok(json!({"gate": name, "status": if green { "green" } else { "red" },
         "exit_code": run.exit_code, "timed_out": run.timed_out, "seconds": run.seconds,
@@ -794,6 +785,80 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs `script` as a gate in a directory of its own, under `limit`,
+    /// keeping its whole output in `output` where one is named there.
+    fn ran(script: &str, limit: u64, output: Option<&str>) -> (CommandRun, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::new(dir.path().to_path_buf());
+        let output = output.map(|name| dir.path().join(name));
+        let limit = Duration::from_secs(limit);
+        let run = run_command(&repo, script, limit, None, None, output.as_deref()).unwrap();
+        (run, dir)
+    }
+
+    const TIMEOUT: &str = "echo '     TIMEOUT [   6.004s] (40/669) afkconvoy::cli dsh::the_line'";
+    const OVERLOADED: &str = "echo 'gate: host overloaded or load unavailable (load 12.71, CPUs \
+                              12); cannot classify TIMEOUT tests.'";
+
+    /// Every gate run is judged by the one module, from its whole output
+    /// (sunfmin/control#619): green, red on a FAIL, red on a TIMEOUT the
+    /// gate classified, unsettled on TIMEOUTs it cannot classify under
+    /// overload, red at the gate limit.
+    #[test]
+    fn a_gate_run_is_judged_green_red_or_unsettled_from_its_whole_output() {
+        assert_eq!(ran("echo fine", 60, None).0.judged, Judged::Green);
+
+        let fail = "echo '        FAIL [   0.208s] (2/3) afkconvoy cutting::a_named_test'; \
+                    exit 100";
+        let Judged::Red(red) = ran(fail, 60, None).0.judged else { panic!("a FAIL is red") };
+        assert_eq!(
+            red.said("the gate"),
+            "the gate is red: it exited 100; failing: afkconvoy cutting::a_named_test"
+        );
+
+        let quiet = format!(
+            "{TIMEOUT}; echo 'gate: afkconvoy::cli dsh::the_line was still TIMEOUT at 2s on a \
+             quiet host.'; exit 100"
+        );
+        let Judged::Red(red) = ran(&quiet, 60, None).0.judged else {
+            panic!("a TIMEOUT the gate classified is red")
+        };
+        assert_eq!(red.tests, ["afkconvoy::cli dsh::the_line"]);
+
+        let overloaded = format!("{TIMEOUT}; {OVERLOADED} >&2; exit 100");
+        let Judged::Unsettled(unsettled) = ran(&overloaded, 60, None).0.judged else {
+            panic!("only TIMEOUTs it cannot classify under overload say nothing")
+        };
+        assert_eq!(unsettled.tests(), ["afkconvoy::cli dsh::the_line"]);
+        assert!(unsettled.said.contains("load 12.71, CPUs 12"), "{}", unsettled.said);
+
+        let hung = format!("{TIMEOUT}; {OVERLOADED}; sleep 30");
+        let (run, _dir) = ran(&hung, 1, None);
+        assert!(run.timed_out);
+        let Judged::Red(red) = run.judged else { panic!("a run at the gate limit is red") };
+        assert!(red.how().starts_with("its run reached the gate limit of 1s"), "{}", red.how());
+    }
+
+    /// The run is judged from all it wrote, not from the excerpt kept of
+    /// its end, nor from the file its whole output is kept in: a failure
+    /// named before the excerpt is named, and a run that keeps no file is
+    /// judged the same as one that does.
+    #[test]
+    fn a_gate_run_is_judged_from_all_it_wrote_with_or_without_a_kept_file() {
+        let script = "echo '        FAIL [   0.208s] (2/3) afkconvoy cutting::a_named_test'; \
+                      i=0; while [ $i -lt 100 ]; do echo line $i; i=$((i+1)); done; exit 1";
+        let (kept, dir) = ran(script, 60, Some("gate.log"));
+        let (unkept, _) = ran(script, 60, None);
+        assert_eq!(kept.excerpt.len(), EXCERPT_LINES);
+        assert!(!kept.excerpt.iter().any(|line| line.contains("FAIL")), "{:?}", kept.excerpt);
+        let Judged::Red(red) = &kept.judged else { panic!("red") };
+        assert_eq!(red.tests, ["afkconvoy cutting::a_named_test"]);
+        assert!(red.quote[0].contains("FAIL"), "quoted from its first failure: {:?}", red.quote);
+        assert_eq!(kept.judged, unkept.judged);
+        let file = std::fs::read_to_string(dir.path().join("gate.log")).unwrap();
+        assert_eq!(file.lines().count(), 101, "the file keeps the whole output");
+    }
 
     #[test]
     fn a_timed_out_record_push_reports_gits_last_pack_progress() {

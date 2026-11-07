@@ -6,7 +6,7 @@ use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publi
 use afkconvoy_core::claims::{HEARTBEAT_KIND, read_heartbeat};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
-use afkconvoy_core::gate::{GateCommand, Proven, Tree};
+use afkconvoy_core::gate::{GateCommand, Judged, Proven, Tree, Unsettled};
 use afkconvoy_core::landing::{Of, merge_message};
 use afkconvoy_core::lease::stamp_stale;
 use afkconvoy_core::lock::keeps_off;
@@ -720,7 +720,7 @@ impl Gate<'_> {
         exit_code: i32,
         timed_out: bool,
         seconds: u64,
-        termination: Option<crate::gate::Termination>,
+        termination: Option<afkconvoy_core::gate::Termination>,
     ) -> Result<()> {
         let evidence = json!({"status":"red", "exit_code":exit_code, "timed_out":timed_out, "seconds":seconds, "termination":termination});
         let chain =
@@ -793,20 +793,18 @@ fn unsettled_by(c: &Candidate, id: &str) -> bool {
 
 /// The answer of a turn whose candidate's `gate` (fast or slow) said nothing
 /// of it (sunfmin/control#617): it names the TIMEOUTs and the gate's line,
-/// with the load it read.
-fn unsettled(mut result: Value, gate: &str, repo: &Repo, issue: Option<u64>) -> Value {
-    let tests: Vec<&str> = result["unsettled"]["tests"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    let said = result["unsettled"]["said"].as_str().unwrap_or_default();
+/// with the load it read (`Unsettled::how`).
+fn unsettled(
+    mut result: Value,
+    gate: &str,
+    unsettled: &Unsettled,
+    repo: &Repo,
+    issue: Option<u64>,
+) -> Value {
     let detail = format!(
-        "the {gate} gate ran red only on TIMEOUTs it cannot classify on an overloaded host ({}) \
-         — `{said}`; that says nothing of this change: it is recorded neither green nor red and \
-         nothing landed; nothing in your tree is to change: ask for a turn again",
-        tests.join(", ")
+        "the {gate} gate ran {}; that says nothing of this change: it is recorded neither green \
+         nor red and nothing landed; nothing in your tree is to change: ask for a turn again",
+        unsettled.how()
     );
     crate::acting::Acting::new("land")
         .on_issue(issue)
@@ -1282,8 +1280,9 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     answer["candidate"] = json!(id);
     answer["merged"] = json!(candidate.predecessor);
     answer["predecessor"] = json!(candidate.predecessor);
-    let mut result = if recovering {
-        candidate.result.clone().expect("a fast-green candidate has its gate result")
+    // A recovered candidate is fast-green: what its run said is not kept.
+    let (mut result, judged) = if recovering {
+        (candidate.result.clone().expect("a fast-green candidate has its gate result"), None)
     } else {
         std::fs::create_dir_all(path.parent().expect("candidate parent"))?;
         repo.git(&[
@@ -1307,7 +1306,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             &hook,
         );
         match result {
-            Ok(result) => result,
+            Ok((result, judged)) => (result, Some(judged)),
             Err(error) => {
                 invalidate(repo, config, &id, "gate_interrupted")?;
                 return Err(error);
@@ -1328,10 +1327,16 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let current = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
     if current.phase == Phase::Red {
         result["outcome"] = json!(Ending::GateRed);
+        if let Some(Judged::Red(red)) = &judged {
+            let gate = if candidate.slow.is_some() { "the fast gate" } else { "the gate" };
+            result["detail"] = json!(red.said(gate));
+        }
         return Ok(result);
     }
-    if unsettled_by(current, &id) {
-        return Ok(unsettled(result, "fast", repo, issue));
+    if let Some(Judged::Unsettled(said)) = &judged
+        && unsettled_by(current, &id)
+    {
+        return Ok(unsettled(result, "fast", said, repo, issue));
     }
     // A green candidate waits for its round, or its predecessor, holding no
     // worker lane: the lanes bound the gates running, not the PRs waiting.
@@ -1513,8 +1518,8 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
         issue,
         &hook,
     );
-    let mut result = match result {
-        Ok(result) => result,
+    let (mut result, judged) = match result {
+        Ok(ran) => ran,
         Err(error) => {
             invalidate(repo, config, id, "gate_interrupted")?;
             return Err(error);
@@ -1533,8 +1538,10 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
     let chain = change(repo, config, |chain| settled(chain, id, &result))?;
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
-    if chain.candidates.iter().any(|c| c.id == id && unsettled_by(c, id)) {
-        return Ok(Some(unsettled(result, "slow", repo, issue)));
+    if let Judged::Unsettled(said) = &judged
+        && chain.candidates.iter().any(|c| c.id == id && unsettled_by(c, id))
+    {
+        return Ok(Some(unsettled(result, "slow", said, repo, issue)));
     }
     if chain.candidates.iter().any(|c| c.id == id && c.phase != Phase::Red) {
         return Ok(None);
@@ -1549,10 +1556,20 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
             .collect::<Vec<_>>()
     );
     result["files"] = json!(files);
+    let red = match &judged {
+        Judged::Red(red) => red.said("the slow gate on the round at this candidate"),
+        Judged::Green | Judged::Unsettled(_) => {
+            "the slow gate ran red on the round at this candidate".to_string()
+        }
+    };
     result["detail"] = json!(if files.is_empty() {
-        "the slow gate ran red on the round at this candidate; your branch now holds the round's tip, every change of it: do not split it; read the issues of `round` and the failing tests, fix the round, commit and ask for a turn again"
+        format!(
+            "{red}; your branch now holds the round's tip, every change of it: do not split it; read the issues of `round` and the failing tests, fix the round, commit and ask for a turn again"
+        )
     } else {
-        "the slow gate ran red on the round at this candidate; bringing your branch up to the round's tip conflicts: resolve `files`, commit, then fix the round from the issues of `round` and the failing tests, and ask for a turn again"
+        format!(
+            "{red}; bringing your branch up to the round's tip conflicts: resolve `files`, commit, then fix the round from the issues of `round` and the failing tests, and ask for a turn again"
+        )
     });
     Ok(Some(result))
 }

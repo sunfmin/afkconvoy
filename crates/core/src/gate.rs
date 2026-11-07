@@ -380,13 +380,6 @@ impl Proven {
     }
 }
 
-/// What a red run adds to the words that report it when it reached the gate
-/// limit of `gate_seconds`: that it did, and what the limit is. Nothing for a
-/// run that ended by itself.
-pub fn at_limit(ran: Ran, gate_seconds: u64) -> String {
-    if ran.timed_out { format!(": its run {}", reached(gate_seconds)) } else { String::new() }
-}
-
 /// How a run that reached the gate limit of `gate_seconds` ended.
 fn reached(gate_seconds: u64) -> String {
     format!("reached the gate limit of {gate_seconds}s and was ended")
@@ -641,6 +634,144 @@ pub fn quoted(lines: &[String]) -> Vec<String> {
     lines.iter().skip(from).take(QUOTE_LINES).cloned().collect()
 }
 
+/// What wait status proves about a gate command ended by a signal. The pid
+/// also names its process group, created by the gate. Wait status identifies
+/// no sender and proves nothing about which repository checks started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Termination {
+    pub pid: u32,
+    pub signal: i32,
+    pub core_dumped: bool,
+}
+
+impl Termination {
+    pub fn description(&self) -> String {
+        format!(
+            "gate command pid {} (process group {}) ended by signal {} (core dumped: {}); \
+             signal sender unknown; repository checks may not have started",
+            self.pid, self.pid, self.signal, self.core_dumped
+        )
+    }
+}
+
+/// How a red run of the gate ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    /// By itself, with this exit code.
+    Exited(i32),
+    /// At the gate limit of this many seconds, by the code that ran it.
+    AtLimit(u64),
+    /// By a signal, outside the gate limit.
+    Signalled(Termination),
+}
+
+/// A red run of the gate: how it ended, the tests its whole output names as
+/// failing (`failing_tests`), and what that output is quoted by (`quoted`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Red {
+    pub ended: Ended,
+    pub tests: Vec<String>,
+    pub quote: Vec<String>,
+}
+
+impl Red {
+    /// How the run went red and the tests it named failing, the one wording
+    /// of it every gate's answer uses: `it exited 1; failing: nx a_test`.
+    pub fn how(&self) -> String {
+        let ended = match self.ended {
+            Ended::Exited(code) => format!("it exited {code}"),
+            Ended::AtLimit(seconds) => format!("its run {}", reached(seconds)),
+            Ended::Signalled(termination) => termination.description(),
+        };
+        match self.tests.as_slice() {
+            [] => format!("{ended}; its output names no failing test"),
+            tests => format!("{ended}; failing: {}", tests.join(", ")),
+        }
+    }
+
+    /// That `what` is red, and how: `the gate is red: it exited 1; failing:
+    /// nx a_test`.
+    pub fn said(&self, what: &str) -> String {
+        format!("{what} is red: {}", self.how())
+    }
+}
+
+/// A red run that says nothing of its tree: it ended red before the gate
+/// limit only on TIMEOUTs the gate said it cannot classify because the host
+/// is overloaded (`overloaded_timeouts`). A quieter host may pass it. It is
+/// recorded neither green nor red.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unsettled {
+    /// The run, as red: its failing tests are the TIMEOUTs.
+    pub red: Red,
+    /// The gate's line that says the host is overloaded, with its load
+    /// (`overload_said`).
+    pub said: String,
+}
+
+impl Unsettled {
+    /// The TIMEOUT tests, as the run named them.
+    pub fn tests(&self) -> &[String] {
+        &self.red.tests
+    }
+
+    /// Why the run says nothing of its tree, the one wording of it:
+    /// `red only on TIMEOUTs it cannot classify on an overloaded host (nx
+    /// a_test) — `gate: host overloaded (load 13, CPUs 12); …``.
+    pub fn how(&self) -> String {
+        format!(
+            "red only on TIMEOUTs it cannot classify on an overloaded host ({}) — `{}`",
+            self.tests().join(", "),
+            self.said
+        )
+    }
+}
+
+/// What one run of the gate says of its tree, judged by `judge`: green, red,
+/// or nothing (`Unsettled`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[refined_by(green: bool, unsettled: bool)]
+pub enum Judged {
+    #[variant(Judged[true, false])]
+    Green,
+    #[variant((Red) -> Judged[false, false])]
+    Red(Red),
+    #[variant((Unsettled) -> Judged[false, true])]
+    Unsettled(Unsettled),
+}
+
+/// Judges a run of the gate from how it ended — `exit_code`, `timed_out` at
+/// the gate limit of `limit` seconds, the signal that ended it — and its
+/// whole output, `lines`. Only exit 0 before the limit is green. A run that
+/// reached the limit is red whatever it printed; one that ended before it
+/// red only on TIMEOUTs the gate said it cannot classify on an overloaded
+/// host is unsettled (`overloaded_timeouts`); every other is red.
+#[spec(fn(exit_code: i32, timed_out: bool, limit: u64, termination: Option<Termination>,
+    lines: &[String]) -> Judged{j: (j.green <=> (exit_code == 0 && !timed_out))
+        && (j.unsettled => !timed_out)})]
+pub fn judge(
+    exit_code: i32,
+    timed_out: bool,
+    limit: u64,
+    termination: Option<Termination>,
+    lines: &[String],
+) -> Judged {
+    if exit_code == 0 && !timed_out {
+        return Judged::Green;
+    }
+    let ended = match (timed_out, termination) {
+        (true, _) => Ended::AtLimit(limit),
+        (false, Some(termination)) => Ended::Signalled(termination),
+        (false, None) => Ended::Exited(exit_code),
+    };
+    let red = Red { ended, tests: failing_tests(lines), quote: quoted(lines) };
+    if timed_out || !overloaded_timeouts(lines) {
+        return Judged::Red(red);
+    }
+    let said = overload_said(lines).unwrap_or_default().to_string();
+    Judged::Unsettled(Unsettled { red, said })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,6 +837,69 @@ mod tests {
         assert!(!overloaded_timeouts(&said(&[timeout, retried, all])));
     }
 
+    /// Every gate run is judged one way, and its red worded one way
+    /// (sunfmin/control#619): green; red on a FAIL; red on a TIMEOUT the
+    /// gate classified; unsettled on TIMEOUTs it cannot classify under
+    /// overload; red at the gate limit, whatever its output says.
+    #[test]
+    fn a_gate_run_is_judged_green_red_or_unsettled_and_its_red_worded_once() {
+        let timeout = "     TIMEOUT [   6.004s] (40/669) afkconvoy::cli dsh::the_line";
+        let overloaded = "gate: host overloaded or load unavailable (load 12.71, CPUs 12); \
+                          cannot classify TIMEOUT tests. Retry on a quiet host.";
+        let quiet = "gate: afkconvoy::cli dsh::the_line was still TIMEOUT at 2s on a quiet host.";
+        let fail = "        FAIL [   0.208s] (2/3) afkconvoy cutting::a_named_test";
+        assert_eq!(judge(0, false, 600, None, &said(&[fail])), Judged::Green);
+
+        let Judged::Red(red) = judge(100, false, 600, None, &said(&["built", fail, "end"])) else {
+            panic!("a FAIL is red");
+        };
+        assert_eq!(red.ended, Ended::Exited(100));
+        assert_eq!(red.tests, ["afkconvoy cutting::a_named_test"]);
+        assert_eq!(red.quote, said(&[fail, "end"]), "quoted from the first failure");
+        assert_eq!(
+            red.said("the gate"),
+            "the gate is red: it exited 100; failing: afkconvoy cutting::a_named_test"
+        );
+
+        let Judged::Red(red) = judge(100, false, 600, None, &said(&[timeout, quiet])) else {
+            panic!("a TIMEOUT the gate classified is red");
+        };
+        assert_eq!(red.how(), "it exited 100; failing: afkconvoy::cli dsh::the_line");
+
+        let Judged::Unsettled(unsettled) =
+            judge(100, false, 600, None, &said(&[timeout, overloaded]))
+        else {
+            panic!("only TIMEOUTs the gate cannot classify under overload say nothing");
+        };
+        assert_eq!(unsettled.tests(), ["afkconvoy::cli dsh::the_line"]);
+        assert_eq!(unsettled.said, overloaded);
+        assert_eq!(
+            unsettled.how(),
+            format!(
+                "red only on TIMEOUTs it cannot classify on an overloaded host \
+                 (afkconvoy::cli dsh::the_line) — `{overloaded}`"
+            )
+        );
+        assert_eq!(unsettled.red.how(), "it exited 100; failing: afkconvoy::cli dsh::the_line");
+
+        let Judged::Red(red) = judge(124, true, 600, None, &said(&[timeout, overloaded])) else {
+            panic!("a run that reached the gate limit is red, whatever it printed");
+        };
+        assert_eq!(
+            red.how(),
+            "its run reached the gate limit of 600s and was ended; failing: afkconvoy::cli \
+             dsh::the_line"
+        );
+        assert_eq!(judge(0, true, 1, None, &[]), judge(124, true, 1, None, &[]), "not green");
+
+        let ended = Termination { pid: 7, signal: 15, core_dumped: false };
+        let Judged::Red(red) = judge(-1, false, 600, Some(ended), &[]) else {
+            panic!("a signal is red");
+        };
+        assert_eq!(red.ended, Ended::Signalled(ended));
+        assert_eq!(red.how(), format!("{}; its output names no failing test", ended.description()));
+    }
+
     fn tree() -> Tree {
         Tree::named("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
     }
@@ -738,11 +932,6 @@ mod tests {
         let at_the_limit = Ran { timed_out: true, ..ran(124) };
         let comment = red_comment(&command, at_the_limit, 600, &[]);
         assert!(comment.contains("`make test` reached the gate limit of 600s and was ended"));
-        assert_eq!(
-            at_limit(at_the_limit, 600),
-            ": its run reached the gate limit of 600s and was ended"
-        );
-        assert_eq!(at_limit(ran(1), 600), "", "a run that ended by itself reached none");
     }
 
     #[test]

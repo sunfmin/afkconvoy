@@ -736,8 +736,6 @@ fn aggregate(repo: &Repo, delivery: &Delivery, host: &str, now: u64) -> Result<A
     let Some(commit) = crate::turn::merged_onto(repo, &base, &head, &message, now)? else {
         return Ok(Aggregate::Conflict);
     };
-    let path = std::env::temp_dir().join(format!("afkconvoy-delivery-{}", crate::unique()));
-    repo.git(&["worktree", "add", "--quiet", "--detach", &path.to_string_lossy(), &commit])?;
     let checked = |checkout: &Repo| -> Result<Aggregate> {
         let config = crate::config::load(&checkout.dir.join(crate::config::FILE))?;
         let command = GateCommand::new(&config.gate_command);
@@ -755,10 +753,12 @@ fn aggregate(repo: &Repo, delivery: &Delivery, host: &str, now: u64) -> Result<A
             crate::gate::Gated::Green { source, .. } => {
                 Ok(Aggregate::Green { tree, command: command.text().to_string(), source })
             }
-            crate::gate::Gated::Red { ran, excerpt, termination } => {
-                let why = termination.map(|end| end.description()).unwrap_or_else(|| {
-                    format!("the aggregate gate is red (exit {})", ran.exit_code)
-                });
+            crate::gate::Gated::Red { red, excerpt }
+            | crate::gate::Gated::Unsettled {
+                unsettled: afkconvoy_core::gate::Unsettled { red, .. },
+                excerpt,
+            } => {
+                let why = red.said("the aggregate gate");
                 let tail = excerpt.into_iter().rev().take(5).collect::<Vec<_>>().into_iter().rev();
                 Ok(Aggregate::Red {
                     detail: format!("{why}\n{}", tail.collect::<Vec<_>>().join("\n")),
@@ -766,11 +766,10 @@ fn aggregate(repo: &Repo, delivery: &Delivery, host: &str, now: u64) -> Result<A
             }
         }
     };
-    let checkout = Repo::new(path.clone());
-    let result = checked(&checkout);
+    let (result, removal) = crate::gate::detached(repo, &commit, "delivery", checked)?;
     // A failed removal must not hide a red gate, and a green result must not
     // leave the temporary worktree behind.
-    if let Err(error) = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()])
+    if let Some(error) = removal
         && result.is_ok()
     {
         return Err(error);
