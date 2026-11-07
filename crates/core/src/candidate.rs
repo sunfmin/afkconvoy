@@ -322,6 +322,27 @@ impl Chain {
         }
     }
 
+    /// A candidate's gate, fast or a round's slow one, ran red only on
+    /// TIMEOUTs it cannot classify on an overloaded host: the run says
+    /// nothing of it, so it is no red. It keeps `result` and leaves the chain
+    /// `gate_unsettled`, for its turn asks again; what was merged onto its
+    /// commit goes with it, `predecessor_unsettled`, as no successor can land
+    /// without it. Its round is not failed: the members before it stay
+    /// fast-green, and the last of them is the round's tip now.
+    pub fn unsettle(&mut self, id: &str, result: serde_json::Value) {
+        if !self.candidates.iter().any(|c| c.id == id && c.valid()) {
+            return;
+        }
+        self.invalidate(id, "gate_unsettled");
+        for c in &mut self.candidates {
+            if c.id == id {
+                c.result = Some(result.clone());
+            } else if c.cancelled_by.as_deref() == Some(id) {
+                c.cause = Some("predecessor_unsettled".to_string());
+            }
+        }
+    }
+
     /// The candidates a landing at `id` takes onto the base: every valid one
     /// up to and including it, in chain order. Empty when `id` is not valid.
     pub fn members(&self, id: &str) -> Vec<&Candidate> {
@@ -749,6 +770,36 @@ mod tests {
         );
         assert!(chain.candidates.iter().all(|c| c.cancelled_by.as_deref() == Some("c2")));
         assert!(chain.round_tip().is_none(), "no smaller round runs after a red one");
+    }
+
+    /// A gate red only on TIMEOUTs it cannot classify under overload is no
+    /// red (sunfmin/control#617): its round is not failed, and its own
+    /// suffix goes with it unsettled, not failed.
+    #[test]
+    fn an_unsettled_gate_fails_no_round_and_its_suffix_goes_unsettled() {
+        let mut chain = Chain { candidates: (0..4).map(split).collect(), ..Chain::default() };
+        for c in ["c0", "c1", "c2"] {
+            chain.finish(c, true, serde_json::json!({}));
+            chain.candidates.iter_mut().for_each(|c| c.stopped = c.phase == Phase::Green);
+        }
+        chain.candidates.pop();
+        assert!(chain.start_round("c2"));
+        let mut later = split(3);
+        later.phase = Phase::Validating;
+        chain.candidates.push(later);
+        chain.unsettle("c2", serde_json::json!({"exit_code": 100}));
+        let phases: Vec<_> = chain.candidates.iter().map(|c| c.phase).collect();
+        assert_eq!(phases, [Phase::Green, Phase::Green, Phase::Cancelling, Phase::Cancelling]);
+        let causes: Vec<_> = chain.candidates.iter().map(|c| c.cause.as_deref()).collect();
+        assert_eq!(causes, [None, None, Some("gate_unsettled"), Some("predecessor_unsettled")]);
+        assert_eq!(chain.candidates[2].result, Some(serde_json::json!({"exit_code": 100})));
+        assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c1"), "the round runs again");
+        // A fast gate unsettled cancels its successor unsettled, not failed.
+        let mut chain = Chain { candidates: vec![candidate(0), candidate(1)], ..Chain::default() };
+        chain.unsettle("c0", serde_json::json!({}));
+        let causes: Vec<_> = chain.candidates.iter().map(|c| c.cause.as_deref()).collect();
+        assert_eq!(causes, [Some("gate_unsettled"), Some("predecessor_unsettled")]);
+        assert!(chain.candidates.iter().all(|c| c.phase != Phase::Red));
     }
 
     #[test]
