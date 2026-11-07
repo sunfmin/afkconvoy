@@ -679,7 +679,7 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                 Kind::ToolMissing,
                 format!("`{name}` is not installed: the fleet cannot work without it"),
                 format!("no `{name}` was found on this host{called}"),
-                tool.install().to_string(),
+                tool.when_missing(),
             ),
             Found::LoggedOut(answer) => (
                 if *tool == Tool::Harness(Harness::Pi) {
@@ -2140,7 +2140,14 @@ fn host_json(host: &Host) -> Value {
             Found::NotRunning => "not_running",
             Found::KnowsNoCheckout(_) => "knows_no_checkout",
         };
-        json!({"name": tool.name(), "state": state})
+        let mut said = json!({"name": tool.name(), "state": state});
+        // Which orca the fleet runs, and where: its calls all go there.
+        if *tool == Tool::Orca && *found != Found::Missing {
+            let place = crate::tools::orca_place();
+            said["path"] = json!(place.as_ref().map(|(path, _)| path));
+            said["from"] = json!(place.map(|(_, from)| from));
+        }
+        said
     };
     json!({
         "tools": host.looked_for().map(|(looked, _)| tool(looked)).collect::<Vec<_>>(),
@@ -3057,7 +3064,7 @@ mod tests {
         ];
         let found = found(&lacking, &run(vec![]), &state());
         assert_eq!(fixes(&found, "`gh` is not logged in"), ["gh auth login"]);
-        assert_eq!(fixes(&found, "`orca` is not installed"), [Tool::Orca.install()]);
+        assert_eq!(fixes(&found, "`orca` is not installed"), [Tool::Orca.when_missing()]);
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found.iter().all(|finding| finding.severity == Severity::Critical));
 

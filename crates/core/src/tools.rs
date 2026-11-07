@@ -166,6 +166,11 @@ pub enum Found {
     KnowsNoCheckout(String),
 }
 
+/// Where Orca's SSH remote runtime puts its CLI, under the home directory:
+/// the desktop Orca on another machine installs it here, on the PATH only of
+/// the terminals Orca opens itself. An `orca` on the PATH wins over it.
+pub const ORCA_REMOTE_CLI: &str = ".orca/cli/bin";
+
 /// The line that starts orca.
 pub const START_ORCA: &str = "orca open";
 
@@ -201,6 +206,20 @@ impl Tool {
             Tool::Orca => "brew install --cask stablyai/orca/orca",
             Tool::Dsh => "install DeepSeek Harness (dsh) and add it to PATH",
             Tool::Harness(harness) => harness.install(),
+        }
+    }
+
+    /// What a host without it is told to do: the line that installs it, and
+    /// for orca the other way to have it too, Orca's SSH remote runtime,
+    /// with where its CLI is looked for (`ORCA_REMOTE_CLI`).
+    pub fn when_missing(self) -> String {
+        match self {
+            Tool::Orca => format!(
+                "{}, or connect to this host from Orca over SSH, whose remote runtime puts its \
+                 CLI at ~/{ORCA_REMOTE_CLI}/orca",
+                self.install()
+            ),
+            tool => tool.install().to_string(),
         }
     }
 
@@ -285,7 +304,7 @@ pub fn fault(tool: Tool, found: &Found, host: Option<&str>, callers: &[String]) 
     let name = tool.name();
     let (what, line) = match found {
         Found::Ready => return None,
-        Found::Missing => ("is not installed".to_string(), tool.install().to_string()),
+        Found::Missing => ("is not installed".to_string(), tool.when_missing()),
         Found::LoggedOut(_) => (tool.logged_out().to_string(), tool.login(host)),
         Found::NotRunning => ("is not running".to_string(), START_ORCA.to_string()),
         Found::KnowsNoCheckout(path) => {
@@ -437,6 +456,14 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_orca_is_named_with_both_ways_to_have_it() {
+        let install = Tool::Orca.when_missing();
+        assert!(install.starts_with("brew install --cask stablyai/orca/orca, "), "{install}");
+        assert_eq!(Tool::Gh.when_missing(), Tool::Gh.install());
+        assert!(install.contains(&format!("~/{ORCA_REMOTE_CLI}/orca")), "{install}");
+    }
+
+    #[test]
     fn every_fault_is_named_with_the_line_that_fixes_it() {
         let found = [
             (Tool::Git, Found::Missing),
@@ -451,7 +478,9 @@ mod tests {
             [
                 "  git is not installed: brew install git",
                 "  gh is not logged in: gh auth login",
-                "  orca is not installed: brew install --cask stablyai/orca/orca",
+                "  orca is not installed: brew install --cask stablyai/orca/orca, or connect to \
+                 this host from Orca over SSH, whose remote runtime puts its CLI at \
+                 ~/.orca/cli/bin/orca",
                 "  claude is not logged in: claude auth login",
             ]
         );
