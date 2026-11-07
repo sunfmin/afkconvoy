@@ -682,7 +682,11 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                 tool.install().to_string(),
             ),
             Found::LoggedOut(answer) => (
-                if *tool == Tool::Pi { Kind::NoProvider } else { Kind::ToolLoggedOut },
+                if *tool == Tool::Harness(Harness::Pi) {
+                    Kind::NoProvider
+                } else {
+                    Kind::ToolLoggedOut
+                },
                 format!("`{name}` {}", tool.logged_out()),
                 format!(
                     "`{}` says so, in a login shell{called}\n{}",
@@ -1689,7 +1693,9 @@ fn noted(called: &[(Harness, Vec<String>)], notes: &[crate::probe::NotedHarness]
                 harness: *harness,
                 callers: callers.clone(),
                 command: command.to_string(),
-                tool: found.and_then(|found| Tool::of(*harness, command).map(|tool| (tool, found))),
+                tool: found
+                    .filter(|_| harness.runs_itself(command))
+                    .map(|found| (Tool::Harness(*harness), found)),
                 fault: noted.and_then(crate::probe::NotedHarness::fault).map(str::to_string),
                 flags_fault: noted
                     .and_then(crate::probe::NotedHarness::flags_fault)
@@ -1721,7 +1727,9 @@ fn trusted(called: &[(Harness, Vec<String>)]) -> Vec<Checked> {
                 command: command.to_string(),
                 // The standing probe already found this command able to start.
                 // Ready is that result; asking it again would start the harness.
-                tool: Tool::of(*harness, command).map(|tool| (tool, Found::Ready)),
+                tool: harness
+                    .runs_itself(command)
+                    .then_some((Tool::Harness(*harness), Found::Ready)),
                 fault: None,
                 flags_fault: None,
             }
@@ -3084,7 +3092,7 @@ mod tests {
                     harness: afkconvoy_core::harness::Harness::Pi,
                     callers: vec!["the stage `build` of the workflow `feature`".into()],
                     command: "pi".into(),
-                    tool: Some((Tool::Pi, found)),
+                    tool: Some((Tool::Harness(Harness::Pi), found)),
                     fault: Some("\"pi\" resolves to nothing in a login shell".into()),
                     flags_fault: Some("`pi --help` failed in a login shell".into()),
                 },
@@ -3093,7 +3101,7 @@ mod tests {
         };
         let missing = pi(Found::Missing);
         let found = self::found(&missing, &run(vec![]), &state());
-        assert_eq!(fixes(&found, "`pi` is not installed"), [Tool::Pi.install()]);
+        assert_eq!(fixes(&found, "`pi` is not installed"), [Tool::Harness(Harness::Pi).install()]);
         assert_eq!(found.len(), 1, "said once, and not again of its command: {found:?}");
         assert!(
             found[0]
