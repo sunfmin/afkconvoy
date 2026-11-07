@@ -490,6 +490,47 @@ fn a_cut_whose_checkout_is_gone_opens_its_issue_and_the_next_takes_up_its_branch
     assert_eq!(cut_branches(&world), pushed, "no second branch for the same version");
 }
 
+/// A cut gated red pushed its branch, untagged; a fix lands and its issue
+/// is closed, so the next cut starts again from the start. That cut makes a
+/// new commit on the base as it stands now, on a branch of its own, and
+/// gates what its record says it holds — not the stale branch's base, as
+/// the v0.5.74 cut did twice (control#639).
+#[test]
+fn a_cut_started_again_after_the_base_moved_makes_a_new_commit_on_the_new_base() {
+    let world = initial(false);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let first = checkout(&world);
+    std::fs::write(world.root.join("red"), "red").unwrap();
+    let failed = world.afk_in(&first, &["cut", "--host", "h1"]).ok();
+    assert_eq!(failed["failed"], "gate", "{failed}");
+    std::fs::remove_file(world.root.join("red")).unwrap();
+    let pushed = cut_branches(&world);
+    assert_eq!(pushed.len(), 1, "{pushed:?}");
+    let stale = world.remote(&["rev-parse", &format!("refs/heads/{}", pushed[0])]);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    let failed = failures(&world);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+
+    land(&world, "Fix the gate (#9)");
+    let tip = world.remote(&["rev-parse", BASE]);
+    world.close_issue(failed[0].0);
+    assert_eq!(cut(&tick_as(&world, "alpha", 20_000)), ["cut done"]);
+    let again = self::checkout(&world);
+    let held = record(&again);
+    assert_eq!((&held["version"], &held["prs"]), (&json!("1.2.3"), &json!([7, 9])), "{held}");
+
+    let answer = finish(&world, &again);
+    let made = answer["commit"].as_str().unwrap();
+    assert_ne!(made, stale, "{answer}");
+    assert_eq!(answer["prs"], json!([7, 9]), "{answer}");
+    assert_eq!(parents(&world, made), vec![tip.clone()], "one parent, the base as it is now");
+    assert!(ancestor(&world, &tip, made), "the commit it gated holds #9");
+    assert_eq!(world.remote(&["show", &format!("{made}:VERSION")]), "1.2.3");
+    let branches = cut_branches(&world);
+    assert_eq!(branches.len(), 2, "a branch of its own: {branches:?}");
+    assert_ne!(answer["branch"], json!(pushed[0]), "{answer}");
+}
+
 /// A peer's cut whose host went silent is a failed cut too: the tick that
 /// unclaims it opens the one issue, named by the version its branch says,
 /// and no cut of that version starts on its own.

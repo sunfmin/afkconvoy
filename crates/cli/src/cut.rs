@@ -606,8 +606,12 @@ impl Cutting<'_> {
     /// On the snapshot the checkout was cut at, the base tip as it stood:
     /// runs the repo's `set` lines and commits what they changed, even
     /// nothing — the version's commit, whose one parent is the snapshot. A
-    /// cut of this version that already tagged, or pushed its branch, made
-    /// that commit before: this one takes it up, and makes no second.
+    /// cut of this version that already tagged made that commit before: this
+    /// one takes it up as it stands, and makes no second. So does one that
+    /// pushed its branch, untagged, on this snapshot. One pushed on an older
+    /// base holds none of what landed since — taken up, that base would be
+    /// gated again however many fixes land (control#639) — so this cut makes
+    /// its own commit on the snapshot, and pushes its own branch.
     fn set(&self, record: &mut Record) -> Result<()> {
         let tag = format!("v{}", record.version);
         let tagged = self.repo.remote().tags(Fresh::Process)?.into_iter().find(|(n, _)| *n == tag);
@@ -616,14 +620,15 @@ impl Cutting<'_> {
                 self.repo.bring(&commit, &format!("refs/tags/{tag}"))?;
                 Some((None, commit))
             }
-            None => cut::pushed(&cut_heads(self.repo)?, &record.version)
-                .map(|(branch, commit)| (Some(branch), commit)),
+            None => match cut::pushed(&cut_heads(self.repo)?, &record.version) {
+                Some((branch, commit)) => {
+                    self.repo.bring(&commit, &format!("refs/heads/{branch}"))?;
+                    self.on_snapshot(&commit)?.then_some((Some(branch), commit))
+                }
+                None => None,
+            },
         };
         if let Some((branch, commit)) = taken {
-            if let Some(branch) = &branch {
-                self.repo.bring(&commit, &format!("refs/heads/{branch}"))?;
-            }
-            self.repo.git(&["reset", "--quiet", "--hard", &commit])?;
             record.branch = branch.or(record.branch.take());
             record.commit = Some(commit);
             return Ok(());
@@ -634,6 +639,17 @@ impl Cutting<'_> {
         self.repo.git(&["commit", "--quiet", "--allow-empty", "-m", &title])?;
         record.commit = Some(self.repo.git(&["rev-parse", "HEAD"])?);
         Ok(())
+    }
+
+    /// Whether `commit`, here, is a version commit on the checkout's
+    /// snapshot: the commit the checkout stands on, or one whose parent it is.
+    fn on_snapshot(&self, commit: &str) -> Result<bool> {
+        let head = self.repo.git(&["rev-parse", "HEAD"])?;
+        if head == commit {
+            return Ok(true);
+        }
+        let parents = self.repo.git(&["rev-parse", &format!("{commit}^@")])?;
+        Ok(parents.lines().any(|parent| parent == head))
     }
 
     /// The version's commit, as its step `set` made it or took it up.
