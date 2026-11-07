@@ -16,6 +16,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail, ensure};
 
 use crate::git::{REMOTE, Ran, Repo};
+use crate::transient;
 
 pub(crate) use publication::{Update, check};
 
@@ -476,52 +477,18 @@ impl Remote {
     }
 }
 
-/// A read changes nothing on the remote, so a failure in transit is safe to
-/// ask again. Any answer from the remote itself fails at once.
+/// A read changes nothing on the remote, so a failure in transit
+/// (`transient::GIT_READ`) is safe to ask again. Any answer from the remote
+/// itself fails at once.
 fn connection_failure(said: &str) -> bool {
-    let said = said.to_ascii_lowercase();
-    [
-        "tls connect error",
-        "unexpected eof",
-        "ssl_error_syscall",
-        "connection reset",
-        "connection refused",
-        "could not resolve host",
-        "timeout",
-        "timed out",
-        "did not end within",
-    ]
-    .iter()
-    .any(|mark| said.contains(mark))
+    transient::met(transient::GIT_READ, said)
 }
 
-/// A push the remote refused for a fault of its own, not of the push: it
-/// could not write the pack (`remote unpack failed`), another push held
-/// the ref's lock at that moment (`lock_failure`), or it failed to update
-/// the ref at all (`server_error`). Nothing was written, so the push is
-/// safe to try again.
+/// A push the remote refused for a fault of its own, not of the push
+/// (`transient::GIT_PUSH`). Nothing was written, so the push is safe to try
+/// again.
 pub(crate) fn remote_fault(stderr: &str) -> bool {
-    stderr.contains("remote unpack failed") || lock_failure(stderr) || server_error(stderr)
-}
-
-/// A ref update GitHub refused with a 5xx of its own:
-/// `! [remote rejected] … (Internal Server Error)` (sunfmin/control#593).
-fn server_error(stderr: &str) -> bool {
-    stderr.lines().any(|line| {
-        let line = line.trim();
-        line.starts_with("! [remote rejected]") && line.ends_with("(Internal Server Error)")
-    })
-}
-
-/// A push the remote rejected because another push held the ref's lock:
-/// GitHub says `(failed)` or `cannot lock ref`, not a rejected fast-forward.
-fn lock_failure(stderr: &str) -> bool {
-    stderr.lines().any(|line| {
-        let line = line.trim();
-        (line.starts_with("! [remote rejected]") && line.ends_with("(failed)"))
-            || line.contains("cannot lock ref")
-            || line.contains("failed to lock")
-    })
+    transient::met(transient::GIT_PUSH, stderr)
 }
 
 /// How many times `try_push_retried` tries a push the remote refuses for a
@@ -544,9 +511,11 @@ fn ls_remote_limit() -> Duration {
 
 pub(crate) fn reads_help() -> String {
     format!(
-        "Every git call that reads the remote ends within a limit: an ls-remote within {} seconds and a fetch within {} minutes. At the limit its process group is ended. A read of the remote's refs that meets a connection-level failure — a TLS connect error or unexpected EOF, SSL_ERROR_SYSCALL, a connection reset or refusal, an unresolvable host, a timeout or that limit — is asked again five seconds later, up to three attempts in all. Authentication, a missing repository and every other failure end the read at once. When every attempt fails, the error says how many were made and gives the last failure's text. A push the remote refuses for a fault of its own — another push held the ref's lock (`(failed)`, `cannot lock ref`), it could not write the pack (`remote unpack failed`), or it failed with a server error of its own (`(Internal Server Error)`) — is tried again after a growing pause, up to {} attempts in all; every other refusal ends it at once. Publications are not retried.",
+        "Every git call that reads the remote ends within a limit: an ls-remote within {} seconds and a fetch within {} minutes. At the limit its process group is ended. A read of the remote's refs that meets a connection-level failure — git said {}, in upper or lower case; the last is that limit — is asked again five seconds later, up to three attempts in all. Authentication, a missing repository and every other failure end the read at once. When every attempt fails, the error says how many were made and gives the last failure's text. A push the remote refuses for a fault of its own — it could not write the pack, another push held the ref's lock, or it failed with a server error of its own: git said {} — is tried again after a growing pause, up to {} attempts in all; every other refusal ends it at once. Publications are not retried.",
         crate::git::LS_REMOTE_LIMIT.as_secs(),
         crate::git::FETCH_LIMIT.as_secs() / 60,
+        transient::listed(transient::GIT_READ),
+        transient::listed(transient::GIT_PUSH),
         PUSH_ATTEMPTS,
     )
 }
@@ -1145,6 +1114,96 @@ pub(crate) mod tests {
         assert!(error.contains("3 attempts"), "{error}");
         assert!(error.contains("SSL_ERROR_SYSCALL"), "{error}");
         assert_eq!(fake.lists(), 3);
+    }
+
+    /// Each marker of `list`, in its order, with what was said holding it.
+    fn each_said(list: &[transient::Marker], said: &[(&str, &str)]) {
+        let markers: Vec<&str> = list.iter().map(|marker| marker.said).collect();
+        let named: Vec<&str> = said.iter().map(|(marker, _)| *marker).collect();
+        assert_eq!(named, markers, "a marker with no example, or one out of order");
+    }
+
+    #[test]
+    fn a_read_that_said_any_marker_of_its_list_is_read_again() {
+        let said = [
+            (
+                "TLS connect error",
+                "fatal: unable to access 'https://github.com/o/r.git/': TLS connect error: error:0A000126:SSL routines::unexpected eof while reading",
+            ),
+            ("unexpected EOF", "error: RPC failed; curl 18 unexpected EOF"),
+            (
+                "SSL_ERROR_SYSCALL",
+                "fatal: unable to access 'https://github.com/o/r.git/': LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to github.com:443",
+            ),
+            (
+                "connection reset",
+                "fatal: unable to access '…': Recv failure: Connection reset by peer",
+            ),
+            (
+                "connection refused",
+                "fatal: unable to access '…': Failed to connect to github.com port 443: Connection refused",
+            ),
+            (
+                "could not resolve host",
+                "fatal: unable to access '…': Could not resolve host: github.com",
+            ),
+            ("timeout", "fatal: unable to access '…': SSL connection timeout"),
+            (
+                "timed out",
+                "fatal: unable to access '…': Failed to connect to github.com port 443: Operation timed out",
+            ),
+            (
+                crate::git::PAST_LIMIT,
+                "git ls-remote origin refs/heads/trunk did not end within 60s; its process group was ended",
+            ),
+        ];
+        each_said(transient::GIT_READ, &said);
+        for (marker, said) in said {
+            assert!(connection_failure(said), "{marker}: {said}");
+            let fake = Fake::with(&[("refs/heads/trunk", "a")]);
+            fake.fails_next(said);
+            let read = remote(&fake).sha("refs/heads/trunk", Fresh::Live).unwrap();
+            assert_eq!(read.as_deref(), Some("a"), "{marker}");
+            assert_eq!(fake.lists(), 2, "{marker}");
+        }
+    }
+
+    #[test]
+    fn a_push_refused_with_any_marker_of_its_list_is_tried_again() {
+        let said = [
+            (
+                "remote unpack failed",
+                "error: remote unpack failed: index-pack failed\n ! [remote rejected] d5531db -> refs/convoy/gate/47 (unpacker error)",
+            ),
+            ("(failed)", HELD),
+            (
+                "cannot lock ref",
+                "error: cannot lock ref 'refs/convoy/candidates/main': is at 1 but expected 2",
+            ),
+            ("failed to lock", " ! [remote rejected] HEAD -> refs/convoy/claim/7 (failed to lock)"),
+            ("(Internal Server Error)", SERVER_ERROR),
+        ];
+        each_said(transient::GIT_PUSH, &said);
+        for (marker, said) in said {
+            assert!(remote_fault(said), "{marker}: {said}");
+            let fake = Fake::with(&[]);
+            let name = "refs/convoy/claim/sunfmin/control/589";
+            fake.refuses(name, said);
+            let ran =
+                remote(&fake).try_push_retried(&Push::set("b", name), None, || Ok(false)).unwrap();
+            assert!(ran.ok, "{marker}: {}", ran.stderr);
+            assert_eq!(fake.pushes(), 2, "{marker}");
+        }
+    }
+
+    #[test]
+    fn the_help_names_every_marker_of_the_reads_and_the_pushes_from_their_lists() {
+        let help = reads_help();
+        assert!(help.contains(&transient::listed(transient::GIT_READ)), "{help}");
+        assert!(help.contains(&transient::listed(transient::GIT_PUSH)), "{help}");
+        for marker in transient::GIT_READ.iter().chain(transient::GIT_PUSH) {
+            assert!(help.contains(marker.said), "{}: {help}", marker.said);
+        }
     }
 
     #[test]

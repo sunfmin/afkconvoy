@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::harness::Harness;
 use crate::record;
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -33,9 +34,71 @@ pub struct Host {
     pub memory_bytes: Option<u64>,
 }
 
+/// The harness a work account names: one this binary knows, or a name it
+/// does not — one a later afkconvoy wrote — kept as it was written, so the
+/// account still reads and writes back as it was (sunfmin/control#630).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedHarness(Recorded);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Recorded {
+    Known(Harness),
+    Unknown(String),
+}
+
+impl RecordedHarness {
+    /// The harness written as `key`.
+    pub fn read(key: &str) -> RecordedHarness {
+        RecordedHarness(match Harness::read(key) {
+            Some(harness) => Recorded::Known(harness),
+            None => Recorded::Unknown(key.to_string()),
+        })
+    }
+
+    /// The harness, when this binary knows it.
+    pub fn known(&self) -> Option<Harness> {
+        match &self.0 {
+            Recorded::Known(harness) => Some(*harness),
+            Recorded::Unknown(_) => None,
+        }
+    }
+
+    /// What it is written as.
+    pub fn key(&self) -> &str {
+        match &self.0 {
+            Recorded::Known(harness) => harness.key(),
+            Recorded::Unknown(key) => key,
+        }
+    }
+
+    /// What an account and its summary call `harness`: its key, or
+    /// `unknown` where the record names none.
+    pub fn named(harness: Option<&RecordedHarness>) -> &str {
+        harness.map_or("unknown", RecordedHarness::key)
+    }
+}
+
+impl From<Harness> for RecordedHarness {
+    fn from(harness: Harness) -> RecordedHarness {
+        RecordedHarness(Recorded::Known(harness))
+    }
+}
+
+impl Serialize for RecordedHarness {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for RecordedHarness {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(RecordedHarness::read(&String::deserialize(deserializer)?))
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worker {
-    pub harness: Option<String>,
+    pub harness: Option<RecordedHarness>,
     pub model: Option<String>,
     pub role: Option<String>,
     pub stage: Option<String>,
@@ -105,7 +168,7 @@ pub fn render(row: &Record) -> String {
         .unwrap_or_else(|| "memory unknown".into());
     let mut workers = vec![];
     for worker in &row.workers {
-        let harness = worker.harness.as_deref().unwrap_or("unknown");
+        let harness = RecordedHarness::named(worker.harness.as_ref());
         let model = worker
             .model
             .as_ref()
@@ -203,5 +266,52 @@ pub(super) fn gate_of(fields: &record::Fields, result: &str) -> Gate {
         at: fields.number("at"),
         seconds: fields.number("seconds"),
         host: fields.get("host").map(str::to_string),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Accounts of schema version 1 as the fleet wrote them: one with every
+    /// fact it records, a harness of every kind among them, and one with
+    /// none.
+    const V1: &str = include_str!("recorded/v1.md");
+    const V1_EMPTY: &str = include_str!("recorded/v1-empty.md");
+
+    #[test]
+    fn a_recorded_account_of_each_schema_version_reads_and_writes_back_byte_for_byte() {
+        assert_eq!(SCHEMA_VERSION, 1, "a new version brings a recorded account of its own");
+        for (issue, body) in [(628, V1), (7, V1_EMPTY)] {
+            let row = read(body, issue).unwrap();
+            assert_eq!(row.schema_version, 1);
+            assert_eq!(render(&row), body, "issue {issue}");
+        }
+    }
+
+    #[test]
+    fn a_harness_name_this_binary_does_not_know_reads_as_it_was_written() {
+        let row = read(V1, 628).unwrap();
+        let named: Vec<Option<String>> = row
+            .workers
+            .iter()
+            .map(|worker| serde_json::to_value(&worker.harness).unwrap().as_str().map(String::from))
+            .collect();
+        assert_eq!(
+            named,
+            [Some("codex"), Some("claude-code"), Some("kimi"), Some("opencode"), None]
+                .map(|name| name.map(String::from))
+        );
+        let known: Vec<Option<Harness>> = row
+            .workers
+            .iter()
+            .map(|worker| worker.harness.as_ref().and_then(RecordedHarness::known))
+            .collect();
+        assert_eq!(
+            known,
+            [Some(Harness::Codex), Some(Harness::ClaudeCode), Some(Harness::Kimi), None, None]
+        );
+        assert!(render(&row).contains("- harness `opencode`, model"), "{}", render(&row));
+        assert!(render(&row).contains("- harness `unknown`, the default model"));
     }
 }

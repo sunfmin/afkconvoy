@@ -1106,7 +1106,7 @@ fn keep_usage(watch: &Watch, ended: u64) -> Result<afkconvoy_core::accounts::Usa
     }
     let usage = afkconvoy_core::accounts::Usage {
         id: watch.id.clone(),
-        harness: Some(watch.harness.key().to_string()),
+        harness: Some(watch.harness.into()),
         model: watch.model.clone(),
         start,
         end: Some(ended),

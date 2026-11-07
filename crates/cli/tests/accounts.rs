@@ -363,7 +363,7 @@ fn watch_rounds_match_a_hand_count_and_answer_their_own_ndjson_rows() {
         });
         let usage = Usage {
             id: format!("round{n}"),
-            harness: Some(if n % 2 == 0 { "codex" } else { "pi" }.into()),
+            harness: Some(account::RecordedHarness::read(if n % 2 == 0 { "codex" } else { "pi" })),
             model: Some("model".into()),
             start: Some(50),
             end: Some(100),

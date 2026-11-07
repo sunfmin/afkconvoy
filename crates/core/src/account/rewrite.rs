@@ -19,7 +19,7 @@ pub fn legacy(body: &str, issue: u64) -> Result<Record, String> {
     let workers: Vec<Worker> = starts
         .into_iter()
         .map(|fields| Worker {
-            harness: fields.get("harness").map(str::to_string),
+            harness: fields.get("harness").map(account::RecordedHarness::read),
             model: fields.get("model").map(str::to_string),
             role: fields.get("role").map(str::to_string),
             stage: fields.get("stage").map(str::to_string),
@@ -156,7 +156,7 @@ pub fn convert(body: &str, issue: u64) -> Result<Record, String> {
                 .and_then(|s| s.split_once("`, "))
                 .ok_or("invalid worker harness")?;
             let (model, rest) = rest.split_once(", ").ok_or("invalid worker model")?;
-            worker.harness = Some(harness.to_string());
+            worker.harness = Some(account::RecordedHarness::read(harness));
             worker.model = if model == "the default model" {
                 None
             } else {
