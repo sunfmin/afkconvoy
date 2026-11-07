@@ -224,6 +224,123 @@ pub fn prose(markdown: &str) -> String {
     above.join("\n").trim().to_string()
 }
 
+/// What `afkconvoy config --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+First, before `plan` and `run`: it shows what the fleet goes by in this repo, or why the config cannot be read. Run it again after editing the config.
+
+## Who runs it
+
+The operator, in a checkout of the repo.
+
+## What it reads and writes
+
+It reads one file — {const:CONFIG_FILE} of the checkout it is about, or `--file` — and of that file the first ```yaml block and any ```yaml gate-budget blocks. It writes nothing, and reads neither GitHub nor the remote.
+
+## The config file
+
+A markdown file. The keys of its ```yaml block are the keys of the answer below, named and written alike: a file holding every key, each at its default, is
+
+~~~markdown
+# afkconvoy config
+
+```yaml
+base_branch: "main"                # required: it has no default
+gate_command: ./gate.sh            # required: it has no default
+gate_seconds: {const:GATE_SECONDS}
+ready_label: ready-for-agent
+epic_labels: [epic, prd]
+escalate_label: ready-for-human
+lock_label: fleet-lock
+team: acme/team                    # naming a team binds the repo
+patrols: []
+intake_limit: {const:INTAKE_LIMIT}
+```
+~~~
+
+The optional `gate_budget_seconds` is omitted from this example: it has no default of its own. A key left out is at the value shown, so the shortest config is the first two lines, and a bound repo's those and `team`. The last two are read only beside `team`: an unbound repo leaves all three out, and may say one key more, never beside `team`:
+
+```
+escalate_to: human                 # legacy consult is accepted; both escalate for the watch
+```
+
+An optional `gate_budget_seconds` declares a fixed warning budget: a positive whole number of seconds below `gate_seconds`. It never ends a run. Put it in the first yaml block, or in a separate block opened by ```yaml gate-budget; that block accepts only `gate_budget_seconds`. Declare it once: duplicate keys fail, including across blocks. Older versions skip the separate block and keep their termination limit, so they can land and cut the version that first supports the budget. They keep warning at {const:SLOW_GATE_PERCENT}% of that limit until upgraded. The budget is fixed in the repo, with its machine class, baseline version, cache conditions and rationale; it never follows recent runs upward. Queue waiting is outside both durations.
+
+A repo may split its gate in two, in a block of its own opened by the line ```yaml gates: the fast gate, what a worker passes before it opens or updates its PR, and the slow gate, everything else the gate checks. Each says its `command`, its limit `seconds` and its warning budget `budget_seconds`:
+
+~~~text
+```yaml gates
+fast:
+  command: afkconvoy exclusive -- ./gate.sh fast
+  seconds: 600
+  budget_seconds: 300
+slow:
+  command: afkconvoy exclusive -- ./gate.sh slow
+  seconds: 3000
+  budget_seconds: 300
+```
+~~~
+
+The two are the gate split, not a gate more: together they check what `gate_command` checks: a landing turn runs the fast gate per candidate and the slow gate once per round (`afkconvoy land --help`), and a base tip with no record is gated with `gate_command` whole. So each budget is below its limit, their limits add up to no more than `gate_seconds`, and their budgets to no more than `gate_budget_seconds` where it is declared. `afkconvoy gate --fast` and `--slow` run each alone (`afkconvoy gate --help`). Older versions skip the block.
+
+What is outside these blocks is yours to explain it in — but for a second block opened by the line ```yaml cut, which names the repo's cut steps and turns cutting on (`afkconvoy cut --help`). It is read beside this one; older versions read only this one, and refuse nothing for it.
+
+No command writes this file: write it, commit it, and run `afkconvoy config`.
+
+## What it answers
+
+{"base_branch", "gate_command", "gate_seconds", "ready_label", "epic_labels", "escalate_label", "lock_label"} — every key, the defaults filled in. `gate_seconds` is the gate limit: how many seconds a run of `gate_command` is given, by `afkconvoy gate` and by a landing turn alike, before it is ended and is red (default {const:GATE_SECONDS}). It is written nowhere else: neither command has a flag for it. A config that leaves it out is a finding of `afkconvoy doctor`. `lock_label` is the label of a fleet lock (default fleet-lock): while an open issue carries it, the fleet works lock issues only (`afkconvoy lock --help`). How many claims a fleet instance holds at work at once is no key: it is its checkout's, said on the host that works it (`afkconvoy run --concurrency`), and {const:CONCURRENCY} until that host says otherwise. A config that still names `concurrency` is read all the same, but for that key, which changes nothing: `afkconvoy doctor` reports it as `info`, since nothing is held up, with the file and key to delete. Where the checkout says none and the config names a different number than the one in force, its fix first gives the `afkconvoy run` that keeps that number on the host. `afkconvoy plan` says the concurrency in force, and who says it.
+
+A repo may declare host requirements in a separate block, which older releases read past:
+
+```yaml gate-needs
+checks:
+  - name: compiler
+    command: test "$(compiler --version)" = "1.0"
+    seconds: 10
+```
+A separate `yaml cut-needs` block uses the same `checks` form for cutting. Before claiming a due cut, the host runs these checks; a failure leaves the cut for another host and is named in the tick, plan and doctor. Output follows the same privacy rules.
+
+Each name is unique and nonempty, each command nonempty, and seconds positive. Each runs with `sh -e` in the checkout, with the host's environment — a fresh login shell's, as the host runner has — never that of the command that set it off: a worker's sandbox proxy, `TMPDIR` and tool homes do not reach it. The startup probe refuses a failed or timed-out check; a passing check stands for an hour. A check's stdout is discarded. On failure its last 20 stderr lines are stored in a user-only file in the host cache, overwritten by its next run; the refusal names the file, never its contents.
+
+A check may declare how to install what it checks, with `install` and `install_seconds` together (both or neither):
+
+```yaml gate-needs
+checks:
+  - name: flux-checker
+    command: ./verify.sh pins
+    seconds: 10
+    install: ./verify.sh install
+    install_seconds: 5400
+```
+Where such a check fails, the host runs its install with `sh -e` in the checkout, in the host's exclusive queue (`afkconvoy exclusive --help`) as a heavy command, within `install_seconds` — past it, it is ended and named as timed out — then the check again. A pass admits; a fail refuses naming the check, the install's status and the user-only host-cache file of its last 20 stderr lines; its stdout is discarded, as a check's is. A failed install is not run again for an hour unless the check's declaration changes, which is tried at once; it stands only while its check fails: a later check that passes on this host drops it. A failed install a worker's command set off (one with AFKCONVOY_ISSUE or AFKCONVOY_PATROL) is not noted: its harness's sandbox may have failed it, so it is not said as failed on this host and does not hold the host's own install. A running fleet instance's hourly recheck installs the same way before it ends broken, and a due cut installs before it is claimed. The startup probe warns when an install ran and passed; `plan` answers each install noted on the host as `need_installs` [{kind, check, at, seconds, status, passed, stderr}]; and `doctor` says each as `was installed on this host` or `install failed on this host`, never its output.
+
+The contract of an install: it writes only under the user's home, never to system directories and never with sudo, and installs the pinned versions the repo already names, reading them from where the repo keeps them, not from a copy. The owner gives standing consent for exactly this — what a repo declares as a gate or cut need, at the version it pins, installed under the user's home (sunfmin/control#499); anything else still asks first.
+
+A repo may declare its heavy commands in a separate block, which older releases read past: what fills the host by itself, which a worker runs only through the host's exclusive queue (`afkconvoy exclusive --help`). Each is a pattern of words:
+
+```yaml heavy-commands
+commands:
+  - cargo build
+  - cargo nextest
+  - ./gate.sh
+```
+A simple command of a worker's shell call runs a pattern when its words, from its program on, begin with the pattern's; a pattern's program with no `/` matches a program by its file name, so `cargo build` matches `~/.cargo/bin/cargo build --release` but not `cargo fmt`. The guard refuses such a call outside `afkconvoy exclusive`, naming the pattern and the line to run instead (`afkconvoy guard --help`): `cd server && cargo nextest run -p x` is refused for `afkconvoy exclusive -- cargo nextest run -p x`, and allowed so wrapped. What `afkconvoy gate`, `land` and `cut` run is never refused: it already queues. Each pattern is nonempty and declared once. The answer has them as {"heavy_commands"}, a list, where the file declares any; a repo that declares none sees no change.
+
+Where a budget is declared, the answer also has `gate_budget_seconds`. The last {const:SLOW_GATE_LANDINGS} recorded landings on one host must each exceed it to warn through the existing slow-gate issue and doctor finding. Without it the warning threshold stays {const:SLOW_GATE_PERCENT}% of `gate_seconds`. A warning neither ends nor fails a gate.
+
+A repo whose config names a team is a bound repo, and answers three keys more: {"team", "patrols", "intake_limit"} — the team's directory as owner/repo or owner/repo/path (a whole repo, or a subdirectory of one), which of its patrols run here, by name (default none; `afkconvoy check` holds them against the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in by workers may be open (default {const:INTAKE_LIMIT}). A config names no harness: what each worker runs is its team's `roster`'s to say (`afkconvoy help roster`), within what the host kit holds (`afkconvoy kit --help`). A repo that names no team is unbound and answers the seven above and one legacy key: {"escalate_to"}, always `human`. Existing `consult` values still load, but every hand-off escalates for the host's watch to answer. Only a consult explicitly named by a bound repo's stage is asked before escalation (`afkconvoy help humans`).
+
+Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored. Where it splits its gate, one more: {"gates": {"fast", "slow"}}, each {"command", "seconds", "budget_seconds"}.
+
+Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish` and `initial`, lacks a required step, a step names nothing to run, or `initial` is not X.Y.Z; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml heavy-commands block has a key but `commands`, an empty pattern or one declared twice; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout", or git's own words for a checkout it refuses.
+
+## What trips you up
+
+- It reads the config only. Whether the team it names loads is `afkconvoy check`.
+- It reads the file as it is in this checkout, committed or not. A worker reads the one in its own worktree, cut from its target branch. The destination remains pinned even if that file names a different configured base."#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

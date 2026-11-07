@@ -398,3 +398,30 @@ fn other_than(worktree: &Worktree, now: u64, target: Harness, landed: &mut bool)
         }
     }
 }
+
+/// What `afkconvoy switch --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+`afkconvoy switch --harness codex` moves Codex to the front of the host kit. Run it anywhere, with no repo or instance required. A checkout that names no harness follows this order. A checkout that names a harness keeps that name: switch does not change it, and does not continue that checkout's workers onto the kit's new first. `--all` skips those checkouts. To change priority again, switch again. The kit itself has no separate choice to clear. A checkout's harness is cleared with `afkconvoy run <checkout> --harness default`.
+
+## Who runs it
+
+The operator, on the host whose kit and workers are being changed.
+
+## What it reads and writes
+
+A known harness that is installed but absent is added first on its stock worker launch command, with no model, so workers start on its login's default at once. This includes one the operator removed with `afkconvoy kit --remove`: the switch clears its removal and puts it first, after which relisting, daily refresh and launch discovery keep it as an ordinary entry. The answer comes within seconds, before that harness is listed or researched. Only after the answer does a background refresh list it and hand its listing to research, preserving the order this switch set. No model is sent a prompt: newly listed models are `research pending`, and its workers stay on the default until research places them with dated sources. If the added harness cannot start a worker, the answer's start_fault says why and doctor names the same fault. Unknown or uninstalled harnesses, and existing entries that cannot start, are refused before the kit changes.
+
+`afkconvoy switch --model sonnet` accepts any listed id or researched name of an existing placed model, moves it first within its harness and moves that harness first. A name matching several harnesses or models is refused with candidates; an unknown name is refused with nearest names, leaving the kit unchanged. Repeating a switch is idempotent. Commands, model contents, research and the relative order of other models and harnesses stay intact. Rebuilds, daily refresh and new-model research preserve these orders; new discoveries follow established models. Ticket labels and team rosters are untouched. Role limits still constrain candidates. Paused candidates are skipped without reordering the kit, and become eligible again after a successful recovery probe. A switch with no target leaves running workers alone.
+
+--all continues workers across every checkout on this host's checkout list that names no harness. A checkout that names one is left as it is, workers included. ISSUE or --patrol on a checkout that names one records nothing moved. --instance may identify the owner of a claim in a checkout that names none. Each continuation keeps its claim, stage, worktree, branch, uncommitted work, PR and breaker counts. Its brief includes the previous output. A failure is reported and other workers continue. An old worker that cannot be confirmed stopped is never given a second writer. Every moved worker's answer and tick-log line name every harness ahead of its actual successor, why it was skipped, and what would make it eligible. To remove the harness those workers are on, move them first with `afkconvoy switch --all --harness <harness>`; `kit --remove` refuses while any live fleet worker remains on it and never ends one.
+
+
+## What it answers
+
+{harness, model, path, order_before, order, changed, added, restored, start_fault, switched, failed}. model is the promoted id, or null for a harness-only switch; added says whether a missing harness was inserted; restored says whether this switch cleared an operator removal. Each moved worker has {from, to, skipped}, where skipped holds {harness, why, fix} for every earlier candidate. Each failure names its checkout and worker. A successful fallback reports the actual harness.
+
+## What trips you up
+
+--all is machine-wide, even when --instance is supplied. --clear is removed: switch to the harness you want first instead. Old repository choice files are ignored. Only `switch --harness` restores an operator-removed harness; a pause, probe, relisting, daily refresh or launch discovery never does."#;

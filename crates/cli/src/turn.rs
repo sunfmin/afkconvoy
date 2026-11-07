@@ -532,6 +532,60 @@ pub(crate) fn ensure_base(pr: &PullRequest, target: &str) -> Result<()> {
     Ok(())
 }
 
+/// What `afkconvoy land --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+After the PR is open and all changes are committed: `afkconvoy land <n>` or `afkconvoy land --issue <n>`. A watch uses `land --watch` for its own PR. Cuts take the same turn automatically.
+
+A bound repo's landing worker can stop with `afkconvoy verdict blocked --issue <n> --stage land --blocked-by <issues> --text-file <file>` when another issue must be fixed first. The fleet parks its claim on open blockers and returns it to Landing when they all close. `verdict escalate --issue <n> --stage land --text-file <file>` hands it to a human, with the PR and branch kept; `afkconvoy rule` returns the issue to Landing after the cause is resolved.
+
+## Who runs it
+
+An issue's worker in its own worktree; in a bound workflow its landing worker after the last stage passes. A watch uses its own linked checkout named {const:WATCH_CHECKOUT}, with an optional numeric suffix. Other watch checkout names are refused.
+
+The issue's claim is checked live first. If another host holds it, the command refuses: `the claim on #N is held by instance X on host H since <ts>: this worker's work was taken; stop`. No candidate, gate record or landing is written. Ownership uses the host's name from its host settings, regardless of --host; a new instance on the same host keeps its workers.
+
+## What it reads and writes
+
+A task uses its pinned target branch (`afkconvoy target --help`), or resolves the configured base when it has no target. Its PR must actually name that base; a wrong base, missing branch or unreadable target refuses without falling back. Each repo and target has its own candidate chain and landed commits. Watches and cuts retain the configured base.
+
+{const:REMOTE_READS}
+
+A turn preserves the PR's original head and atomically assigns a candidate merged onto the certified base or its preceding candidate. Each candidate must gate that exact commit in its own worktree, and its gate run is recorded green against it. A gate-record push that does not end within 30 seconds is killed with its process group: `not_recorded` says so, the candidate is not green, and queued work can take its lane. With free worker lanes, candidates of the same repo validate concurrently; green successors wait for their exact predecessors, then push that commit to the target branch as a fast-forward without another gate. A candidate holds a worker lane only while it builds and runs its gate; the window has no bound of its own, but for barriers and unconfirmed cancellation. A light gate keeps its repo lane. Committed source changes are pushed to the PR first; candidate merges never move that source branch. The merge message names the PR and issue or watch. Landing closes the issue; the tick settles its claim and source worktree. Once the landing is published, a failure to close the issue or write its work account does not turn the answer into an error: it is `merged`, with the failure in `settle_error`, and the tick settles the issue; a close GitHub refuses while it closes the issue itself, as a merged PR that says `Closes` it, is a close.
+
+Where the candidate's commit declares a ```yaml gates block (`afkconvoy config --help`), the candidate runs the fast gate, not `gate_command`, and waits fast-green for a round. A round is as big as the PRs that are ready: a turn that asks to land is on the candidate record as pending while it waits for a worker lane, and a fast-green candidate frees its lane. When no turn is pending and every candidate of the chain is fast-green, the turn of the chain's last candidate, the round's tip, takes a slow lane and runs the slow gate once on its commit, in its worktree; a PR that asks meanwhile waits for the next round. Green, the whole gate is put on record for the tip's tree from its fast and slow runs, and one atomic push lands every candidate up to the tip; each of their turns answers `merged` and closes its own issue. Red is not split to find whose change failed: the tip's turn answers `gate_red` with `gate` slow and `round`, the round's PRs and issues, and merges the round's tip into its branch, so its worker fixes the round from those issues and the failing tests and asks again; every other candidate of the round answers `round_red` and stops, its change carried by the tip's PR, and its issue is settled from the merge commits on the target branch once that lands. A merge onto the candidate ahead that conflicts is left in the worker's worktree to resolve, as `speculative_conflict`: the worker's branch then carries that candidate. If a fast-green candidate's owner exits on this host after its gate processes are confirmed stopped, the next turn of the same PR and original head adopts it with its recorded evidence and successors intact; a running gate is never adopted.
+
+Candidate worktrees are kept in `candidates/<repo-key>/<candidate-id>` under the host's cache directory (`afkconvoy help cache`), outside the checkout: a gate's tools discover the candidate's own configuration without finding the checkout's above it. The repo key hashes the canonical common git directory, so all worktrees of one repository share a root and separate clones have separate roots.
+A cache configured inside any checkout is refused before reserving a turn or assigning a candidate. Choose a cache outside every checkout (`afkconvoy help cache`) and run `afkconvoy land` again.
+
+Once a candidate has stopped — landed, red, or cancelled with its processes confirmed gone — its worktree is removed. Removal accepts only that repo's candidate root and the earlier `convoy-candidates` root in its common git directory, so a candidate left by an older version is removed too. The candidate chain keeps the gate evidence: the phase, the cause and the gate excerpt, and a recorded gate run stays on the remote. A directory left behind after git dropped the registration is removed too, including when a directory inside it is not writable by its owner. A candidate that is building, validating, green and waiting on its predecessor or for a round, slow-gating, or cancelling, keeps its worktree. A worktree a process still has as its working directory stays until that process is gone, and a later tick removes it. The issue's, watch's or cut's own worktree is left, and the candidate chain is not rewritten.
+
+The remote candidate record holds original head, predecessor, commit, tree, gate declaration, owner, process group, validation and cancellation. Publication rechecks validity, the PR's actual base, head, predecessor landing, issue blockers, fleet locks and the green record, then atomically fast-forwards the exact tested candidate, or a round's tip with every candidate it lands, and its state. No force push or extra merge is used; a round's slow gate is the one gate of more than one candidate. Known candidate advances preserve successors; an outside base move or changed PR head invalidates the affected suffix. Cuts, watches, fleet-lock repairs and base certification drain the candidate window and run as serial barriers.
+
+Failure invalidates the dependent suffix before terminating its running gates and children. Their lanes remain occupied until exit is confirmed. Cancellation does not record a dependent worker's gate as failed or increase its rework count. A later turn rebuilds from preserved original heads and the last landed base, respecting issue blockers. Gate startup waits until its group is recorded; inherited kernel lane leases prevent duplicate capacity after runner or owner death. Interrupted cancellation is completed on the owning host. Another host's processes are never signalled from here, but that host is dead once nothing of it said it was alive within the lease, {const:LEASE_MINUTES} minutes: none of its turns stamped the candidate record, which each does at least every {const:BEAT_EVERY_MINUTES} minutes while it waits, and no fleet instance of it beat on this remote. The next turn on another host takes over what a dead host holds on the chain: its candidates are cancelled `owner_died` with their suffix and no longer hold the chain, unconfirmed, and its pending turns and barriers are dropped. A turn of that host that comes back learns it at its next look at the chain: it stops its own gate and answers `cancelled`, cause `owner_died`; one still waiting for a candidate takes a place again, at the back. A successful base push records its landed prefix atomically, and its merge commit lets recovery settle the issue after a crash.
+
+Publication uses an explicit atomic Git receive-pack transaction so an unchanged source head is verified alongside the base and candidate record. Normal git push omits that unchanged-ref condition. Local remotes use git; SSH origins use their existing SSH login. A GitHub HTTPS origin publishes through GitHub's all-or-none `updateRefs` after a plain `git push` carries the objects: `gh` must be logged in with write access and git's credential helper must give that login (`gh auth setup-git`). No token is read or handled. Other HTTP transports require an SSH origin. Failed authentication or missing atomic capability refuses before any ref update is sent.
+
+A watch finds its branch's PR through REST, and every turn checks fleet locks through REST. Exhausted GraphQL quota alone therefore does not prevent a watch from landing its repair; an unreadable lock listing still refuses the turn.
+
+An unrecorded base tip is gated alone in a separate checkout using its own gate declaration. While it is red, ordinary turns wait outside worker lanes. The fleet opens a dispatchable fleet-lock issue for its repair. That issue's worker alone may take a turn on the red tip, and must still gate its complete merge green before landing. A standing fleet lock allows only its issues to land.
+
+## What it answers
+
+{"outcome", "pr", "commit", "merged", "candidate", "predecessor", "target_branch", "status", "recorded", "detail", …}. issue or watch identifies whose PR it is. merged and predecessor name the assigned predecessor; commit is the exact candidate landed. status and recorded describe the gate, with head, command, exit_code, timed_out, seconds and excerpt. doctor and the panel expose the same candidate lifecycle with validation, predecessor, waiting and cancellation cause.
+
+{const:LAND_ENDINGS}
+
+Errors are {"error": …} with non-zero exit: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
+
+## What trips you up
+
+- The turn owns its lane through landing. Never run gh pr merge or push the base branch yourself.
+- A rejected push ends the turn; no untested merge is silently retried.
+- A standalone gate before review lands nothing. Only the landing worker of a bound workflow takes the turn after review.
+- A conflict remains in progress. Commit its resolution before asking again."#;
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;

@@ -271,3 +271,29 @@ pub fn watch(
         }
     }
 }
+
+/// What `afkconvoy restart --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+To replace a silent worker by hand. A tick does this on its own, once, for a claim whose PR is open and not on the base branch, and whose worker stopped, was nudged, and stayed silent. Do it yourself when a plan keeps showing such a claim under `mine` as `landing`.
+
+## Who runs it
+
+The operator, in a checkout of the repo, on the host the worker runs on.
+
+## What it reads and writes
+
+It records the restart in the fleet's comment on the PR, then starts a new worker in the same worktree, briefed only to land in a turn — in a bound repo, in the landing role of the issue's workflow. The PR, the branch and the worktree are untouched.
+
+## What it answers
+
+{"issue", "pr", "action": "restarted", "restarted", "terminal", "prompt"} — restarted is the time, in epoch seconds; prompt is the brief the new worker got.
+
+Errors, each with nothing changed: "has no stopped worker" — the instance holds no claim on the issue, its worker is at work or gone, or the issue has no open PR; "is not restarted" — the PR's landing worker already had its restart, the worker was not nudged yet, or it showed a sign of life within the grace period; the claim is another instance's.
+
+## What trips you up
+
+- `--instance` is required, and must be the instance that holds the claim.
+- One restart per PR. A worker silent again after it is escalated by the next tick.
+- It is not `dispatch`: for a claim with no PR, continue it with `dispatch`."#;

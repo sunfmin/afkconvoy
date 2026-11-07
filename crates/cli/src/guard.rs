@@ -161,6 +161,75 @@ fn whom(read: &OnHost, pid: u32) -> Process {
     }
 }
 
+/// What `afkconvoy guard --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+Never by hand. Every worker and the watch ask it before each tool call. Outside a bound stage, --terminal-input-only checks input to the asking Terminal without requiring stage facts. Bound workers also check what their stage may not do. Read this to learn what a worker is refused, or why one was.
+
+## Who runs it
+
+Claude Code, as a hook: the fleet adds it to every worker of a bound repo as it starts it, whatever the role's repo holds, and Claude Code runs it before each tool call the worker makes. A call it refuses is not made.
+
+pi, through an extension of afkconvoy's own, named on the line that starts a pi worker: pi hands it each tool call before making it, it asks this command, and a call this command does not allow — one it refuses, and one it could not be asked of — is not made. A pi worker whose extension is not there does not start.
+
+Codex, as a hook too, said on the line that starts a Codex worker and kept in no file: Codex runs it before each tool call. Codex makes a call whose hook fails in any way but one, so the hook turns every answer but an allowed call into that one: a call this command refuses, and one it could not be asked of, is not made.
+
+DSH, through a plugin of afkconvoy's own, which the overlay on the line that starts a DSH worker loads last: it asks this command before every tool call. A DSH worker whose plugin is missing or broken does not start.
+
+What each harness's worker is started with, the guard among it: [`afkconvoy help worker-launch`](help:worker-launch).
+
+A role's own limits are hooks in the role's repo — for pi, extensions there. They load because the worker starts there, run beside this one, and refuse in the same way.
+
+## What it reads and writes
+
+It writes nothing. It reads two things, and a third for a watch that would end a process:
+
+Standard input: one tool call, as Claude Code describes it to a `PreToolUse` hook — a JSON object with `tool_name` and `tool_input`. Only a `Bash` call is judged, by the words of each simple command of its `tool_input.command`. pi's is described as pi describes it to an extension — `toolName` and `input` — and only a `bash` call is judged, the same way. Codex describes its own as Claude Code does, and a `Bash` call is judged; its `apply_patch` hands the text of a patch as `tool_input.command`, which is no shell line and is not judged as one. DSH describes a call with `name` and `arguments`: `bash` and `bash_persistent` are judged by `arguments.command`. What is refused is decided once, for all.
+
+The environment: the facts of the worker's stage, which the fleet put there when it started the worker — AFKCONVOY_STAGE, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL — and, for a selected task destination, AFKCONVOY_TARGET_BRANCH, protected alongside the configured base — and AFKCONVOY_HARNESS, the harness that asks: how the call is described is its own. A watch names its host in AFKCONVOY_WATCH, in place of a stage, and HOME, the home folder it reads paths under.
+
+The host's processes, as `ps` says them, and the host runner's pid, as its lock says it: whom each process a `kill` names is. The fleets of this host started a process carrying a worker's `TMPDIR` — the link a fleet made for it (`afkconvoy help worker-launch`), or the own one (.afkconvoy-tmp) of a worktree they put a worker in — or one under either, as a gate sets, and every process under one of those, or left behind by one.
+
+Refused for every worker:
+
+- input to the asking session's Terminal (`orca terminal send`, including raw text, Enter, interrupts and retried prompts). The current handle comes from the asking launch record, never its title or directory. The host runner's own deliveries run outside worker hooks; the asking session itself is exempt by its runtime Terminal identity. Input to another Terminal is unchanged.
+- adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
+- writing a stage record by hand: only `afkconvoy verdict` writes one
+- writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
+- writing a work account or a worker start by hand: the fleet writes each, and a worker writes neither
+- merging a PR (`gh pr merge`, or the merge endpoint through `gh api`)
+- pushing the base branch (`git push` with a refspec that lands on it, `--all`, `--mirror`)
+- running one of the repo's heavy commands outside the host's exclusive queue: a simple command whose words begin with a pattern its config's `yaml heavy-commands` block declares (`afkconvoy config --help`), unless it is `afkconvoy exclusive …`. The reason names the pattern and the line to run instead, `afkconvoy exclusive -- <the command>`. The declaration is read from the worker's worktree, the one its `TMPDIR` links to, bound worker or unbound alike, even with --terminal-input-only; a session with no such `TMPDIR`, and the watch, have none. A block that cannot be read refuses every shell call, naming the fault. What `afkconvoy gate`, `land` and `cut` run is no tool call and already queues: it is never refused.
+
+Refused besides in a stage its workflow marks `writes: false`, for every consult, and for a patrol's worker (AFKCONVOY_PATROL, in place of a stage's facts):
+
+- committing and pushing (`git commit`, `merge`, `cherry-pick`, `revert`, `am`, `push`)
+
+A watch is no consult: it is the operator on its host, started so that the fleet's work goes on (`afkconvoy run --help`). It commits, pushes a branch of its own and changes the host, whatever the facts of its role say. It is held instead to the bounds of any unattended worker — refused, beside what every worker is:
+
+- ending what the fleets of this host did not start: `kill` of a pid that is no worker's, watch's process, nor one they left behind; of the host runner; of what names no pid the guard can read — a variable, a process group; and `pkill` and `killall`, which end whatever a name matches, the user's own among them
+- deleting what cannot be rebuilt: `rm`, `rmdir`, `unlink` or `shred` of a path that is, or holds, model weights, downloads, media, Docker's images or the user's own files under the home folder, or of a path outside it but for the system's temporary files; a path it cannot place — relative, or named by another variable — is its own to place
+- deleting a change no commit holds: `git clean` without `-X`, `git worktree remove --force`, `git reset --hard`, `orca worktree rm --force`
+- a force push: `--force`, `-f`, `--force-with-lease`, or a refspec that begins with `+`
+- stopping the host runner, or taking a checkout off its list: `afkconvoy stop`
+
+## What it answers
+
+Unlike every other command, no JSON: it answers Claude Code the way a hook does.
+
+- exit 0, nothing printed: the call is allowed
+- exit 2, a line on stderr: the call is refused; the line is the reason, and Claude Code shows it to the worker — as pi does, given it by the extension, and Codex
+
+A call it cannot read, an environment that lacks one of the stage's facts, or one that names no harness there is, is refused with the reason: nothing is allowed unread.
+
+## What trips you up
+
+- Heredoc bodies and quoted arguments are data, not commands: a report may name `rm` or `git worktree remove`, and a read-only `gh` call may search for stage or intake records with `--jq` or `--template`. Sending a handwritten record through a writing `gh` call is still refused, including through a heredoc. The argument after `sh -c` or `bash -c` is executable shell text and is judged as commands.
+- It recognises commands. The same act wrapped in a script, hidden in a variable or in a substitution inside quotes gets past it: it stops a worker that errs, not one that means to get by.
+- What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a patrol's final commit not on the base branch, working-tree changes, or a PR is a failed run, reported to a human — see `afkconvoy tick --help`.
+- Unbound workers and the watch carry only the asking Terminal input guard, and the heavy-commands guard above. The opaque launch command stays intact; the harness adds its hook, extension or plugin. The asking session starts without this guard."#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1223,3 +1223,37 @@ pub fn brief(repo: &Repo, issue: u64) -> Result<String> {
         d.jira, d.branch, d.final_target
     ))
 }
+
+/// What `afkconvoy delivery --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+Run `afkconvoy delivery -C <checkout> --jira https://example.atlassian.net/browse/ABC-123 --final-target <branch> --issue 7` before making the first task dispatchable. The checkout names the code repo. Repeat with another --issue to attach another open task. Omit --final-target and --issue for read-only inspection. Repeat the creation command to reconcile pending final review.
+
+For discussion and decomposition, create the delivery once without --issue, take its returned `delivery` identity, and use `afkconvoy flows --delivery <identity>`. Its line opens a non-runnable task; its intake_line records membership and then enables dispatch. For example, create ABC-123 and ABC-456 with full Jira URLs and --final-target <branch>. Use ABC-123's flows line twice, then `afkconvoy intake --issue 11 --delivery <ABC-123-identity>` and the same for issue 12. Use ABC-456's line once and intake issue 13 with <ABC-456-identity>. In a bound repo add the chosen --workflow to each intake. Tasks 11 and 12 target ABC-123's delivery branch; task 13 targets ABC-456's. Their internal PRs land only there. Repeated delivery inspection lists their tracker issue identities without writing anything or creating tasks. `afkconvoy plan` and `afkconvoy doctor` answer `targets` with delivery membership, resolved target_branch, configured_base, whether it is pinned, and per-task errors; `afkconvoy show --issue <n>` also shows delivery and target_branch for a bound task.
+
+Run `afkconvoy delivery -C <checkout> --jira <url> --handoff` once every attached task has landed. It checks the whole attached set and what actually landed, gates the combined delivery against the current final target without publishing that merge, and marks the same final PR ready for a human. Repeat it after a new task, a new delivery commit, or a moved final target: an older green check does not certify later work. After a human merges or closes that PR, run it again to record what happened.
+
+## Who runs it
+
+The operator. Jira is an external reference; no Jira login or synchronization is performed.
+
+## What it reads and writes
+
+The full HTTPS Jira browse URL, including site and optional context path, and the code repo identify the delivery. Creation requires an explicit existing final target on origin and a private tracker. It atomically creates an immutable JSON definition at delivery/<identity> under the remote fleet ref layout and a predictable delivery/jira-<key>-<identity> branch at that target's tip. This definition alone owns both branches. Task target records store only a delivery reference. The repo defaults and release destination stay unchanged.
+
+A task cuts from the delivery branch and lands its internal PR only there. The final review PR is opened as a Draft as soon as a meaningful diff exists, after task landing or on an acting tick. No diff leaves creation pending without empty commits or PR attempts. Its number lives once in the subordinate delivery-pr/<identity> receipt. Each invocation discovers actual remote branches, records and all PR states first. Later tasks reuse the same final PR even after it is closed or merged. A human owns colleague review and merging the final PR; ordinary dispatch, landing, watch and recovery exclude it.
+
+`--handoff` reads the delivery definition, every attached task's issue state, claims, open internal PRs, blockers, landing candidates and linked worktrees, plus the delivery branch and the current final target. A green check records that snapshot at delivery-evidence/<identity>, updates the one final PR's body with the Jira reference, what each attached task came to and the verification evidence, and marks that PR ready. It does not open a second final PR, does not publish the merge to the final target, and does not change reviews. A conflict or a red gate leaves both branches as they are and returns the PR to draft without recording a green snapshot. A merged or closed final PR is observed once at delivery-settled/<identity>; repeating the observation does not write another record or remove other work.
+
+## What it answers
+
+{"jira", "delivery", "repository", "record", "branch", "final_target", "final_pr", "tasks"}, and "woke" after creation. final_pr is {number, url, state, draft, merged} or {pending: reason}; tasks lists the attached tracker issue identities. Inspection writes nothing and adds `handoff`, the read-only summary `plan` and `doctor` list under deliveries. Errors answer {"error": …} with a non-zero exit.
+
+`--handoff` answers {jira, delivery, branch, final_target, final_pr, tasks, ready, reasons, gate, settlement, discrepancy, delivered, reviews}, and "woke". tasks is each attached issue with `result` (implemented, not_planned, abandoned or incomplete) and blocking reasons. ready is true only when the evidence just recorded certifies those heads and what each task came to and the final PR is open and not a draft. reasons names every attached task that is not implemented, a conflict, a red gate, or a closed or incomplete merge. gate is {status, source, tree} after an aggregate check, or {status: red, detail} or {status: conflict}. settlement is the one observation, or null. delivered is true only when that observation is a complete merge onto the declared final target and still matches. reviews is "not changed". A task closed as not planned or abandoned is not implemented. An empty attached set is not ready.
+
+## What trips you up
+
+Ticket keys alone are not references: different Jira sites may reuse a key. An unrelated existing branch, conflicting final target, claimed task with another target, ambiguous PRs, unreadable record or missing owned branch refuses with a diagnostic. Restore inconsistent remote metadata before continuing attached tasks; nothing falls back to the configured base. A ticket spanning code repos has a separate delivery and final PR in each. To hand a task to the fleet, give it its ready or flow label after attaching it.
+
+A green gate of one task does not make the final PR ready. `--handoff` is the check of the whole delivery. The fleet, ordinary landing, recovery and watches do not merge the final PR because it is green or names a delivery. Closing it without a merge is not delivery: the observation says it needs action. A merge while an attached task is not implemented is a discrepancy, not delivery of the whole Jira ticket. A new task, a new delivery commit, or a moved final target makes an older snapshot not certify; run `--handoff` again. It withdraws readiness with `gh pr ready --undo` or marks the same PR ready with `gh pr ready`. It does not dismiss reviews."#;

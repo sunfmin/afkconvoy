@@ -92,3 +92,31 @@ pub fn recovery(fleet: &Fleet, number: u64) -> Result<Value> {
         "reason": found.plan.reason,
     }))
 }
+
+/// What `afkconvoy recovery --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+Before `dispatch` on an issue that was worked before: it shows what `dispatch` would continue from, and so what `--start fresh` would throw away.
+
+## Who runs it
+
+The operator, in a checkout of the repo, on the host the worker ran on — a worktree counts only where it is.
+
+## What it reads and writes
+
+It reads the issue's comments and the open PRs on GitHub, the issue's branches on the remote, and its worktree through orca. It changes nothing.
+
+## What it answers
+
+{"issue", "base", "worktree", "branch", "tier", "action", "prompt", "reason"}
+
+- `worktree`: {present, path, commits_ahead, dirty} — what is on this host
+- `branch`: {name, candidates, commits_ahead} — the issue's own branches on the remote, and the one a worktree would be recreated at
+- `tier`, `action`, `prompt`, `reason`: what `dispatch` would do, as `dispatch` answers it
+
+Errors: the config, GitHub or the remote cannot be read; the remote has no base branch; there is no such issue (`no such issue: #7 (HTTP 404)`), or GitHub says it was deleted or transferred.
+
+## What trips you up
+
+- It takes no `--instance` and looks at no claim: it answers for an issue nobody holds, and for one another instance holds."#;

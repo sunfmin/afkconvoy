@@ -845,6 +845,73 @@ fn workflow(loaded: &Loaded, workflow: &Workflow) -> Value {
     })
 }
 
+/// What `afkconvoy check --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+After every edit to a team's files, a role's skills or a repo's `team` key, and before a fleet is started on a bound repo: it says whether the team loads, and if not, every fault at once. Edit, run it, and repeat until it exits 0.
+
+## Who runs it
+
+The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere with `--team` or `--dir`.
+
+## What it reads and writes
+
+It writes nothing but a copy the fleet has not got yet (below). It reads a team's files, and of each role's directory which skills it holds and what each one's `SKILL.md` opens with, which harnesses it holds limits for, and whether a file of it would have a harness load other rules.
+
+What those files are, and every key of each: `afkconvoy help team`, `afkconvoy help workflows` and `afkconvoy help patrols`.
+
+Without a flag it reads the config of this checkout for `team`, and that directory from GitHub at the head of its repo's default branch — and holds the config's `patrols` against the patrols that team has.
+
+`--team owner/repo` or `--team owner/repo/path` names the team instead. `--dir <path>` reads a team's files from a directory as they are, committed or not. Every role is always read from GitHub, at the head of its repo's default branch. A directory says no repo, so a role it names as `./path` is a fault — unless `--team` beside `--dir` says which team on GitHub the files are an edit of: the role is then read from that repo.
+
+A repo on GitHub — the team's, and each role's — is asked for the commit at its head, and read from the fleet's copy of that commit: the one a worker's directory is taken out of, kept read-only under the cache directory (copies/<owner>/<repo>/<commit>): `afkconvoy help cache` says where that directory is on this host, and what moves it.
+
+Only a commit the fleet has no copy of yet is cloned, so a role pushed since the last run is read at its new head, and one that has not moved costs one question. A repo is asked and cloned once however many roles it holds, and a role in the team's own repo is read at the team's commit. The repos are read at once, not one after another.
+
+It reads this host's host kit (`afkconvoy kit --help`) for each role's range, and asks no harness anything: which models a harness knows is the host kit's to hold.
+
+## What it answers
+
+{"team", "path", "commit", "files", "escalate_label", "rules", "host_user", "dsh_profile", "split", "roles", "workflows", "patrols"} — what it read.
+
+`team` is the team's repo and `path` its directory there, "" for a whole repo — with `--dir`, the directory read and null. `commit` is the team's commit read, null with `--dir`; `files` the definition files read, each from the team's directory. `rules` is whether the team has rules of its own: a `CLAUDE.md` in its directory, which every one of its workers is given.
+
+`host_user` is whether its workers are given the host user's own skills and rules beside their role's: true unless the team file says `host_user: false`, and a value that is not true or false is a fault (`afkconvoy help roles`). It is each role's default.
+
+`split` is whether stage briefs offer splitting: true unless the team file says `split: false`. Anything but true or false is a fault (`afkconvoy help team`). `dsh_profile` is `fleet` (default) or `host-user`: which profile DSH workers load, independently of host_user. A role may say its own choice; check answers its effective dsh_profile and refuses every other value.
+
+Each of `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above", "limits", "roster", "range", "left_out", "unmatched", "nothing_safe"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the one the role's repo was read at; `host_user` whether its workers are given the host user's skills and rules — its own say, `{ dir, host_user, dsh_profile }`, or the team's; a key of that map but those three, or a `host_user` that is not true or false, is a fault; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its repo, as a path from the repo's root — but for the team's own `CLAUDE.md`, where the team's directory is above the role: those are the team rules, which a worker is given; `limits` the harnesses the role holds limits for — a hook or a denied permission in its `.claude/settings.json` for claude-code, an entry of its `.pi/extensions/` for pi, a hook in its `.codex/hooks.json` for codex, a `.dsh/cordis.patch.yml` overlay for dsh, a hook or denied permission in its `.kimi-code/limits.toml` for kimi, a hook or denied permission in its `.grok/config.toml` for grok; `roster` its entry in the team's roster, {"run": [{"harness", "model", "good_at"}]} with null for what it leaves out, and null for a role it names none for; `range` its range on this host, [{"harness", "models"}] in the order a worker takes them — the host kit whole for a role with no entry, or whose entry matches nothing in the host kit, less each harness the role holds no limits for while it holds limits for another, and null where this host has no host kit (`afkconvoy help roster`); `left_out` each harness its entry and the host kit allow it and its range leaves out, [{"harness", "why"}] — why `no limits for pi` — and null where this host has no host kit; `unmatched` what its roster entry allows and the host kit holds, where the entry matches nothing in the host kit — the role then ranges over the host kit whole — and null otherwise; `nothing_safe` why no worker of it can be started on this host, where it holds limits for no harness the host kit holds — its stages wait — and null otherwise. Each of `workflows` is {"name", "flow_label", "max_rework", "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is {"name", "by", "do", "writes", "escalate", "pass", "reject"}. `unmatched_models` lists each roster model matching nothing held, as {role, harness, model, holds, said}, with the nearest names or the two matches; a tick opens one issue for each in the team’s repo.
+
+Each of `patrols` is {"name", "by", "do", "every", "max_open", "max_runs_a_day", "max_landed_a_day", "runs_here"}: `every` in seconds, `max_runs_a_day` null where the file says none. `runs_here` is whether the config of this checkout names the patrol — false with `--team` and `--dir`, which read no config.
+
+A team with a fault: {"error", "faults"} and exit 1. `faults` holds every fault of the team, not the first: each {"file", "key", "problem", "see"}. `key` is a path from the top of the file's yaml, counting from 0 — `stages[1].on.reject` — and empty when the fault is the file itself. `see` is the command that prints the help topic describing that file, to run as it is: `afkconvoy help workflows` for a workflow's, `afkconvoy help patrols` for a patrol's, and `afkconvoy help team` for the team file — a role is named there, and that topic says what its directory holds — and for the config's keys that bind the repo. A fault in a file no topic describes has no `see`.
+
+A fault is one of: an unknown key, or one written twice; a wrong type; a duplicate stage name; a stage named `land`, `done` or `human`; a `pass` or `reject` that names no stage; a `reject` to its own or a later stage; a stage no path from the first reaches; a stage whose passes never come to `land` or `done`; a `pass: land` with no `land:`, or a `land:` no pass leads to; a role the team file does not name; a role named as none of owner/repo, owner/repo/path and ./path; a role's path with a `..`, or an absolute one; a role whose repo cannot be read, or whose path is no directory at its head; a role's directory that is the team's or contains it, or is inside the team's `workflows/` or `patrols/`; a role's directory that contains another role's or is inside one — two names for one directory are none; a symlink in a role in a subdirectory that leaves the role's directory; a file in a role's directory that a harness would load in place of `CLAUDE.md`, its rules under every harness — pi `AGENTS.override.md`, `AGENTS.md` or `AGENTS.MD`, Codex `AGENTS.override.md` or `AGENTS.md` — the fault naming the file and each harness that would load it, whatever harnesses the role may run; a role's limits that cannot be read; a skill its role's directory does not hold; a missing `by`, `do` or `on`; a `harness` or a `model` in a stage or a patrol, which name none any more — the fault says the line to delete and the roster entry to write in its place; in the `roster`, an entry for a name that is no role of the team, a `run` that is missing or empty, a `harness` that names no harness, or an allowance written twice; a flow label two workflows take, or one that is the team's escalate label, the repo's lock label or an epic label — under `label`, or the file where it is the `flow:<name>` it names none in place of; a patrol file whose name is not a patrol's; an `every` that is no duration; a missing `every` or `max_open`; and — in the config, {const:CONFIG_FILE}, under `patrols` — a name the team has no patrol for.
+
+A team that loads is then held to its harnesses, and these are faults too, each with its file and key, all at once:
+
+- A skill a worker is asked to perform whose file is not in the form every harness reads a skill in: its directory holds no `SKILL.md`, or one that opens with no frontmatter, or whose frontmatter says another `name` than the directory's, or no `description`. The key is the `do` that names the skill — `stages[1].do`, `stages[1].escalate.do`, `land.do`, a patrol's `do` — and each `do` that names it has the fault. The form is in `afkconvoy help skill-file`. A skill no `do` names is not held to it.
+- A roster entry that lets a role run a harness it holds no limits for, while it holds limits for another: the fault names the role and both harnesses, and its key is that `harness` of the entry (`roster.dev.run[1].harness`). A role with no limits at all is no fault. A role the roster names no entry for ranges over the host kit, less what it holds no limits for: that is no fault, and `left_out` names it.
+
+A warning, on stderr, for each workflow whose file says nothing above its yaml block: that prose is what `afkconvoy flows` answers as what the workflow is for, and whoever hands the fleet work chooses a workflow by it. The team loads all the same.
+
+A note, on stderr, for each role with something in `above`: a session opened by hand in the role's directory loads those rules too, and a worker, given the role's directory alone, does not. The team loads all the same, and it exits 0.
+
+A note, on stderr, for each worker on codex whose role holds an `.agents/skills/` or a `.codex/skills/` itself, the skill the worker is asked to perform not in either: Codex finds skills there and not in `.claude/skills/`, the fleet leaves what a role holds there as it is, and the worker would not be shown that skill. A role that holds neither is given a link to its skills, in the fleet's copy, and nothing is noted. The team loads all the same, and it exits 0.
+
+A note, on stderr, for a team whose directory holds a `.claude/`: the hooks and skills there are loaded by no worker. Of a team's directory a worker is given the rules, and a hook and a skill are a role's. The team loads all the same, and it exits 0.
+
+Other errors, as {"error": …}: the repo's config names no team and no flag was given; the config cannot be read, the error naming its file and the key — a `harness` there is one, which a config names no more; the team's repo cannot be read, or the team's path is no directory at its head.
+
+## What trips you up
+
+- From GitHub it reads what is pushed to the default branch. An edit in a checkout of the team is checked with `--dir`; a role's is checked only once it is pushed, wherever the role is — in the team's own repo too.
+- A role's `range` is this host's: run `check` on the host the fleet runs on, after `afkconvoy kit`.
+- Only `check` holds a team to its harnesses, and a skill's file to its form: a tick loads the team and starts its workers without asking again.
+- Following `pass` alone from any stage must end. A loop back is made with `reject`, which the breakers count; a loop of passes nothing would ever stop.
+- A stage nothing leads to is reported only once every `pass` and `reject` names a stage: fix those first and run it again."#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
