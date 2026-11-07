@@ -1248,7 +1248,7 @@ fn exclusive(out: &mut String, host: &Host) {
         }
         out.push_str("<ul class=\"cards\">");
         for request in requests {
-            let class = if request.ticket.ran.is_some() { "busy" } else { "queued" };
+            let class = if request.ticket.running() { "busy" } else { "queued" };
             let _ = write!(
                 out,
                 "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\

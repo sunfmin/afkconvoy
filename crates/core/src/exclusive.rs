@@ -10,6 +10,8 @@
 //! runs in a slow lane of its own (docs/adr/0048): a round's slow gate is
 //! counted apart from the worker lanes, where the round's turns wait.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 /// One `exclusive` command in the queue, as its ticket says it.
@@ -56,6 +58,63 @@ pub struct Ticket {
     pub asked: u64,
     /// When it began to run; `None`: it waits.
     pub ran: Option<u64>,
+}
+
+impl Ticket {
+    /// Whether its command runs: its turn was granted, and it has not left
+    /// the queue. Every other ticket waits.
+    pub fn running(&self) -> bool {
+        self.ran.is_some()
+    }
+}
+
+/// The queue's running work, as one reading of the process table finds it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Work {
+    /// The process of each running ticket, and every process under one of
+    /// them (`under`).
+    pub pids: BTreeSet<u32>,
+    /// Whether the reading holds the process of every running ticket. One
+    /// that left the reading before it was taken leaves the work it ran
+    /// unfound.
+    pub whole: bool,
+}
+
+/// The work `queue`'s running tickets run, by the reading `table` of the
+/// process table: each process's pid and its parent's.
+pub fn running_work(queue: &[Ticket], table: &[(u32, u32)]) -> Work {
+    let mut roots: Vec<u32> = Vec::new();
+    let mut whole = true;
+    for ticket in queue {
+        if ticket.running() {
+            roots.push(ticket.pid);
+            whole = whole && table.iter().any(|(pid, _)| *pid == ticket.pid);
+        }
+    }
+    Work { pids: under(&roots, table), whole }
+}
+
+/// `roots`, and every process of `table` under one of them: its parent is
+/// one, or under one, as the reading says each process's parent. A process
+/// whose parent ended was handed to another, and is under that one alone;
+/// a pid used again, after the process that had it ended, is under whatever
+/// started the new one. A reading taken while processes end and start may
+/// say a loop of parents, which is followed once.
+pub fn under(roots: &[u32], table: &[(u32, u32)]) -> BTreeSet<u32> {
+    let mut children: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for &(pid, parent) in table {
+        children.entry(parent).or_default().push(pid);
+    }
+    let mut found: BTreeSet<u32> = roots.iter().copied().collect();
+    let mut next: Vec<u32> = roots.to_vec();
+    while let Some(pid) = next.pop() {
+        for &child in children.get(&pid).into_iter().flatten() {
+            if found.insert(child) {
+                next.push(child);
+            }
+        }
+    }
+    found
 }
 
 /// One of the two gates a repo's gate is split into, as a ticket names the
@@ -212,12 +271,12 @@ pub struct Scheduling {
 /// each other. Pausing prevents every new grant.
 pub fn scheduling(queue: &[Ticket], lanes: Lanes, paused: bool) -> Vec<Scheduling> {
     let ordered = in_order(queue.to_vec());
-    let mut admitted: Vec<&Ticket> = ordered.iter().filter(|t| t.ran.is_some()).collect();
+    let mut admitted: Vec<&Ticket> = ordered.iter().filter(|t| t.running()).collect();
     let mut decisions: Vec<Scheduling> = admitted
         .iter()
         .map(|ticket| Scheduling { number: ticket.number, state: State::Running, reasons: vec![] })
         .collect();
-    for ticket in ordered.iter().filter(|t| t.ran.is_none()) {
+    for ticket in ordered.iter().filter(|t| !t.running()) {
         let decision = reservation(ticket, &admitted, lanes, paused);
         if matches!(decision.state, State::Eligible) {
             admitted.push(ticket);
@@ -295,7 +354,7 @@ fn holders(tickets: &[&Ticket]) -> Vec<Holder> {
         .iter()
         .map(|ticket| Holder {
             number: ticket.number,
-            state: if ticket.ran.is_some() { State::Running } else { State::Eligible },
+            state: if ticket.running() { State::Running } else { State::Eligible },
         })
         .collect()
 }
@@ -569,7 +628,7 @@ pub fn snapshot(queue: &[Ticket], lanes: Lanes, paused: bool, now: u64) -> Snaps
             scheduling,
             ticket,
         };
-        if observed.ticket.ran.is_some() {
+        if observed.ticket.running() {
             result.running.push(observed);
         } else {
             result.waiting.push(observed);
@@ -580,7 +639,7 @@ pub fn snapshot(queue: &[Ticket], lanes: Lanes, paused: bool, now: u64) -> Snaps
 
 /// How many places of the lane [`lane`] names `named` are used.
 fn occupancy(queue: &[Ticket], named: &str, capacity: u64) -> Capacity {
-    let used = queue.iter().filter(|t| t.ran.is_some() && lane(t) == named).count() as u64;
+    let used = queue.iter().filter(|t| t.running() && lane(t) == named).count() as u64;
     Capacity { capacity, used, free: capacity.saturating_sub(used) }
 }
 
@@ -607,7 +666,7 @@ pub fn in_order(mut queue: Vec<Ticket>) -> Vec<Ticket> {
 /// Running commands first, then waiting cuts, then other waiters; each
 /// group keeps ask time and ticket order within its lanes.
 fn place(ticket: &Ticket) -> (bool, bool, u64, u64) {
-    (ticket.ran.is_none(), !ticket.cut, ticket.asked, ticket.number)
+    (!ticket.running(), !ticket.cut, ticket.asked, ticket.number)
 }
 
 /// Since when a worker in the worktree `dir` has waited in the queue — or run
@@ -988,5 +1047,57 @@ mod tests {
         assert_eq!(seen.waiting[0].scheduling.state, State::Waiting);
         assert_eq!(seen.running[0].elapsed_seconds, Some(50));
         assert!(!seen.waiting[0].ticket.command.contains("postgres"));
+    }
+
+    fn sorted(pids: BTreeSet<u32>) -> Vec<u32> {
+        pids.into_iter().collect()
+    }
+
+    #[test]
+    fn a_tickets_work_is_its_process_and_every_one_under_it() {
+        // a worker's harness 10, its gate 11, the gate's `afkconvoy exclusive`
+        // 12 running cargo 13 and rustc 14; 20 is another of its commands
+        let table = [(1, 0), (10, 1), (11, 10), (12, 11), (13, 12), (14, 13), (20, 10)];
+        assert_eq!(sorted(under(&[12], &table)), [12, 13, 14]);
+        assert_eq!(sorted(under(&[13, 20], &table)), [13, 14, 20]);
+        assert!(under(&[], &table).is_empty());
+        // a root the reading does not hold is still its own work
+        assert_eq!(sorted(under(&[99], &table)), [99]);
+    }
+
+    #[test]
+    fn a_child_handed_to_another_parent_is_under_that_one_alone() {
+        // 13's parent 12 ended: 13 was handed to pid 1, with 14 under it
+        let table = [(1, 0), (11, 1), (13, 1), (14, 13), (15, 11)];
+        assert_eq!(sorted(under(&[11], &table)), [11, 15]);
+        assert_eq!(sorted(under(&[13], &table)), [13, 14]);
+    }
+
+    #[test]
+    fn a_pid_used_again_after_its_process_ended_is_under_what_started_the_new_one() {
+        // 13 ran under the ticket's 12 and ended; its pid now names a process
+        // a shell, 30, started; and the reading caught a loop of parents as
+        // 40 and 41 ended and started
+        let table = [(12, 1), (30, 1), (13, 30), (40, 41), (41, 40), (42, 41), (43, 12)];
+        assert_eq!(sorted(under(&[12], &table)), [12, 43]);
+        assert_eq!(sorted(under(&[40], &table)), [40, 41, 42]);
+    }
+
+    #[test]
+    fn the_running_work_is_that_of_the_running_tickets_alone() {
+        let mut runs = ticket(1, "/a", 100);
+        (runs.pid, runs.ran) = (12, Some(100));
+        let mut waits = ticket(2, "/b", 110);
+        waits.pid = 20;
+        assert!(runs.running() && !waits.running());
+        let table = [(10, 1), (12, 10), (13, 12), (20, 10), (21, 20)];
+        let work = running_work(&[runs.clone(), waits], &table);
+        assert_eq!((sorted(work.pids), work.whole), (vec![12, 13], true));
+        // a running ticket whose process left before the reading was taken
+        let mut gone = ticket(3, "/c", 120);
+        (gone.pid, gone.ran) = (50, Some(120));
+        let work = running_work(&[runs, gone], &table);
+        assert_eq!((sorted(work.pids), work.whole), (vec![12, 13, 50], false));
+        assert_eq!(running_work(&[], &table), Work { pids: BTreeSet::new(), whole: true });
     }
 }
