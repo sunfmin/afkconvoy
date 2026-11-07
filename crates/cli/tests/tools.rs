@@ -98,7 +98,11 @@ fn remote_cli(world: &World) -> std::path::PathBuf {
     let dir = world.home().join(".orca/cli/bin");
     std::fs::create_dir_all(&dir).unwrap();
     let built = Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap().join("examples");
-    std::os::unix::fs::symlink(built.join("fake_orca"), dir.join("orca")).unwrap();
+    // a wrapper of absolute paths, as the runtime's is: a file of its own
+    let wrapper = format!("#!/bin/sh\nexec '{}' \"$@\"\n", built.join("fake_orca").display());
+    std::fs::write(dir.join("orca"), wrapper).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir.join("orca"), std::fs::Permissions::from_mode(0o755)).unwrap();
     dir.join("orca")
 }
 
