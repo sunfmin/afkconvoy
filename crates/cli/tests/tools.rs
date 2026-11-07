@@ -296,11 +296,12 @@ fn the_commands_that_make_one_transition_by_hand_check_no_tool() {
 /// start: each must be the line a refusal gives (the formula's: `release.rs`).
 #[test]
 fn the_readme_gives_the_install_lines_a_refusal_gives() {
+    use afkconvoy_core::harness::Harness;
     use afkconvoy_core::tools::Tool;
     let readme = include_str!("../../../README.md");
     assert!(readme.contains(&format!("`{}`", Tool::Orca.install())));
-    assert!(readme.contains(&format!("`{}`", Tool::Claude.install())));
-    assert!(readme.contains(&format!("`{}`", Tool::Pi.install())));
+    assert!(readme.contains(&format!("`{}`", Tool::Harness(Harness::ClaudeCode).install())));
+    assert!(readme.contains(&format!("`{}`", Tool::Harness(Harness::Pi).install())));
     assert!(!readme.contains("Homebrew does not"), "orca has an install line now");
     // …and the two an installed orca is refused with.
     let said = afkconvoy_core::tools::refusal(

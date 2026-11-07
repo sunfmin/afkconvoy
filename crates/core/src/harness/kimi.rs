@@ -20,6 +20,22 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const NAME: &str = "Kimi Code";
 pub(super) const KEY: &str = "kimi";
 pub(super) const PROGRAM: &str = "kimi";
+/// The line that installs it.
+pub(super) const INSTALL: &str = "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash";
+/// A session of it outside a role gets a home of its own.
+pub(super) const OWN_HOME_OUTSIDE_ROLE: bool = true;
+/// How it is asked whether it is logged in, and logged in.
+pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
+    question: "kimi provider list --json",
+    logged_out: "is not logged in or has no models configured",
+    line: "kimi login",
+});
+
+/// Whether the answer to its login question says it is logged in: it has a
+/// configured model.
+pub(super) fn logged_in(succeeded: bool, printed: &str) -> bool {
+    succeeded && models(printed).is_some()
+}
 /// Where it reads its user's global instructions, under the user's home.
 pub(super) const INSTRUCTIONS: &str = ".kimi-code/AGENTS.md";
 /// The agent `npx skills` installs its user's skills for.
@@ -785,5 +801,19 @@ pattern = "Bash(rm -rf*)"
         assert!(!shows_background(&screen(&["❯", "[1 tasks running]"])));
         assert!(!shows_background(&screen(&["❯", "[0 tasks running]"])));
         assert!(!shows_background(&screen(&[])));
+    }
+
+    #[test]
+    fn kimi_is_logged_in_when_it_has_a_configured_model() {
+        let kimi = Harness::Kimi;
+        assert_eq!(kimi.install(), "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash");
+        let login = kimi.login().unwrap();
+        assert_eq!((login.question, login.line), ("kimi provider list --json", "kimi login"));
+        assert_eq!(login.logged_out, "is not logged in or has no models configured");
+        let listed = r#"{"models":{"kimi-code/k3":{"display_name":"K3"}}}"#;
+        assert!(kimi.logged_in(true, listed));
+        assert!(!kimi.logged_in(false, listed));
+        assert!(!kimi.logged_in(true, "{}"));
+        assert!(kimi.own_home_outside_role());
     }
 }

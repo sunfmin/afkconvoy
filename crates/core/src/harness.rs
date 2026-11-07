@@ -22,7 +22,6 @@ mod kimi;
 mod pi;
 mod session;
 
-pub(crate) use grok::not_authenticated as grok_not_authenticated;
 pub(crate) use session::{epoch_number, parse_iso};
 
 /// A file or a directory of the host user's that a directory the host keeps
@@ -246,6 +245,19 @@ pub struct GoalRow {
     pub token_budget: Option<u64>,
 }
 
+/// How a harness is asked whether it is logged in, and what logs it in
+/// (`crate::tools`): what a start that finds it logged out names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Login {
+    /// The shell line whose answer says whether it is logged in
+    /// (`Harness::logged_in` reads it).
+    pub question: &'static str,
+    /// What it is said to be when it is not.
+    pub logged_out: &'static str,
+    /// The line that logs it in.
+    pub line: &'static str,
+}
+
 /// A harness the fleet can start a worker of a bound repo on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Harness {
@@ -377,6 +389,96 @@ impl Harness {
             Harness::Dsh => dsh::PROGRAM,
             Harness::Kimi => kimi::PROGRAM,
             Harness::Grok => grok::PROGRAM,
+        }
+    }
+
+    /// Whether `launch`, a worker launch command of it, runs it by its own
+    /// name: a harness is looked for only as that command's first word —
+    /// what a wrapper runs and logs in to is its own business.
+    pub fn runs_itself(self, launch: &str) -> bool {
+        crate::launch::first_word(launch) == Some(self.program())
+    }
+
+    /// The line that installs it.
+    pub const fn install(self) -> &'static str {
+        match self {
+            Harness::ClaudeCode => claude_code::INSTALL,
+            Harness::Pi => pi::INSTALL,
+            Harness::Codex => codex::INSTALL,
+            Harness::Dsh => dsh::INSTALL,
+            Harness::Kimi => kimi::INSTALL,
+            Harness::Grok => grok::INSTALL,
+        }
+    }
+
+    /// How it is asked whether it is logged in, and logged in; `None`: it
+    /// logs in to nothing a start asks about.
+    pub const fn login(self) -> Option<Login> {
+        match self {
+            Harness::ClaudeCode => claude_code::LOGIN,
+            Harness::Pi => pi::LOGIN,
+            Harness::Codex => codex::LOGIN,
+            Harness::Dsh => dsh::LOGIN,
+            Harness::Kimi => kimi::LOGIN,
+            Harness::Grok => grok::LOGIN,
+        }
+    }
+
+    /// Whether the answer to its login question (`Login::question`) says it
+    /// is logged in: whether that shell line `succeeded`, and what it
+    /// `printed`.
+    pub fn logged_in(self, succeeded: bool, printed: &str) -> bool {
+        match self {
+            Harness::ClaudeCode => claude_code::logged_in(succeeded, printed),
+            Harness::Pi => pi::logged_in(succeeded, printed),
+            Harness::Codex => codex::logged_in(succeeded, printed),
+            Harness::Dsh => dsh::logged_in(succeeded, printed),
+            Harness::Kimi => kimi::logged_in(succeeded, printed),
+            Harness::Grok => grok::logged_in(succeeded, printed),
+        }
+    }
+
+    /// The program besides itself a worker of it cannot start without, which
+    /// a start looks for once it is found ready: dsh-tui runs dsh's own.
+    pub const fn needs(self) -> Option<crate::tools::Tool> {
+        match self {
+            Harness::Dsh => Some(crate::tools::Tool::Dsh),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// Whether a session of it outside a role gets a home of its own: one
+    /// whose generated hook files a probe or asking launch must not write
+    /// into a home a worker or a watch shares.
+    pub const fn own_home_outside_role(self) -> bool {
+        match self {
+            Harness::Kimi => kimi::OWN_HOME_OUTSIDE_ROLE,
+            Harness::Grok => grok::OWN_HOME_OUTSIDE_ROLE,
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh => false,
+        }
+    }
+
+    /// The hosts its worker's login shell reaches without a proxy unless the
+    /// host says otherwise (`crate::proxy`); `None`: none.
+    pub const fn no_proxy(self) -> Option<&'static str> {
+        match self {
+            Harness::Dsh => Some(dsh::NO_PROXY),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// Where, under the directory a host keeps for it (`kept`), the package
+    /// of its installed program is linked, where one is; `None`: nowhere.
+    pub const fn kept_package(self) -> Option<&'static str> {
+        match self {
+            Harness::Dsh => Some(dsh::KEPT_PACKAGE),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Kimi | Harness::Grok => {
+                None
+            }
         }
     }
 
@@ -1450,6 +1552,29 @@ fn whole(listed: &[String], model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_harness_is_looked_for_only_as_the_first_word_of_its_launch_command() {
+        let claude = |launch| Harness::ClaudeCode.runs_itself(launch);
+        assert!(claude("claude --dangerously-skip-permissions"));
+        assert!(claude("  claude"));
+        // a wrapper, an alias that ends in claude, another agent, a path
+        for other in ["kim --yolo", "wrap claude", "aider", "/usr/local/bin/claude", "claudex", ""]
+        {
+            assert!(!claude(other), "{other:?}");
+        }
+        assert!(Harness::Pi.runs_itself("pi --thinking high"));
+        for other in ["wrap pi", "pip install", "/opt/homebrew/bin/pi", "claude"] {
+            assert!(!Harness::Pi.runs_itself(other), "{other:?}");
+        }
+        // …and only as its own harness's: pi starts no Claude Code worker
+        assert!(!claude("pi"));
+        let codex = |launch| Harness::Codex.runs_itself(launch);
+        assert!(codex("codex --dangerously-bypass-approvals-and-sandbox"));
+        for other in ["wrap codex", "codexx", "claude", "pi"] {
+            assert!(!codex(other), "{other:?}");
+        }
+    }
 
     #[test]
     fn a_model_is_probed_through_the_command_with_one_line_and_nothing_else() {

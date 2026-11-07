@@ -24,6 +24,22 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const NAME: &str = "Grok";
 pub(super) const KEY: &str = "grok";
 pub(super) const PROGRAM: &str = "grok";
+/// The line that installs it.
+pub(super) const INSTALL: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
+/// A session of it outside a role gets a home of its own.
+pub(super) const OWN_HOME_OUTSIDE_ROLE: bool = true;
+/// How it is asked whether it is logged in, and logged in.
+pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
+    question: "grok models",
+    logged_out: "is not logged in or listed no model",
+    line: "grok login",
+});
+
+/// Whether the answer to its login question says it is logged in: it does
+/// not say it is not, and names a model.
+pub(super) fn logged_in(succeeded: bool, printed: &str) -> bool {
+    succeeded && !not_authenticated(printed) && models(printed).is_some()
+}
 /// Where it reads its user's global instructions, under the user's home.
 pub(super) const INSTRUCTIONS: &str = ".grok/rules/AGENTS.md";
 /// The agent `npx skills` installs its user's skills for.
@@ -485,7 +501,7 @@ pub(super) fn shown(_answer: &str) -> Vec<(String, String)> {
 
 /// Whether a listing says the login is missing. A listing that is not logged
 /// in still names models, so the models alone do not say it is logged in.
-pub(crate) fn not_authenticated(answer: &str) -> bool {
+fn not_authenticated(answer: &str) -> bool {
     answer.to_ascii_lowercase().contains("not authenticated")
 }
 
@@ -978,5 +994,22 @@ hooks = [{ type = "command", command = "role hook", timeout = 5 }]
         );
         assert!(!text.contains("base_prompt"));
         assert!(system(&Told::default()).is_none());
+    }
+
+    #[test]
+    fn grok_is_logged_in_only_when_it_says_so_and_names_a_model() {
+        let grok = Harness::Grok;
+        let listed = "You are logged in with grok.com.\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.5\n";
+        assert!(grok.logged_in(true, listed));
+        assert!(!grok.logged_in(false, listed), "a failed question is not a login");
+        let out =
+            "You are not authenticated.\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n";
+        assert!(!grok.logged_in(true, out), "a listing that names models is still logged out");
+        assert!(!grok.logged_in(true, "You are logged in with grok.com.\n"));
+        let login = grok.login().unwrap();
+        assert_eq!((login.question, login.line), ("grok models", "grok login"));
+        assert_eq!(login.logged_out, "is not logged in or listed no model");
+        assert_eq!(grok.install(), "curl -fsSL https://x.ai/cli/install.sh | bash");
+        assert!(grok.own_home_outside_role());
     }
 }

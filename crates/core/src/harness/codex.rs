@@ -72,6 +72,24 @@ pub(super) fn account_quota(output: &[String]) -> Option<String> {
 pub(super) const NAME: &str = "Codex";
 pub(super) const KEY: &str = "codex";
 pub(super) const PROGRAM: &str = "codex";
+/// The line that installs it.
+pub(super) const INSTALL: &str = "brew install --cask codex";
+/// What asks whether Codex holds a login a worker can use: the file a worker
+/// is given a link to, and that Codex takes what it holds for a login. A
+/// login Codex keeps in a keyring is in no file, and is no worker's: its
+/// words say where a worker reads its login.
+pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
+    question: "test -f \"$HOME/.codex/auth.json\" && codex login status",
+    logged_out: "is not logged in where a worker reads its login, `~/.codex/auth.json` (a login \
+                 kept in a keyring is in no file)",
+    line: "codex login",
+});
+
+/// Whether the answer to its login question says it is logged in: by its
+/// exit status.
+pub(super) fn logged_in(succeeded: bool, _printed: &str) -> bool {
+    succeeded
+}
 /// Where it reads its user's global instructions, under the user's home.
 pub(super) const INSTRUCTIONS: &str = ".codex/AGENTS.md";
 /// The agent `npx skills` installs its user's skills for.
@@ -1590,5 +1608,18 @@ mod tests {
         assert_eq!(Harness::Codex.goal_row("done|1|2"), None);
         assert_eq!(Harness::Codex.goal_row("complete|many|2"), None);
         assert_eq!(Harness::Kimi.goal_row("complete|1|2"), None);
+    }
+
+    #[test]
+    fn codex_is_logged_in_when_the_file_a_worker_is_linked_to_holds_a_login() {
+        let codex = Harness::Codex;
+        assert_eq!(codex.install(), "brew install --cask codex");
+        let login = codex.login().unwrap();
+        assert_eq!(login.question, "test -f \"$HOME/.codex/auth.json\" && codex login status");
+        assert_eq!(login.line, "codex login");
+        assert!(login.logged_out.contains("`~/.codex/auth.json`"), "{}", login.logged_out);
+        assert!(codex.logged_in(true, "Logged in using ChatGPT"));
+        assert!(!codex.logged_in(false, ""));
+        assert!(!codex.logged_in(false, "Not logged in"));
     }
 }

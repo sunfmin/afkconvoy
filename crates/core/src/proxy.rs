@@ -40,12 +40,10 @@ pub fn lists(given: &[String], default: Harness) -> Result<Lists, String> {
     Ok(Lists { values })
 }
 
-/// The host's addition, or the harness's stock list. None leaves both
+/// The host's addition, or the harness's stock list (`Harness::no_proxy`). None leaves both
 /// inherited spellings untouched; an explicitly empty list turns stock off.
 pub fn addition(said: &Lists, harness: Harness) -> Option<&str> {
-    said.of(harness)
-        .or(if harness == Harness::Dsh { Some("api.deepseek.com") } else { None })
-        .filter(|list| !list.is_empty())
+    said.of(harness).or(harness.no_proxy()).filter(|list| !list.is_empty())
 }
 
 /// Extends both inherited spellings at the worker's terminal, after its
