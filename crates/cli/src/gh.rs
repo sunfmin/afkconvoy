@@ -707,16 +707,21 @@ fn located(url: &str) -> Option<(String, u64)> {
 }
 
 /// Whether what `gh` said of a call that failed says it failed in transit:
-/// an answer cut short, a 5xx, a connection reset or a timeout. Any other
-/// status — a 404, a 403 — is GitHub's answer, and asking again gets the same.
+/// a 5xx, or no status and a marker of `transient::GH`. Any other status — a
+/// 404, a 403 — is GitHub's answer, and asking again gets the same.
 fn in_transit(said: &str) -> bool {
     if let Some(status) = status(said) {
         return status / 100 == 5;
     }
-    let said = said.to_ascii_lowercase();
-    let cut_short = ["unexpected end of json input", "unexpected eof", ": eof"];
-    let unanswered = ["connection reset", "timeout", "timed out"];
-    cut_short.iter().chain(&unanswered).any(|mark| said.contains(mark))
+    crate::transient::met(crate::transient::GH, said)
+}
+
+/// How the help names the failures `in_transit` finds.
+pub(crate) fn in_transit_help() -> String {
+    format!(
+        "`gh` said an HTTP 5xx, or named no HTTP status and said {}, in upper or lower case",
+        crate::transient::listed(crate::transient::GH)
+    )
 }
 
 /// What a read made beside another came to: a panic in it is this thread's.
@@ -1973,6 +1978,36 @@ mod tests {
             ["-f", "owner=123", "-f", "repo=tracker", "-f", "labels[]=repo:acme/dev"]
         );
         assert_eq!(carrying_labels(&other, "slow-gate"), "slow-gate,repo%3Aacme%2Fdev");
+    }
+
+    #[test]
+    fn a_read_that_said_any_marker_of_its_list_failed_in_transit() {
+        let said = [
+            ("unexpected end of JSON input", "unexpected end of JSON input"),
+            ("unexpected EOF", "Post \"https://api.github.com/graphql\": unexpected EOF"),
+            (": EOF", "Post \"https://api.github.com/graphql\": EOF"),
+            (
+                "connection reset",
+                "Get \"https://api.github.com/repos/a/b\": read tcp: connection reset by peer",
+            ),
+            ("timeout", "Post \"https://api.github.com/graphql\": net/http: TLS handshake timeout"),
+            ("timed out", "Get \"https://api.github.com/repos/a/b\": dial tcp: i/o timed out"),
+        ];
+        let markers: Vec<&str> = crate::transient::GH.iter().map(|marker| marker.said).collect();
+        let named: Vec<&str> = said.iter().map(|(marker, _)| *marker).collect();
+        assert_eq!(named, markers, "a marker with no example, or one out of order");
+        for (marker, said) in said {
+            assert!(in_transit(said), "{marker}: {said}");
+        }
+    }
+
+    #[test]
+    fn the_help_names_every_marker_of_a_read_in_transit_from_its_list() {
+        let help = in_transit_help();
+        assert!(help.contains(&crate::transient::listed(crate::transient::GH)), "{help}");
+        for marker in crate::transient::GH {
+            assert!(help.contains(marker.said), "{}: {help}", marker.said);
+        }
     }
 
     #[test]

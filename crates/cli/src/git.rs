@@ -20,6 +20,10 @@ pub(crate) const LS_REMOTE_LIMIT: std::time::Duration = std::time::Duration::fro
 /// the largest fetches the fleets make, including zhiyuanwiki's tens of MB.
 pub(crate) const FETCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// What a git call past its limit says of itself: `git <args> did not end
+/// within <n>s; its process group was ended`.
+pub(crate) const PAST_LIMIT: &str = "did not end within";
+
 /// The note of the ref layout a start settled on (`Repo::note`).
 const LAYOUT_NOTE: &str = "convoy-layout";
 
@@ -577,7 +581,7 @@ pub(crate) fn run_within(
         stderr.push('\n');
     }
     stderr.push_str(&format!(
-        "git {} did not end within {}s; its process group was ended",
+        "git {} {PAST_LIMIT} {}s; its process group was ended",
         args.join(" "),
         limit.as_secs()
     ));
