@@ -15,6 +15,7 @@ use crate::advance::advance;
 use crate::claims::{Me, Take, delete, drop_heartbeat, retake_run, take};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
+use crate::found::Found;
 use crate::stage::Flows;
 
 /// Puts `claim` in my name under `_licence` — the one way a claim is taken
@@ -83,6 +84,7 @@ fn lapsed(fleet: &Fleet, me: &Me, issue: u64) -> Option<(Claim, Licence)> {
 /// or its holder beat again.
 pub fn reclaim(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     flows: &Flows,
@@ -93,9 +95,9 @@ pub fn reclaim(
         return Ok(Outcome::Lost);
     }
     if fleet.config.bound.is_some() && flows.called(issue, &claim.id)?.said.is_some() {
-        advance(fleet, me, agent, flows, issue)?;
+        advance(fleet, found, me, agent, flows, issue)?;
     } else {
-        dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+        dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
     }
     Ok(Outcome::Done)
 }

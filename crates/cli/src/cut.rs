@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 use crate::claims::{Me, drop_run, take_run};
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
+use crate::found::Found;
 use crate::gate::Gated;
 use crate::gh::GitHub;
 use crate::git::Repo;
@@ -191,14 +192,20 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
 /// A step that fails after the claim gives the claim back and is an error:
 /// held, a later tick would read the record a cut before it left in the
 /// checkout as this one's, and say that cut's end again.
-pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, busy: bool) -> Result<Outcome> {
+pub fn start(
+    fleet: &mut Fleet,
+    found: &mut Found,
+    me: &Me,
+    agent: &Agent,
+    busy: bool,
+) -> Result<Outcome> {
     if fleet.config.cut.is_none() {
         return Ok(Outcome::Nothing);
     }
     // The one evaluation this tick starts the cut by, and says (#532).
     let failed = crate::probe::check_cut_needs(&fleet.repo, &fleet.config, me.now, true)?;
     let held = failed.is_some();
-    fleet.cut_needs = Some(failed);
+    found.cut_needs = Some(failed);
     if held {
         return Ok(Outcome::Nothing);
     }
@@ -215,7 +222,7 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, busy: bool) -> Result<Ou
         bail!("{failed}its claim could not be given back: {kept:#}");
     }
     let Some(record) = started? else { return Ok(Outcome::Lost) };
-    fleet.cut_said.push(What::CutStarted {
+    found.cut_said.push(What::CutStarted {
         version: record.version.clone(),
         said: record.line(),
         busy,
@@ -252,7 +259,13 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Opti
 /// that issue too, named by the version its branch says, and is unclaimed.
 /// Unclaimed without that issue, the next idle tick would start the same
 /// version again on its own. `Nothing` while it still runs.
-pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcome> {
+pub fn end(
+    fleet: &mut Fleet,
+    found: &mut Found,
+    me: &Me,
+    read: &Flows,
+    row: &Row,
+) -> Result<Outcome> {
     let Some(claim) = &row.claim else { return Ok(Outcome::Nothing) };
     let started = claim.owner.as_ref().map_or(me.now, |owner| owner.ts);
     let unseen = |why: &str| Ending::Gone(why.to_string());
@@ -308,7 +321,7 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
             if record.superseded.is_none() {
                 release_waiting(fleet)?;
             }
-            fleet.cut_said.push(What::CutEnded {
+            found.cut_said.push(What::CutEnded {
                 version,
                 said: record.line(),
                 failed: None,
@@ -346,7 +359,7 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
                 failure.why.trim(),
                 fleet.gh.tracker.issue(issue)
             );
-            fleet.cut_said.push(What::CutEnded {
+            found.cut_said.push(What::CutEnded {
                 version,
                 said: record.line(),
                 failed: Some(failed),

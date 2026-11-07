@@ -21,6 +21,7 @@ use crate::board::declared;
 use crate::claims::{Me, Take, delete, take};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
+use crate::found::Found;
 use crate::judge::{
     BLOCKED_BRIEF, Handed, Look, close_claim, escalate_claim, mine, nudge_worker, refuted_work,
     silence_of, where_it_stopped, worktree_and_work, worktree_of,
@@ -87,6 +88,7 @@ fn hand_on(fleet: &mut Fleet, claim: &Claim, waits_at: Option<&str>, end: End) -
 /// a human, as ever.
 fn hand_off(
     fleet: &mut Fleet,
+    found: &mut Found,
     flows: &Flows,
     claim: &Claim,
     failure: Failure,
@@ -95,7 +97,7 @@ fn hand_off(
 ) -> Result<Outcome> {
     let issue = claim.number;
     let Some(stage) = flows.consults(issue, failure) else {
-        escalate_claim(fleet, claim, why, pr_of(fleet, issue)?, worktree)?;
+        escalate_claim(fleet, found, claim, why, pr_of(fleet, issue)?, worktree)?;
         return Ok(Outcome::Done);
     };
     let record = StageRecord::failed(&stage, failure, &why.reason);
@@ -162,6 +164,7 @@ pub fn run_again_unclaimed(fleet: &Fleet, flows: &Flows, issue: u64) -> Result<b
 /// stage's own worker: that stage runs again.
 fn ask_after(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     flows: &Flows,
@@ -177,7 +180,7 @@ fn ask_after(
     match settled_by_state(state) {
         Some(Route::Leave) => return Ok(Outcome::Nothing),
         Some(_) => {
-            dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
             return Ok(Outcome::Continued);
         }
         None => {}
@@ -189,7 +192,7 @@ fn ask_after(
         Silence::Lively => Ok(Outcome::Nothing),
         Silence::Waiting(since) => Ok(Outcome::Waiting(since)),
         Silence::Gone => {
-            dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
             Ok(Outcome::Continued)
         }
         Silence::Nudge(unnudged) => {
@@ -216,10 +219,17 @@ fn ask_after(
                 if !flows.ends_with(issue, &record) {
                     fleet.gh.comment(issue, &record.comment())?;
                 }
-                escalate_claim(fleet, claim, &reason, pr_of(fleet, issue)?, Some(&worktree))?;
+                escalate_claim(
+                    fleet,
+                    found,
+                    claim,
+                    &reason,
+                    pr_of(fleet, issue)?,
+                    Some(&worktree),
+                )?;
                 return Ok(Outcome::Done);
             }
-            hand_off(fleet, flows, claim, Failure::Silent, &reason, Some(&worktree))
+            hand_off(fleet, found, flows, claim, Failure::Silent, &reason, Some(&worktree))
         }
     }
 }
@@ -247,6 +257,7 @@ fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<(String, bool)>> {
 /// whoever is due there: starting that worker is the pass's.
 pub fn advance(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     flows: &Flows,
@@ -264,10 +275,18 @@ pub fn advance(
         // seen the issue, and no tick puts it to the consult again.
         if consult {
             let pr = pr_of(fleet, issue)?;
-            escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;
+            escalate_claim(fleet, found, &claim, &reason, pr, worktree.as_ref())?;
             return Ok(Outcome::Done);
         }
-        return hand_off(fleet, flows, &claim, Failure::LeftCommit, &reason, worktree.as_ref());
+        return hand_off(
+            fleet,
+            found,
+            flows,
+            &claim,
+            Failure::LeftCommit,
+            &reason,
+            worktree.as_ref(),
+        );
     }
     // What a fleet lock explains is run again, not carried out: its stage's
     // `escalate` goes neither to a consult nor to a human.
@@ -279,7 +298,7 @@ pub fn advance(
     let reason = match called.advance {
         Advance::AskAfter => {
             let asked = (called.stage.as_deref().unwrap_or("?"), called.consulted);
-            return ask_after(fleet, me, agent, flows, &claim, asked);
+            return ask_after(fleet, found, me, agent, flows, &claim, asked);
         }
         Advance::HandOn => {
             hand_on(fleet, &claim, called.waits_at.as_deref(), End::HandedOn)?;
@@ -310,7 +329,15 @@ pub fn advance(
                 refuted_work(fleet, issue, worktree.as_ref())?
             );
             let why = Handed::at(stage, Why::Refuted.brief(), reason);
-            return hand_off(fleet, flows, &claim, Failure::Refuted, &why, worktree.as_ref());
+            return hand_off(
+                fleet,
+                found,
+                flows,
+                &claim,
+                Failure::Refuted,
+                &why,
+                worktree.as_ref(),
+            );
         }
         Advance::Blocked(named) => match routed(fleet, issue, &named)? {
             Blocked::Park(parkable) => {
@@ -329,6 +356,7 @@ pub fn advance(
                 let worktree = worktree_of(fleet, issue)?;
                 return hand_off(
                     fleet,
+                    found,
                     flows,
                     &claim,
                     Failure::Unblockable,
@@ -343,7 +371,7 @@ pub fn advance(
     };
     let worktree = worktree_of(fleet, issue)?;
     let pr = pr_of(fleet, issue)?;
-    escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;
+    escalate_claim(fleet, found, &claim, &reason, pr, worktree.as_ref())?;
     Ok(Outcome::Done)
 }
 
@@ -353,6 +381,7 @@ pub fn advance(
 /// breaker stopped, where one did.
 pub fn hand_to_human(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     issue: u64,
     (brief, reason): (&str, &str),
@@ -365,6 +394,6 @@ pub fn hand_to_human(
     let worktree = worktree_of(fleet, issue)?;
     let pr = pr_of(fleet, issue)?;
     let reason = Handed::new(brief, stated(reason, None, rounds));
-    escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;
+    escalate_claim(fleet, found, &claim, &reason, pr, worktree.as_ref())?;
     Ok(Outcome::Done)
 }

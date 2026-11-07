@@ -122,6 +122,95 @@ pub enum Outcome {
     Failed,
 }
 
+/// One fact of a claim of mine, as the effect layer read it just before the
+/// step on it (`Seen`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fact {
+    Yes,
+    No,
+    /// It could not be read: a step that has to know it fails on that read.
+    Unread,
+}
+
+/// What the effect layer read of a claim of mine just before a `Judge`,
+/// `Watch` or `Advance` step on it: what says what the step sees to first
+/// (`first`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seen {
+    /// Of a `Watch`: its landing's last turn answered what the tick handles
+    /// itself, without a judgment of its worker — a wait to ask again for,
+    /// an answer to hand its worker, or a turn still asking. `No` of any
+    /// other step.
+    pub answered: Fact,
+    /// A dispatch under the claim stopped before its worker took the brief:
+    /// the terminal it left is no worker to judge for silence.
+    pub incomplete: Fact,
+    /// Its worker, not gone, is on a harness that worker health holds: a
+    /// shared harness outage, which is no worker's silence.
+    pub held: Fact,
+}
+
+/// Which of `Seen` a step could not read, and fails on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unread {
+    Answered,
+    Incomplete,
+    Held,
+}
+
+/// What a `Judge`, `Watch` or `Advance` step does first (`first`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum First {
+    /// Handle the landing's last turn: ask its wait again, hand its answer
+    /// to the worker, or leave a turn still asking. Worker health does not
+    /// hide that answer.
+    Answer,
+    /// Continue the incomplete dispatch under the same claim, before worker
+    /// health or the nudge ladder can mistake its shell for a harness.
+    Continue,
+    /// Keep the claim and its progress, its one nudge among them, until the
+    /// held harness's pending prompt can probe it.
+    Hold,
+    /// The step's own work: none of these applies.
+    Own,
+    /// What decides it could not be read: the step fails on that read.
+    Unread(Unread),
+}
+
+/// What `step` does first, by what was `seen` of its claim just before it:
+/// a watch's answer before all, then an incomplete dispatch continued —
+/// only where a worker may be started under the claim — then a held
+/// harness holding the claim, else its own work. A fact is asked only where
+/// the ones before it did not decide, so one that could not be read fails
+/// the step only there. Every other step does its own work.
+pub fn first(step: TickStep, seen: Seen) -> First {
+    let (watch, starts) = match step {
+        TickStep::Judge { start, .. } => (false, start),
+        TickStep::Watch { start, .. } => (true, start),
+        TickStep::Advance { .. } => (false, true),
+        _ => return First::Own,
+    };
+    if watch {
+        match seen.answered {
+            Fact::Yes => return First::Answer,
+            Fact::Unread => return First::Unread(Unread::Answered),
+            Fact::No => {}
+        }
+    }
+    if starts {
+        match seen.incomplete {
+            Fact::Yes => return First::Continue,
+            Fact::Unread => return First::Unread(Unread::Incomplete),
+            Fact::No => {}
+        }
+    }
+    match seen.held {
+        Fact::Yes => First::Hold,
+        Fact::Unread => First::Unread(Unread::Held),
+        Fact::No => First::Own,
+    }
+}
+
 /// The claims a fleet holds against its bound, as a pass takes and frees slots.
 #[refined_by(held: int, limit: int)]
 struct Slots {
@@ -1696,5 +1785,56 @@ mod tests {
             [Advance { issue: 1 }, Advance { issue: 2 }, Dispatch { issue: 2 }]
         );
         assert_eq!((free.held, free.bound, free.frontier_remaining), (2, 2, 1));
+    }
+
+    const NOTHING: Seen = Seen { answered: Fact::No, incomplete: Fact::No, held: Fact::No };
+
+    #[test]
+    fn a_watchs_answer_goes_first() {
+        let answered = Seen { answered: Fact::Yes, incomplete: Fact::Yes, held: Fact::Yes };
+        for start in [true, false] {
+            assert_eq!(first(Watch { issue: 3, start }, answered), First::Answer);
+        }
+        // only a watch's landing has a turn to answer
+        assert_eq!(first(Judge { issue: 3, start: true }, answered), First::Continue);
+        assert_eq!(first(Advance { issue: 3 }, answered), First::Continue);
+        let unread = Seen { answered: Fact::Unread, ..answered };
+        assert_eq!(first(Watch { issue: 3, start: true }, unread), First::Unread(Unread::Answered));
+        assert_eq!(first(Judge { issue: 3, start: true }, unread), First::Continue);
+    }
+
+    #[test]
+    fn an_incomplete_dispatch_is_continued_where_a_worker_may_be_started() {
+        let incomplete = Seen { incomplete: Fact::Yes, held: Fact::Yes, ..NOTHING };
+        assert_eq!(first(Judge { issue: 3, start: true }, incomplete), First::Continue);
+        assert_eq!(first(Watch { issue: 3, start: true }, incomplete), First::Continue);
+        assert_eq!(first(Advance { issue: 3 }, incomplete), First::Continue);
+        // with no slot free for its worker, the held harness decides
+        assert_eq!(first(Judge { issue: 3, start: false }, incomplete), First::Hold);
+        assert_eq!(first(Watch { issue: 3, start: false }, incomplete), First::Hold);
+        let unread = Seen { incomplete: Fact::Unread, ..NOTHING };
+        assert_eq!(
+            first(Judge { issue: 3, start: true }, unread),
+            First::Unread(Unread::Incomplete)
+        );
+        // a read that does not decide fails nothing
+        assert_eq!(first(Judge { issue: 3, start: false }, unread), First::Own);
+    }
+
+    #[test]
+    fn a_shared_harness_outage_holds_the_claim() {
+        let held = Seen { held: Fact::Yes, ..NOTHING };
+        for step in [Judge { issue: 3, start: true }, Watch { issue: 3, start: false }] {
+            assert_eq!(first(step, held), First::Hold);
+        }
+        assert_eq!(first(Advance { issue: 3 }, held), First::Hold);
+        let unread = Seen { held: Fact::Unread, ..NOTHING };
+        assert_eq!(first(Advance { issue: 3 }, unread), First::Unread(Unread::Held));
+        assert_eq!(first(Advance { issue: 3 }, NOTHING), First::Own);
+        // a step on no claim of mine at work does its own work
+        let all = Seen { answered: Fact::Yes, incomplete: Fact::Yes, held: Fact::Yes };
+        for step in [Settle { issue: 3 }, Dispatch { issue: 3 }, Heartbeat, EndCut] {
+            assert_eq!(first(step, all), First::Own);
+        }
     }
 }

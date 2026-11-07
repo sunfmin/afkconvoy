@@ -963,6 +963,27 @@ fn a_cut_tags_its_commit_and_publishes_with_the_tag_checked_out() {
 }
 
 #[test]
+fn an_end_of_a_cut_that_fails_after_it_said_the_cut_ended_still_says_so() {
+    let world = cutting();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    its_commit_is_made(&checkout);
+    world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
+
+    // The cut is over, and its checkout cannot be removed: the step fails
+    // after it said the cut ended, and the tick says both.
+    world.with_orca(|orca| orca["rm_fails"] = json!(true));
+    let ticked = tick_as(&world, "alpha", 10_100);
+    let said = cut(&ticked);
+    assert!(said.len() == 1 && said[0].starts_with("end_cut failed: "), "{ticked}");
+    let logged = logged(&world);
+    let ended: Vec<_> = logged.iter().filter(|line| line.starts_with("cut: ")).collect();
+    assert_eq!(ended.len(), 2, "{logged:#?}");
+    assert!(ended[1].ends_with("tagged, published and installed"), "{ended:#?}");
+    assert!(claimed(&world), "the claim is held for the next tick to end it");
+}
+
+#[test]
 fn a_minor_landing_before_or_after_the_cuts_own_commit_supersedes_the_patch() {
     for minor_after_cut in [false, true] {
         let world = cutting();
