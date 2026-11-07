@@ -98,17 +98,23 @@ fn a_dsh_profile_links_only_credentials_and_opted_in_skills_and_rules() {
     );
 }
 
-/// Whether this host has a `node` to run the DSH plugin with.
-fn has_node() -> bool {
-    Command::new("node").arg("--version").output().is_ok_and(|out| out.status.success())
+/// The `node` binary this host runs the DSH plugin with, by its own path, or
+/// None when PATH has none. Resolved here, in this process's environment: a
+/// `node` on PATH may be a version manager's shim (mise, asdf), and a shim
+/// started under a test's stand-in HOME reads none of the user's installs and
+/// may try to download one, so the stand-in DSH would never start.
+fn node() -> Option<String> {
+    let out = Command::new("node").args(["-p", "process.execPath"]).output().ok()?;
+    let path = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && !path.is_empty()).then_some(path)
 }
 
 #[test]
 fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted_idle() {
-    if !has_node() {
+    let Some(node) = node() else {
         eprintln!("skipped: no `node` on PATH to run the DSH plugin with");
         return;
-    }
+    };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(root, "plugin.mjs", include_str!("../../core/src/harness/dsh/plugin.mjs"));
@@ -123,7 +129,7 @@ fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted
         "---\nname: build\ndescription: shadowed-skill\n---",
     );
     write(root, "driver.mjs", DRIVER);
-    let output = Command::new("node")
+    let output = Command::new(&node)
         .arg(root.join("driver.mjs"))
         .current_dir(root)
         .env("AFKCONVOY_GUARD", format!("'{}' guard", env!("CARGO_BIN_EXE_afkconvoy")))
@@ -220,10 +226,10 @@ server.close()
 
 #[test]
 fn the_generated_line_uses_native_guard_dependencies_and_quotes_every_path() {
-    if !has_node() {
+    let Some(node) = node() else {
         eprintln!("skipped: no `node` on PATH to run the DSH plugin with");
         return;
-    }
+    };
     use afkconvoy_core::role::{Facts, On, Start, Told};
     use std::io::Write;
     use std::process::Stdio;
@@ -282,7 +288,8 @@ process.stdin.once('data', input => {
         },
     };
     let launch = afkconvoy_core::line::Line::new()
-        .fixed("node ")
+        .word(&node)
+        .fixed(" ")
         .word(root.join("worker.mjs").to_str().unwrap())
         .own();
     let line = Harness::Dsh.in_role(&launch, &start);
