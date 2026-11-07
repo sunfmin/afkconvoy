@@ -13,6 +13,23 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const KEY: &str = "dsh";
 pub(super) const NAME: &str = "DeepSeek Harness";
 pub(super) const PROGRAM: &str = "dsh-tui";
+/// The line that installs it.
+pub(super) const INSTALL: &str = "npm install -g @deepseek-harness-tui/dsh-tui";
+/// It is asked about no login.
+pub(super) const LOGIN: Option<super::Login> = None;
+/// The host its worker's login shell reaches without a proxy, unless the
+/// host says otherwise.
+pub(super) const NO_PROXY: &str = "api.deepseek.com";
+/// Where, under the directory kept for it, the installed program's package
+/// is linked: preferred to an editable profile copy, as the login shell a
+/// worker gets finds it.
+pub(super) const KEPT_PACKAGE: &str = "profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui";
+
+/// Whether the answer to its login question says it is logged in: it is
+/// asked none, so by the exit status alone.
+pub(super) fn logged_in(succeeded: bool, _printed: &str) -> bool {
+    succeeded
+}
 /// Where it reads its user's global instructions, under the user's home.
 pub(super) const INSTRUCTIONS: &str = ".dsh/AGENTS.md";
 /// `npx skills` names no agent for it: it reads the shared copies in
@@ -369,5 +386,21 @@ AFKCONVOY_DSH_LISTED {"models":[{"id":"deepseek-flash","name":"DeepSeek V4.1 Fla
         let refused = r#"AFKCONVOY_DSH_LISTED {"error":"Authentication Fails"}"#;
         assert_eq!(Harness::Dsh.models(refused), None);
         assert_eq!(Harness::Dsh.listing_failure(refused).as_deref(), Some("Authentication Fails"));
+    }
+
+    #[test]
+    fn dsh_installs_from_npm_needs_dsh_and_reaches_deepseek_without_a_proxy() {
+        let dsh = Harness::Dsh;
+        assert_eq!(dsh.install(), "npm install -g @deepseek-harness-tui/dsh-tui");
+        assert_eq!(dsh.login(), None, "it is asked about no login");
+        assert!(dsh.logged_in(true, ""));
+        assert!(!dsh.logged_in(false, ""));
+        assert_eq!(dsh.needs(), Some(crate::tools::Tool::Dsh));
+        assert_eq!(dsh.no_proxy(), Some("api.deepseek.com"));
+        assert_eq!(
+            dsh.kept_package(),
+            Some("profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui")
+        );
+        assert!(!dsh.own_home_outside_role());
     }
 }
