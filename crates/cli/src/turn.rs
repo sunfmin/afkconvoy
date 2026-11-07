@@ -46,7 +46,14 @@ pub enum Certified {
 /// An unrecorded base tip is gated alone, with no worker's changes present.
 /// The run's whole log is kept in the checkout's git dir, in a file of its
 /// own, unless it is green: what a red tip's repair reads.
-pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) -> Result<Certified> {
+pub fn certify(
+    repo: &Repo,
+    config: &Config,
+    tip: &str,
+    host: &str,
+    now: u64,
+    unremoved: &mut Vec<String>,
+) -> Result<Certified> {
     let command = GateCommand::new(&config.gate_command);
     let _permit = Permit::take(
         repo,
@@ -73,9 +80,13 @@ pub fn certify(repo: &Repo, config: &Config, tip: &str, host: &str, now: u64) ->
         None,
         Some(&output),
     );
-    let removed = repo.git(&["worktree", "remove", "--force", &path.to_string_lossy()]);
+    // A worktree that cannot be removed does not hide the verdict: why is
+    // added to `unremoved`, beside it (sunfmin/control#610).
+    if let Err(error) = repo.remove_worktree(&path) {
+        eprintln!("warning: {error:#}");
+        unremoved.push(format!("{error:#}"));
+    }
     let run = run?;
-    removed?;
     if run.ran.green() {
         let _ = std::fs::remove_file(&output);
     }
@@ -131,6 +142,7 @@ fn take(
     host: &str,
     now: u64,
     on_red: OnRedBase,
+    unremoved: &mut Vec<String>,
 ) -> Result<Certified> {
     let mut tried = None;
     loop {
@@ -153,7 +165,7 @@ fn take(
         };
         if !repairing && crate::gate::recorded(repo, &tree, &command, now)?.is_none() {
             if tried.as_deref() != Some(tip.as_str()) {
-                match certify(repo, &declared, &tip, host, now)? {
+                match certify(repo, &declared, &tip, host, now, unremoved)? {
                     Certified::Green => {
                         tried = Some(tip);
                         continue;
@@ -472,7 +484,12 @@ fn run(
         answer["commit"] = json!(current);
         return Ok(answer);
     }
-    match take(repo, config, issue, host, now, on_red)? {
+    let mut unremoved = vec![];
+    let taken = take(repo, config, issue, host, now, on_red, &mut unremoved)?;
+    if !unremoved.is_empty() {
+        answer["unremoved"] = json!(unremoved);
+    }
+    match taken {
         Certified::Green => {}
         Certified::Red => {
             answer["outcome"] = json!(Ending::BaseRed);
