@@ -146,7 +146,7 @@ fn help_texts() -> Vec<(String, String)> {
     let long = manual();
     let mut texts = vec![("crates/cli/src/lib.rs".to_string(), guide(&long).to_string())];
     for command in listed(&help("-h")) {
-        let doc = format!("the doc comment of `{command}`, crates/cli/src/lib.rs");
+        let doc = format!("the help of `{command}`, the module its `long_about` names");
         texts.push((doc, asked(&[command, "--help"])));
     }
     for topic in topics(&long) {

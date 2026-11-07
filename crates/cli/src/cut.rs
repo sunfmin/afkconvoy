@@ -890,3 +890,90 @@ fn repo_name(repo: &Repo) -> Result<String> {
     let of = crate::checkout_list::repo_of(repo)?;
     Ok(of.rsplit('/').next().unwrap_or(&of).to_string())
 }
+
+/// What `afkconvoy cut --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+The fleet runs it: in a repo that turns cutting on, a tick starts a cut once landed work is past the newest version tag and either the fleet is idle or the oldest landing reaches `busy_after_seconds` (default {const:CUT_BUSY_AFTER_SECONDS}s). At the bound it starts while busy too, whatever claims or frontier remain, even while admission holds workers back. It cuts from the base branch as it stands; work still in flight goes into a later version. A remote with no version tag and a declared `initial` is cut on an idle tick. No flag, command or fixed schedule starts one.
+
+A human runs it with `--from <step>` once, after a cut failed, to go on from the step that failed: the issue the failure opened gives the exact line, in the checkout the cut kept. A watch may run that line too after fixing the cause; only the four human kinds in `afkconvoy help humans` stay with a human. To have a landed fix cut, the watch wakes the repo's checkout and fixes what holds its fleet back: the next idle tick, or busy tick past the age bound, starts the due cut through these same steps.
+
+## Who runs it
+
+A cut's worker, in its own worktree: the checkout (`afkconvoy-cut`) the tick that started it cut from the base branch as it stood; a human, there, after a failure. Run anywhere else it is refused.
+
+A cut is a worker in no role, started the way a watch is: its own checkout, the bounds of any unattended worker, a time limit. It is this command, not a model session: its steps are known, each is timed, and a failure names its step. It takes no slot of the concurrency.
+
+The fleet titles its terminal `afkconvoy cut v<version>`. Before its first step, including when continued with `--from <step>`, it prints one line naming the version, the tag it is cut past (or the initial version), the PRs it holds, the steps it will take, and the paths to `convoy-cut.log` and `convoy-cut.json`. Each step prints a start line and an end line with its seconds and whether it passed or failed; its commands' output stays between those lines. These lines and the commands' output go to stderr; stdout holds the JSON answer.
+
+The step `gate` writes the whole output of each run it makes to a file of that run's own in the checkout's git dir, `convoy-cut-gate-<seconds>.log`, named for when the run started; a later run, as with `--from gate`, writes another and leaves it. A red run fails the step naming the tests its output says failed (nextest's `FAIL`, `TIMEOUT` and signal lines) and that file; the answer names it as `gate_output`. The issue the failure opens names those tests, quotes the output from the first of them on — its end, where it names none — and names that file.
+
+## Turning it on
+
+A repo turns cutting on by naming its cut steps in its config file, {const:CONFIG_FILE}, in a block of their own opened by the line ```yaml cut — never in the ```yaml block of the config, which a version older than this one reads with every key known to it, refusing a key it does not know. Older versions read only that first block, and read past this one.
+
+~~~markdown
+```yaml cut
+initial: 0.1.0
+set: ./packaging/set-version.sh "$VERSION"
+publish: |
+  ./packaging/release.sh publish "$VERSION"
+  brew upgrade acme/tap/widget
+```
+
+```yaml cut
+busy_after_seconds: {const:CUT_BUSY_AFTER_SECONDS}
+```
+~~~
+
+`set` and `publish` are required. Optional `initial` declares the first version, exactly X.Y.Z: three whole numbers without leading zeroes, a `v` prefix or a prerelease suffix. Without a version tag and without `initial`, nothing is cut. With it, the next idle tick cuts that exact version, whatever labels earlier PRs carry; after a version tag exists, `initial` is ignored and the usual patch/minor selection applies. No seed tag or manual release is needed.
+
+A repo may declare host checks in a `yaml cut-needs` block (`afkconvoy config --help`). A host whose check fails does not claim a due cut; the tick, plan and doctor name it. Stdout is discarded and failed stderr is private to the host.
+
+Optional `busy_after_seconds` bounds how long the oldest landing past the newest tag waits for an idle fleet. Leaving it out means {const:CUT_BUSY_AFTER_SECONDS}s; zero permits a busy cut at the next tick. Its clock uses the landing commit's time on the base branch, rather than the age of commits on a side branch. Put this key in a second cut block as above: older versions that know cut steps read only the first cut block and skip the addition. All cut blocks form one mapping, and a key declared twice is refused. `plan`'s `cut` row gives `oldest_landing_age_seconds` and `busy_in_seconds`: zero means a busy cut may start now; null means no landing past a version tag.
+
+Each step is run by `sh -e` in the cut's checkout with the version, `0.5.17`, in `$VERSION`; what it prints goes to the terminal and the cut's log, in the checkout's git dir (`convoy-cut.log`). Its lines run in order, and the first that fails fails the step: the lines after it are not run. Above, a publish that fails is not followed by the upgrade, which would find nothing newer and succeed. A line `set -e` changes nothing of that, and `set -ex` adds each line to the log as it runs. A repo whose file has no such block turns cutting off: nothing is cut. `afkconvoy config` answers the steps as `cut`, and `afkconvoy plan` says where the cut stands, including `initial` while there is no version tag.
+
+## What it does
+
+The version: the next patch past the newest version tag — a tag `v` and three numbers, `v0.5.16` — or the next minor, its patch 0, where a PR that landed since carries the label `{const:CUT_MINOR_LABEL}`. The tick that starts the cut picks it, from the tags as they are then, and keeps it in the checkout with the PRs the cut holds: those the base branch's landings past the tag name.
+
+Its steps, in order, each timed:
+
+1. `set` — on the snapshot, the base tip the checkout was cut at, runs the `set` lines and commits what they changed, titled `<repo> <version>`: the version's commit, whose one parent is the snapshot. Lines that change nothing still make that commit, empty. Where the remote has the tag `v<version>` already, or a branch a cut of this version pushed, the cut takes up that commit instead, and makes no second.
+2. `push` — pushes that commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`. It opens no PR.
+3. `gate` — gates that commit in the checkout: the whole gate, the fast gate and the slow gate, in a worker lane as any heavy command is (`afkconvoy exclusive --help`); a green run on record for its tree answers. It takes no landing turn, is no candidate and reserves no barrier: turns land on the base branch while it runs, whether it passes, fails or hangs. A run red only on TIMEOUTs the gate says it cannot classify because the host is overloaded — every failing test a `TIMEOUT`, each covered by a gate line that says `host overloaded` and `cannot classify TIMEOUT tests` or `cannot classify <binary> <test>` — says nothing of the commit: the step gives its lane back, waits five minutes, and gates again in its place, while that wait and a whole gate run fit in the cut's time limit. A FAIL, a TIMEOUT the gate does not say it cannot classify on an overloaded host, a run that reached the gate limit, or such a red with no time left for another run fails the step and opens its issue.
+4. `tag` — tags that commit `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit. A patch also checks landings up to the current base branch: where one landed while it ran and carries `{const:CUT_MINOR_LABEL}`, it stops at `tag` without tagging or publishing, and opens no failure issue. The next tick releases its claim and starts the minor cut, unless a fleet lock stands. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
+5. `publish` — with the tag checked out, runs the `publish` lines.
+
+The tick that finds a cut took every step takes the label `convoy-waits-on-cut` off every open issue carrying it: those whose stages declared `blocked` on the next cut (`afkconvoy verdict --help`) return to the frontier at the stage they left. A cut that failed, or a patch a minor landing overtook, takes it off nothing.
+
+The base branch never receives the version commit: it pushes its own branch and its version tag, and nothing to the base branch. The version's home is the tag; version files on the base branch stay as they are, and the next cut's `set` lines write its version on its own snapshot. The tag's parent is a base commit, so the landings past the tag are still those on the base branch past that parent.
+
+## What it reads and writes
+
+It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its branch and its commit, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: three hours beside the two gate limits (`gate_seconds`), for its gate and its wait for a worker lane — five hours at the default.
+
+A cut's gate and exclusive commands go ahead of waiting worker commands, keeping request order among cuts. They never interrupt a running command. Queue waits count toward the cut's time limit; the gate's own limit starts once its worker lane is granted. The tick line that starts a cut says whether the fleet was `idle` or `busy`.
+
+A cut that took every step is a line of the tick log — `cut v0.5.17 (past v0.5.16, holding #451, #452) · its commit 0123456789 on afkconvoy-cut/v0.5.17-1793666786 · set 3s, push 2s, gate 610s, tag 1s, publish 95s` — `afkconvoy doctor` lists it among its events, and the panel shows it; its checkout is removed.
+
+A cut that failed, ran out of time, was ended from outside, whose checkout is gone, or whose host went silent opens one issue under the escalate label, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there. The tick log, `doctor` and the panel say it too. Its checkout is kept, its terminal closed. No cut starts while that issue is open (`afkconvoy help humans`).
+
+With `--from <step>` it takes that step and those after it, the record kept as it was; without, the step after the last it took. Once it took its last, it closes the open issue that said this version's cut failed.
+
+## What it answers
+
+{"version", "tag", "prs", "branch", "commit", "took", "closed", "said"} — the cut took every step: `took` is each step with its seconds, `closed` the issues it closed. {"version", "stopped": "tag", "why", "said"} — a minor landing superseded the patch; nothing was tagged or published, and the fleet cuts the minor next. {"version", "failed", "why", "said", "log"} — it failed at the step `failed`.
+
+Errors: the checkout is no cut's, or keeps no cut's record; the repo names no cut steps; `--from` names no step.
+
+## What trips you up
+
+- One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, which opens the failure issue for it: no cut of that version starts again on its own. A fleet lock and an open cut failure hold a new one back.
+- A cut interrupted after tagging goes on from the tag; one interrupted before, from its branch. A cut started again for the same version takes up that commit, and pushes no second branch.
+- Cut records and serial barriers that earlier versions left on the remote candidate chain are read as before, and drain: nothing new names a cut there.
+- `sh -e` fails a step at a line whose command fails, not at one whose command it tests: a command of an `if` or `while` test, on the left of `&&` or `||`, after `!`, or before the last of a pipe fails nothing. `./packaging/release.sh publish "$VERSION" | tee published` passes whatever `release.sh` did.
+- The cut's commit is made in the checkout's name, by its git config: a repo whose base branch is protected against pushes is as good as any other here, for the cut pushes nothing to it.
+- Turns keep landing while a cut runs. A cut that hangs costs only its own version: its time limit ends it, and its failure issue holds the next cut back."#;

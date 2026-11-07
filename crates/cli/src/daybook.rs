@@ -834,6 +834,57 @@ fn index(discussions: &Discussions, discussion: &Day, url: &str) -> Result<()> {
     }
 }
 
+/// What `afkconvoy daybook --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+When an agent — an interactive session, the watch, the asking session or a worker — did or decided something no issue holds: a host fix or install, a ruling made without a ticket, a change made at the operator's word. Record it and carry on: the operator reads the daybook when they choose, and nobody waits on it. What belongs to an issue goes on the issue, not here.
+
+## Who runs it
+
+The operator, or any agent acting on the host for them: the agent a human is talking to, the watch, the asking session, or a worker, in its own worktree. Each says what it did in its own entry; none reads the daybook to decide what to do next.
+
+## What it reads and writes
+
+It reads the tracker's discussion categories and its latest discussions of `Daybook`, and this host's checkout list for the tracker.
+
+One comment on today's discussion of the tracker, in its discussion category `Daybook`: one discussion a day, titled with the host's local date, `YYYY-MM-DD`, created by the first entry of the day. Two entries that both find no discussion of the day both still go to one: the discussion of the day with the lowest number is the day's, and a run that created a second deletes its own.
+
+Every entry has one shape: the repo it is of and the kind of session that wrote it — `interactive`, `watch`, `asking session` or `worker`, told by its environment — then the headings `Did`, `Why`, `Undo`, `Lesson` and `Links`, each holding what was said for it. A heading said of nothing is left out. The text given alone goes under `Did`.
+
+A **lesson** (`--lesson`) is one sentence the agent, at the moment, thinks should outlast the day: "the gate on this host needs X", "this kind of edit breaks Y". Writing it does not interrupt the work: it is raw material for the weekly distillation, which carries each lesson to its lasting home — a check, a hook, a rule, a doc. An entry with a lesson also rebuilds the lesson index at the foot of the day's discussion body — each lesson of the day and its entry's link — from the day's entries, so `--lessons` lists a span's lessons from the days' bodies without fetching an entry.
+
+`--lessons --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]` writes nothing: it lists the lessons of the days from `--since` to `--until`, both included (to today where `--until` is not given), from the days' indexes.
+
+The **distillation** is the host's watch's: at most once a week, when a span of days holds a lesson or two entries without one — enough for a fault to recur — a watch round reads the span's lessons and entries, decides each lesson's lasting home and proposes it there through that home's normal path: a repeated mistake first as a mechanism, a ticket to the repo that owns it; one project's decision or term, a ticket for its ADR or GLOSSARY; a cross-project one, a change to the control repo's; how to use a tool, a ticket for its own skill; the operator's global principles, a draft PR they read and no fleet merges. It keeps nothing of its own: the proposal is the record, and the entries are left to age out. `--distill` asks the watch for one at its next look without waiting out the week; it still runs only on a span that holds something, from the day after the last distillation's span to today.
+
+`--distilled <file>` is how the round records it: the JSON file says {"since", "until", "carried": [{"entries": [entry URL…], "lesson", "home", "link"}]}, `home` one of `ticket`, `doc` (a control ADR or GLOSSARY change), `draft` (a draft PR on the global principles) or `covered` (its home holds it already, `link` saying where). Each lesson of the days `since` to `until` is carried exactly once, by its entry's URL; its `lesson` may be left out. A pattern recurring across entries without a lesson names two entries at least and says its `lesson`. The file is checked against the span's lesson indexes before anything is written, then one entry is written whose `Did` maps each lesson to where it went.
+
+The repo is the one the checkout's remote names, or `--repo`. The tracker is the one this host's checkout list says for the checkout, its own repo where it says none, or `--tracker`. Run in no checkout, both flags are needed.
+
+It is not fleet state: nothing reads it to decide what a fleet does.
+
+## What it answers
+
+{"url", "discussion", "day", "created"}
+
+- `url`: the entry's comment
+- `discussion`: the day's discussion
+- `day`: its title, the host's local date
+- `created`: whether this run created it
+
+With `--lessons`: {"lessons": [{"day", "url", "lesson"}], "since", "until"}, oldest day first.
+
+With `--distilled`: the entry's answer, and "since", "until", "lessons" (how many the span holds) and "carried" (how many lessons and patterns the file carried). With `--distill`: {"asked", "at"}, the epoch second the watch was asked at.
+
+Errors, as {"error": …} with a non-zero exit, each before anything is written but the last: an entry that says nothing; a distillation file that carries a lesson of its span nowhere or twice, or a pattern with no `lesson` or fewer than two entries; no repo or tracker to name, run in no checkout; the tracker has no `Daybook` category — the error names the page that creates one, as GitHub creates no category through its API, and the line that turns its discussions on where they are off; GitHub refused to read or create the discussion, or to add the comment.
+
+## What trips you up
+
+- The category is created by hand, once, in the tracker: https://github.com/<owner>/<tracker>/discussions/categories/new, named `Daybook`.
+- An entry is written once: a second run writes a second entry. To correct one, edit its comment on GitHub; to correct its lesson in the index too, edit the index line in the day's discussion body, or write the day's next lesson, which rebuilds the index from the entries.
+- Two lessons written at once can each rebuild an index the other's is missing from. Each run checks the index holds its own lesson and rebuilds it until it does, and the day's next lesson restores any other; an index that still lacks a run's lesson is an error naming the entry, which was written."#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -93,3 +93,31 @@ pub fn record(id: &str, file: &Path) -> Result<Value> {
     }
     Ok(json!({"question": id, "reported": true, "report": report}))
 }
+
+/// What `afkconvoy asked --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+After the operator has decided the current question, or asked to put it aside, using the exact line in the asking session's brief:
+
+```
+afkconvoy asked --question <episode-id> --text-file <report.json>
+```
+
+A settled report is {"outcome":"settled","url":"<comment-url>"}. Its URL is the issue comment holding the operator's quoted words and their time; the asking session's own words establish no human intent. A put-aside report is {"outcome":"aside"} and has no URL. Put-aside questions stay pending and are listed when the operator asks.
+
+## Who runs it
+
+The resident asking session, after recording the operator's actual decision on the issue. The operator may repeat its exact command if the receipt was lost.
+
+## What it reads and writes
+
+It reads the current delivered question on this host and atomically keeps the report in the host cache. It needs no repo or GitHub login. Only the current, delivered, unwithdrawn question may report. The next question is delivered only after this report. The same report may be submitted again; a different one cannot replace it.
+
+## What it answers
+
+{question, reported: true, report}: the question's episode identity and its record. Errors name the current question's brief and the JSON to fix.
+
+## What trips you up
+
+Settling requires the link to the operator's quoted words and time, not a summary written by the Agent. Printed output is no report. A recovered question is withdrawn by the host runner and cannot be settled afterwards."#;

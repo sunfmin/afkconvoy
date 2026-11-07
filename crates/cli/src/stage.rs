@@ -809,3 +809,74 @@ impl Flows {
         Ok(if moved { Outcome::Done } else { Outcome::Nothing })
     }
 }
+
+/// What `afkconvoy verdict --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+Once, as the last thing a stage does: it declares the verdict that ends the stage, with the text the stage produced. A worker's brief gives the line with `--issue` and `--stage` filled in; add the verdict and the text:
+
+```
+afkconvoy verdict pass --issue 7 --stage build --text-file /tmp/build.md
+```
+
+The five verdicts:
+
+- `pass`: the stage did its work: the issue goes where the workflow says
+- `reject`: the work of an earlier stage is turned down; the text says why. Only a stage whose workflow gives it a `reject` may declare it
+- `blocked`: the issue waits on other issues: name them with `--blocked-by`. One that can go on only once the next version of this repo is installed — what it needs has landed but is not released — names `cut` there (`--blocked-by cut`) instead of polling for it: the fleet releases the claim and puts the label `convoy-waits-on-cut` on the issue, which keeps it off the frontier, so the fleet can go idle and cut. Once a cut has published and installed its version it takes that label off every issue carrying it, and each returns at the stage it left; a failed cut leaves them waiting. Where the repo names no cut steps, or nothing has landed past its newest version tag and no cut is running, no cut will come, and the issue escalates instead. A stage that splits its issue declares it on the issues it opened and took in (`afkconvoy intake --help`), and runs again when they have all closed. So does a stage whose gate is red for a defect outside its issue, on the defect's issue: one it opened and took in, or the open one that already recorded it
+- `already-satisfied`: the issue needs no change: it is already done
+- `escalate`: the stage cannot decide; the text says what has to be decided
+
+Opening a PR declares nothing: a stage that wrote one still declares `pass` — after `afkconvoy gate` says green on what it pushed, as its brief tells it.
+
+At Landing, a worker declares with `--stage land`: `blocked` names open issues the fleet can wait for and parks the claim, keeping work as `afkconvoy park` does. Once every blocker closes it returns to Landing, without repeating a stage. `escalate` hands it to a human with an answer line, keeping its PR and branch; a human's `afkconvoy rule` returns the issue to Landing. Other worker verdicts do not advance Landing.
+
+A consult also declares `close` or `park`, with its reason in the text. Close ends the issue; park leaves it open for new evidence, off the frontier until explicitly brought back (see `afkconvoy help humans`). Neither adds rework or resets its counts. `escalate` lets through to a human what the consult was asked to rule on. Its ruling uses `afkconvoy rule --help`.
+
+A human runs it too, for a stage a workflow gives them (`by: human`): the issue waits there, unclaimed, until they declare. `afkconvoy show --issue 7` names the stage:
+
+```
+afkconvoy verdict pass --issue 7 --stage sign-off --text "Approved."
+```
+
+## Who runs it
+
+A worker, in its own worktree: it starts in its role's directory, so the line its brief gives changes to the worktree first. The fleet put the commits of its role and of its team, and the harness it is a session of, in its environment, and the command reads them from there.
+
+Or a human, in a checkout of the bound repo, with neither commit named and none in the environment: that is what makes the record a human's.
+
+The issue's claim is checked live first. If another host holds it, the command refuses: `the claim on #N is held by instance X on host H since <ts>: this worker's work was taken; stop`. No stage record is written. Ownership uses the host's name from its host settings; a new instance on the same host keeps its workers.
+
+## What it reads and writes
+
+It reads the claim on the issue off the remote and the issue's comments, and writes one comment on the issue: the stage record. The record opens with a marker that carries the stage, the verdict, the claim it was declared under, the commits of the role and of the team and the harness the worker ran on — and nothing of how it was started — and the text follows it. Nothing but this command writes that format.
+
+A human's record is written under no claim, and only on an issue nobody holds. It says a human left it and carries no commit. Unlike a worker's it is checked first, against the team the config names and the issue's records: the issue must be at the stage named, and the verdict one that may be declared there.
+
+The text is `--text`, or the contents of `--text-file`: one of the two, and not empty. Then it wakes the fleet, as `afkconvoy wake` does.
+
+It moves nothing. Where the issue goes is read by the fleet off its records and its workflow at the next tick: see `afkconvoy show --help`.
+
+## What it answers
+
+{"issue", "stage", "verdict", "claim", "declared", "woke"} {"issue", "stage", "verdict", "by": "human", "declared": true, "woke"} — a human's
+
+- declared: true: the record was written
+- declared: false: this stage already has a record under this claim: nothing was written, and `standing` is the verdict that record declared
+- `woke`: whether a `run` on this host was told, as `afkconvoy wake` answers
+
+Errors, as {"error": …} with a non-zero exit: a word that is none of the five verdicts; no text, or an empty one; `--blocked-by` with another verdict than `blocked`; a worker's on an issue that is not claimed; one of `--role-commit` and `--team-commit` (or AFKCONVOY_ROLE_COMMIT and AFKCONVOY_TEAM_COMMIT) without the other; a `--harness` (or AFKCONVOY_HARNESS) that names no harness, or one with no commit; "is not in a git checkout", or git's own words for a checkout it refuses.
+
+A human's is refused, with nothing written, when the issue "is claimed" — its stage is its worker's, and a worker's record names both commits; when it is at another stage, or has left its stages; when the verdict "cannot be declared" there; with `--blocked-by`; and when the issue carries no one flow label.
+
+## What trips you up
+
+- One stage declares once under one claim. A second run changes nothing, whatever it says: the first record stands.
+- A record is a verdict only for the stage the claim was dispatched to. One that names another stage is written and counts for nothing: the worker is then treated as having declared no verdict.
+- It does not check that the verdict is one the stage may declare. A `reject` from a stage whose workflow gives it none is no valid verdict, and the issue escalates.
+- A ruling is not a verdict, and is not declared here: see `afkconvoy rule --help`.
+- An `escalate` starts a consult only where the stage names one. Otherwise it escalates for the host's watch to answer. A named consult rules — and the stage runs again under the ruling — or declares `escalate` itself. That one always goes to a human: the chain is one role long.
+- Whether a record is a consult's is read from AFKCONVOY_CONSULT, which the fleet put in the worker's environment (or `--consult`). Anything a consult declares but `escalate`, `close` or `park` is no valid verdict, and the issue escalates.
+- With no commit named a record is a human's. A worker whose environment lost its commits is refused, as its issue is claimed.
+- A human's `already-satisfied` ends the workflow and closes nothing, and a human's `blocked` parks nothing: no claim is there to do either."#;

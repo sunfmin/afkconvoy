@@ -599,6 +599,138 @@ pub fn release(repo: &Repo, scan: &mut Scan, me: &InstanceId, number: u64) -> Re
     }
 }
 
+/// What `afkconvoy heartbeat --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HEARTBEAT_HELP: &str = r#"## When to run it
+
+Hardly ever: every tick refreshes its instance's heartbeat. Run it to keep the claims of an instance live while nothing ticks for it — claims made by hand, or a fleet stopped for a while whose claims no other host should take.
+
+## Who runs it
+
+The operator, in a checkout of the repo.
+
+## What it reads and writes
+
+It reads the instance's heartbeat on the remote and, when it is due — never written, or older than a third of the lease — writes it anew. Nothing on GitHub changes.
+
+## What it answers
+
+{"refreshed": true, "ts", "ref"} {"refreshed": false, "reason": "not due", "ts", "ref"} — ts is the heartbeat that stands, in epoch seconds.
+
+Errors: the remote cannot be read, or refuses the push.
+
+## What trips you up
+
+- `--instance` is required.
+- It keeps a dead fleet's claims alive: while they are beaten for, no other host takes them as stale, and nobody works them.
+- One beat lasts one lease. Kept up by hand, it has to be run again before that."#;
+
+/// What `afkconvoy release --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const RELEASE_HELP: &str = r#"## When to run it
+
+Hardly ever: `close`, `escalate` and `park` release the claim they end, and a landed PR's claim is released by the tick. Run it to drop a claim made with `claim`, or one left behind by something that went wrong.
+
+## Who runs it
+
+The operator, in a checkout of the repo.
+
+## What it reads and writes
+
+It deletes the issue's claim on the remote, only while it is still the claim that was read. It does not read or change GitHub, and touches no worker and no worktree.
+
+## What it answers
+
+{"released": true, "issue", "ref"} — also when the issue had no claim: already gone counts as released.
+
+Errors: the claim is another instance's ("is not this fleet's claim"); it "moved since it was read" — somebody took it meanwhile, and it was left alone; the delete failed; "the tracker is not said" — the checkout is on no checkout list of this host, and the remote holds claims named for another tracker, so the claim's ref cannot be named.
+
+## What trips you up
+
+- `--instance` is required, and must be the instance that holds the claim. To end another instance's claim, take it first: `takeover`.
+- It only unlocks. The issue keeps its labels, its worker keeps working, and — still open and ready — the issue is back on the frontier: a fleet dispatches it again."#;
+
+/// What `afkconvoy claim --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const CLAIM_HELP: &str = r#"## When to run it
+
+Hardly ever: `dispatch` claims the issue it starts a worker on. Run it to hold an issue back from every fleet — a claim keeps the issue off the frontier — or to repair a claim that was released by mistake.
+
+## Who runs it
+
+The operator, in a checkout of the repo.
+
+## What it reads and writes
+
+It creates the issue's claim on the remote in one atomic push, which succeeds for exactly one instance. Before it, it refreshes the instance's heartbeat when that is due. It does not read GitHub: the issue is not checked, and no worker is started.
+
+## What it answers
+
+{"won": true, "issue", "ref", "sha", "instance"} {"won": false, "issue", "ref", "owner", "detail"} — the issue is claimed already. owner is that claim: {number, instance, host, ts, sha}.
+
+Errors: the push failed and it was not a lost race; the remote cannot be read.
+
+## What trips you up
+
+- `--instance` is required. A lost race is an answer with exit 0: read `won`.
+- A claim the instance holds already answers `won: false`, with itself as the owner.
+- A claim is live only while its instance's heartbeat is within the lease. Under an id nothing beats for, another fleet takes it as stale once the lease runs out.
+- Claimed as a running fleet's instance, it is a claim with no worker: that fleet's next tick starts a worker on it."#;
+
+/// What `afkconvoy scan --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const SCAN_HELP: &str = r#"## When to run it
+
+To see exactly what the remote holds: which instance claims which issue, and when each instance last beat. `plan` and `takeover --list` say what that means; this is the refs themselves, for repairing them.
+
+## Who runs it
+
+The operator, in a checkout of the repo.
+
+## What it reads and writes
+
+It reads the fleet's refs on the remote. It changes nothing, and does not read GitHub or the config.
+
+## What it answers
+
+{"claims", "heartbeats"}
+
+- `claims`: one per claimed issue, lowest number first: {number, instance, host, ts, sha}. ts is when it was stamped, in epoch seconds; sha is what a take or a release of it is leased to
+- `heartbeats`: {<instance id>: <epoch seconds>}
+
+Errors: the remote cannot be read; "is not in a git checkout", or git's own words for a checkout it refuses; "the tracker is not said" — the checkout is on no checkout list of this host, and the remote holds claims named for another tracker, which would read as no claim.
+
+## What trips you up
+
+- It looks where this repo's last startup probe found the remote keeps the fleet's refs. In a clone no `plan`, `tick` or `run` was ever run in, it looks under refs/convoy/ — and finds nothing on a remote that keeps them as convoy-* branches.
+- It does not say whether a claim is live: compare its instance's heartbeat with the lease, or read `takeover --list`."#;
+
+/// What `afkconvoy over --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const OVER_HELP: &str = r#"## When to run it
+
+Once, as the last command of a worker that is on no issue: a patrol's, when it has nothing more to open. The worker's brief ends with the exact line, the run named in it.
+
+## Who runs it
+
+A patrol's worker, in its own worktree: the checkout it was started in. Never a worker on an issue: its stage ends with a verdict (`afkconvoy verdict --help`).
+
+## What it reads and writes
+
+It reads the claim on the run off the remote and pushes one record that names it — a ref of the fleet's, `over/<run>` — then wakes the `run` of this host (`afkconvoy wake --help`). The next tick finds the run declared over and ends it at once, as it would one whose worker is gone (`end_patrol`: `afkconvoy tick --help`): a patrol's checkout is still checked for a commit and a PR. The slot the run held is free from that tick on.
+
+## What it answers
+
+{"over": true, "run", "ref", "woke"} — the record is on the remote; `woke` is whether a `run` on this host was told.
+
+Errors: no run is claimed under that name — it was ended already, or never started; the name is an issue's number; the worker is on an issue (AFKCONVOY_ISSUE is in the environment); the remote cannot be read or does not take the push.
+
+## What trips you up
+
+- It ends nothing itself: the fleet ends the run, at its next tick. A worker that goes on working after it is cut short.
+- A worker that never runs it loses nothing but time: the fleet ends the run once the worker is gone, or has been stopped for the grace period — five minutes in which the run holds a slot of the concurrency no issue can be worked in.
+- The record names the claim it was read from: left behind, it says nothing of the next run of the same patrol."#;
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

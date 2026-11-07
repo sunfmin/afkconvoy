@@ -894,6 +894,57 @@ pub fn failed(message: &str) -> ExitCode {
     ExitCode::from(125)
 }
 
+/// What `afkconvoy exclusive --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+For work you know to be heavy: a build, a test suite or a benchmark that takes most of the host's cores, memory or disk for minutes. You know it from a watch that typed at you that the work really is that heavy, or from your role's rules that name the command. Put `afkconvoy exclusive --` in front of that command, every time you run it from then on:
+
+```
+afkconvoy exclusive -- cargo test --workspace
+```
+
+Not for everyday commands — `git`, a single test, a quick build: the queue makes each one wait for every heavy one before it, of every fleet on this host.
+
+Split a long measurement up front. Run each step that needs a quiet host as its own `afkconvoy exclusive`, so landing turns can run between steps.
+
+## Who runs it
+
+A worker, in its own worktree. Anyone else on the host may too: the queue is the host's, not a fleet's.
+
+## What it reads and writes
+
+Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its worker lane while it builds and gates; a round's slow gate takes one of the host's slow lanes, 1 by default, which `run --slow-gate-lanes N` sets live. A gate alone in the queue keeps every core; one that starts while another command runs in a worker, fast or slow lane is given its share of the host's cores — its cores over those lanes together, at least 1 — as `NEXTEST_TEST_THREADS`, unless its environment already sets it, and its build every core (sunfmin/control#245, sunfmin/control#318). Inherited kernel leases keep a dead owner's still-running descendants from being replaced.
+
+A worker's fast gate, run by `afkconvoy gate --fast`, takes the fast lane instead: `gate --fast` tells its command's `exclusive` that it runs the fast gate, through `AFKCONVOY_GATE`, which `exclusive` does not pass on to its command. Fast gates contend only with each other, up to the host setting `fast_lanes`, {const:FAST_LANES} by default (`run --fast-lanes N`); no slow gate, turn or other command holds a place they need, and fast gates of one repo run side by side, each in its own worktree. A slow gate run alone, `gate --slow`, keeps the worker lanes.
+
+A cut's gate and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
+
+The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
+
+It writes a line to the tick log of this host for this repo as it starts to wait, when another command is ahead of it; as its command runs — in its turn, or at once in no queue, with why; as it waits again, in the next host runner's queue; and as it ends, with its exit status. Its lines name the worker or repo lane. `doctor` and the panel show each lane's running and waiting commands, with the counts in force. A turn logs the commit it merged, whether its gate was green and its landing.
+
+While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. Waiting for a turn uses none of the gate limit (`gate_seconds`); the limit times the gate command once the turn starts. A worker with confirmed live background work remains waiting even past the observation interval; silence alone does not authorize escalation or continuation.
+
+## What it answers
+
+A running command is ended once it has held other commands up for {const:EXCLUSIVE_SECONDS}s, or the seconds the host setting `afkconvoy run --exclusive-seconds N` says (`AFKCONVOY_EXCLUSIVE_SECONDS` names it too). `--exclusive-seconds default` changes it back; 0 ends a command as soon as another waits. Only time with another command waiting counts: time running alone never uses the bound, and gaps without waiters pause it. A changed host setting applies to the command already running. On reaching the bound it ends the command and its descendants before the next command starts, exits {const:EXCLUSIVE_BOUND_CODE}, and prints one line on stderr beginning `[afkconvoy] exclusive:` telling the worker to run each step as its own `afkconvoy exclusive`. The tick log records the command, its runtime and how many commands waited; `doctor` names each recent occurrence as a warning.
+
+Unlike every other command, no JSON of its own: what the command prints is printed, and it exits with the command's exit status — 128 and the signal for a command a signal ended. While it waits it says so on stderr, in one line beginning `[afkconvoy] exclusive:`.
+
+With no host runner on this host it runs the command at once, in no queue, and says so on stderr: `[afkconvoy] exclusive: runs `<command>` at once, in no queue: no host runner runs on this host`. So it does too where the host runner cannot hold it — one of an older afkconvoy, which cannot read the question — saying why. A host runner that is starting or stopping is waited for, as one replaced is.
+
+When the host runner is replaced — an upgrade moves it (`afkconvoy run --help`) — or ends, a command that waits asks the next one, within a minute, keeping its lane and when it first asked: within its lane it waits before every command that asked after it, saying so on stderr. Where no host runner places it within the minute, it runs at once, saying so. A command that runs runs on to its end: the next host runner does not know of it, and may start the next command beside it.
+
+Exit {const:EXCLUSIVE_BOUND_CODE} is reserved for the bound: a command that itself exits {const:EXCLUSIVE_BOUND_CODE} is reported as exit 1. Every other command exit status is passed through. It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the host runner cannot be asked — the cache directory is not known — or what it said cannot be read, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
+
+## What trips you up
+
+- It may wait long: as long as every heavy command ahead of it runs. Run it as you would the gate — in the background, or with a time limit of the gate limit — not under a short tool time limit that kills it while it waits.
+- Killing it kills its place in the queue, not only its wait: run it again to wait from the end.
+- Only commands run through it wait for one another. A heavy command run without it runs beside the one that runs alone.
+- The gate, run by `afkconvoy gate`, goes through the queue only when the config's `gate_command` does — `afkconvoy exclusive -- ./gate.sh`, for a gate that fills the host by itself. The turn owns the lane before it merges; the gate command's nested `exclusive` inherits that lease and never waits on itself. Existing `gate_command: afkconvoy exclusive -- ./gate.sh` configurations keep working. Never use `afkconvoy gate` or `land` as the gate_command: config and check name the build-and-test command to set."#;
+
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader, Write};

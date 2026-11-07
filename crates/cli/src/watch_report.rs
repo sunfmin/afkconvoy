@@ -128,3 +128,35 @@ pub fn record(id: &str, file: &Path, now: u64) -> Result<Value> {
     }
     Ok(json!({"watch": id, "reported": true, "report": report}))
 }
+
+/// What `afkconvoy watched --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+As the watch's last step, using the exact line at the end of its brief:
+
+```
+afkconvoy watched --watch <id> --text-file <report.json>
+```
+
+Write a JSON object with all five keys: `held_back`, `did`, `verified` and `pending` are lists of nonempty strings; `human` is a list of {condition, question, answer}, all nonempty strings. `condition` names an exact condition id from the round's look, listed in its brief, and is checked against that look. It may be omitted only for a look with exactly one actionable condition; ambiguous or unknown conditions are refused. Question and answer words never identify a condition. Use [] where nothing belongs. `held_back` says what held work back; `did` each action and its evidence, including repo, PR, cut and version; `verified` what was checked and what it showed; `human` each decision left alone and its exact answer command; `pending` everything unfinished. Printed terminal output is no report.
+
+## Who runs it
+
+The host's watch, in its watch directory, as the last step of each round in its resident interactive session. The operator may repeat the watch's exact command if its receipt was lost.
+
+## What it reads and writes
+
+It reads the running watch on this host and the report file, and atomically keeps the report in the host cache. It needs no repo or GitHub login. The same report may be submitted again; a different report cannot replace it. A missing part, unknown key, empty entry, wrong watch or expired hour is refused with {error} and nonzero exit; fix the JSON or use the running watch's brief.
+
+Once the host runner reads the report, it appends one entry for the round to the daybook (`afkconvoy daybook --help`), of session kind `watch`: what held work back under `Why`; the actions, what was verified and what was left under `Did`; and the issues and PRs the report links under `Links`. Each human question still goes to the asking session; the entry notes only that it was raised, with its link, and asks nothing. The entry is written later and retried until it is: it never holds the round, or the next one, back; one not written is a `doctor` finding.
+
+Recording completes only the named round and keeps the healthy resident Agent and Terminal available for later rounds. It does not finish queued work or another active round. `doctor.host.watch` and later briefs show the report; an ended watch with no report says `reported: false`.
+
+## What it answers
+
+{watch, reported: true, report}: the watch id and its complete record. Reporting does not claim recovery beyond the evidence in the report.
+
+## What trips you up
+
+Use the id and report path from this watch's brief. Include all five parts, even those with empty lists. The report cannot be replaced once recorded, and a successful harness exit without this command is shown as not reported."#;

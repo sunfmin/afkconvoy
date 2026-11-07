@@ -1701,6 +1701,72 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
     }
 }
 
+/// What `afkconvoy panel --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+To see every fleet of this host at a glance where no host runner serves it: the host, what waits for a human across every repo, then each repo — its workflows as lines of stages, the issues at work, queued and held back at each. Save it and open it in a browser:
+
+```
+afkconvoy panel > panel.html                       every checkout on the checkout list
+afkconvoy panel ~/Developments/hkj > hkj.html      that checkout alone
+```
+
+To watch the fleets, do not run this in a loop: the host runner serves the same page from its start, live — brought up to date after every tick of any fleet instance, by itself. Ask where:
+
+```
+afkconvoy panel --open
+```
+
+and open the address it answers. Run it again whenever you want that address back.
+
+## Who runs it
+
+The operator, anywhere on the host. `--open` asks the host runner, whatever directory it is run in.
+
+## What it reads and writes
+
+It writes nothing, on GitHub or on the remote, and makes no startup probe. For each checkout it makes the rebuild `plan` makes — the open issues and PRs, the claims and heartbeats, the base branch’s commits, and in a bound repo the team and every stage record — then asks orca after the worker of each claim of its fleet instance on this host, and reads its tick log on this host for the workers that are hot and whether its fleet instance is broken. Of the host it reads admission's reading, resource findings and the host watch, the exclusive queue, the host settings and the host kit.
+
+With `--open` it reads nothing itself, and starts nothing: it asks this host's runner, on its socket, where it serves the panel. The host runner serves it from its start, to this host only, on the panel's port of the host settings — {const:PANEL_PORT} where they say none, or any free port where that one is taken (`afkconvoy run --help`).
+
+## What it answers
+
+Not a JSON object: one HTML document on stdout, complete in itself, with no address in it that a browser would fetch. The same fleet state gives the same document. It has three parts, each made by one rendering, whether the host runner serves the page or this prints it:
+
+- The host, once: admission — whether it holds back new workers, why, and what it read of the host; the workers that are hot, in every repo, with why and what each held at the most; the watch running, and what the last watch did; the commands run alone on the host and those waiting their turn (`exclusive`); the host kit — each harness in order with its models, each one paused, and what the stock consult runs
+- With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with what kind of wait and the first sentence of the reason its comment gives, a Reason link to that comment (the report itself for an older failed patrol or cut), and the line that answers it: what `doctor` answers as `waiting_on_human`.
+- Each repo: a row at the top names every checkout, each with whether its fleet instance is idle, its claims held of its bound and its frontier, and links to its part. Each part then shows:
+  - Claims held: the claims of its fleet instance that take a slot, of the concurrency
+  - `Taking no slot`: shown while there are any: the claims whose worker declared a verdict not acted on yet, or that are landing with their worker not changing the tree, which take no slot
+  - a lane: one per workflow; an unbound repo has one, `backlog`, with the two stages `work` and `land`
+  - a stage: the number in its stop is the workers at it; under it the issues at work — each with its worker's state: busy, stopped and for how long, or no worker — then the queued, which are the frontier, and in a bound repo those held back there, with why
+  - `Patrols`: in a bound repo that names patrols: each, with what it is doing or what holds it back — one held by its `max_runs_a_day` says until when, as a time of day in UTC and how long from now
+  - left alone: every other open issue, with the reason `plan` gives under `excluded`
+  - Jira deliveries, when the repo has any: each delivery's reference, its identity, and whether it is ready for a human, not ready, or settled, as `doctor` answers under `deliveries`
+
+Errors, as {"error": …} with a non-zero exit: the checkout list cannot be read; of a checkout named — or of the one it is run in, where the list holds none — the config, GitHub or the remote cannot be read. A checkout on the list that cannot be rebuilt is said so in its part, with why, and every other is shown.
+
+With `--open`, one JSON object:
+
+- `panel`: the address to open in a browser of this host: http://127.0.0.1:<port>/
+- `host_runner`: the host runner that serves it: its pid, its version, its log, and that address as `panel`
+
+Its errors, as {"error": …} with a non-zero exit, none of which changes anything:
+
+- no host runner runs on this host: `afkconvoy run` starts one, which serves the panel; or print the page once, without `--open`
+- the host runner did not answer within 10 seconds: its log says why
+- the host runner serves no panel: it is of an older afkconvoy, which `afkconvoy run` moves onto this one; or it could not serve it, as its log says — or, for a fleet instance held in the foreground, as it warned
+
+## What trips you up
+
+- Without `--instance` each checkout is seen as the fleet instance its tick log on this host names last — the one the host runner holds, or held — as the live page sees it; one whose fleet never ran on this host is seen as nobody's: its claims show as "held by <instance>", with no worker's state. `--instance` names the fleet instance of every checkout printed: name the checkout with it. `takeover --list` shows the ids.
+- A worker's state is this host's orca's to say. A claim whose worker runs on another host shows "no worker" here.
+- The panel is served at one address for as long as its host runner runs. `afkconvoy run --panel <port>` changes the port the next host runner serves it on, not the running one's: `afkconvoy stop --all` and then `afkconvoy run` moves it.
+- A checkout a `run` adds is on the live page at once, as starting, and filled in by its first tick. One whose fleet instance broke shows what its last tick showed, said broken, until it is back.
+- `--open` takes no checkout, no `--instance` and no `--host`: the page is the host runner's own.
+- The page the host runner serves is not this one made again and again: each repo's part is made from what its fleet instance's tick already read, and adds what that tick did. It costs GitHub nothing."#;
+
 #[cfg(test)]
 mod tests {
     use afkconvoy_core::admission::{Disk, Reading, SHARES};

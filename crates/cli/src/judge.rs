@@ -867,3 +867,94 @@ pub fn label_segment(label: &str) -> String {
     }
     out
 }
+
+/// What `afkconvoy nudge --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const NUDGE_HELP: &str = r#"## When to run it
+
+To send a worker its nudge by hand. A tick does this on its own only when worker health or the capacity rule asks the worker to carry on; silence alone starts observation, and what no rule classes goes to Jev, where the host settings name a key command, or else to the operator. Do it yourself when you have checked the worker’s scene and want it to carry on.
+
+## What counts as silent
+
+A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence, never proof of quota exhaustion by themselves. Structured error codes and a harness's explicit usage-limit and task-refusal messages are classed by rule: Codex's `Usage limit reached … Increase your limits to continue using codex` is an account quota fault, with no observation delay. Codex's `We take extra care with some cybersecurity requests. If you're doing authorized security work, apply for Daybreak to get broader access.` is a refusal of this task by rule, also with no observation delay. This issue continues on the next harness in host kit order that can start for its role. The issue remembers each refusing harness on GitHub and skips it at every later stage and start; the harness stays healthy for other issues. With none left, the issue escalates at once with the refusal line as evidence and no consult. What no rule classes is judged by one Jev request on the worker's latest screen where the host settings name a key command; without one, or where the key command, TypeSafe or Jev's answers settle nothing, the worker waits for the operator and its scene is preserved.
+
+Account quota with no reset time continues on the next harness in host kit order that can start for the worker's role. A reset within the one-hour recovery window may be waited for; a later reset continues instead. Repeated waits on unchanged evidence never restart that window. After one hour the fleet acts on the fault class or escalates the issue to a human with its evidence. Doctor names the worker, its class and its next check, and a worker waiting for the operator with the reason and a line of its screen.
+
+Codex's `Selected model is at capacity. Please try a different model.` is a capacity stop by rule, also with no diagnosis or observation delay. The first stop waits {{CAPACITY_WAIT_SECONDS}} seconds before nudging the same session; the next waits {{CAPACITY_SECOND_WAIT_SECONDS}} seconds. After {{MAX_CAPACITY_STOPS}} stops in the episode, the worker continues on the next eligible harness in host kit order, keeping its worktree, branch, stage, claim and PR. The episode survives brief working turns and runner restarts, ending after {{CAPACITY_HEALTHY_SECONDS}} seconds observed healthy or a different session. Capacity faults no harness for other workers. Tick-log worker-health lines name the rule, waits and nudges; doctor's host kit reports capacity_stops per harness, retained after episodes end.
+
+Confirmed background work, waiting for a human or dependency and completed idle sessions are left alone. A worker's gate waiting in the exclusive queue is background work too. The tick does not turn a long wait into permission for another writer. Continuation closes the old agent and confirms its terminal, runtime and process tree are gone before starting the successor in the same worktree, branch, stage, claim and PR. Structured transient rate limits respect Retry-After and get two retries before session fallback. Account and model recovery probes run hourly, in the login shell a worker gets, and open no terminal; successful recovery affects new starts without moving healthy successors back.
+
+## Who runs it
+
+The operator, in a checkout of the repo, on the host the worker runs on.
+
+## What it reads and writes
+
+It asks orca for the worker's state and reads the issue's comments for a verdict. Immediately before sending, it checks that the terminal still has a harness ready for a prompt: a bare shell receives nothing. It types one line at the worker's terminal and records the nudge in the worktree. Nothing on GitHub or the remote changes.
+
+## What it answers
+
+{"issue", "action": "nudged", "terminal"}
+
+Errors, each with nothing sent: "has no stopped worker" — the instance holds no claim on the issue, or its worker is at work or gone; "is not nudged" — it was nudged already, showed a sign of life within the grace period, waits on background work of its own, or declared a verdict; the claim is another instance's; the worktree has no live terminal.
+
+## What trips you up
+
+- `--instance` is required, and must be the instance that holds the claim.
+- It is refused wherever a tick would not nudge: it cannot be used to hurry a worker.
+- One nudge per worker. A worker silent again after it is escalated by the next tick.
+- To tell a worker something it must know, busy or stopped, use `afkconvoy tell`: a nudge only says carry on."#;
+
+/// What `afkconvoy escalate --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const ESCALATE_HELP: &str = r#"## When to run it
+
+To hand a claim to a human by hand. A tick does this on its own for every failure: an `escalate` verdict, a worker silent past its nudge, a blocker that cannot be parked on. Do it yourself when you can see a claim will not finish and the fleet has not given it up yet.
+
+## Who runs it
+
+The operator, in a checkout of the repo.
+
+## What it reads and writes
+
+On GitHub it comments `--reason` on the issue, swaps the config's `ready_label` for its `escalate_label`, and writes the status board's last word. In a bound repo it swaps the issue's flow label for the `escalate_label` of the team instead, and the comment records which workflow the issue left: `afkconvoy rule` puts that label back. On the remote it releases the claim. The PR and the branch are kept. The worktree is removed when its tree is clean and every commit of its branch is on the remote — pushed, or on the base branch: a later dispatch recreates it at the pushed tip. Otherwise it is kept, and the comment and the status board say what it holds that exists on this host only, the comment listing each commit the remote does not have by its subject. In orca it closes the terminal of the issue's worker: a worktree that is kept has no worker left in it.
+
+## What it answers
+
+{"issue", "action": "escalated", "released": true, "worktree", "kept_because", "unpushed"} — worktree is "removed", "kept", or "none" when the issue has none on this host. A kept one says why: kept_because is "dirty", "unpushed" or "unread", and unpushed is how many commits only it holds (null when unread).
+
+{"issue", "released": true, "detail"} — no claim is held on the issue: nothing was done.
+
+Errors: the claim is another instance's ("is not this fleet's claim").
+
+## What trips you up
+
+- `--instance` is required, and must be the instance that holds the claim.
+- It escalates only a claim. On an issue nobody holds it answers `released` with a `detail`, and has neither commented nor relabelled.
+- Cut short, run it again with the same reason: it goes on from the step it stopped at, and still posts one comment.
+- It stops no worker: one still at work goes on, on an issue the fleet gave up."#;
+
+/// What `afkconvoy close --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const CLOSE_HELP: &str = r#"## When to run it
+
+To close, by hand, a claim whose issue needed no change. A tick does this on its own for a worker that stopped with an `already-satisfied` verdict and no work on its branch. Do it yourself when a plan keeps showing such a claim under `mine` as `no_pr`.
+
+## Who runs it
+
+The operator, in a checkout of the repo, on the host the worker ran on.
+
+## What it reads and writes
+
+It closes the issue on GitHub, writes the status board's last word, releases the claim on the remote, and removes the worktree.
+
+## What it answers
+
+{"issue", "action": "closed", "released": true} {"issue", "released": true, "detail"} — no claim is held on the issue: nothing was done.
+
+Errors: the claim is another instance's ("is not this fleet's claim"); the worktree shows work, or there is no worktree on this host to show there is none ("is not closed as needing no change"). Nothing was changed.
+
+## What trips you up
+
+- `--instance` is required, and must be the instance that holds the claim.
+- It does not read the verdict. Any claim of the instance whose branch has no commits past its merge base with the remote base branch, has the same tree as that merge base and has nothing uncommitted is closed — one whose worker has only just started as well. A clean branch only behind the base branch qualifies. A refusal names files the branch changed since the merge base and anything uncommitted."#;

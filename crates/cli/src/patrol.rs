@@ -433,3 +433,53 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
     drop_run(&fleet.repo, &mut fleet.scan, claim)?;
     Ok(Outcome::Done)
 }
+
+/// What `afkconvoy patrol-now --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+When you want a patrol's run now rather than when its interval has passed — a review right after several landings, say — without editing the team's patrol file, which changes the schedule for every repo that runs it:
+
+```
+afkconvoy patrol-now sweep
+```
+
+The next tick of whichever host claims the run starts it, and this command wakes the `run` of this host so that tick starts at once.
+
+## Who runs it
+
+The operator, or any human, in a checkout of a bound repo whose config names the patrol under `patrols`. No worker is told to: a patrol's worker ends its run with `afkconvoy over`.
+
+## What it reads and writes
+
+It reads the team, the patrol's file, the remote's records of the patrol and what is open on GitHub — what `afkconvoy plan` reads of a patrol. Then it pushes one record to the remote, a ref of the fleet's, `asked/<name>`, saying when it asked and from which host, and wakes the `run` of this host (`afkconvoy wake --help`). It changes no config file, starts no worker and claims nothing itself.
+
+A run asked for this way:
+
+- passes `every` and `max_runs_a_day`: it runs though the interval has not passed since the last run, and though the day's runs have reached the bound;
+- is still held by what holds a due run: a fleet lock, the patrol's open issues having reached `max_open`, its completed issues having reached `max_landed_a_day`, a failed run whose report is still open, and a run of it still going. Each refuses the ask, and nothing is recorded;
+- is claimed on the remote as a due run is: of several hosts asked at once, one runs it and the others' ticks say `lost`;
+- is recorded as the patrol's run, with `asked=human` in its record: its start is the last run `every` counts from, and one of the day's starts `max_runs_a_day` counts. The ask is deleted as the run is recorded.
+
+Until a tick starts the run, `afkconvoy plan` shows `asked` (normally `due`; new completions may hold it again): when the ask was made. The panel says a human asked for it.
+
+## What it answers
+
+{"patrol", "asked", "ref", "woke"} — the ask is on the remote at `ref`, made at `asked` (epoch seconds); `woke` is whether a `run` on this host was told.
+
+Errors, as {"error", "see"} with a non-zero exit, nothing recorded:
+
+- a fleet lock stands: no patrol runs until the last lock issue closes;
+- the open issues the patrol opened have reached its `max_open`: it runs once one closes, or `max_open` is raised;
+- its last run failed and the issue that reports it is open: close it once you have looked;
+- a run of it is still going: ask again once it has ended;
+- the repo runs no patrol of that name: the config's `patrols` lists those it runs.
+
+Also: "is not in a git checkout", or git's own words for a checkout it refuses; the config, the team, the remote or GitHub cannot be read; the remote does not take the push.
+
+## What trips you up
+
+- It runs nothing itself: a `run` does, at its next tick. With no `run` on any host (`woke: false` here, and none elsewhere), the ask waits on the remote for the first tick of any of them.
+- An ask made while nothing held the patrol stands until a run answers it, whatever comes to hold the patrol meanwhile: a lock raised since holds it, and it runs once the lock has closed. `afkconvoy plan` shows it held, with `asked`.
+- Asking twice before the run asks once: one run answers both.
+- The schedule goes on from the run asked for: the next due run is `every` after its start, not after the last scheduled one."#;
