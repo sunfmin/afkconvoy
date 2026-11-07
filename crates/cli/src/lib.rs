@@ -5281,7 +5281,7 @@ fn run(
             let dispatched =
                 dispatch::dispatch(&mut fleet, found, &me, &agent, issue.number(), start);
             probe::announce(&agent.launches.warned());
-            dispatched
+            dispatched.map(|dispatched| dispatched.answer)
         }
         Command::Recovery { issue, .. } => {
             recovery::recovery(&Fleet::open(&checkout?, now)?, issue.number())

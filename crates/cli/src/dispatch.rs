@@ -266,8 +266,56 @@ pub fn dispatch(
     agent: &Agent,
     number: u64,
     from: StartFrom,
-) -> Result<Value> {
+) -> Result<Dispatched> {
     dispatch_continuing(fleet, found, me, agent, number, from, None)
+}
+
+/// What a dispatch came to: how its start ended, which its callers act on,
+/// and the answer `dispatch` gives, which says it again with what was
+/// started.
+#[derive(Debug)]
+pub struct Dispatched {
+    pub start: Start,
+    pub answer: Value,
+}
+
+/// How a dispatch's start ended, when it did not fail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    /// A worker was started under the claim, and took its brief.
+    Started,
+    /// A worker was started under the claim, its brief still to hand it.
+    BriefPending,
+    /// A peer won the claim: nothing was started.
+    Lost,
+    /// The issue had these open blockers just before its claim: nothing was
+    /// claimed or started.
+    Blocked(Vec<u64>),
+    /// GitHub says the issue is gone: nothing was started.
+    Gone,
+}
+
+impl Dispatched {
+    fn blocked(number: u64, blockers: Vec<u64>) -> Dispatched {
+        let answer = json!({"issue": number, "started": false, "skipped": "blocked",
+            "blocked_by": blockers});
+        Dispatched { start: Start::Blocked(blockers), answer }
+    }
+
+    fn lost(number: u64, owner: Value) -> Dispatched {
+        let answer = json!({"issue": number, "started": false, "claim": "lost", "owner": owner});
+        Dispatched { start: Start::Lost, answer }
+    }
+
+    fn gone(number: u64, said: &str, released: bool) -> Dispatched {
+        let answer = json!({"issue": number, "started": false, "gone": said, "released": released});
+        Dispatched { start: Start::Gone, answer }
+    }
+
+    /// Whether a worker was started and took its brief.
+    pub fn started(&self) -> bool {
+        self.start == Start::Started
+    }
 }
 
 /// `dispatch`, whose brief also says what of the work of the worker before
@@ -281,14 +329,14 @@ pub(crate) fn dispatch_continuing(
     number: u64,
     from: StartFrom,
     continuing: Option<&Continuing>,
-) -> Result<Value> {
+) -> Result<Dispatched> {
     let previous = starting(fleet, number)?;
     let ready = previous.as_ref().and_then(|previous| previous.ready.as_deref());
     let started = start(fleet, me, agent, number, from, continuing, ready);
     let Some(how) = started.as_ref().err().and_then(gone).cloned() else {
         return match started {
             Ok(started) => {
-                if started["started"] == true {
+                if started.started() {
                     forget_starting(fleet, number)?;
                 }
                 Ok(started)
@@ -317,7 +365,7 @@ pub(crate) fn dispatch_continuing(
     }
     let said = how.word();
     forget_starting(fleet, number)?;
-    Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
+    Ok(Dispatched::gone(number, said, released))
 }
 
 /// A trust gap hands the claim on at once: restarting the same command would
@@ -330,7 +378,7 @@ fn start_failed(
     number: u64,
     previous: Option<Starting>,
     error: anyhow::Error,
-) -> Result<Value> {
+) -> Result<Dispatched> {
     let Some(claim) =
         fleet.scan.claim_of(number).filter(|claim| claim.is_held_by(&me.instance)).cloned()
     else {
@@ -379,7 +427,7 @@ fn wait_for_close(
     number: u64,
     previous: Option<Starting>,
     error: anyhow::Error,
-) -> Result<Value> {
+) -> Result<Dispatched> {
     let Some(claim) =
         fleet.scan.claim_of(number).filter(|claim| claim.is_held_by(&me.instance)).cloned()
     else {
@@ -473,7 +521,7 @@ fn start(
     from: StartFrom,
     continuing: Option<&Continuing>,
     ready: Option<&str>,
-) -> Result<Value> {
+) -> Result<Dispatched> {
     let issue = fleet.gh.issue(number)?;
     if issue.is_closed() {
         // before the claim: never lock a closed issue
@@ -556,14 +604,12 @@ fn start(
                 }
                 if !blockers.is_empty() {
                     blockers.sort_unstable();
-                    return Ok(json!({"issue": number, "started": false, "skipped": "blocked",
-                        "blocked_by": blockers}));
+                    return Ok(Dispatched::blocked(number, blockers));
                 }
                 pin_target(fleet, number, &target)?;
                 let claim = take(&fleet.repo, &mut fleet.scan, me, number, Take::Fresh)?;
                 if claim["won"] != true {
-                    return Ok(json!({"issue": number, "started": false, "claim": "lost",
-                        "owner": claim["owner"]}));
+                    return Ok(Dispatched::lost(number, claim["owner"].clone()));
                 }
                 keep_starting(fleet, number, interrupted)?;
                 if let Some(staged) = &staged {
@@ -714,7 +760,8 @@ fn start(
             started["unmatched_untold"] = json!(format!("{error:#}"));
         }
     }
-    Ok(started)
+    let start = if brief_pending { Start::BriefPending } else { Start::Started };
+    Ok(Dispatched { start, answer: started })
 }
 
 /// Posts the worker-start record when this start is its own row. A landing
@@ -897,4 +944,35 @@ fn discard_attempt(fleet: &Fleet, number: u64) -> Result<Value> {
     }
     Ok(json!({"closed_prs": closed, "deleted_branches": own,
         "removed_worktree": worktree.map(|worktree| worktree.path)}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_start_that_did_not_start_says_how_typed_and_answers_as_before() {
+        let blocked = Dispatched::blocked(3, vec![5, 9]);
+        assert_eq!(blocked.start, Start::Blocked(vec![5, 9]));
+        assert_eq!(
+            blocked.answer,
+            json!({"issue": 3, "started": false, "skipped": "blocked", "blocked_by": [5, 9]})
+        );
+        let lost = Dispatched::lost(3, json!("beta"));
+        assert_eq!(lost.start, Start::Lost);
+        assert_eq!(
+            lost.answer,
+            json!({"issue": 3, "started": false, "claim": "lost", "owner": "beta"})
+        );
+        let gone = Dispatched::gone(3, "deleted", true);
+        assert_eq!(gone.start, Start::Gone);
+        assert_eq!(
+            gone.answer,
+            json!({"issue": 3, "started": false, "gone": "deleted", "released": true})
+        );
+        assert!(![blocked, lost, gone].iter().any(Dispatched::started));
+        let pending = Dispatched { start: Start::BriefPending, answer: json!({}) };
+        assert!(!pending.started());
+        assert!(Dispatched { start: Start::Started, answer: json!({}) }.started());
+    }
 }

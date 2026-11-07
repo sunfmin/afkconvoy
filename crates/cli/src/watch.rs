@@ -140,8 +140,7 @@ pub(crate) fn answer_turn(
         if worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Gone
             || crate::dispatch::incomplete(fleet, issue)?
         {
-            let started = dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
-            if started["started"] != true {
+            if !dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?.started() {
                 return Ok(Outcome::Nothing);
             }
         } else {
@@ -209,7 +208,7 @@ fn restart_worker(
                 record_join(fleet, stopped.pr, &record, &stopped.comments)?;
             }
             RestartStep::Replace => {
-                started = dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
+                started = dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?.answer;
             }
         }
         Ok::<(), anyhow::Error>(())

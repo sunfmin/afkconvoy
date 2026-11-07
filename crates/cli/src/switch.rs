@@ -309,11 +309,12 @@ pub(crate) fn switch_issue(
     if let Some(worktree) = &worktree {
         worktree.stop_for_continuation()?;
     }
-    let started =
+    let dispatched =
         dispatch_continuing(fleet, found, me, agent, issue, StartFrom::Auto, Some(&continued))?;
-    if started["started"] != true {
-        bail!("issue #{issue}: no worker was started: {started}");
+    if !dispatched.started() {
+        bail!("issue #{issue}: no worker was started: {}", dispatched.answer);
     }
+    let started = dispatched.answer;
     let to = started["harness"].as_str().and_then(Harness::read).unwrap_or(from);
     let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
     if let Some(pr) = pr {

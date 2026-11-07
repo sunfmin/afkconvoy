@@ -23,7 +23,7 @@ use crate::admission::Admission;
 use crate::advance::{advance, hand_to_human, run_again_unclaimed};
 use crate::board::show;
 use crate::claims::{Me, beat, goodbye};
-use crate::dispatch::{Agent, StartFrom, dispatch};
+use crate::dispatch::{Agent, Start, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::fleet_report::FleetReport;
 use crate::forget::forget;
@@ -475,14 +475,15 @@ fn carry_out(
                 Err(error) if error.is::<crate::dispatch::Closed>() => return Ok(Outcome::Closed),
                 started => started?,
             };
-            if started["gone"].is_string() {
-                return Ok(Outcome::Gone);
-            }
-            if let Some(blockers) = started["blocked_by"].as_array() {
-                found.blocked.push((issue, blockers.iter().filter_map(Value::as_u64).collect()));
-                return Ok(Outcome::Blocked);
-            }
-            Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
+            Ok(match started.start {
+                Start::Started => Outcome::Done,
+                Start::BriefPending | Start::Lost => Outcome::Lost,
+                Start::Blocked(blockers) => {
+                    found.blocked.push((issue, blockers));
+                    Outcome::Blocked
+                }
+                Start::Gone => Outcome::Gone,
+            })
         }
         TickStep::EndCut => match &read.set.cut {
             Some(row) => crate::cut::end(fleet, found, me, read.flows, row),
