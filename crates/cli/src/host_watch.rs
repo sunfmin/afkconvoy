@@ -1688,20 +1688,8 @@ fn push(items: &mut Vec<Item>, id: String, reason: String) {
     }
 }
 
-/// A finding's identity scoped to where it was found: a checkout's to its
-/// checkout, a host's to the host. A resource's holds its scope already.
-pub(crate) fn scoped_finding_id(at: &str, id: &str) -> String {
-    if let Some(identity) = id.strip_prefix("checkout:") {
-        format!("finding:{at}:{identity}")
-    } else if let Some(identity) = id.strip_prefix("host:") {
-        format!("finding:host:{identity}")
-    } else {
-        id.to_string()
-    }
-}
-
 /// A finding as the look answers it: what the watch acts on, by its kind and
-/// its identity.
+/// its identity, as doctor scoped it.
 #[derive(Deserialize)]
 struct Said {
     kind: crate::doctor::Kind,
@@ -1722,13 +1710,23 @@ fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
         }
         let reason =
             format!("{}; evidence: {}; fix: {}", said.what, json!(said.evidence), json!(said.fix));
-        let id = match said.kind {
-            crate::doctor::Kind::KitUnplaced => {
-                format!("{}{}", host_watch::RESEARCH_ITEM, said.watch_id)
-            }
-            _ => scoped_finding_id(at, &said.watch_id),
-        };
-        push(items, id, reason);
+        push(items, unscoped_as_scoped(at, &said), reason);
+    }
+}
+
+/// The identity of `said`, found at `at`, as doctor says it. A look saved by
+/// an afkconvoy before doctor scoped `watch_id` itself still holds it
+/// unscoped, `checkout:` or `host:`: a round started then and reported after
+/// the host runner moved is read by the rule the watch went by then, so its
+/// human conditions still match. A scoped identity never begins so. Delete
+/// this once no host runs a release older than the one that made doctor
+/// scope it, and no round it started is left: one release past it.
+fn unscoped_as_scoped(at: &str, said: &Said) -> String {
+    let id = &said.watch_id;
+    if id.starts_with("checkout:") || id.starts_with("host:") {
+        crate::doctor::scoped(at, said.kind, id)
+    } else {
+        id.clone()
     }
 }
 
@@ -1750,10 +1748,8 @@ pub(crate) fn actionable(look: &Value) -> Vec<Item> {
                 "#{issue} waits on a human: {}; answer: {}",
                 waiting["why"], waiting["answer"]
             );
-            if let Ok(identity) =
-                serde_json::from_value::<crate::doctor::HumanWait>(waiting.clone())
-            {
-                push(&mut items, scoped_finding_id(at, &identity.watch_id()), reason);
+            if let Ok(id) = crate::doctor::waiting_id(at, waiting) {
+                push(&mut items, id, reason);
             }
         }
     }
@@ -1900,7 +1896,10 @@ mod tests {
             at: Some(HUMAN_SINCE),
         }]);
         json!({"until": now, "checkouts": [{"checkout": "/bizkernel", "doctor": {
-            "findings": crate::doctor::waiting_findings(std::slice::from_ref(&waiting), now),
+            "findings": crate::doctor::answered(
+                "/bizkernel",
+                crate::doctor::waiting_findings(std::slice::from_ref(&waiting), now),
+            ).unwrap(),
             "waiting_on_human": [waiting], "fleet": {"alive": true}
         }}]})
     }
@@ -2245,13 +2244,14 @@ mod tests {
 
     #[test]
     fn every_actionable_kind_has_an_identity_that_holds_through_its_episode() {
-        use crate::doctor::{Kind, finding};
-        // Each finding as doctor makes it, said in the words `say` gives.
+        use crate::doctor::{Kind, answered, finding};
+        // Each finding as doctor makes it and answers it, said in the words
+        // `say` gives.
         let look = |say: &dyn Fn(&str) -> String| {
             let made = |kind: Kind, identity: Value, what: &str| {
-                json!(finding(kind, identity, say(what), "seen".into(), "a fix".into()))
+                finding(kind, identity, say(what), "seen".into(), "a fix".into())
             };
-            json!({"findings": [
+            json!({"findings": answered("host", vec![
                 made(Kind::OrcaNotRunning, json!(["tool", "orca"]), "`orca` is not running"),
                 made(Kind::WatchUnavailable, json!(["watch-unavailable"]),
                     "no harness can start this host's watch"),
@@ -2261,9 +2261,9 @@ mod tests {
                     "the harness `codex` has unplaced models in the host kit"),
                 made(Kind::HealthOverdue, json!(["health-overdue", "/w"]),
                     "the worker in /w: its health observation is overdue"),
-            ],
+            ]).unwrap(),
             "checkouts": [{"checkout": "/r", "doctor": {
-                "findings": [
+                "findings": answered("/r", vec![
                     made(Kind::StepUnrecovered, json!(["step", "dispatch", null, null]),
                         "`dispatch` failed in tick 4 and has not recovered"),
                     made(Kind::Broken, json!(["broken", 800]),
@@ -2272,7 +2272,7 @@ mod tests {
                         "a tick failed since the last look: one of alpha"),
                     made(Kind::RetiredConcurrency, json!(["retired-concurrency"]),
                         "`concurrency: 2`, which nothing reads any more"),
-                ],
+                ]).unwrap(),
                 "waiting_on_human": [{"issue": 7, "why": "escalated", "answer": "gh issue view 7"}],
             }}]})
         };
@@ -2295,6 +2295,119 @@ mod tests {
         );
         let reworded = ids(&look(&|what| format!("{what}, said again in other words")));
         assert_eq!(reworded, first, "rewording a finding keeps its episode");
+    }
+
+    #[test]
+    fn a_round_whose_look_an_older_afkconvoy_saved_unscoped_still_matches_its_human_conditions() {
+        use crate::doctor::{Kind, answered, finding};
+        let made = |kind: Kind, identity: Value, what: &str| {
+            finding(kind, identity, what.into(), "seen".into(), "a fix".into())
+        };
+        let host = || {
+            vec![
+                made(Kind::OrcaNotRunning, json!(["tool", "orca"]), "`orca` is not running"),
+                made(
+                    Kind::KitUnplaced,
+                    json!(["kit-unplaced", "codex"]),
+                    "the harness `codex` has unplaced models in the host kit",
+                ),
+            ]
+        };
+        let own = || {
+            vec![made(
+                Kind::StepUnrecovered,
+                json!(["step", "dispatch", null, null]),
+                "`dispatch` failed in tick 4 and has not recovered",
+            )]
+        };
+        let waiting = json!([{"issue": 7, "why": "escalated", "answer": "gh issue view 7"}]);
+        let look = |host: Value, own: Value| {
+            json!({"findings": host, "checkouts": [{"checkout": "/r", "doctor": {
+                "findings": own, "waiting_on_human": waiting}}]})
+        };
+        // As the older afkconvoy saved it: each `watch_id` as judged.
+        let old = look(json!(host()), json!(own()));
+        assert_eq!(old["findings"][0]["watch_id"], r#"host:["tool","orca"]"#);
+        let new = look(answered("host", host()).unwrap(), answered("/r", own()).unwrap());
+        let ids = |look: &Value| -> Vec<String> {
+            actionable(look).into_iter().map(|item| item.id).collect()
+        };
+        assert_eq!(ids(&old), ids(&new), "both forms are acted on by one identity");
+        // A round started on the old look and reported after the host runner
+        // moved: its human conditions name the identities the watch was given.
+        let watch = human_round(old, actionable(&new), vec![], true);
+        for condition in ids(&new) {
+            let human = crate::watch_report::Human {
+                condition: Some(condition.clone()),
+                question: "Provide a quiet environment?".into(),
+                answer: "no".into(),
+            };
+            assert_eq!(crate::watch_report::condition(&watch, &human).unwrap(), condition);
+        }
+    }
+
+    #[test]
+    fn the_watch_acts_on_every_kind_of_finding_by_the_identity_it_did_before_doctor_scoped_it() {
+        use crate::doctor::{Finding, Kind, Severity, answered, finding, waiting_id};
+        // The watch's own rule before doctor answered each finding scoped:
+        // what every open question and ruling of a watch is keyed by.
+        let before = |at: &str, found: &Finding| {
+            let id = &found.watch_id;
+            if found.kind == Kind::KitUnplaced {
+                format!("{}{id}", host_watch::RESEARCH_ITEM)
+            } else if let Some(identity) = id.strip_prefix("checkout:") {
+                format!("finding:{at}:{identity}")
+            } else if let Some(identity) = id.strip_prefix("host:") {
+                format!("finding:host:{identity}")
+            } else {
+                id.to_string()
+            }
+        };
+        let made = |kind: Kind| {
+            let identity = json!([format!("{kind:?}"), "/w", 7]);
+            finding(kind, identity, kind.symptom().into(), "seen".into(), "a fix".into())
+        };
+        // Every kind as doctor makes it, and those a resource episode names
+        // by the episode's identity.
+        let mut found: Vec<Finding> = Kind::ALL.iter().map(|kind| made(*kind)).collect();
+        for kind in [Kind::AdmissionHeld, Kind::MemoryPressure] {
+            found.push(Finding { watch_id: format!("{kind:?}-episode"), ..made(kind) });
+        }
+        let (of_host, own): (Vec<_>, Vec<_>) = found.into_iter().partition(|f| f.of_host);
+        let waiting = json!({"issue": 7, "title": "seven", "why": "escalated", "url": null,
+            "since": 10, "answer": "gh issue view 7"});
+        let look = json!({
+            "findings": answered("host", of_host.clone()).unwrap(),
+            "checkouts": [{"checkout": "/r", "doctor": {
+                "findings": answered("/r", own.clone()).unwrap(),
+                "waiting_on_human": [waiting.clone()],
+            }}],
+        });
+        let said = |list: &Value| -> Vec<String> {
+            let found = list.as_array().unwrap().iter();
+            found.map(|f| f["watch_id"].as_str().unwrap().to_string()).collect()
+        };
+        let was = |at: &str, found: &[Finding]| -> Vec<String> {
+            found.iter().map(|f| before(at, f)).collect()
+        };
+        assert_eq!(said(&look["findings"]), was("host", &of_host), "the host's findings");
+        let checkout = &look["checkouts"][0]["doctor"]["findings"];
+        assert_eq!(said(checkout), was("/r", &own), "the checkout's findings");
+        // A waiting issue is acted on by the identity its finding has once it
+        // has waited long.
+        let identity = json!(["human", {"issue": 7, "since": 10, "url": null, "why": "escalated",
+            "answer": "gh issue view 7"}]);
+        let long = Finding { watch_id: format!("checkout:{identity}"), ..made(Kind::WaitedLong) };
+        let human = before("/r", &long);
+        assert_eq!(waiting_id("/r", &waiting).unwrap(), human);
+        let acted = |f: &&Finding| f.severity != Severity::Info && f.kind.watched();
+        let mut expected = was("host", &of_host.iter().filter(acted).cloned().collect::<Vec<_>>());
+        expected.extend(was("/r", &own.iter().filter(acted).cloned().collect::<Vec<_>>()));
+        expected.push(human);
+        let ids: Vec<String> = actionable(&look).into_iter().map(|item| item.id).collect();
+        assert_eq!(ids, expected, "each kind the watch acts on keeps its identity");
+        assert!(ids.iter().any(|id| id.starts_with(host_watch::RESEARCH_ITEM)), "{ids:?}");
+        assert!(ids.iter().any(|id| id == "AdmissionHeld-episode"), "{ids:?}");
     }
 
     #[test]
