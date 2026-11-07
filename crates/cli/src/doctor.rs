@@ -9,6 +9,12 @@
 //! commands still stands, it starts no harness; otherwise it starts a ready
 //! harness once, and asks a logged-out one once more. `findings` is the half that judges what was read, and asks
 //! nothing. Nothing here fixes anything: the fleet's own commands do.
+//!
+//! What a run's log says is read by `run_log`. Whether a claim's health
+//! observation is overdue, its worker stopped or its worker disputed is
+//! judged by health (`health::Pace`), the tick (`judge::silenced`) and the
+//! worker (`worker::disputed_past_grace`), each from what this look read
+//! once: doctor makes their judgments findings, and keeps no rule of theirs.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +26,7 @@ use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
 use afkconvoy_core::left::{Kept, KeptBecause};
+use afkconvoy_core::lock::keeps_off;
 use afkconvoy_core::patrol::Standing;
 use afkconvoy_core::plan::{LabelBar, NOT_OURS, Status, WorkingSet, closing_pr};
 use afkconvoy_core::slow_gate;
@@ -27,7 +34,7 @@ use afkconvoy_core::team::Fault;
 use afkconvoy_core::tools::{Found, START_ORCA, Tool, add_checkout, harness_missing};
 use afkconvoy_core::tracker::Tracker;
 use afkconvoy_core::waiting::{WAITED_LONG, Waiting};
-use afkconvoy_core::worker::WorkerState;
+use afkconvoy_core::worker::{self, WorkerState};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -47,6 +54,7 @@ use crate::log::{self, Entry, Failed, Log, Tick, What, by_cause};
 use crate::orca::{Source, Under, Worktree};
 use crate::panel::lasted;
 use crate::role::{self, Checked};
+use crate::run_log::{self, BrokenRead, Event, HotRead};
 use crate::stage::Stood;
 use crate::team::{self, Refused};
 use crate::tools;
@@ -58,8 +66,6 @@ pub mod watching;
 const FAILED_TICKS: usize = 3;
 /// How many failed steps the answer lists, newest first.
 pub(crate) const FAILED_SHOWN: usize = 10;
-/// How many of the events that reached a `run` the answer lists, newest first.
-pub(crate) const EVENTS_SHOWN: usize = 20;
 /// How long an issue is at a stage before its stay is held against the
 /// stages before it.
 const STAGE_LONG: u64 = 900;
@@ -444,43 +450,6 @@ pub struct Run {
     pub broken: Option<BrokenRead>,
 }
 
-/// A worker that is hot, as the log has it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HotRead {
-    /// `#7`, or the name of its worktree.
-    pub worker: String,
-    /// When it turned hot, why, and what it held as it did, in words.
-    pub since: u64,
-    pub why: String,
-    pub held: String,
-}
-
-/// A fleet instance that is broken, as the log has it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct BrokenRead {
-    /// Why it broke, as it last did.
-    pub why: String,
-    /// When it broke: a start of it again that failed since is no end of it.
-    pub since: u64,
-    /// When the host runner starts it again; `None`: no host runner runs on
-    /// this host to.
-    pub next: Option<u64>,
-    /// The fleet instance that broke; empty where it broke before it was any.
-    pub instance: String,
-}
-
-/// One event that reached a `run` from outside it: a wake, its start or
-/// stop, the host waking.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Event {
-    pub at: u64,
-    /// `wake`, `start`, `stop` or `host_wake`, among others (`Entry::event`).
-    pub event: &'static str,
-    /// What caused it, in words.
-    pub cause: String,
-    pub instance: String,
-}
-
 impl Run {
     fn last_tick(&self) -> Option<&(u64, Tick)> {
         self.ticks.as_ref().and_then(|ticks| ticks.last())
@@ -832,7 +801,7 @@ fn settle_wait_findings(run: &Run, held: &[Held], now: u64) -> Vec<Finding> {
         let path = claim.worktree.as_ref()?;
         let worktree = Worktree::at(path.clone(), String::new());
         let since: u64 = std::fs::read_to_string(worktree.note("convoy-settle-wait").ok()?).ok()?.trim().parse().ok()?;
-        if now.saturating_sub(since) < afkconvoy_core::worker::GRACE { return None; }
+        if !worker::past_grace(since, now) { return None; }
         let processes = crate::hot::working_in(path).ok()?;
         // A session still there, working or still ending, keeps the wait.
         let session = matches!(claim.worker, Some(WorkerState::Busy | WorkerState::Idle { .. }));
@@ -861,10 +830,12 @@ fn claim_findings(run: &Run, held: &[Held], now: u64, locks: &[u64]) -> Vec<Find
             None => "no worktree".to_string(),
         };
         match claim.worker {
-            _ if !locks.is_empty() && !locks.contains(&issue) => {}
+            _ if keeps_off(locks, issue) => {}
             // The tick routes by the session, and leaves a worker it says is
             // at work alone: a session misread holds the claim for good.
-            Some(WorkerState::Busy) if disputed(claim, now) => {
+            Some(WorkerState::Busy)
+                if worker::disputed_past_grace(claim.worker, claim.orca_done, now) =>
+            {
                 let since = claim.orca_done.unwrap_or_default();
                 let carry_on = match claim.status {
                     Status::Landing => format!(
@@ -1767,124 +1738,6 @@ fn trusted(called: &[(Harness, Vec<String>)]) -> Vec<Checked> {
         .collect()
 }
 
-/// The worker launch commands a `run` said it started with: the first word
-/// of each, retained only as log evidence, never used to select commands.
-type StartedWith = Vec<String>;
-
-/// What the log says of the `run` of `host`: its fleet instance, the worker
-/// launch commands it started with, and that instance's ticks.
-pub(crate) fn read_log(
-    entries: &[Entry],
-    host: &str,
-) -> (Option<String>, Option<StartedWith>, Vec<(u64, Tick)>) {
-    // A command's line names the instance it acted as, not the `run`'s.
-    let Some(newest) = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())
-    else {
-        return (None, None, vec![]);
-    };
-    let own = || entries.iter().filter(|entry| entry.instance == newest.instance);
-    let command = own().rev().find_map(|entry| match &entry.what {
-        What::Start { worker_command, harness_commands } => {
-            let named = harness_commands.iter().map(|(harness, word)| format!("{harness}={word}"));
-            Some(std::iter::once(worker_command.clone()).chain(named).collect())
-        }
-        _ => None,
-    });
-    let ticks = own().filter_map(|entry| match &entry.what {
-        What::Tick(tick) => Some((entry.at, tick.clone())),
-        _ => None,
-    });
-    (Some(newest.instance.clone()), command, ticks.collect())
-}
-
-/// The seconds the last tick of the newest `run` of `host` took, from the
-/// line it started with to the one it ended with, as the log has them.
-fn read_last_took(entries: &[Entry], host: &str) -> Option<u64> {
-    let newest = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())?;
-    let mut own = entries.iter().rev().filter(|entry| entry.instance == newest.instance);
-    let (ended, count) = own.find_map(|entry| match &entry.what {
-        What::Tick(tick) => Some((entry.at, tick.count)),
-        _ => None,
-    })?;
-    own.find_map(|entry| match &entry.what {
-        What::TickStarted { count: started, .. } if *started == count => {
-            Some(ended.saturating_sub(entry.at))
-        }
-        _ => None,
-    })
-}
-
-/// The unfinished tick of the newest `run` of `host`. Other commands and
-/// events do not end a tick, and another instance's ticks are no evidence.
-fn read_tick_started(entries: &[Entry], host: &str) -> Option<u64> {
-    let newest = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())?;
-    let latest = entries.iter().rev().find(|entry| {
-        entry.host == host
-            && entry.instance == newest.instance
-            && matches!(
-                entry.what,
-                What::TickStarted { .. }
-                    | What::Tick(_)
-                    | What::Start { .. }
-                    | What::Stop { .. }
-                    | What::Broken { .. }
-            )
-    })?;
-    matches!(latest.what, What::TickStarted { .. }).then_some(latest.at)
-}
-
-/// The workers the newest `run` of `host` found hot and has not found
-/// stopped being hot since, as the log has them, longest hot first.
-pub(crate) fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
-    let Some(newest) = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())
-    else {
-        return vec![];
-    };
-    let mut hot: Vec<HotRead> = vec![];
-    for entry in entries.iter().filter(|entry| entry.instance == newest.instance) {
-        match &entry.what {
-            What::Hot { worker, why, held } => {
-                hot.retain(|read| &read.worker != worker);
-                let (worker, why, held) = (worker.clone(), why.clone(), held.clone());
-                hot.push(HotRead { worker, since: entry.at, why, held });
-            }
-            What::Cooled { worker, .. } => hot.retain(|read| &read.worker != worker),
-            _ => {}
-        }
-    }
-    hot
-}
-
-/// The fleet instance of `host` broken, as the log has it: its newest line
-/// of a start, a break, a coming back or a stop is a break. `runs` says whether a
-/// host runner runs on this host, which starts it again.
-pub(crate) fn read_broken(entries: &[Entry], host: &str, runs: bool) -> Option<BrokenRead> {
-    let of_host = entries.iter().rev().filter(|entry| entry.host == host);
-    // A `stop:` line after it broke: `stop` took its checkout off the list.
-    let mut starts = of_host.filter(|entry| {
-        matches!(
-            entry.what,
-            What::Start { .. } | What::Broken { .. } | What::Back { .. } | What::Stop { .. }
-        )
-    });
-    let newest = starts.next()?;
-    let What::Broken { why, since, next } = &newest.what else { return None };
-    let (why, since, next) = (why.clone(), *since, runs.then_some(*next));
-    Some(BrokenRead { why, since, next, instance: newest.instance.clone() })
-}
-
-/// The events that reached the `run`s of `host` (`Entry::event`), as the log
-/// has them: the newest `EVENTS_SHOWN`, newest first, whichever instance they
-/// reached — a `run` stopped and started again is two.
-fn read_events(entries: &[Entry], host: &str) -> Vec<Event> {
-    let of_host = entries.iter().rev().filter(|entry| entry.host == host);
-    let event = |entry: &Entry| {
-        let (event, cause) = entry.event()?;
-        Some(Event { at: entry.at, event, cause, instance: entry.instance.clone() })
-    };
-    of_host.filter_map(event).take(EVENTS_SHOWN).collect()
-}
-
 /// The team the config of the checkout `repo` names, where it is `bound`,
 /// as it stands at its head → with the team itself, where it loaded: what a
 /// stage in flight is held against. What its roles make of the host kit is
@@ -2022,15 +1875,6 @@ fn orca_done(report: &Value) -> Option<u64> {
         return None;
     }
     Some(report["stateStartedAt"].as_u64().unwrap_or(0) / 1000)
-}
-
-/// Whether the worker's session says it is at work while orca has said it is
-/// done for the grace period: they disagree, and neither is reported alone.
-fn disputed(claim: &Held, now: u64) -> bool {
-    claim.worker == Some(WorkerState::Busy)
-        && claim
-            .orca_done
-            .is_some_and(|since| now.saturating_sub(since) >= afkconvoy_core::worker::GRACE)
 }
 
 /// The fleet instance the claims stamped with `host` name: the one stamped
@@ -2233,7 +2077,7 @@ fn fleet_json(run: &Run) -> Value {
 }
 
 fn held_json(held: &Held, locks: &[u64]) -> Value {
-    if held.at_work() && !locks.is_empty() && !locks.contains(&held.issue) {
+    if held.at_work() && keeps_off(locks, held.issue) {
         return json!({
             "issue": held.issue, "title": held.title, "status": held.status, "pr": held.pr,
             "stage": held.stage, "role": held.role, "held_for": held.held_for,
@@ -2241,7 +2085,7 @@ fn held_json(held: &Held, locks: &[u64]) -> Value {
             "gate": held.gate.map(|at| json!({"green_at": at})),
         });
     }
-    let disputed = held.worker == Some(WorkerState::Busy) && held.orca_done.is_some();
+    let disputed = worker::disputed(held.worker, held.orca_done);
     let mut worker = held.worker.map(|worker| match worker {
         WorkerState::Gone => json!({"state": "gone"}),
         WorkerState::Busy if disputed => json!({"state": "disputed", "session": "busy"}),
@@ -2358,35 +2202,21 @@ struct Examined {
     not_alive: Option<Finding>,
 }
 
-/// How a fleet instance ticks: the sleep and the time of its last tick, and
-/// the worktrees its claims hold (`health::Cadence`), and of those the ones a
-/// standing fleet lock leaves alone, by the rule its tick goes by
-/// (`WorkingSet::locked_out`), with the checkout it is of.
+/// How a fleet instance ticks (`health::Pace`), with the checkout it is of.
 struct Pace {
     checkout: PathBuf,
-    sleep: u64,
-    took: u64,
-    worktrees: Vec<PathBuf>,
-    left_alone: Vec<PathBuf>,
+    pace: crate::health::Pace,
 }
 
 /// The pace of `run`'s fleet instance of `checkout`, holding the claims
 /// `state` read, if it read them.
 fn pace_of(checkout: &Path, run: &Run, state: Option<&State>) -> Pace {
     let held = state.map(|state| state.held.as_slice()).unwrap_or_default();
-    let worktrees = |alone: bool| -> Vec<PathBuf> {
-        held.iter()
-            .filter(|held| !alone || state.is_some_and(|state| state.set.locked_out(held.issue)))
-            .filter_map(|held| held.worktree.clone())
-            .collect()
-    };
-    Pace {
-        checkout: checkout.to_path_buf(),
-        sleep: run.last_tick().map(|(_, tick)| tick.sleep).unwrap_or(0),
-        took: run.last_took.unwrap_or(0),
-        worktrees: worktrees(false),
-        left_alone: worktrees(true),
-    }
+    let claims = held.iter().filter_map(|held| Some((held.issue, held.worktree.clone()?)));
+    let sleep = run.last_tick().map(|(_, tick)| tick.sleep).unwrap_or(0);
+    let set = state.map(|state| &state.set);
+    let pace = crate::health::Pace::new(sleep, run.last_took.unwrap_or(0), set, claims);
+    Pace { checkout: checkout.to_path_buf(), pace }
 }
 
 /// Each worker health observation past its time and past a tick's chance to
@@ -2407,13 +2237,9 @@ fn overdue_findings(paces: &[Pace], now: u64) -> Vec<Finding> {
 
 fn overdue_of(health: &crate::health::Health, paces: &[Pace], now: u64) -> Vec<Finding> {
     use crate::health::Overdue;
-    let mut cadence = crate::health::Cadence::default();
-    for pace in paces {
-        cadence.instance(pace.sleep, pace.took, pace.worktrees.iter().cloned());
-        cadence.left_alone(pace.left_alone.iter().cloned());
-    }
+    let paces: Vec<_> = paces.iter().map(|pace| pace.pace.clone()).collect();
     health
-        .overdue(&cadence, now)
+        .overdue(&paces, now)
         .into_iter()
         .map(|overdue| {
             let (path, evidence) = match overdue {
@@ -2474,7 +2300,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     let log = Log::of(repo).ok();
     let entries = log.as_ref().and_then(Log::read);
     let bounded = exclusive_findings(entries.as_deref().unwrap_or_default(), now);
-    let (instance, _started_with, ticks) = read_log(entries.as_deref().unwrap_or_default(), host);
+    let lines = entries.as_deref().unwrap_or_default();
+    let (instance, _started_with, ticks) = run_log::run(lines, host);
     let mut run = Run {
         alive: host_runner::holds(repo),
         instance,
@@ -2482,15 +2309,11 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         heartbeat_age: None,
         heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
-        last_took: read_last_took(entries.as_deref().unwrap_or_default(), host),
-        tick_started: read_tick_started(entries.as_deref().unwrap_or_default(), host),
-        hot: read_hot(entries.as_deref().unwrap_or_default(), host),
-        broken: read_broken(
-            entries.as_deref().unwrap_or_default(),
-            host,
-            crate::host_runner::runs(),
-        ),
-        events: read_events(entries.as_deref().unwrap_or_default(), host),
+        last_took: run_log::last_took(lines, host),
+        tick_started: run_log::tick_started(lines, host),
+        hot: run_log::hot(lines, host),
+        broken: run_log::broken(lines, host, crate::host_runner::runs()),
+        events: run_log::events(lines, host),
         // A log only commands wrote to is no `run`'s.
         ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
     };
@@ -3246,10 +3069,10 @@ mod tests {
             What::TickStarted { count: 18, cause: Cause::Timer, by: None },
         )];
         let read = |entries: &[Entry]| {
-            let (_, _, ticks) = read_log(entries, "h1");
+            let (_, _, ticks) = run_log::run(entries, "h1");
             Run {
-                tick_started: read_tick_started(entries, "h1"),
-                last_took: read_last_took(entries, "h1"),
+                tick_started: run_log::tick_started(entries, "h1"),
+                last_took: run_log::last_took(entries, "h1"),
                 ..run(ticks)
             }
         };
@@ -3271,7 +3094,7 @@ mod tests {
         );
 
         entries.push(entry(began + 77, "alpha", What::Tick(tick(18, json!([])).1)));
-        assert_eq!(read_tick_started(&entries, "h1"), None);
+        assert_eq!(run_log::tick_started(&entries, "h1"), None);
         // A following tick has now had its chance, even if a wake made it
         // finish inside the sleep plus the preceding tick's duration.
         entries.push(entry(
@@ -3296,7 +3119,7 @@ mod tests {
             "alpha",
             What::Start { worker_command: "codex".into(), harness_commands: [].into() },
         ));
-        assert_eq!(read_tick_started(&entries, "h1"), None);
+        assert_eq!(run_log::tick_started(&entries, "h1"), None);
     }
 
     #[test]
@@ -3614,13 +3437,8 @@ mod tests {
     #[test]
     fn a_health_observation_is_overdue_only_past_its_ticks_chance() {
         // The instance holding /w sleeps 90s between ticks, and its last took 10s.
-        let paces = [Pace {
-            checkout: "/c".into(),
-            sleep: 90,
-            took: 10,
-            worktrees: vec!["/w".into()],
-            left_alone: vec![],
-        }];
+        let pace = crate::health::Pace::new(90, 10, None, [(7, PathBuf::from("/w"))]);
+        let paces = [Pace { checkout: "/c".into(), pace }];
         let health = |next: u64| -> crate::health::Health {
             serde_json::from_value(json!({
                 "workers": [{"path": "/w", "terminal": "t", "harness": "codex", "snapshots": [],
@@ -4141,52 +3959,6 @@ mod tests {
     }
 
     #[test]
-    fn the_events_that_reached_this_hosts_runs_are_listed_newest_first_with_their_causes() {
-        let entry = |at: u64, instance: &str, host: &str, what: What| Entry {
-            at,
-            instance: instance.into(),
-            host: host.into(),
-            what,
-        };
-        let start = What::Start { worker_command: "claude".into(), harness_commands: [].into() };
-        let started = |count, cause| What::TickStarted { count, cause, by: None };
-        let entries = [
-            entry(10, "old", "h1", start.clone()),
-            entry(20, "old", "h1", What::Stop { line: "holding no claim".into() }),
-            entry(30, "alpha", "h1", start.clone()),
-            entry(30, "alpha", "h1", started(1, Cause::Start)),
-            entry(40, "alpha", "h1", What::Tick(tick(1, json!([])).1)),
-            entry(50, "alpha", "h1", started(2, Cause::Timer)),
-            entry(55, "alpha", "h1", What::WokenDuring { during: 2, by: None }),
-            entry(60, "alpha", "h1", started(3, Cause::Woken)),
-            entry(90, "alpha", "h1", What::HostWoke { asleep: 3600 }),
-            entry(95, "beta", "h2", start),
-        ];
-        let events = read_events(&entries, "h1");
-        let said: Vec<(u64, &str, &str, &str)> = events
-            .iter()
-            .map(|event| (event.at, event.event, event.cause.as_str(), event.instance.as_str()))
-            .collect();
-        assert_eq!(
-            said,
-            [
-                (90, "host_wake", "after 3600s asleep", "alpha"),
-                (60, "wake", "woken: tick 3 started", "alpha"),
-                (55, "wake", "woken during tick 2: tick 3 followed", "alpha"),
-                (30, "start", "afkconvoy run started, its workers with `claude`", "alpha"),
-                (20, "stop", "told to stop (SIGTERM or SIGINT): holding no claim", "old"),
-                (10, "start", "afkconvoy run started, its workers with `claude`", "old"),
-            ]
-        );
-        // only the newest are listed
-        let many: Vec<Entry> =
-            (0..30).map(|at| entry(at, "alpha", "h1", started(at, Cause::Woken))).collect();
-        let events = read_events(&many, "h1");
-        assert_eq!(events.len(), EVENTS_SHOWN);
-        assert_eq!(events[0].at, 29);
-    }
-
-    #[test]
     fn the_last_tick_says_the_seconds_it_took_from_its_own_start() {
         let entry = |at: u64, instance: &str, what: What| Entry {
             at,
@@ -4203,80 +3975,18 @@ mod tests {
             entry(104, "alpha", started(2)),
             entry(116, "alpha", What::Tick(tick(2, json!([])).1)),
         ];
-        assert_eq!(read_last_took(&entries, "h1"), Some(12));
+        assert_eq!(run_log::last_took(&entries, "h1"), Some(12));
         entries.push(entry(206, "alpha", started(3)));
-        assert_eq!(read_last_took(&entries, "h1"), Some(12), "a tick under way is not the last");
+        assert_eq!(
+            run_log::last_took(&entries, "h1"),
+            Some(12),
+            "a tick under way is not the last"
+        );
         let cut: Vec<Entry> = entries.drain(4..).collect();
-        assert_eq!(read_last_took(&cut, "h1"), None, "the log kept no start of it");
+        assert_eq!(run_log::last_took(&cut, "h1"), None, "the log kept no start of it");
         let mut answer = run(vec![(116, tick(2, json!([])).1)]);
         answer.last_took = Some(12);
         let said = &fleet_json(&answer)["last_tick"];
         assert_eq!((said["sleep"].as_u64(), said["took"].as_u64()), (Some(90), Some(12)));
-    }
-
-    #[test]
-    fn the_hot_workers_are_those_the_newest_run_found_hot_and_not_cooled_since() {
-        let entry = |at: u64, instance: &str, what: What| Entry {
-            at,
-            instance: instance.into(),
-            host: "h1".into(),
-            what,
-        };
-        let hot = |worker: &str| What::Hot {
-            worker: worker.into(),
-            why: "past 4.0 cores for 120s".into(),
-            held: "6.0 cores, 1.0 GiB resident".into(),
-        };
-        let cooled = |worker: &str| What::Cooled {
-            worker: worker.into(),
-            since: 0,
-            held: "6.0 cores, 1.0 GiB resident".into(),
-            gone: false,
-        };
-        let start = What::Start { worker_command: "claude".into(), harness_commands: [].into() };
-        let entries = [
-            entry(10, "old", start.clone()),
-            entry(20, "old", hot("#1")),
-            entry(30, "alpha", start),
-            entry(40, "alpha", hot("#7")),
-            entry(50, "alpha", hot("#8")),
-            entry(60, "alpha", cooled("#7")),
-            entry(70, "alpha", hot("#9")),
-        ];
-        let read = read_hot(&entries, "h1");
-        let said: Vec<(&str, u64)> =
-            read.iter().map(|hot| (hot.worker.as_str(), hot.since)).collect();
-        // #1 was the old run's, and #7 cooled
-        assert_eq!(said, [("#8", 50), ("#9", 70)]);
-        assert!(read_hot(&entries, "h2").is_empty());
-    }
-
-    #[test]
-    fn the_log_is_read_for_the_instance_this_host_ran_last() {
-        let entry = |at: u64, instance: &str, host: &str, what: What| Entry {
-            at,
-            instance: instance.into(),
-            host: host.into(),
-            what,
-        };
-        let start = |command: &str| What::Start {
-            worker_command: command.into(),
-            harness_commands: [("pi".to_string(), "pi".to_string())].into(),
-        };
-        let ticked = |count| What::Tick(tick(count, json!([])).1);
-        let entries = [
-            entry(10, "old", "h1", start("agent")),
-            entry(20, "old", "h1", ticked(1)),
-            entry(30, "alpha", "h1", start("claude --yolo")),
-            entry(40, "alpha", "h1", ticked(1)),
-            entry(50, "alpha", "h1", ticked(2)),
-        ];
-        let (instance, command, ticks) = read_log(&entries, "h1");
-        assert_eq!(instance.as_deref(), Some("alpha"));
-        // as the legacy start record represents them: the default harness's bare
-        assert_eq!(command.unwrap(), ["claude --yolo", "pi=pi"]);
-        let counts: Vec<(u64, u64)> = ticks.iter().map(|(at, tick)| (*at, tick.count)).collect();
-        assert_eq!(counts, [(40, 1), (50, 2)], "its own ticks only");
-        assert_eq!(read_log(&entries, "h2"), (None, None, vec![]));
     }
 }

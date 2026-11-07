@@ -112,6 +112,7 @@ pub mod resources;
 pub mod rewrite_accounts;
 pub mod role;
 pub mod roster_issue;
+pub mod run_log;
 pub mod runner_socket;
 pub mod scaffold;
 pub mod serve;
@@ -4249,7 +4250,7 @@ pub fn manual() -> agent_help::Help {
         .constant("TIMED_OUT_CODE", gate::TIMED_OUT_CODE)
         .constant("STRAYS_LISTED", gate::STRAYS_LISTED)
         .constant("DOCTOR_FAILED_SHOWN", doctor::FAILED_SHOWN)
-        .constant("DOCTOR_EVENTS_SHOWN", doctor::EVENTS_SHOWN)
+        .constant("DOCTOR_EVENTS_SHOWN", run_log::EVENTS_SHOWN)
         .constant("CUT_MINOR_LABEL", afkconvoy_core::cut::MINOR_LABEL)
         .constant("CUT_BUSY_AFTER_SECONDS", afkconvoy_core::cut::BUSY_AFTER_SECONDS);
     for (name, group) in [

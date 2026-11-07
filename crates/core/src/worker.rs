@@ -294,6 +294,25 @@ pub fn worker_state(terminals: u64, turn: Option<Turn>, now: u64) -> WorkerState
     }
 }
 
+/// Whether what began at `since` has lasted the grace by `now`: from then
+/// on, a worker's quiet, or a wait on it, means something.
+pub fn past_grace(since: u64, now: u64) -> bool {
+    now.saturating_sub(since) >= GRACE
+}
+
+/// Whether the worker's session says it is at work, `state`, while orca has
+/// said its agent is done, since `done`: they disagree, and neither is the
+/// worker's state alone.
+pub fn disputed(state: Option<WorkerState>, done: Option<u64>) -> bool {
+    state == Some(WorkerState::Busy) && done.is_some()
+}
+
+/// Whether the worker is `disputed`, and orca has said its agent is done for
+/// the grace period by `now`: long enough to be acted on.
+pub fn disputed_past_grace(state: Option<WorkerState>, done: Option<u64>, now: u64) -> bool {
+    disputed(state, done) && done.is_some_and(|since| past_grace(since, now))
+}
+
 #[cfg(flux)]
 #[allow(dead_code)]
 mod rejected {
@@ -421,6 +440,24 @@ mod tests {
         assert_eq!(recorded_branches(bodies.iter().map(String::as_str)), ["u/issue-7-a", "u/b"]);
         assert_eq!(short_branch("refs/heads/u/b"), "u/b");
         assert_eq!(short_branch("u/b"), "u/b");
+    }
+
+    #[test]
+    fn a_session_at_work_that_orca_says_is_done_is_disputed_and_acted_on_past_the_grace() {
+        assert!(!past_grace(1000, 1000 + GRACE - 1));
+        assert!(past_grace(1000, 1000 + GRACE));
+        assert!(!past_grace(1000 + GRACE, 1000), "a stamp ahead has lasted nothing");
+        let busy = Some(WorkerState::Busy);
+        assert!(disputed(busy, Some(1000)), "said at once, however recently");
+        assert!(!disputed(busy, None), "orca says nothing of it done");
+        let idle = Some(WorkerState::Idle { quiet: None });
+        for state in [None, Some(WorkerState::Gone), idle] {
+            assert!(!disputed(state, Some(1000)), "{state:?} is not its session at work");
+            assert!(!disputed_past_grace(state, Some(1000), 1000 + GRACE));
+        }
+        assert!(!disputed_past_grace(busy, Some(1000), 1000 + GRACE - 1));
+        assert!(disputed_past_grace(busy, Some(1000), 1000 + GRACE));
+        assert!(!disputed_past_grace(busy, None, 1000 + GRACE));
     }
 
     #[test]
