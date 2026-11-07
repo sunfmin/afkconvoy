@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow};
 use std::thread;
 
 use crate::claims::Scan;
-use crate::gh::{GitHub, Gone, Open, OpenIssues, beside, gone};
+use crate::gh::{GitHub, Open, OpenIssues, beside, gone};
 use crate::git::Repo;
 use crate::orca::{Source, Worktree};
 use crate::patrol;
@@ -29,6 +29,18 @@ use crate::remote::{Fresh, Listing, Remote};
 use crate::settle::cut_landing_of;
 use crate::slow_gate;
 use crate::stage::Flows;
+
+/// What a rebuild read of the claimed issues besides the working set: what
+/// the tick says of them.
+#[derive(Debug, Default)]
+pub struct Claimed {
+    /// The claimed issues it could not read, each with why: the pass goes on
+    /// with them as open, and its tick reports each.
+    pub unread: Vec<(u64, anyhow::Error)>,
+    /// The closed claimed issues it read, each with the login of whoever
+    /// closed it, where GitHub says: what a tick's line names.
+    pub closers: Vec<(u64, String)>,
+}
 
 struct Runnable {
     kit: crate::kit::Kit,
@@ -58,32 +70,6 @@ pub struct Fleet {
     /// `Fresh::Opened` read answers.
     pub remote: Remote,
     pub now: u64,
-    /// The issues this view escalated, each with why in a few words: what a
-    /// tick's line says of them. Every escalation is made through
-    /// `judge::escalate_claim`, which is what adds to it.
-    pub escalated: Vec<(u64, String)>,
-    /// The issues this view found gone — deleted, transferred or never
-    /// issued — as a step
-    /// met them, each with whether a claim on it was released: what a tick's
-    /// line says of them.
-    pub forgotten: Vec<(Gone, bool)>,
-    /// The claimed issues the last rebuild could not read, each with why: the
-    /// pass goes on with them as open, and its tick reports each.
-    pub unread: Vec<(u64, anyhow::Error)>,
-    /// The closed claimed issues the last rebuild read, each with the login of
-    /// whoever closed it, where GitHub says: what a tick's line names.
-    pub closers: Vec<(u64, String)>,
-    /// What this view's start and end of a cut said: what a tick's line says
-    /// of them, and its log keeps.
-    pub cut_said: Vec<crate::log::What>,
-    /// The cut needs as the pass's start of a cut evaluated them, where it
-    /// did: what the tick then says in place of its rebuild's look, so no
-    /// tick both names a failed need and starts the cut (`cut::start`).
-    pub cut_needs: Option<Option<afkconvoy_core::cut::Held>>,
-    /// The landings this view asked a turn for again that had stopped at a
-    /// fleet lock, each with the locks that turn named, closed since: what a
-    /// tick's line names.
-    pub after_locks: Vec<(u64, Vec<u64>)>,
     /// A startup probe that still stands already checked every harness.
     /// `runnable` then keeps the kit `running` built and starts none again.
     trust_launches: bool,
@@ -136,13 +122,7 @@ impl Fleet {
             scan,
             remote,
             now,
-            escalated: vec![],
-            forgotten: vec![],
-            unread: vec![],
-            closers: vec![],
-            cut_said: vec![],
-            cut_needs: None,
-            after_locks: vec![],
+
             trust_launches: false,
             patrol_landings: None,
         })
@@ -595,11 +575,15 @@ impl Fleet {
     }
 
     /// Rebuilds the working set of `me` from `open` and the remote as this
-    /// view was opened on it (`Fleet::read`) → it, and the read of the issues
-    /// that follow a workflow it was assembled from. Reads only. A claimed
-    /// issue that cannot be read costs only itself: it is taken for open,
-    /// and noted in `unread`.
-    pub fn rebuild(&mut self, open: &Open, me: Option<&InstanceId>) -> Result<(WorkingSet, Flows)> {
+    /// view was opened on it (`Fleet::read`) → it, the read of the issues
+    /// that follow a workflow it was assembled from, and what it read of the
+    /// claimed issues besides. Reads only. A claimed issue that cannot be
+    /// read costs only itself: it is taken for open, and noted in `Claimed::unread`.
+    pub fn rebuild(
+        &self,
+        open: &Open,
+        me: Option<&InstanceId>,
+    ) -> Result<(WorkingSet, Flows, Claimed)> {
         for issue in &open.issues.rows {
             self.refusals.borrow_mut().insert(
                 issue.number,
@@ -623,8 +607,7 @@ impl Fleet {
         // about, and is closed, gone — deleted, transferred or never issued —
         // or unread.
         let (mut closed, mut vanished) = (vec![], vec![]);
-        self.unread.clear();
-        self.closers.clear();
+        let mut claimed = Claimed::default();
         for claim in &self.scan.claims {
             if issues.iter().any(|issue| issue.number == claim.number) {
                 continue;
@@ -632,11 +615,11 @@ impl Fleet {
             match self.gh.issue(claim.number) {
                 Ok(read) if read.is_closed() => {
                     closed.push(claim.number);
-                    self.closers.extend(read.closed_by.map(|by| (claim.number, by)));
+                    claimed.closers.extend(read.closed_by.map(|by| (claim.number, by)));
                 }
                 Ok(_) => {}
                 Err(error) if gone(&error).is_some() => vanished.push(claim.number),
-                Err(error) => self.unread.push((claim.number, error)),
+                Err(error) => claimed.unread.push((claim.number, error)),
             }
         }
         let base = self.base_tip()?;
@@ -648,7 +631,7 @@ impl Fleet {
             let tip = match self.task_tip_at_open(claim.number) {
                 Ok(tip) => tip,
                 Err(error) => {
-                    self.unread.push((claim.number, error));
+                    claimed.unread.push((claim.number, error));
                     continue;
                 }
             };
@@ -730,7 +713,7 @@ impl Fleet {
             None => self.cast_frontier(&mut set, &open.issues),
             Some(_) => self.cast_bound_frontier(&mut set, &open.issues, &stages),
         }
-        Ok((set, stages))
+        Ok((set, stages, claimed))
     }
 
     /// My claims whose PR is open and whose worker is not changing the tree

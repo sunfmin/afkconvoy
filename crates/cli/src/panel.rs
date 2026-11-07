@@ -735,8 +735,8 @@ fn rebuilt(
     let logged = logged.and_then(|logged| InstanceId::parse(&logged).ok());
     let instance = instance.cloned().or(logged);
     let me = instance.map(|instance| Me { instance, host: host.to_string(), now });
-    let (mut fleet, open) = Fleet::read(repo, now)?;
-    let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
+    let (fleet, open) = Fleet::read(repo, now)?;
+    let (set, flows, _) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
     let report = FleetReport::read(&fleet, &flows, &set, readings);
     let mut panel = read(&fleet, me.as_ref(), &set, &flows, &[], &report);
     panel.hot = run_log::hot(entries, host)

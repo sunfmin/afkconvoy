@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use crate::claims::{Me, Take, take};
 use crate::fleet::Fleet;
 use crate::forget::forget;
+use crate::found::Found;
 use crate::gh::{IssueRead, Tracker, gone};
 use crate::git::Repo;
 use crate::launch::Launches;
@@ -260,12 +261,61 @@ pub enum StartFrom {
 /// `from` is `Fresh`.
 pub fn dispatch(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     number: u64,
     from: StartFrom,
-) -> Result<Value> {
-    dispatch_continuing(fleet, me, agent, number, from, None)
+) -> Result<Dispatched> {
+    dispatch_continuing(fleet, found, me, agent, number, from, None)
+}
+
+/// What a dispatch came to: how its start ended, which its callers act on,
+/// and the answer `dispatch` gives, which says it again with what was
+/// started.
+#[derive(Debug)]
+pub struct Dispatched {
+    pub start: Start,
+    pub answer: Value,
+}
+
+/// How a dispatch's start ended, when it did not fail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    /// A worker was started under the claim, and took its brief.
+    Started,
+    /// A worker was started under the claim, its brief still to hand it.
+    BriefPending,
+    /// A peer won the claim: nothing was started.
+    Lost,
+    /// The issue had these open blockers just before its claim: nothing was
+    /// claimed or started.
+    Blocked(Vec<u64>),
+    /// GitHub says the issue is gone: nothing was started.
+    Gone,
+}
+
+impl Dispatched {
+    fn blocked(number: u64, blockers: Vec<u64>) -> Dispatched {
+        let answer = json!({"issue": number, "started": false, "skipped": "blocked",
+            "blocked_by": blockers});
+        Dispatched { start: Start::Blocked(blockers), answer }
+    }
+
+    fn lost(number: u64, owner: Value) -> Dispatched {
+        let answer = json!({"issue": number, "started": false, "claim": "lost", "owner": owner});
+        Dispatched { start: Start::Lost, answer }
+    }
+
+    fn gone(number: u64, said: &str, released: bool) -> Dispatched {
+        let answer = json!({"issue": number, "started": false, "gone": said, "released": released});
+        Dispatched { start: Start::Gone, answer }
+    }
+
+    /// Whether a worker was started and took its brief.
+    pub fn started(&self) -> bool {
+        self.start == Start::Started
+    }
 }
 
 /// `dispatch`, whose brief also says what of the work of the worker before
@@ -273,48 +323,49 @@ pub fn dispatch(
 /// (`switch`).
 pub(crate) fn dispatch_continuing(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     number: u64,
     from: StartFrom,
     continuing: Option<&Continuing>,
-) -> Result<Value> {
+) -> Result<Dispatched> {
     let previous = starting(fleet, number)?;
     let ready = previous.as_ref().and_then(|previous| previous.ready.as_deref());
     let started = start(fleet, me, agent, number, from, continuing, ready);
     let Some(how) = started.as_ref().err().and_then(gone).cloned() else {
         return match started {
             Ok(started) => {
-                if started["started"] == true {
+                if started.started() {
                     forget_starting(fleet, number)?;
                 }
                 Ok(started)
             }
             Err(error) if error.is::<crate::paused::Held>() || error.is::<Closed>() => Err(error),
             Err(error) if error.is::<crate::orca::StillClosing>() => {
-                wait_for_close(fleet, me, number, previous, error)
+                wait_for_close(fleet, found, me, number, previous, error)
             }
             Err(error) => {
                 // Waiting to hand a ready worker its brief is no failed
                 // start, even if it subsequently disappears or refuses it.
                 // Nor is waiting for the previous worker's terminal to close.
                 let previous = previous.filter(|p| p.ready.is_none() && p.closing_since.is_none());
-                start_failed(fleet, me, number, previous, error)
+                start_failed(fleet, found, me, number, previous, error)
             }
         };
     };
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
-    let released = held && forget(fleet, me, number)? == Outcome::Done;
+    let released = held && forget(fleet, found, me, number)? == Outcome::Done;
     if held && !released {
         // GitHub has it after all: the failure is as it was.
         return started;
     }
     if !released {
-        fleet.forgotten.push((how.clone(), false));
+        found.forgotten.push((how.clone(), false));
     }
     let said = how.word();
     forget_starting(fleet, number)?;
-    Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
+    Ok(Dispatched::gone(number, said, released))
 }
 
 /// A trust gap hands the claim on at once: restarting the same command would
@@ -322,11 +373,12 @@ pub(crate) fn dispatch_continuing(
 /// for continuation; a second hands it on with both startup errors.
 fn start_failed(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     number: u64,
     previous: Option<Starting>,
     error: anyhow::Error,
-) -> Result<Value> {
+) -> Result<Dispatched> {
     let Some(claim) =
         fleet.scan.claim_of(number).filter(|claim| claim.is_held_by(&me.instance)).cloned()
     else {
@@ -353,7 +405,7 @@ fn start_failed(
     };
     let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
-    crate::judge::escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
+    crate::judge::escalate_claim(fleet, found, &claim, &why, pr, worktree.as_ref())?;
     forget_starting(fleet, number)?;
     let context = if trust_gap {
         "worker start found a worktree trust gap; the claim was escalated"
@@ -370,11 +422,12 @@ fn start_failed(
 /// start again, and escalates saying how long it was waited for.
 fn wait_for_close(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     number: u64,
     previous: Option<Starting>,
     error: anyhow::Error,
-) -> Result<Value> {
+) -> Result<Dispatched> {
     let Some(claim) =
         fleet.scan.claim_of(number).filter(|claim| claim.is_held_by(&me.instance)).cloned()
     else {
@@ -403,7 +456,7 @@ fn wait_for_close(
     );
     let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
-    crate::judge::escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
+    crate::judge::escalate_claim(fleet, found, &claim, &why, pr, worktree.as_ref())?;
     forget_starting(fleet, number)?;
     // No longer a wait: this start failed.
     Err(anyhow!(
@@ -468,7 +521,7 @@ fn start(
     from: StartFrom,
     continuing: Option<&Continuing>,
     ready: Option<&str>,
-) -> Result<Value> {
+) -> Result<Dispatched> {
     let issue = fleet.gh.issue(number)?;
     if issue.is_closed() {
         // before the claim: never lock a closed issue
@@ -551,14 +604,12 @@ fn start(
                 }
                 if !blockers.is_empty() {
                     blockers.sort_unstable();
-                    return Ok(json!({"issue": number, "started": false, "skipped": "blocked",
-                        "blocked_by": blockers}));
+                    return Ok(Dispatched::blocked(number, blockers));
                 }
                 pin_target(fleet, number, &target)?;
                 let claim = take(&fleet.repo, &mut fleet.scan, me, number, Take::Fresh)?;
                 if claim["won"] != true {
-                    return Ok(json!({"issue": number, "started": false, "claim": "lost",
-                        "owner": claim["owner"]}));
+                    return Ok(Dispatched::lost(number, claim["owner"].clone()));
                 }
                 keep_starting(fleet, number, interrupted)?;
                 if let Some(staged) = &staged {
@@ -709,7 +760,8 @@ fn start(
             started["unmatched_untold"] = json!(format!("{error:#}"));
         }
     }
-    Ok(started)
+    let start = if brief_pending { Start::BriefPending } else { Start::Started };
+    Ok(Dispatched { start, answer: started })
 }
 
 /// Posts the worker-start record when this start is its own row. A landing
@@ -942,3 +994,33 @@ Errors: the issue is closed; in a bound repo, the issue carries no flow label, m
 - It checks that the issue is open and, unless the instance holds it already, that no blocker of it is open — nothing else of the frontier: an issue without the ready label, or past the concurrency, is started all the same. A claim the instance holds is continued whatever blocks it.
 - A role in a subdirectory is not the directory a human opens in a checkout: a `CLAUDE.md` or a `.claude/` above it there is not in the worker's copy, nor above it — but for the `CLAUDE.md` of the team's own directory, the team rules, which every worker is given. `afkconvoy check` notes each role that has another above it.
 - It does not ask after a worker already there. On a claim whose worker is at work it starts another in the same worktree."#;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_start_that_did_not_start_says_how_typed_and_answers_as_before() {
+        let blocked = Dispatched::blocked(3, vec![5, 9]);
+        assert_eq!(blocked.start, Start::Blocked(vec![5, 9]));
+        assert_eq!(
+            blocked.answer,
+            json!({"issue": 3, "started": false, "skipped": "blocked", "blocked_by": [5, 9]})
+        );
+        let lost = Dispatched::lost(3, json!("beta"));
+        assert_eq!(lost.start, Start::Lost);
+        assert_eq!(
+            lost.answer,
+            json!({"issue": 3, "started": false, "claim": "lost", "owner": "beta"})
+        );
+        let gone = Dispatched::gone(3, "deleted", true);
+        assert_eq!(gone.start, Start::Gone);
+        assert_eq!(
+            gone.answer,
+            json!({"issue": 3, "started": false, "gone": "deleted", "released": true})
+        );
+        assert!(![blocked, lost, gone].iter().any(Dispatched::started));
+        let pending = Dispatched { start: Start::BriefPending, answer: json!({}) };
+        assert!(!pending.started());
+        assert!(Dispatched { start: Start::Started, answer: json!({}) }.started());
+    }
+}

@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use crate::claims::Me;
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
+use crate::found::Found;
 use crate::git::Repo;
 use crate::kit::Kit;
 use crate::orca::{Source, Worktree};
@@ -811,6 +812,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 /// runtime keeps its evidence. Account/model faults survive their workers.
 pub fn reconcile(
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     open: &crate::gh::Open,
@@ -963,7 +965,7 @@ pub fn reconcile(
     let mut events = vec![];
     for (issue, patrol, worktree) in jobs {
         let handled =
-            observe(&mut book, fleet, me, agent, &kit, issue, patrol.as_deref(), &worktree);
+            observe(&mut book, fleet, found, me, agent, &kit, issue, patrol.as_deref(), &worktree);
         if let Err(e) = handled {
             events.push(json!({"worktree": worktree.path, "error": format!("{e:#}")}));
             book.observations_failed.retain(|failed| failed.path != worktree.path);
@@ -985,6 +987,7 @@ pub fn reconcile(
 fn observe(
     book: &mut Book,
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     kit: &Kit,
@@ -1158,6 +1161,7 @@ fn observe(
         book,
         &mut observed,
         fleet,
+        found,
         me,
         agent,
         kit,
@@ -1197,6 +1201,7 @@ fn observe(
 fn escalate_observed(
     observed: &mut Observed,
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     issue: Option<u64>,
 ) -> Result<()> {
@@ -1229,6 +1234,7 @@ fn escalate_observed(
                 afkconvoy_core::plan::closing_pr(&fleet.gh.open_prs()?, issue).map(|p| p.number);
             crate::judge::escalate_claim(
                 fleet,
+                found,
                 &claim,
                 &crate::judge::Handed::refusal_exhausted(reason),
                 pr,
@@ -1236,7 +1242,7 @@ fn escalate_observed(
             )?;
         }
     } else {
-        crate::judge::escalate(fleet, me, issue, &reason)?;
+        crate::judge::escalate(fleet, found, me, issue, &reason)?;
     }
     observed.action = "escalated".into();
     Ok(())
@@ -1316,6 +1322,7 @@ fn decide(
     book: &mut Book,
     observed: &mut Observed,
     fleet: &mut Fleet,
+    found: &mut Found,
     me: &Me,
     agent: &Agent,
     kit: &Kit,
@@ -1338,7 +1345,7 @@ fn decide(
             || observed.action == "waiting for operator"
             || observed.continuations >= MAX_CONTINUATIONS)
     {
-        return escalate_observed(observed, fleet, me, issue);
+        return escalate_observed(observed, fleet, found, me, issue);
     }
     let raw_error = structured.get("error").unwrap_or(structured);
     let rule = terminal.map(|rule| ("terminal rule", rule)).or_else(|| {
@@ -1471,7 +1478,7 @@ fn decide(
             }
             if !quota {
                 if expired {
-                    return escalate_observed(observed, fleet, me, issue);
+                    return escalate_observed(observed, fleet, found, me, issue);
                 }
                 observed.next_check = observed
                     .next_check
@@ -1564,7 +1571,7 @@ fn decide(
                 || why.contains("no eligible harness")
             {
                 observed.error = Some(why);
-                return escalate_observed(observed, fleet, me, Some(issue));
+                return escalate_observed(observed, fleet, found, me, Some(issue));
             }
             return Err(error);
         }
@@ -1597,7 +1604,7 @@ fn decide(
         }
         fleet.avoiding = excluded.clone();
         let next = match issue {
-            Some(n) => crate::switch::switch_issue(fleet, me, agent, n, observed.harness),
+            Some(n) => crate::switch::switch_issue(fleet, found, me, agent, n, observed.harness),
             None if patrol.is_some_and(|p| p.starts_with('@')) => {
                 crate::switch::auxiliary(fleet, agent, worktree)
             }
@@ -1630,7 +1637,7 @@ fn decide(
     if observed.action != "continued" {
         if expired {
             observed.error = Some(format!("no successor started: {}", failures.join("; ")));
-            return escalate_observed(observed, fleet, me, issue);
+            return escalate_observed(observed, fleet, found, me, issue);
         }
         // The named harness is the only candidate. The fault stays on it, the
         // claim stays, and the tick goes on so plan and doctor can say why.

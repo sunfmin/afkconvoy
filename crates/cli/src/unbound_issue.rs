@@ -21,8 +21,8 @@ use crate::git::Repo;
 /// {"number", "branch", "fleet"}, `fleet` whether its branch is one the
 /// fleet recorded on the issue: only such a PR waits to land.
 pub fn show(repo: &Repo, now: u64, number: u64) -> Result<Value> {
-    let (mut fleet, open) = Fleet::read(repo, now)?;
-    let (set, _) = fleet.rebuild(&open, None)?;
+    let (fleet, open) = Fleet::read(repo, now)?;
+    let (set, ..) = fleet.rebuild(&open, None)?;
     let bodies = open.issues.comments(number).iter().map(|comment| comment.body.as_str());
     let recorded = recorded_branches(bodies);
     let pr = closing_pr(&open.prs, number);

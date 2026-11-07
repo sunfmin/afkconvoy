@@ -34,10 +34,17 @@ stages:
 /// A world whose repo is bound to a team with the one workflow `feature`,
 /// and runs `concurrency` workers at once.
 fn bound(feature: &str, concurrency: u64) -> World {
+    let kit = |world: &World| world.kit_researched_models("claude-code", &["opus", "sonnet"]);
+    bound_to(TEAM, kit, feature, concurrency)
+}
+
+/// The same, of the team `team`, whose roster runs what `kit` has the host
+/// kit hold.
+fn bound_to(team: &str, kit: impl FnOnce(&World), feature: &str, concurrency: u64) -> World {
     let began = std::time::Instant::now();
     let world = World::new();
     world.reuse_repository_templates();
-    world.kit_researched_models("claude-code", &["opus", "sonnet"]);
+    kit(&world);
     world.repo(
         "acme/dev",
         &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
@@ -47,7 +54,7 @@ fn bound(feature: &str, concurrency: u64) -> World {
         (".claude/skills/rule/SKILL.md", "---\nname: rule\ndescription: rule\n---\n"),
     ];
     world.repo("acme/reviewer", &reviewer);
-    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", feature)]);
+    world.repo("acme/team", &[("team.md", team), ("workflows/feature.md", feature)]);
     let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
     write(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
@@ -972,6 +979,47 @@ fn an_issue_handed_to_a_human_that_no_consult_saw_is_put_to_its_consult_once() {
     assert!(with_a_human(&world), "{:?}", world.labels(7));
     assert_eq!(did(&tick(&world, 1270)), [] as [&str; 0]);
     assert!(with_a_human(&world));
+}
+
+/// An escalation worker health made is said on the tick's line, though the
+/// tick read its fleet again once it put another hand-off to its consult.
+#[test]
+fn a_health_escalation_is_said_though_the_tick_reads_its_fleet_again_for_a_consult() {
+    let team = TEAM.replace("claude-code, model: opus", "codex, model: gpt-5");
+    let team = team.replace("claude-code, model: sonnet", "codex, model: gpt-5");
+    let codex = |world: &World| {
+        world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
+        world.kit_researched_models("codex", &["gpt-5"]);
+        world.with_kit(|kit| {
+            kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] == "codex")
+        });
+    };
+    let world = bound_to(&team, codex, FEATURE, 2);
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done", "dispatch 8 done"]);
+    // #8 handed over by hand: the next tick puts it to its consult first.
+    let line = ["escalate", "--issue", "8", "--instance", "alpha", "--host", "h1"];
+    world.afk(&[&line[..], &["--reason", "The gate stayed red: no space left."]].concat()).ok();
+    // #7's worker refuses its task, and no harness is left to switch to.
+    let dir = worktree(&world);
+    let refusal = include_str!("screens/codex-task-refusal-control-98.txt");
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["worktreePath"] == dir.to_str().unwrap() && terminal["open"] == true {
+                terminal["screen"] = json!(refusal.lines().collect::<Vec<_>>());
+                terminal["agent"] =
+                    json!({"state": "done", "outcome": "failure", "stateStartedAt": 1_050_000});
+            }
+        }
+    });
+    let run = ["run", "--foreground", "--instance", "alpha", "--host", "h1", "--ticks", "1"];
+    let (lines, _) = world.afk_lines(&[&run[..], &["--now", "1090", "--second-ms", "0"]].concat());
+    assert!(with_a_human(&world), "{:?}", world.labels(7));
+    let consulted =
+        world.comments(8).iter().filter(|c| c.contains("verdict=failed-escalated")).count();
+    assert_eq!(consulted, 1, "#8 was put to its consult, and the fleet read again");
+    assert!(lines[0].contains("escalated #7 (no harness left after task refusal)"), "{lines:?}");
 }
 
 #[test]

@@ -217,6 +217,7 @@ fn wants_converge(applied: Option<&str>, desired: &str) -> bool {
 /// continuation that did not land. The tick is not failed.
 pub fn converge(
     fleet: &mut crate::fleet::Fleet,
+    found: &mut crate::found::Found,
     me: &crate::claims::Me,
     agent: &crate::dispatch::Agent,
 ) -> Result<()> {
@@ -248,7 +249,7 @@ pub fn converge(
     if cannot_start(&fleet.repo, target, fleet.now).is_some() {
         return Ok(());
     }
-    let landed = match crate::switch::onto(fleet, me, agent, target) {
+    let landed = match crate::switch::onto(fleet, found, me, agent, target) {
         Ok(true) => true,
         Ok(false) | Err(_) => false,
     };
