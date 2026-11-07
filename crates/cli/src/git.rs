@@ -262,6 +262,35 @@ impl Repo {
         run(&self.dir, args, env)
     }
 
+    /// Removes the linked worktree at `path`, its directory and its
+    /// registration, including when a directory in it is not writable by its
+    /// owner, as a cancelled test leaves one (sunfmin/control#610).
+    ///
+    /// Directories are opened for removal first (`copies::removable`): git
+    /// deletes the gitdir before the worktree, and stops on a directory the
+    /// owner cannot write, leaving the registration gone and the directory
+    /// behind. What git leaves is removed here, and the registration pruned.
+    pub fn remove_worktree(&self, path: &Path) -> Result<()> {
+        crate::copies::removable(path);
+        let text = path.to_string_lossy();
+        let ran = self.try_git(&["worktree", "remove", "--force", text.as_ref()])?;
+        if path.exists() {
+            crate::copies::removable(path);
+            let _ = std::fs::remove_dir_all(path);
+        }
+        // A removal that deleted the directory and left the registration, or
+        // the reverse, converges here. A worktree still on disk stays listed.
+        let _ = self.try_git(&["worktree", "prune"]);
+        if path.exists() {
+            bail!(
+                "cannot remove worktree {}: {}",
+                path.display(),
+                if ran.ok { "it is still there" } else { ran.stderr.trim() }
+            );
+        }
+        Ok(())
+    }
+
     /// One fetch whose failure the caller reads. At `FETCH_LIMIT` its process
     /// group is ended and the call is a failure.
     pub fn try_fetch(&self, args: &[&str]) -> Result<Ran> {
