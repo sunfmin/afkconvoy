@@ -31,8 +31,10 @@ pub(crate) fn tip_config(repo: &Repo, tip: &str) -> Result<Config> {
 /// How the base tip's gate run alone came out.
 pub enum Certified {
     Green,
-    /// Red, and recorded red: worker turns wait for its repair.
-    Red,
+    /// Red, and recorded red: worker turns wait for its repair. A run made
+    /// by this turn says how it went red (`red_tip`); a tip recorded red
+    /// before says nothing more.
+    Red(Option<String>),
     /// Red only on TIMEOUTs the gate said it cannot classify on an
     /// overloaded host (`gate::Judged::Unsettled`): it says nothing of the
     /// tip, which is recorded neither green nor red, and is gated alone again
@@ -111,17 +113,20 @@ pub fn certify(
         Judged::Red(red) => {
             let red_ref = crate::repair::red_ref(repo, &config.base_branch);
             repo.remote().push(&Push::set(tip, &red_ref).force())?;
-            Acting::new("gate").in_checkout(Some(repo.clone())).say(
-                crate::clock(),
-                format!(
-                    "{}; worker turns wait for its repair; its output is in {shown}",
-                    red.said(&format!("base tip {tip}"))
-                ),
-            );
-            return Ok(Certified::Red);
+            let said = red_tip(tip, &red);
+            Acting::new("gate")
+                .in_checkout(Some(repo.clone()))
+                .say(crate::clock(), format!("{said}; its output is in {shown}"));
+            return Ok(Certified::Red(Some(said)));
         }
     }
     Ok(Certified::Green)
+}
+
+/// What a base tip gated alone red is told by: the one red wording
+/// (`Red::said`) and what the fleet does of it.
+fn red_tip(tip: &str, red: &afkconvoy_core::gate::Red) -> String {
+    format!("{}; worker turns wait for its repair", red.said(&format!("base tip {tip}")))
 }
 
 /// Acquires one repo's turn on its current certified base tip. A repair
@@ -144,6 +149,7 @@ fn take(
     unremoved: &mut Vec<String>,
 ) -> Result<Certified> {
     let mut tried = None;
+    let mut said = None;
     loop {
         let gh = GitHub::of(repo)?;
         let locks = standing_locks(&gh, config)?;
@@ -172,14 +178,15 @@ fn take(
                     // A tip no run settled is not waited on as red: the
                     // turn ends, and the next one gates it alone again.
                     unsettled @ Certified::Unsettled { .. } => return Ok(unsettled),
-                    Certified::Red => {
+                    Certified::Red(red) => {
+                        said = red;
                         tried = Some(tip);
                         let _ = crate::wake::wake(repo, "red base tip");
                     }
                 }
             }
             if matches!(on_red, OnRedBase::Return) {
-                return Ok(Certified::Red);
+                return Ok(Certified::Red(said));
             }
             std::thread::sleep(Duration::from_secs(2));
             continue;
@@ -490,8 +497,11 @@ fn run(
     }
     match taken {
         Certified::Green => {}
-        Certified::Red => {
+        Certified::Red(said) => {
             answer["outcome"] = json!(Ending::BaseRed);
+            if let Some(said) = said {
+                answer["detail"] = json!(said);
+            }
             return Ok(answer);
         }
         Certified::Unsettled { unsettled, output } => {
@@ -553,6 +563,25 @@ mod tests {
             }
         }
         words
+    }
+
+    /// A base tip gated alone red says how in the one red wording, as a
+    /// candidate's `gate_red` does (sunfmin/control#619): its `base_red`
+    /// answer and its log line carry it.
+    #[test]
+    fn a_base_tip_gated_red_is_told_by_the_one_red_wording() {
+        let lines: Vec<String> =
+            ["        FAIL [   0.208s] (2/3) nx a_test".to_string(), "end".to_string()].to_vec();
+        let afkconvoy_core::gate::Judged::Red(red) =
+            afkconvoy_core::gate::judge(1, false, 600, None, &lines)
+        else {
+            panic!("a FAIL is red");
+        };
+        assert_eq!(
+            red_tip("abc", &red),
+            "base tip abc is red: it exited 1; failing: nx a_test; worker turns wait for its repair"
+        );
+        assert!(red_tip("abc", &red).starts_with(&red.said("base tip abc")));
     }
 
     /// The land step teaches each word the turn returns, and no other.
