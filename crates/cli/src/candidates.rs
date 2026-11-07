@@ -774,6 +774,50 @@ fn settle(repo: &Repo, gh: &GitHub, issue: Option<u64>, now: u64, answer: &mut V
     }
 }
 
+/// Puts a candidate's gate `result` on the chain: green or red
+/// (`Chain::finish`), or unsettled (`Chain::unsettle`) where the run was red
+/// only on TIMEOUTs it cannot classify on an overloaded host.
+fn settled(chain: &mut Chain, id: &str, result: &Value) {
+    if result["unsettled"].is_null() {
+        let green = result["status"] == "green" && result["recorded"] == true;
+        chain.finish(id, green, result.clone());
+    } else {
+        chain.unsettle(id, result.clone());
+    }
+}
+
+/// Whether `c` left the chain unsettled by its own gate run, `id`'s.
+fn unsettled_by(c: &Candidate, id: &str) -> bool {
+    c.cause.as_deref() == Some("gate_unsettled") && c.cancelled_by.as_deref() == Some(id)
+}
+
+/// The answer of a turn whose candidate's `gate` (fast or slow) said nothing
+/// of it (sunfmin/control#617): it names the TIMEOUTs and the gate's line,
+/// with the load it read.
+fn unsettled(mut result: Value, gate: &str, repo: &Repo, issue: Option<u64>) -> Value {
+    let tests: Vec<&str> = result["unsettled"]["tests"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let said = result["unsettled"]["said"].as_str().unwrap_or_default();
+    let detail = format!(
+        "the {gate} gate ran red only on TIMEOUTs it cannot classify on an overloaded host ({}) \
+         — `{said}`; that says nothing of this change: it is recorded neither green nor red and \
+         nothing landed; nothing in your tree is to change: ask for a turn again",
+        tests.join(", ")
+    );
+    crate::acting::Acting::new("land")
+        .on_issue(issue)
+        .in_checkout(Some(repo.clone()))
+        .say(crate::clock(), format!("candidate {}", detail));
+    result["outcome"] = json!(Ending::GateUnsettled);
+    result["gate"] = json!(gate);
+    result["detail"] = json!(detail);
+    result
+}
+
 fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
     if c.cause.as_deref() == Some("round_red") {
         let tip = chain.candidates.iter().find(|t| Some(&t.id) == c.cancelled_by.as_ref());
@@ -944,20 +988,10 @@ fn candidate_directory(root: &Path, path: &Path, id: &str) -> bool {
     }
 }
 
-/// Drops `path` and, once the directory is gone, its process-scope file.
-///
-/// Directories are opened for removal first (`copies::removable`): git deletes
-/// the gitdir before the worktree, and stops on a directory the owner cannot
-/// write, leaving the registration gone and the directory behind.
+/// Drops `path` (`Repo::remove_worktree`) and, once the directory is gone,
+/// its process-scope file.
 fn remove_candidate_worktree(repo: &Repo, path: &Path, recorded: &str) {
-    crate::copies::removable(path);
-    let text = path.to_string_lossy();
-    let _ = repo.try_git(&["worktree", "remove", "--force", text.as_ref()]);
-    if path.exists() {
-        crate::copies::removable(path);
-        let _ = std::fs::remove_dir_all(path);
-    }
-    if path.exists() {
+    if repo.remove_worktree(path).is_err() && path.exists() {
         eprintln!(
             "warning: candidate worktree {} is still there and will be removed on a later tick",
             path.display()
@@ -1286,8 +1320,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let chain = if recovering {
         read(repo, config)?.chain
     } else {
-        let green = result["status"] == "green" && result["recorded"] == true;
-        let chain = change(repo, config, |chain| chain.finish(&id, green, result.clone()))?;
+        let chain = change(repo, config, |chain| settled(chain, &id, &result))?;
         cleanup(repo, config, &chain)?;
         stop_candidate(repo, config, &id)?;
         chain
@@ -1296,6 +1329,9 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     if current.phase == Phase::Red {
         result["outcome"] = json!(Ending::GateRed);
         return Ok(result);
+    }
+    if unsettled_by(current, &id) {
+        return Ok(unsettled(result, "fast", repo, issue));
     }
     // A green candidate waits for its round, or its predecessor, holding no
     // worker lane: the lanes bound the gates running, not the PRs waiting.
@@ -1484,21 +1520,22 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
             return Err(error);
         }
     };
-    let mut green = result["status"] == "green" && result["recorded"] == true;
-    if green {
+    if result["status"] == "green" && result["recorded"] == true {
         let tree = Tree::named(&tip.tree);
         let parts = (&GateCommand::new(&slow.whole), &GateCommand::new(&tip.command), &command);
         if let Some(why) =
             crate::gate::record_whole(repo, &tree, &tip.commit, parts, issue, clock())?
         {
-            green = false;
             result["recorded"] = json!(false);
             result["not_recorded"] = json!(why);
         }
     }
-    let chain = change(repo, config, |chain| chain.finish(id, green, result.clone()))?;
+    let chain = change(repo, config, |chain| settled(chain, id, &result))?;
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
+    if chain.candidates.iter().any(|c| c.id == id && unsettled_by(c, id)) {
+        return Ok(Some(unsettled(result, "slow", repo, issue)));
+    }
     if chain.candidates.iter().any(|c| c.id == id && c.phase != Phase::Red) {
         return Ok(None);
     }
