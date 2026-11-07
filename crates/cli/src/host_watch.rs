@@ -1700,7 +1700,7 @@ struct Said {
     watch_id: String,
 }
 
-fn findings(items: &mut Vec<Item>, findings: &Value) {
+fn findings(items: &mut Vec<Item>, at: &str, findings: &Value) {
     for said in findings.as_array().into_iter().flatten() {
         let Ok(said) = Said::deserialize(said) else { continue };
         // An `info` finding holds nothing up. A watch that cannot start, and
@@ -1710,7 +1710,23 @@ fn findings(items: &mut Vec<Item>, findings: &Value) {
         }
         let reason =
             format!("{}; evidence: {}; fix: {}", said.what, json!(said.evidence), json!(said.fix));
-        push(items, said.watch_id, reason);
+        push(items, unscoped_as_scoped(at, &said), reason);
+    }
+}
+
+/// The identity of `said`, found at `at`, as doctor says it. A look saved by
+/// an afkconvoy before doctor scoped `watch_id` itself still holds it
+/// unscoped, `checkout:` or `host:`: a round started then and reported after
+/// the host runner moved is read by the rule the watch went by then, so its
+/// human conditions still match. A scoped identity never begins so. Delete
+/// this once no host runs a release older than the one that made doctor
+/// scope it, and no round it started is left: one release past it.
+fn unscoped_as_scoped(at: &str, said: &Said) -> String {
+    let id = &said.watch_id;
+    if id.starts_with("checkout:") || id.starts_with("host:") {
+        crate::doctor::scoped(at, said.kind, id)
+    } else {
+        id.clone()
     }
 }
 
@@ -1718,11 +1734,11 @@ fn findings(items: &mut Vec<Item>, findings: &Value) {
 /// stays the same while its episode lasts.
 pub(crate) fn actionable(look: &Value) -> Vec<Item> {
     let mut items = vec![];
-    findings(&mut items, &look["findings"]);
+    findings(&mut items, "host", &look["findings"]);
     for checkout in look["checkouts"].as_array().into_iter().flatten() {
         let at = checkout["checkout"].as_str().unwrap_or("unknown");
         let doctor = &checkout["doctor"];
-        findings(&mut items, &doctor["findings"]);
+        findings(&mut items, at, &doctor["findings"]);
         for waiting in doctor["waiting_on_human"].as_array().into_iter().flatten() {
             if waiting["taken_by"].is_string() {
                 continue;
@@ -2279,6 +2295,55 @@ mod tests {
         );
         let reworded = ids(&look(&|what| format!("{what}, said again in other words")));
         assert_eq!(reworded, first, "rewording a finding keeps its episode");
+    }
+
+    #[test]
+    fn a_round_whose_look_an_older_afkconvoy_saved_unscoped_still_matches_its_human_conditions() {
+        use crate::doctor::{Kind, answered, finding};
+        let made = |kind: Kind, identity: Value, what: &str| {
+            finding(kind, identity, what.into(), "seen".into(), "a fix".into())
+        };
+        let host = || {
+            vec![
+                made(Kind::OrcaNotRunning, json!(["tool", "orca"]), "`orca` is not running"),
+                made(
+                    Kind::KitUnplaced,
+                    json!(["kit-unplaced", "codex"]),
+                    "the harness `codex` has unplaced models in the host kit",
+                ),
+            ]
+        };
+        let own = || {
+            vec![made(
+                Kind::StepUnrecovered,
+                json!(["step", "dispatch", null, null]),
+                "`dispatch` failed in tick 4 and has not recovered",
+            )]
+        };
+        let waiting = json!([{"issue": 7, "why": "escalated", "answer": "gh issue view 7"}]);
+        let look = |host: Value, own: Value| {
+            json!({"findings": host, "checkouts": [{"checkout": "/r", "doctor": {
+                "findings": own, "waiting_on_human": waiting}}]})
+        };
+        // As the older afkconvoy saved it: each `watch_id` as judged.
+        let old = look(json!(host()), json!(own()));
+        assert_eq!(old["findings"][0]["watch_id"], r#"host:["tool","orca"]"#);
+        let new = look(answered("host", host()).unwrap(), answered("/r", own()).unwrap());
+        let ids = |look: &Value| -> Vec<String> {
+            actionable(look).into_iter().map(|item| item.id).collect()
+        };
+        assert_eq!(ids(&old), ids(&new), "both forms are acted on by one identity");
+        // A round started on the old look and reported after the host runner
+        // moved: its human conditions name the identities the watch was given.
+        let watch = human_round(old, actionable(&new), vec![], true);
+        for condition in ids(&new) {
+            let human = crate::watch_report::Human {
+                condition: Some(condition.clone()),
+                question: "Provide a quiet environment?".into(),
+                answer: "no".into(),
+            };
+            assert_eq!(crate::watch_report::condition(&watch, &human).unwrap(), condition);
+        }
     }
 
     #[test]
