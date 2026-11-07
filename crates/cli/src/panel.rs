@@ -1290,14 +1290,15 @@ fn kit_health(out: &mut String, health: &crate::health::Health) {
     if !health.workers.is_empty() {
         out.push_str("<section data-worker-health><h2>Worker recovery</h2><table><tr><th>Worker</th><th>Orca state / outcome / agent type / since (epoch ms)</th><th>Action / successor</th><th>Evidence source</th><th>Next check</th><th>Evidence / failure</th></tr>");
         for worker in health.workers.iter().map(|worker| &worker.observed) {
+            let orca = worker.orca.clone().unwrap_or_default();
             let _ = write!(
                 out,
                 "<tr><td>{}</td><td>{} / {} / {} / {}{}</td><td>{} {}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 esc(&worker.path.to_string_lossy()),
-                esc(worker.orca["state"].as_str().unwrap_or("unknown")),
-                esc(worker.orca["outcome"].as_str().unwrap_or("none")),
-                esc(worker.orca["agentType"].as_str().unwrap_or("unknown")),
-                worker.orca["stateStartedAt"],
+                esc(orca.state.as_deref().unwrap_or("unknown")),
+                esc(orca.outcome.as_deref().unwrap_or("none")),
+                esc(orca.agent_type.as_deref().unwrap_or("unknown")),
+                orca.since_ms.map_or("null".to_string(), |ms| ms.to_string()),
                 if worker.harness_mismatch {
                     format!(
                         " (recorded {}; Orca's harness is used)",
