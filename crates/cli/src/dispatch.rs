@@ -893,3 +893,52 @@ fn discard_attempt(fleet: &Fleet, number: u64) -> Result<Value> {
     Ok(json!({"closed_prs": closed, "deleted_branches": own,
         "removed_worktree": worktree.map(|worktree| worktree.path)}))
 }
+
+/// What `afkconvoy dispatch --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+To start a worker on one issue by hand. A tick does this on its own for every frontier issue it has a free slot for, and for every claim of its own left without a worker. Do it yourself when a plan shows an issue the fleet is not starting, or — with `--start fresh` — to throw away an attempt that went wrong and have the issue worked again. Run `recovery` first: it shows what this would continue from.
+
+## Who runs it
+
+The operator, in a checkout of the repo, on the host the worker is to run on.
+
+## What it reads and writes
+
+Before it claims an issue the instance does not hold, it reads the issue's blockers on GitHub once more: with any of them open nothing is claimed and no worker starts. A tick's rebuild can be minutes older than its dispatches, and a blocker added in between holds the issue back all the same.
+
+It claims the issue for `--instance` unless that instance holds it already, looks at what survives of an earlier attempt, has orca put a worktree there, records the worktree's branch in a comment on the issue, writes the worker's brief into the worktree, starts the worker launch command in it — under `nice`, with the worktree's own `TMPDIR` — and hands the worker its prompt.
+
+In a bound repo the issue's flow label names its workflow, and the worker performs the stage the issue's stage records put it at — the workflow's first while there are none — in the stage's role, with the verdicts declared so far, and the reason of a rejection, in its brief. The team's repo and each role's are asked for the commit at their head; one the fleet has no copy of yet is cloned and kept, read-only, under the cache directory (copies/<owner>/<repo>/<commit>; `afkconvoy help cache` says where that directory is and what moves it), once however many roles it holds. A role that is a subdirectory of its repo is copied out of that on its own (<commit>-role-<path>; <commit>-role+codex-<path>, with a link to the role's skills where Codex finds them, for a Codex worker), and so is the team's directory, without the directories of its roles and without a `.claude/` at its top (<commit>-team+rules-<path>): a worker is given its role's directory and, of the team's, the team rules (its `CLAUDE.md`) — nothing else above its role, and no neighbour's.
+
+The terminal is opened on the worktree as ever, and the line it runs changes to the role's copy, puts the stage's facts in the environment, and starts the worker launch command with what puts the worker in its role: [`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness. The worker's harness is the first eligible one in this host's kit order within its role's range. Its model is the issue's one model label of that harness, or that harness's user default (`afkconvoy help roster`).
+
+Where the stage declared `escalate` and names a consult, the worker is started as that consult instead: in the consult's role, on a brief that names the skill, the stage that asked and its reason, and the two lines it ends with — `afkconvoy rule`, or `afkconvoy verdict escalate` to let it through to a human. AFKCONVOY_CONSULT is `true` in its environment, the guard refuses its commits, and it runs its own role's range, not the stage's.
+
+Once the issue's last stage has passed to `land`, the worker is started in the workflow's landing role instead, on the landing brief with that role's landing skill named in it: it gates the issue's open PR and lands in a turn. Its stage is `land`; when it cannot proceed it may declare `blocked` or `escalate` (`afkconvoy verdict --help`).
+
+## What it answers
+
+{"issue", "started": true, "claim", "tier", "action", "prompt", "reason", "worktree", "branch", "terminal"}
+
+- `claim`: won (claimed now) or held (the instance's already)
+- `tier`, `action`: 1 reuse_worktree — the worktree is still on this host; 2 recreate_at_tip — a new worktree at the issue's pushed branch; 3 dispatch_fresh — a new worktree at the base branch
+- `prompt`: the brief the worker got: fresh, continue, land (its PR is open: only the landing is left), or take_up (its PR is open and no claim held it: an escalation or a park kept it — take its landing turn) — in a bound repo, stage, consult, or land for a landing worker
+- `stage`: in a bound repo: {flow, name, role, skill, writes, consult, harness, model, role_commit, role_dir, team_commit, team_dir} — the stage the worker performs, and the copies and commits fixed for it; name is `land` for a landing worker. For a consult (`consult: true`), name is the stage that asked, and role and skill are the consult's
+- `reason`: why that tier, in words
+- `discarded`: with `--start fresh`: {closed_prs, deleted_branches, removed_worktree}
+
+{"issue", "started": false, "claim": "lost", "owner"} — another instance holds the claim. Nothing was started.
+
+{"issue", "started": false, "skipped": "blocked", "blocked_by"} — the issue has an open blocker: blocked_by lists them, lowest number first. Nothing was claimed and nothing was started.
+
+Errors: the issue is closed; in a bound repo, the issue carries no flow label, more than one, or one that names no workflow of the team, it is at no stage a worker performs (the error says where it is), it passed to `land` and no open PR closes it, the team does not load (the error carries its `faults`) — none of which claims the issue; the instance's claim on it is one a stage already declared under; the worker launch command resolves to nothing; orca fails, or the worker is not ready in time. After a failed start the claim is still held: until the worker takes its brief, the instance's next tick finds a claim with no worker and starts it again in the same worktree. A second failed start escalates and releases the claim, naming the start errors. A start held up only by the previous worker's terminal, still there after orca acknowledged closing it, is no failed start: it fails no tick, keeps the claim, and is tried again each tick until the terminal is gone; still there 300 seconds after the first such start, it escalates as a failed start, saying how long it was waited for. No nudge or silence judgment is made of an incomplete start.
+
+## What trips you up
+
+- `--instance` is required, and it is the instance that holds the claim afterwards. Give it the id of the fleet that is to look after the worker.
+- `--start fresh` discards the previous attempt: it closes the issue's open PRs, deletes its branches on the remote and removes its worktree, unpushed work included.
+- It checks that the issue is open and, unless the instance holds it already, that no blocker of it is open — nothing else of the frontier: an issue without the ready label, or past the concurrency, is started all the same. A claim the instance holds is continued whatever blocks it.
+- A role in a subdirectory is not the directory a human opens in a checkout: a `CLAUDE.md` or a `.claude/` above it there is not in the worker's copy, nor above it — but for the `CLAUDE.md` of the team's own directory, the team rules, which every worker is given. `afkconvoy check` notes each role that has another above it.
+- It does not ask after a worker already there. On a claim whose worker is at work it starts another in the same worktree."#;

@@ -178,6 +178,39 @@ fn with_roster<'m>(markdown: &'m str, roster: &'m str) -> Option<(String, Vec<&'
     Some((written, had))
 }
 
+/// What `afkconvoy draft --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+When a team has no roster yet, or the host kit has changed and its roster is to follow: a team's roster is drafted rather than written from nothing. Run it on a host whose host kit holds what the team's workers are to run (`afkconvoy kit`).
+
+## Who runs it
+
+The operator, or whoever designs the team, in a checkout of it: the team's working tree. The fleet never runs it, and never changes a team's roster.
+
+## What it reads and writes
+
+It reads the team's files from `--dir` — this directory unless it says another — as `afkconvoy check --dir` does, each role from GitHub, and this host's host kit without the harnesses paused on it. A role named as ./path is read from the repo `--team` names: give it for a team whose roles are in its own repo.
+
+1. It sends no prompt. `good_at` comes from the host kit's research.
+2. It drafts the team file's `roster` (`afkconvoy help roster`): an entry for each role, its `run` every placed harness and model of the host kit in the host kit's order, each with the `good_at` from the host kit. It writes no `cast` line. A harness the role holds no limits for, while it holds limits for another, is left out of its entry and named in a comment there, so that the draft passes `check` as written; a role left nothing is named in a comment alone. A roster `cast` key already there is not read.
+3. It writes the draft into the team file, team.md, in place of the `roster` there and everything under it, or at the end of its yaml block where it has none. Nothing else of the file changes, and nothing is committed.
+
+Where the team file holds a roster, it says on stderr each line the draft would take out (-) and put in (+), and writes only once the human at the terminal confirms, or with `--yes`. With no terminal and no `--yes` it writes nothing.
+
+## What it answers
+
+{"path", "roster", "replaces", "removed", "added", "unsaid", "written"}: `path` the team file, `roster` the draft as written, `replaces` whether the team file held a roster, `removed` and `added` the lines the draft takes out and puts in, `unsaid` what the host kit's research says nothing of — each also a warning on stderr, to write in by hand — and `written` whether the team file was written. A roster the same as the draft is not written again.
+
+Errors: a team that does not load, with every fault, as `check` answers it; a host kit that cannot be read or holds no harness.
+
+## What trips you up
+
+- Read the draft before committing it: model strengths come from the host kit's sourced research. Edit them, take out what a role is not to run, and order what is left as the team prefers — `afkconvoy check --dir` then says whether the team loads.
+- A team file whose roster has a fault does not load: delete the roster, and draft again.
+- The draft is the host kit of the host it runs on. A harness another host holds and this one does not is not in it.
+- Drafting sends no prompt."#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

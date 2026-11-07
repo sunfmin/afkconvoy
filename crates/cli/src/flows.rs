@@ -206,3 +206,66 @@ pub fn flows(repo: &Repo, delivery: Option<&str>, asked: Option<&RepoName>) -> R
     }
     Ok(answer)
 }
+
+/// What `afkconvoy flows --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+Before opening an issue the fleet is to work, and again whenever the team gains a workflow: it says which workflow takes which kind of issue, what label puts an issue in it, and which labels to keep off — and it creates the labels that takes, so the line it gives works. Run it once for all the issues you open, not once per issue.
+
+```
+afkconvoy flows
+```
+
+## Who runs it
+
+Whoever hands the fleet work: a human, or the agent a human is talking to, with work decided on and issues to open for it. In a checkout of the repo the issues go to, bound or unbound. A worker opening a blocker for another repo of the host names that repo's checkout: `afkconvoy flows <target-checkout>`. It takes the issue in there with `afkconvoy intake`.
+
+## What it reads and writes
+
+It reads the config of the checkout and the labels its tracker has. The tracker is the one this host's checkout list says for the checkout, or for the checkout it is a worktree of — the checkout's own repo, until its host says another (`afkconvoy run --tracker`). Where the list holds no entry of it — another account on a shared machine, a fresh clone — the tracker is not said, and it is refused: name it with `--tracker <owner>/<repo>`, the checkout's own repo where that is its tracker. On an entry, a `--tracker` the entry does not say is refused, naming both. In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
+
+It writes one thing: each label its lines name that the tracker lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label; and, where `--tracker` names another repo off the list, the repo label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
+
+With `--delivery <identity>`, it first validates an existing same-repo Jira delivery. Its `line` keeps the tracker and repo label but omits the runnable flow or ready label. Run that line, then its `intake_line` with the returned issue number: intake attaches the delivery before adding the selected workflow's label (or the unbound repo's ready label). Both steps run in this code repo's checkout. The answer includes `delivery`; each workflow, or the unbound answer, includes `intake_line`. An invalid or cross-repo delivery refuses before creating labels. Without --delivery, today's ordinary creation line is unchanged.
+
+## What it answers
+
+In a bound repo:
+
+{"team", "workflows", "keep_off", "intake", "created"}
+
+With --delivery: also `delivery`, and each workflow's `intake_line` to run after its non-runnable creation line. In an unbound repo, `delivery` and `intake_line` are top-level keys.
+
+- `team`: the team's repo
+- `workflows`: every workflow of the team, each {"name", "flow_label", "description", "first", "ends", "line"}:
+
+  - `description`: what the workflow is for and what an issue of it holds: the prose of its file, workflows/<name>.md, above the yaml block. Empty when the file says nothing there — `afkconvoy check` warns of that. Choose the workflow by it
+  - `first`: the stage an issue enters at, {"stage", "by", "do"}: the role that performs it and the skill — `by` is `human`, and `do` null, where a human's decision is waited for
+  - `ends`: where its passes end: `land`, a landing turn — its issues end in a PR landed on their target branch — `done`, nothing more to do, or both, by different stages
+  - `line`: the line that opens an issue into it, in the tracker. Give it a title and a file holding the body
+- `keep_off`: the labels that keep an issue from being worked as one of a workflow, {"epic_labels", "escalate_label", "lock_label"}: an issue carrying an epic label is never dispatched; the escalate label is the fleet's to put on, when it hands an issue to a human; and an open issue carrying the lock label is a fleet lock, which stops all other work (`afkconvoy lock --help`)
+- `intake`: {"open", "limit"}: the open issues workers took in, against the repo's `intake_limit`. An issue a human opens with a flow label is outside both: nothing refuses it
+- `created`: the flow labels this run created on the repo; empty when it had them all
+
+In an unbound repo, which has no workflow:
+
+{"team": null, "ready_label", "line", "keep_off", "created"}
+
+- `ready_label`: the label an issue is worked under
+- `line`: the line that opens an issue carrying it
+- `keep_off`: as above; the escalate label is the config's
+- `created`: the ready label, when this run created it; else empty
+
+Errors, as {"error": …} with a non-zero exit: "the tracker is not said" — the checkout is on no checkout list of this host, and no `--tracker` names it; a `--tracker` its entry does not say; the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout", or git's own words for a checkout it refuses; GitHub refused to list or create a label.
+
+## What trips you up
+
+- `gh issue create --label` refuses a label the repo lacks, and nothing but this command creates a flow label ahead of the first issue. Run it before the line.
+- Opening an issue with `gh`, or labelling one, wakes no fleet: the fleet takes it up at its next tick — within {const:TICK_BUSY_SECONDS} seconds while it has work, within {const:TICK_IDLE_MINUTES} minutes once it has been idle {const:TICK_IDLE_AFTER} ticks in a row. `afkconvoy wake <checkout>`, on the fleet's host, starts that tick now: run it once, after the last issue you open.
+- An issue follows one workflow: put one flow label on it. With several it follows none, and no stage of any is performed on it.
+- The flow label is what hands the issue over. Leave it off an issue that is not ready to be worked, and put it on later: `gh issue edit <n> --add-label <label>`.
+- Where the tracker is another repo, the line opens the issue there, `--repo <owner>/<tracker>`, with this repo's repo label, `repo:<owner>/<repo>`: an issue there without it is no issue of this repo, and its fleet never works it. Name the tracker in every `gh issue` command (`--repo`): run in the checkout, `gh` acts on the checkout's own repo.
+- A workflow whose `first` is `by: human` starts by waiting for a human: the fleet does nothing on its issue until one declares a verdict (`afkconvoy verdict --help`).
+- It answers the team as pushed to its default branch. A workflow added in a checkout of the team is not answered, and its label not created, until it is pushed.
+- A label of a workflow the team no longer has is left on the repo: this command creates labels and removes none."#;

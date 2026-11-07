@@ -143,3 +143,25 @@ pub fn run(repo: &Repo, backup: Option<&Path>, now: u64) -> Result<Value> {
         json!({"dry_run": backup.is_none(), "backup": backup.map(|p| p.display().to_string()), "rewrite": changes.iter().filter(|c| c.new_body.is_some()).count(), "left": changes.iter().filter(|c| c.new_body.is_none()).count(), "changes":changes, "before":before, "after":after}),
     )
 }
+
+/// What `afkconvoy rewrite-accounts --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+Run once per tracker after upgrading all fleet instances. It needs git and a signed-in gh. Run with no flags first to inspect every old and proposed body and its check.
+
+## Who runs it
+
+The operator or an agent working on the operator's behalf, in a checkout of a repo using that tracker.
+
+## What it reads and writes
+
+Reads all issues and comments in the checkout’s tracker. With no flags it writes nothing. With `--backup <directory>` it saves each original in that directory before editing the comment, and skips records it cannot validate. The directory must be kept for recovery. Repeating it skips JSON accounts.
+
+## What it answers
+
+One JSON object with `dry_run`, `backup`, counts `rewrite` and `left`, and `changes` containing issue, comment, old_body, new_body and check. `before` and `after` show this checkout’s all-time account summaries as currently read and as projected after conversion. It refuses a changed comment or a conflicting backup; run it again after examining the error.
+
+## What trips you up
+
+Store the backups in a durable private directory. Accounts with unrecognized facts are left as they are and remain unreadable to `accounts` until repaired."#;

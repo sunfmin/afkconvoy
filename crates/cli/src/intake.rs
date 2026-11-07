@@ -293,3 +293,71 @@ fn missing_issue(repo: &Repo, gh: &GitHub, number: u64, error: anyhow::Error) ->
         "issue #{number} was not found in tracker {tracker}; {where_found}. Transfer it: {transfer}; then run afkconvoy flows in the target repo's checkout and take the transferred issue in there"
     )
 }
+
+/// What `afkconvoy intake --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+When a worker has an issue the fleet is to work with no human labelling it: one a patrol opened, or one a stage split off its own. It is the intake a worker makes — a human takes an issue in by putting its flow label on, on GitHub.
+
+```
+afkconvoy intake --issue 12 --workflow feature
+```
+
+A stage that splits its issue runs it once per child, saying with `--blocked-by` which of the others a child has to wait for, and then declares `blocked` on all of them (`afkconvoy verdict --help`):
+
+```
+afkconvoy intake --issue 13 --workflow fix --blocked-by 11,12
+```
+
+Fleet repairs are dispatched automatically outside product workflows; no intake is needed.
+
+## Who runs it
+
+A worker, in its own worktree: it starts in its role's directory, so it changes to the worktree first, as the line its brief gives for `afkconvoy verdict` does. The fleet put its role and the issue it is on in its environment (AFKCONVOY_ROLE, AFKCONVOY_ISSUE), and the command reads them from there; `--role` and `--from` say them by hand. A patrol's worker is on no issue: it has its patrol's name there instead (AFKCONVOY_PATROL), which `--patrol` says by hand. The repair worker has no role and is on no issue and no patrol: it says `--repair`, in its own checkout, and nothing else of who it is.
+
+## What it reads and writes
+
+It reads the config of the checkout, the team it names, the issue, and — to count — the comments of every open issue that carries a flow label. It writes on the issue, in this order: a blocked-by edge to each issue `--blocked-by` names that GitHub does not record yet; one comment, the intake record, whose marker carries the workflow, the role and the issue the worker was on — or the patrol it ran, or, of the repair worker's, `by=repair` and nothing else; then, where the checkout's tracker is another repo (`afkconvoy run --tracker`) and the issue lacks it, this repo's repo label, `repo:<owner>/<repo>`; then the workflow's flow label, `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick — or, with an open issue to wait for, once that has closed. The edges go first, so the issue is never on the frontier ahead of what blocks it.
+
+For a Jira delivery, run `afkconvoy flows --delivery <identity>`, open with its line (no runnable label), then run its intake_line. `--delivery <identity>` attaches the existing delivery before any runnable label is added. In a bound repo select --workflow; in an unbound repo omit it and intake adds the ready label. An operator or discussion agent may use explicit --delivery without a worker role: this follows human intake and consumes no worker intake limit. Workers still name their role and source task or patrol and count against the existing limit.
+
+A worker's --from (or its worker issue environment) inherits that source task's delivery automatically. Explicit --delivery selects the named delivery instead of inheritance for work genuinely belonging to another delivery. A dependency, parent link, checkout branch or discussion title supplies no delivery. Keep --blocked-by separate: it orders tasks and never assigns membership. The delivery reference lives once in the task's remote target record; stages, restart, rework and harness/model switches retain it. Missing, contradictory and cross-repo delivery context refuses without a runnable label being added. Existing pinned targets cannot be reassigned; claims, retained work and unaccounted PRs/candidates are preserved and reported.
+
+The issue, the issues it waits for and every issue it counts are the tracker's: the checkout's own repo, or the one its host says, where it counts only the issues that carry this repo's repo label.
+
+An issue not found there is refused naming the tracker, where `gh` finds it in the checkout's repo (following a transfer), and `gh issue transfer <n> <tracker> --repo <its repo>`. Use the number GitHub assigns after transfer. For another repo's blocker, run `afkconvoy flows` in that repo's checkout, open it on the tracker with that repo's repo label using its line (omit the flow label until intake), and take it in there.
+
+The limit. Before it writes anything it counts the open issues taken in by workers: those that carry a flow label and an intake record for it. With that count at the repo's `intake_limit` (see `afkconvoy config --help`) it refuses and writes nothing. The count is taken from the records each time and stored nowhere, so closing such an issue makes room. An issue a human labelled has no record: it is never counted, and nothing here refuses a human's label.
+
+## What it answers
+
+{"issue", "workflow", "taken", "role", "from", "blocked_by", "open", "limit", "woke"}
+
+Delivery intake also answers `delivery` and resolved `target_branch`. Human delivery intake omits worker identity, open and limit. Unbound intake omits workflow and answers target_branch for ordinary tasks too.
+
+- taken: true: the record and the flow label were written
+- `role`, `from`: who took it in: the worker's role, and the issue it was on. A patrol's worker answers `patrol`, the patrol's name, in place of `from`. The repair worker answers "repair": true in place of both
+- `blocked_by`: the issues it was said to wait for
+- `open`: the open issues taken in by workers, this one among them
+- `limit`: the repo's `intake_limit`
+- `woke`: whether a `run` on this host was told, as `afkconvoy wake` answers
+
+{"issue", "workflow", "taken": false, "standing"}
+
+- taken: false: the issue follows that workflow already: nothing was written
+- `standing`: how it came in: {"by": "worker", "role", "from", "url"} with the comment of its intake record — `patrol` in place of `from` where a patrol's worker took it in, "repair": true in place of both where the repair worker did — or {"by": "human"}
+
+Errors, as {"error": …} with a non-zero exit: the intake limit is reached — the error says the count and the limit; the team has no workflow of that name — the error lists the ones it has; the team has no such role, or no such patrol; the repo is unbound; the issue is closed, is a pull request, already carries the flow label of another workflow, or carries the repo label of another repo — it is that repo's to work — or, in a repo that is its own tracker, any repo label; the role, or both the issue the worker is on and its patrol, is neither in the environment nor given, and `--repair` is not given; `--repair` with a role, an issue or a patrol, given or in the environment; both `--from` and `--patrol` are given; `--blocked-by` names the issue itself, a pull request, or an issue that cannot be read; the team has a fault; "is not in a git checkout", or git's own words for a checkout it refuses.
+
+## What trips you up
+
+- It is the only way a worker's intake is on the record. A flow label a worker puts on by itself would read as a human's and escape the limit: the guard refuses that, and an intake record written by hand (`afkconvoy guard --help`).
+- An issue a patrol's worker takes in counts against two limits: the repo's `intake_limit`, which refuses here, and the patrol's own `max_open`, which refuses nothing here — the fleet does not run the patrol again while that many are open.
+- The limit bounds the work the fleet gives itself, not a day's work: it is set high, to stop a runaway. `afkconvoy plan` reports the count against it.
+- The record counts only while the issue carries the flow label it names. A human who moves the issue to another workflow has taken it in themselves.
+- A split is nothing but this and a `blocked` verdict: the parent is parked on its children, and the stage that split it runs again when all of them have closed. A child counts against the limit like any issue a worker takes in, and may be split in turn.
+- An issue the repair worker takes in counts against the limit too. This compatibility intake is distinct from the fleet's automatic repair issue: that issue carries the ready and convoy-repair labels and runs outside product workflows.
+- A child has to close for its parent to return. One whose workflow ends in `done` stays open until somebody closes it.
+- `--blocked-by` is read only as the issue is taken in. On one that follows the workflow already, nothing is written.
+- Two workers taking in at the same moment can both pass the count: the limit can be overshot by as many as ran at once."#;

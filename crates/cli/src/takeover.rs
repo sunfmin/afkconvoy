@@ -216,3 +216,43 @@ pub fn takeover(fleet: &mut Fleet, me: &Me, from: &str, yes: bool) -> Result<Val
         }
     }
 }
+
+/// What `afkconvoy takeover --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+When a fleet instance on another host is dead and its claims should not wait out the lease. `--list` first, to find its id and see whether its heartbeat is fresh; then `--from <id>`. For this host's own claims it is not needed: `run` takes them at its start. A claim is on an issue, a patrol's run or a cut: both ways take all of them.
+
+## Who runs it
+
+The operator, in a checkout of the repo, on the host that is to carry the claims on.
+
+## What it reads and writes
+
+`--list` reads the claims and heartbeats on the remote, and changes nothing. `--from` re-stamps each of that instance's claims on the remote in the name of `--instance`, and refreshes that instance's heartbeat when it is due. Each push is refused if the claim moved since it was read. A claim taken is still the claim it was created as: a verdict declared under it before it was taken is read as its. It starts no worker and changes nothing on GitHub.
+
+## What it answers
+
+`--list`: {"instances", "me", "now", "lease"}
+
+- `instances`: one per instance the remote remembers: {instance, host, claims, runs, claim_count, heartbeat_ts, heartbeat_age, fresh, is_me}. claims: the issues it holds a claim on. runs: the runs it holds one on, by key — `patrol-<name>` a patrol's, `cut` a cut's. claim_count: both. fresh: its heartbeat is within the lease
+- `me`: `--instance`, when given
+- `lease`: the lease, in seconds
+
+`--from`: {"action", "instance", "taken", "lost", "taken_runs", "lost_runs", "detail", …}
+
+- `action`: taken — with "as", the instance they were taken as confirm — its heartbeat is fresh: nothing was taken. With "heartbeat_age" none — that instance holds no claims, or no instance has that id
+
+- `taken`: the issues whose claims were taken
+- `lost`: the ones that moved first: that fleet is not dead
+- `taken_runs`: the runs whose claims were taken, by key as `--list` gives them
+- `lost_runs`: the ones that moved first
+
+Errors: `--from` without `--instance`; neither `--list` nor `--from`; `--from` is `--instance` itself.
+
+## What trips you up
+
+- `--from` an instance whose heartbeat is still fresh takes nothing until `--yes`: the answer is `confirm`, with exit 0. Add `--yes` only when you know that fleet is dead. The old host's next tick stops its workers on claims taken to another host, and their verdict, land and gate commands refuse.
+- Taking starts nothing. The claims are continued by the next tick of `--instance`: follow it with `run --instance <id>` or `tick --instance <id>`, under the same id.
+- A run taken is not continued: that tick ends it — its worker is on the host that died — and the patrol is due again by its interval, the ruling not proposed again.
+- `--list` is the way to learn a running fleet's instance id."#;

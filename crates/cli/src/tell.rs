@@ -128,6 +128,37 @@ pub(crate) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// What `afkconvoy tell --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+When the worker at work on an issue must know a decision or correction now. Each tick also tells it later issue comments and body edits automatically. Use it rather than `nudge`, which is the fleet's own line to a stopped worker telling it only to carry on: this is the operator's words, to a worker busy or stopped.
+
+## Who runs it
+
+The operator, in a checkout of the repo, on the host the worker runs on. Name the issue, never an orca terminal.
+
+## What it reads and writes
+
+It posts the note as a comment on the issue first: that comment is the note's one home, which a continuation, a restart or a later stage's worker reads in its brief's first step. Rerun for the same note, it finds that comment and posts no second one.
+
+It then finds the worker at work under this host's claim of the issue, whichever fleet instance of the host holds it, and types one line at its terminal: the note, on one line, with the comment's link. At a worker that is stopped it first checks that the terminal has a harness ready for a prompt: a bare shell receives nothing. At a busy worker it types into the harness's input. Claude Code gives a line typed while it works to its model at the next step. A busy Grok keeps that line in its input queue; once the screen shows the line queued, tell presses send now, which gives it to the model at the next step. A harness that does neither waits, bounded, until its turn ends.
+
+It is told only once the harness's session record holds the line as a message its model was given as the user's. A line seen only in the harness's input queue is not delivered: a harness stopped or dead with it there drops it. It records the delivery in the worktree, beside the nudge, and in the tick log.
+
+## What it answers
+
+{"issue", "action": "told", "terminal", "comment", "seconds"} — seconds from the send to the session record's user entry; "typed": false instead where a rerun found the line already taken.
+
+With no worker at work under this host's claim — the issue is not claimed, its worker has not taken its brief, it has no worktree here (not started, or between stages), no live terminal, or another host holds the claim — it posts the comment, types nothing, and answers {"issue", "action": "commented", "comment", "why"}, with "host" naming the host that holds the claim where another one does.
+
+Errors: past the bound (600 seconds) with the line not taken, it fails with the current screen and the comment's link, and types no second line; rerun it to try again. A terminal with no harness at its input is sent nothing.
+
+## What trips you up
+
+- It never edits the issue's body. Each tick tells later body edits and issue comments to the worker under this host's claim, with session proof, and retries failed deliveries. A line the worker's terminal took but its harness has not given the model yet (a harness running a tool hands over queued input when the tool ends) is recorded queued, no failure, and told by the tick that finds the session holding it; still not taken past tell's bound (600 seconds), it fails each tick. A refused line, or a harness at no input, fails at once. Three consecutive failed ticks make a doctor finding naming the issue and comment. Fleet comments carrying a `<!--convoy:` marker and comments the worker itself posted (identified by its session's write receipts) are skipped. With no worker here, the next worker reads the issue at its start. PR comments are not told, and closed issues stay closed.
+- It takes no `--instance`: the claim says whose worker it is, and only a worker on this host can be typed at."#;
+
 #[cfg(test)]
 mod tests {
     #[test]

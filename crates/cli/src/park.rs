@@ -190,3 +190,30 @@ pub fn park(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     }
     Ok(with_left(answer, left.as_ref()))
 }
+
+/// What `afkconvoy park --help` says after its one line, which
+/// lib.rs's `Command` holds.
+pub(crate) const HELP: &str = r#"## When to run it
+
+To park a claim by hand. A tick does this on its own for a worker that stopped with a `blocked` verdict naming open issues the fleet can wait for. Do it yourself when a plan keeps showing such a claim under `mine` as `no_pr`.
+
+## Who runs it
+
+The operator, in a checkout of the repo.
+
+## What it reads and writes
+
+It reads the worker's latest verdict on the issue and where each issue it names stands. On GitHub it records each blocker as a blocked-by edge of the issue and writes the status board's last word. On the remote it releases the claim. Then the worktree: when its tree is clean and every commit of its branch is on the remote — pushed, or on the base branch — it is removed, and a later dispatch recreates it at the pushed tip. Otherwise it is kept, with the terminal of the issue's worker closed, and the status board says what it holds that exists on this host only.
+
+## What it answers
+
+{"issue", "action": "parked", "blocked_by", "released": true, "worktree", "kept_because", "unpushed"} — blocked_by is the issues it waits on; worktree is "removed", "kept", or "none" when the issue has none on this host. A kept one says why: kept_because is "dirty" (something uncommitted), "unpushed" (commits the remote does not have) or "unread" (its commits could not be checked against the remote), and unpushed is how many commits only it holds (null when unread).
+
+{"issue", "released": true, "detail"} — no claim is held on the issue: nothing was done.
+
+Errors, each with nothing changed: the claim is another instance's; "is not parkable" — the latest verdict is not `blocked`, or every blocker it named is closed (dispatch the issue again instead), or a blocker cannot be waited for (escalate it instead: the error says why).
+
+## What trips you up
+
+- `--instance` is required, and must be the instance that holds the claim.
+- It takes no blockers of yours: they are the ones the worker's verdict names."#;
