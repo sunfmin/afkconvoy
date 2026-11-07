@@ -686,10 +686,14 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                 Kind::ToolMissing,
                 format!("`{name}` is not installed: the fleet cannot work without it"),
                 format!("no `{name}` was found on this host{called}"),
-                tool.install().to_string(),
+                tool.when_missing(),
             ),
             Found::LoggedOut(answer) => (
-                if *tool == Tool::Pi { Kind::NoProvider } else { Kind::ToolLoggedOut },
+                if *tool == Tool::Harness(Harness::Pi) {
+                    Kind::NoProvider
+                } else {
+                    Kind::ToolLoggedOut
+                },
                 format!("`{name}` {}", tool.logged_out()),
                 format!(
                     "`{}` says so, in a login shell{called}\n{}",
@@ -1698,7 +1702,9 @@ fn noted(called: &[(Harness, Vec<String>)], notes: &[crate::probe::NotedHarness]
                 harness: *harness,
                 callers: callers.clone(),
                 command: command.to_string(),
-                tool: found.and_then(|found| Tool::of(*harness, command).map(|tool| (tool, found))),
+                tool: found
+                    .filter(|_| harness.runs_itself(command))
+                    .map(|found| (Tool::Harness(*harness), found)),
                 fault: noted.and_then(crate::probe::NotedHarness::fault).map(str::to_string),
                 flags_fault: noted
                     .and_then(crate::probe::NotedHarness::flags_fault)
@@ -1730,7 +1736,9 @@ fn trusted(called: &[(Harness, Vec<String>)]) -> Vec<Checked> {
                 command: command.to_string(),
                 // The standing probe already found this command able to start.
                 // Ready is that result; asking it again would start the harness.
-                tool: Tool::of(*harness, command).map(|tool| (tool, Found::Ready)),
+                tool: harness
+                    .runs_itself(command)
+                    .then_some((Tool::Harness(*harness), Found::Ready)),
                 fault: None,
                 flags_fault: None,
             }
@@ -1821,7 +1829,7 @@ fn read_held(
         };
         let under = worktree.as_ref().and_then(|worktree| worktree.under().ok().flatten());
         let orca_done =
-            worktree.as_ref().and_then(|worktree| orca_done(&worktree.agent_report().ok()?));
+            worktree.as_ref().and_then(|worktree| worktree.agent_report().ok()??.over_since());
         let green = worktree.as_ref().and_then(|worktree| {
             let tree = head_tree(&Repo::new(worktree.path.clone())).ok()?;
             fleet.recorded_gate(&tree, &gate)
@@ -1866,15 +1874,6 @@ fn read_held(
         }
     };
     set.mine.iter().map(read).collect()
-}
-
-/// Since when orca's `agent_report` has the agent `done`, in epoch seconds.
-fn orca_done(report: &Value) -> Option<u64> {
-    let state = report["programStatus"]["state"].as_str().or(report["state"].as_str());
-    if state != Some("done") {
-        return None;
-    }
-    Some(report["stateStartedAt"].as_u64().unwrap_or(0) / 1000)
 }
 
 /// The fleet instance the claims stamped with `host` name: the one stamped
@@ -2023,7 +2022,14 @@ fn host_json(host: &Host) -> Value {
             Found::NotRunning => "not_running",
             Found::KnowsNoCheckout(_) => "knows_no_checkout",
         };
-        json!({"name": tool.name(), "state": state})
+        let mut said = json!({"name": tool.name(), "state": state});
+        // Which orca the fleet runs, and where: its calls all go there.
+        if *tool == Tool::Orca && *found != Found::Missing {
+            let place = crate::tools::orca_place();
+            said["path"] = json!(place.as_ref().map(|(path, _)| path));
+            said["from"] = json!(place.map(|(_, from)| from));
+        }
+        said
     };
     json!({
         "tools": host.looked_for().map(|(looked, _)| tool(looked)).collect::<Vec<_>>(),
@@ -2097,7 +2103,7 @@ fn held_json(held: &Held, locks: &[u64]) -> Value {
     {
         worker["harness"] = json!(harness);
         let worktree = Worktree::at(path.clone(), String::new());
-        worker["orca"] = worktree.agent_report().unwrap_or(Value::Null);
+        worker["orca"] = json!(worktree.agent_report().ok().flatten());
         let recorded = worktree.recorded_harness().ok().flatten();
         worker["recorded_harness"] = json!(recorded);
         worker["harness_mismatch"] = json!(recorded.is_some_and(|h| h != harness));
@@ -2925,7 +2931,7 @@ mod tests {
         ];
         let found = found(&lacking, &run(vec![]), &state());
         assert_eq!(fixes(&found, "`gh` is not logged in"), ["gh auth login"]);
-        assert_eq!(fixes(&found, "`orca` is not installed"), [Tool::Orca.install()]);
+        assert_eq!(fixes(&found, "`orca` is not installed"), [Tool::Orca.when_missing()]);
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found.iter().all(|finding| finding.severity == Severity::Critical));
 
@@ -2960,7 +2966,7 @@ mod tests {
                     harness: afkconvoy_core::harness::Harness::Pi,
                     callers: vec!["the stage `build` of the workflow `feature`".into()],
                     command: "pi".into(),
-                    tool: Some((Tool::Pi, found)),
+                    tool: Some((Tool::Harness(Harness::Pi), found)),
                     fault: Some("\"pi\" resolves to nothing in a login shell".into()),
                     flags_fault: Some("`pi --help` failed in a login shell".into()),
                 },
@@ -2969,7 +2975,7 @@ mod tests {
         };
         let missing = pi(Found::Missing);
         let found = self::found(&missing, &run(vec![]), &state());
-        assert_eq!(fixes(&found, "`pi` is not installed"), [Tool::Pi.install()]);
+        assert_eq!(fixes(&found, "`pi` is not installed"), [Tool::Harness(Harness::Pi).install()]);
         assert_eq!(found.len(), 1, "said once, and not again of its command: {found:?}");
         assert!(
             found[0]
@@ -3195,16 +3201,44 @@ mod tests {
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
     }
 
+    /// sunfmin/control#623: doctor and health read one agent the same way,
+    /// whichever of orca's `programStatus.state` and `state` says its turn
+    /// is over.
+    #[test]
+    fn doctor_and_health_agree_on_an_agent_whose_two_states_differ() {
+        let failed: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/orca-failed-agent.json")).unwrap();
+        let mut working_by_program = failed.clone();
+        working_by_program["programStatus"]["state"] = json!("working");
+        let mut done_by_program = failed.clone();
+        done_by_program["state"] = json!("working");
+        done_by_program["programStatus"]["state"] = json!("done");
+        for orca in [failed, working_by_program, done_by_program] {
+            let agent = crate::orca::Agent::of(&orca).unwrap();
+            let held = Held {
+                worker: Some(WorkerState::Busy),
+                orca_done: agent.over_since(),
+                ..held(623)
+            };
+            assert_eq!(
+                worker::disputed_past_grace(held.worker, held.orca_done, 799 + GRACE),
+                agent.failed(),
+                "doctor and health disagree on {orca}"
+            );
+        }
+    }
+
     /// sunfmin/control#511: a session that says busy while orca has said
     /// done for the grace period is a finding, and neither read is reported
     /// alone as the worker's state.
     #[test]
     fn a_worker_busy_by_its_session_and_done_by_orca_is_disputed() {
+        let over = |agent: Value| crate::orca::Agent::of(&agent).and_then(|a| a.over_since());
         let report = json!({"state": "done", "stateStartedAt": (NOW - GRACE) * 1000,
             "programStatus": {"state": "done"}});
-        assert_eq!(orca_done(&report), Some(NOW - GRACE));
-        assert_eq!(orca_done(&json!({"programStatus": {"state": "working"}})), None);
-        assert_eq!(orca_done(&Value::Null), None);
+        assert_eq!(over(report), Some(NOW - GRACE));
+        assert_eq!(over(json!({"state": "done", "programStatus": {"state": "working"}})), None);
+        assert_eq!(over(Value::Null), None);
         let landing = |since: Option<u64>| Held {
             status: Status::Landing,
             pr: Some(52),
