@@ -3,7 +3,7 @@
 //! record is one atomic push, so invalidation and publication cannot both win.
 use afkconvoy_core::account::End;
 use afkconvoy_core::candidate::{
-    Barrier, Candidate, Chain, Evidence, Phase, Process, Publication, Slow,
+    Barrier, Candidate, Chain, Decision, Evidence, Phase, Process, Publication, Slow,
 };
 use afkconvoy_core::claims::{HEARTBEAT_KIND, read_heartbeat};
 use afkconvoy_core::config::Config;
@@ -786,9 +786,10 @@ fn answered(evidence: &Evidence, answer: &Value) -> Value {
     result
 }
 
-/// Whether `c` left the chain unsettled by its own gate run, `id`'s.
-fn unsettled_by(c: &Candidate, id: &str) -> bool {
-    c.cause.as_deref() == Some("gate_unsettled") && c.cancelled_by.as_deref() == Some(id)
+/// Says in `answer` the ending the chain decided for `c`
+/// (`Candidate::decision`): its turn's ending is set nowhere else.
+fn decided(answer: &mut Value, c: &Candidate) {
+    answer["outcome"] = json!(c.decision().map(Decision::ending));
 }
 
 /// The answer of a turn whose candidate's `gate` (fast or slow) said nothing
@@ -796,7 +797,7 @@ fn unsettled_by(c: &Candidate, id: &str) -> bool {
 /// with the load it read (`Unsettled::how`).
 fn unsettled(
     mut result: Value,
-    gate: &str,
+    (gate, c): (&str, &Candidate),
     unsettled: &Unsettled,
     repo: &Repo,
     issue: Option<u64>,
@@ -810,7 +811,7 @@ fn unsettled(
         .on_issue(issue)
         .in_checkout(Some(repo.clone()))
         .say(crate::clock(), format!("candidate {}", detail));
-    result["outcome"] = json!(Ending::GateUnsettled);
+    decided(&mut result, c);
     result["gate"] = json!(gate);
     result["detail"] = json!(detail);
     result
@@ -819,7 +820,7 @@ fn unsettled(
 fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
     if c.cause.as_deref() == Some("round_red") {
         let tip = chain.candidates.iter().find(|t| Some(&t.id) == c.cancelled_by.as_ref());
-        answer["outcome"] = json!(Ending::RoundRed);
+        decided(&mut answer, c);
         answer["status"] = json!("cancelled");
         answer["recorded"] = json!(false);
         answer["candidate"] = json!(c.id);
@@ -831,11 +832,7 @@ fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
         );
         return answer;
     }
-    answer["outcome"] = json!(if c.cause.as_deref() == Some("base_moved") {
-        Ending::TargetMoved
-    } else {
-        Ending::Cancelled
-    });
+    decided(&mut answer, c);
     answer["status"] = json!("cancelled");
     answer["recorded"] = json!(false);
     answer["candidate"] = json!(c.id);
@@ -1121,7 +1118,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                     None => answer,
                 };
                 settle(repo, &gh, issue, clock(), &mut result);
-                result["outcome"] = json!(Ending::Merged);
+                decided(&mut result, c);
                 result["commit"] = json!(c.commit);
                 return Ok(result);
             }
@@ -1332,8 +1329,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         chain
     };
     let current = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
-    if current.phase == Phase::Red {
-        result["outcome"] = json!(Ending::GateRed);
+    if current.decision() == Some(Decision::Red) {
+        decided(&mut result, current);
         if let Some(Judged::Red(red)) = &judged {
             let gate = if candidate.slow.is_some() { "the fast gate" } else { "the gate" };
             result["detail"] = json!(red.said(gate));
@@ -1341,9 +1338,9 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         return Ok(result);
     }
     if let Some(Judged::Unsettled(said)) = &judged
-        && unsettled_by(current, &id)
+        && current.decision() == Some(Decision::Unsettled)
     {
-        return Ok(unsettled(result, "fast", said, repo, issue));
+        return Ok(unsettled(result, ("fast", current), said, repo, issue));
     }
     // A green candidate waits for its round, or its predecessor, holding no
     // worker lane: the lanes bound the gates running, not the PRs waiting.
@@ -1357,7 +1354,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         // A round at a candidate behind this one may have landed it.
         if c.phase == Phase::Landed {
             settle(repo, &gh, issue, clock(), &mut result);
-            result["outcome"] = json!(Ending::Merged);
+            decided(&mut result, c);
             result["commit"] = json!(c.commit);
             result["detail"] = json!(
                 "landed with the round at a candidate behind it, as a fast-forward; source head preserved — stop"
@@ -1455,7 +1452,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             continue;
         }
         settle(repo, &gh, issue, clock(), &mut result);
-        result["outcome"] = json!(Ending::Merged);
+        let published = snapshot.chain.candidates.iter().find(|c| c.id == id);
+        decided(&mut result, published.expect("the published candidate"));
         result["commit"] = json!(landed);
         result["landed"] = json!(members.iter().map(|m| m.pr).collect::<Vec<_>>());
         result["detail"] = json!(
@@ -1546,16 +1544,17 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
     let mut result = json!(evidence);
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
+    let at = chain.candidates.iter().find(|c| c.id == id).context("round tip disappeared")?;
     if let Judged::Unsettled(said) = &judged
-        && chain.candidates.iter().any(|c| c.id == id && unsettled_by(c, id))
+        && at.decision() == Some(Decision::Unsettled)
     {
-        return Ok(Some(unsettled(result, "slow", said, repo, issue)));
+        return Ok(Some(unsettled(result, ("slow", at), said, repo, issue)));
     }
-    if chain.candidates.iter().any(|c| c.id == id && c.phase != Phase::Red) {
+    if at.decision() != Some(Decision::Red) {
         return Ok(None);
     }
     let files = crate::turn::merge_in(repo, &tip.commit, "the round's tip")?;
-    result["outcome"] = json!(Ending::GateRed);
+    decided(&mut result, at);
     result["gate"] = json!("slow");
     result["round"] = json!(
         members

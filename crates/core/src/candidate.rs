@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
+use crate::ending::Ending;
 use crate::gate::Termination;
 use crate::lease::{stamp_due, stamp_stale};
 
@@ -158,7 +159,58 @@ pub struct Slow {
     pub whole: String,
 }
 
+/// What the chain decided of a candidate that holds it no more: the one
+/// source of its turn's ending (`Decision::ending`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// It landed, by its own turn or with a round at a candidate behind it.
+    Landed,
+    /// Its own gate, or the slow gate of the round at it, ran red.
+    Red,
+    /// Its own gate said nothing of it (`gate_unsettled`).
+    Unsettled,
+    /// The slow gate ran red on a round at another candidate, which holds
+    /// this one's change (`round_red`).
+    RoundRed,
+    /// The target branch moved past it outside the chain (`base_moved`).
+    TargetMoved,
+    /// Another candidate's fault, or its own turn's, cancelled it.
+    Cancelled,
+}
+
+impl Decision {
+    /// The ending a turn answers for what the chain decided.
+    pub fn ending(self) -> Ending {
+        match self {
+            Decision::Landed => Ending::Merged,
+            Decision::Red => Ending::GateRed,
+            Decision::Unsettled => Ending::GateUnsettled,
+            Decision::RoundRed => Ending::RoundRed,
+            Decision::TargetMoved => Ending::TargetMoved,
+            Decision::Cancelled => Ending::Cancelled,
+        }
+    }
+}
+
 impl Candidate {
+    /// What the chain decided of it: `None` while it is valid, waiting or
+    /// gating. It is red where its own gate or its round failed it; it left
+    /// the chain unsettled where its own run said nothing of it; otherwise
+    /// what cancelled it says which ending.
+    pub fn decision(&self) -> Option<Decision> {
+        let cause = self.cause.as_deref();
+        let own = self.cancelled_by.as_deref() == Some(self.id.as_str());
+        Some(match self.phase {
+            Phase::Landed => Decision::Landed,
+            Phase::Red => Decision::Red,
+            _ if self.valid() => return None,
+            _ if own && cause == Some("gate_unsettled") => Decision::Unsettled,
+            _ if cause == Some("round_red") => Decision::RoundRed,
+            _ if cause == Some("base_moved") => Decision::TargetMoved,
+            _ => Decision::Cancelled,
+        })
+    }
+
     /// Display copy only: every interface uses this lifecycle interpretation.
     pub fn observation(&self) -> Validation {
         Validation {
@@ -668,6 +720,65 @@ mod tests {
         let said = "gate: host overloaded (load 13, CPUs 12); cannot classify TIMEOUT tests.";
         let overloaded = Overloaded { tests: vec!["nx a_test".into()], said: said.into() };
         Evidence { unsettled: Some(overloaded), ..Evidence::red(100, false, 1, None) }
+    }
+
+    /// A turn's ending is what the chain decided of its candidate, mapped
+    /// in one place (sunfmin/control#620): each decision to its ending, and
+    /// each state the chain leaves a candidate in to its decision.
+    #[test]
+    fn a_turn_s_ending_is_the_chain_s_decision_of_its_candidate() {
+        let endings: Vec<Ending> = [
+            Decision::Landed,
+            Decision::Red,
+            Decision::Unsettled,
+            Decision::RoundRed,
+            Decision::TargetMoved,
+            Decision::Cancelled,
+        ]
+        .map(Decision::ending)
+        .to_vec();
+        assert_eq!(
+            endings,
+            [
+                Ending::Merged,
+                Ending::GateRed,
+                Ending::GateUnsettled,
+                Ending::RoundRed,
+                Ending::TargetMoved,
+                Ending::Cancelled
+            ]
+        );
+        let decisions = |chain: &Chain| -> Vec<Option<Decision>> {
+            chain.candidates.iter().map(Candidate::decision).collect()
+        };
+        // Gating, or green and waiting: nothing decided.
+        let mut chain = Chain { candidates: (0..2).map(candidate).collect(), ..Chain::default() };
+        assert_eq!(decisions(&chain), [None, None]);
+        chain.finish("c0", ran(true));
+        assert_eq!(decisions(&chain), [None, None]);
+        chain.land("c0");
+        assert_eq!(decisions(&chain)[0], Some(Decision::Landed));
+        // A red root, and the suffix it cancels.
+        let mut chain = Chain { candidates: (0..2).map(candidate).collect(), ..Chain::default() };
+        chain.finish("c0", ran(false));
+        assert_eq!(decisions(&chain), [Some(Decision::Red), Some(Decision::Cancelled)]);
+        // An unsettled root; what was merged onto it is cancelled.
+        let mut chain = Chain { candidates: (0..2).map(candidate).collect(), ..Chain::default() };
+        chain.finish("c0", unsettled());
+        assert_eq!(decisions(&chain), [Some(Decision::Unsettled), Some(Decision::Cancelled)]);
+        // A red round: its tip red, the members it holds round-red.
+        let mut chain = Chain { candidates: (0..2).map(split).collect(), ..Chain::default() };
+        for c in ["c0", "c1"] {
+            chain.finish(c, ran(true));
+            chain.candidates.iter_mut().for_each(|c| c.stopped = c.phase == Phase::Green);
+        }
+        assert!(chain.start_round("c1"));
+        chain.finish("c1", ran(false));
+        assert_eq!(decisions(&chain), [Some(Decision::RoundRed), Some(Decision::Red)]);
+        // A target moved outside the chain.
+        let mut chain = Chain { candidates: vec![candidate(0)], ..Chain::default() };
+        chain.observe_base("elsewhere");
+        assert_eq!(decisions(&chain), [Some(Decision::TargetMoved)]);
     }
 
     /// The chain decides a candidate from its typed evidence

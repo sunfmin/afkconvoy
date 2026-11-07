@@ -547,9 +547,14 @@ mod tests {
     use super::*;
 
     /// The words the turn's own code sets as `outcome`: each through an
-    /// ending, never as a bare string.
+    /// ending, never as a bare string — its own, or the one the chain
+    /// decided (`candidate::Decision::ending`).
     fn returned() -> BTreeSet<&'static str> {
-        let code = [include_str!("turn.rs"), include_str!("candidates.rs")];
+        let code = [
+            include_str!("turn.rs"),
+            include_str!("candidates.rs"),
+            include_str!("../../core/src/candidate.rs"),
+        ];
         let mut words = BTreeSet::new();
         for text in code {
             let code = text.split("#[cfg(test)]").next().unwrap();
