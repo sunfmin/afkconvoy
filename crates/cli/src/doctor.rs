@@ -100,9 +100,9 @@ pub struct Finding {
     #[serde(skip)]
     pub of_host: bool,
     /// The condition's identity, made where it is judged and the same while
-    /// it lasts, however its words change. `checkout:` identities are scoped
-    /// by the watch to this checkout; `host:` and resource identities already
-    /// hold their scope.
+    /// it lasts, however its words change: `checkout:` one of this checkout,
+    /// `host:` one of the host, a resource's its episode. Doctor answers it
+    /// scoped as the watch acts on it (`answered`).
     pub watch_id: String,
 }
 
@@ -285,15 +285,21 @@ pub(crate) fn finding(
 ) -> Finding {
     debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
     let (severity, see, of_host) = (kind.severity(), kind.see(), kind.of_host());
-    let scope = if of_host { "host" } else { "checkout" };
-    let watch_id = format!("{scope}:{identity}");
+    let watch_id = unscoped(kind, &identity);
     Finding { kind, severity, what, evidence, fix, see, of_host, watch_id }
+}
+
+/// A finding's `watch_id` as it is judged: `identity`, said to be the host's
+/// or its checkout's by its `kind`.
+fn unscoped(kind: Kind, identity: &Value) -> String {
+    let scope = if kind.of_host() { "host" } else { "checkout" };
+    format!("{scope}:{identity}")
 }
 
 /// A human question's source and answer, independent of its displayed age
 /// and issue title. Both doctor representations use this same condition.
 #[derive(serde::Deserialize, Serialize)]
-pub(crate) struct HumanWait {
+struct HumanWait {
     issue: u64,
     since: Option<u64>,
     url: Option<String>,
@@ -316,13 +322,45 @@ impl From<&Waiting> for HumanWait {
 impl HumanWait {
     /// The question's identity, which its finding and its place among those
     /// waiting on a human share.
-    pub(crate) fn identity(&self) -> Value {
+    fn identity(&self) -> Value {
         json!(["human", self])
     }
+}
 
-    pub(crate) fn watch_id(&self) -> String {
-        format!("checkout:{}", self.identity())
+/// The identity the watch acts on a finding of `kind` by, made of its
+/// `watch_id`, `id`, where it was found, `at`: a checkout's scoped to that
+/// checkout, a host's to the host, and a kit's unplaced models to their
+/// research. A resource's holds its scope already.
+pub(crate) fn scoped(at: &str, kind: Kind, id: &str) -> String {
+    if kind == Kind::KitUnplaced {
+        format!("{}{id}", afkconvoy_core::host_watch::RESEARCH_ITEM)
+    } else if let Some(identity) = id.strip_prefix("checkout:") {
+        format!("finding:{at}:{identity}")
+    } else if let Some(identity) = id.strip_prefix("host:") {
+        format!("finding:host:{identity}")
+    } else {
+        id.to_string()
     }
+}
+
+/// `found` as doctor answers it of `at`, the checkout it was found in, or
+/// `host`: each `watch_id` scoped as the watch acts on it, which the watch
+/// reads as given.
+pub(crate) fn answered(at: &str, found: Vec<Finding>) -> Result<Value> {
+    let found: Vec<Finding> = found
+        .into_iter()
+        .map(|finding| Finding { watch_id: scoped(at, finding.kind, &finding.watch_id), ..finding })
+        .collect();
+    Ok(serde_json::to_value(found)?)
+}
+
+/// The identity the watch acts on `waiting`, an issue of the checkout `at`
+/// in doctor's `waiting_on_human`, by: the one its finding is answered with
+/// once it has waited long.
+pub(crate) fn waiting_id(at: &str, waiting: &Value) -> Result<String> {
+    let wait: HumanWait = serde_json::from_value(waiting.clone())?;
+    let kind = Kind::WaitedLong;
+    Ok(scoped(at, kind, &unscoped(kind, &wait.identity())))
 }
 
 /// An answer with a finding of the highest severity: printed as it is, with
@@ -2288,7 +2326,7 @@ pub fn doctor_with_proxy_rounds(
     // each once, so `examined` leaves those unnamed.
     name_fixes(&repo.dir, &mut found);
     let unwell = critical(&found);
-    answer["findings"] = serde_json::to_value(found)?;
+    answer["findings"] = answered(checkout_at(&repo.dir), found)?;
     if unwell {
         return Err(Unwell(answer).into());
     }
@@ -2773,7 +2811,7 @@ pub fn all_since_rounds(
                 if say_watch_once {
                     lift_watch_events(&mut answer, &mut watch_events);
                 }
-                answer["findings"] = serde_json::to_value(own)?;
+                answer["findings"] = answered(checkout_at(&entry.checkout), own)?;
                 answer
             }
             Err(error) => {
@@ -2810,13 +2848,19 @@ pub fn all_since_rounds(
     let answer = json!({
         "until": complete.then_some(now),
         "host": once,
-        "findings": of_host,
+        "findings": answered("host", of_host)?,
         "checkouts": checkouts,
     });
     if unwell {
         return Err(Unwell(answer).into());
     }
     Ok(answer)
+}
+
+/// The checkout `doctor --all` names a checkout's answer by, `checkout`: as
+/// the watch reads it there.
+pub(crate) fn checkout_at(checkout: &Path) -> &str {
+    checkout.to_str().unwrap_or("unknown")
 }
 
 #[cfg(test)]

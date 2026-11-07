@@ -688,9 +688,9 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     assert_eq!(late["waiting_on_human"], waiting);
     let mut warnings = waited(&late);
     let identity = warnings[0].as_object_mut().unwrap().remove("watch_id").unwrap();
-    let identity: Value =
-        serde_json::from_str(identity.as_str().unwrap().strip_prefix("checkout:").unwrap())
-            .unwrap();
+    // Scoped to this checkout as the watch acts on it: `finding:<checkout>:`.
+    let scoped = identity.as_str().unwrap().strip_prefix("finding:").unwrap();
+    let identity: Value = serde_json::from_str(&scoped[scoped.find(":[").unwrap() + 1..]).unwrap();
     assert_eq!(identity[0], "human");
     let identity = identity[1].clone();
     let mut question = waiting[0].clone();

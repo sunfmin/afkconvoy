@@ -1340,7 +1340,7 @@ enum Command {
     ///   - `evidence`: what was read that says so
     ///   - `fix`: one command line, run as printed apart from what stands between < and > — it names the checkout as the command takes it, so the line runs from any directory, and `afkconvoy doctor --all` is run from anywhere — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit. For an escalation with no position and several workflows, `what` lists the flow labels to choose `<flow label>` from
     ///   - `see`: the command that prints the help topic explaining it: `afkconvoy help humans` where what it reports waits for a human, else `afkconvoy help troubleshooting`, which has a row for each finding
-    ///   - `watch_id`: the condition's identity, made where it is judged: the same while the condition lasts, whatever `what` says of it. `checkout:` is one of this checkout, `host:` one of the host; a resource's is its episode identity. The host's watch acts on each finding but an `info` one, or its own, by `kind` and `watch_id`, never by its words
+    ///   - `watch_id`: the condition's identity, made where it is judged and scoped to where it was found: the same while the condition lasts, whatever `what` says of it. `finding:<checkout>:` is one of that checkout, `finding:host:` one of the host, `kit-research:` a harness's unplaced models in the host kit; a resource's is its episode identity. The host's watch acts on each finding but an `info` one, or its own, by `kind` and `watch_id` as doctor says it, never by its words
     ///
     /// A finding's `severity` is one of, most first:
     ///
@@ -5028,7 +5028,7 @@ fn run(
             }
             let findings = blockers::findings(&set.unworked_blockers);
             let mut plan = serde_json::to_value(set)?;
-            plan["findings"] = serde_json::to_value(findings)?;
+            plan["findings"] = doctor::answered(doctor::checkout_at(&repo.dir), findings)?;
             if let Some(plan) = plan.as_object_mut() {
                 plan.extend(report.plan_json()?);
             }
