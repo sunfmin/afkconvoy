@@ -1930,7 +1930,7 @@ fn read_held(
         };
         let under = worktree.as_ref().and_then(|worktree| worktree.under().ok().flatten());
         let orca_done =
-            worktree.as_ref().and_then(|worktree| orca_done(&worktree.agent_report().ok()?));
+            worktree.as_ref().and_then(|worktree| worktree.agent_report().ok()??.over_since());
         let green = worktree.as_ref().and_then(|worktree| {
             let tree = head_tree(&Repo::new(worktree.path.clone())).ok()?;
             fleet.recorded_gate(&tree, &gate)
@@ -1975,15 +1975,6 @@ fn read_held(
         }
     };
     set.mine.iter().map(read).collect()
-}
-
-/// Since when orca's `agent_report` has the agent `done`, in epoch seconds.
-fn orca_done(report: &Value) -> Option<u64> {
-    let state = report["programStatus"]["state"].as_str().or(report["state"].as_str());
-    if state != Some("done") {
-        return None;
-    }
-    Some(report["stateStartedAt"].as_u64().unwrap_or(0) / 1000)
 }
 
 /// Whether the worker's session says it is at work while orca has said it is
@@ -2215,7 +2206,7 @@ fn held_json(held: &Held, locks: &[u64]) -> Value {
     {
         worker["harness"] = json!(harness);
         let worktree = Worktree::at(path.clone(), String::new());
-        worker["orca"] = worktree.agent_report().unwrap_or(Value::Null);
+        worker["orca"] = json!(worktree.agent_report().ok().flatten());
         let recorded = worktree.recorded_harness().ok().flatten();
         worker["recorded_harness"] = json!(recorded);
         worker["harness_mismatch"] = json!(recorded.is_some_and(|h| h != harness));
@@ -3328,16 +3319,44 @@ mod tests {
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
     }
 
+    /// sunfmin/control#623: doctor and health read one agent the same way,
+    /// whichever of orca's `programStatus.state` and `state` says its turn
+    /// is over.
+    #[test]
+    fn doctor_and_health_agree_on_an_agent_whose_two_states_differ() {
+        let failed: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/orca-failed-agent.json")).unwrap();
+        let mut working_by_program = failed.clone();
+        working_by_program["programStatus"]["state"] = json!("working");
+        let mut done_by_program = failed.clone();
+        done_by_program["state"] = json!("working");
+        done_by_program["programStatus"]["state"] = json!("done");
+        for orca in [failed, working_by_program, done_by_program] {
+            let agent = crate::orca::Agent::of(&orca).unwrap();
+            let held = Held {
+                worker: Some(WorkerState::Busy),
+                orca_done: agent.over_since(),
+                ..held(623)
+            };
+            assert_eq!(
+                disputed(&held, 799 + GRACE),
+                agent.failed(),
+                "doctor and health disagree on {orca}"
+            );
+        }
+    }
+
     /// sunfmin/control#511: a session that says busy while orca has said
     /// done for the grace period is a finding, and neither read is reported
     /// alone as the worker's state.
     #[test]
     fn a_worker_busy_by_its_session_and_done_by_orca_is_disputed() {
+        let over = |agent: Value| crate::orca::Agent::of(&agent).and_then(|a| a.over_since());
         let report = json!({"state": "done", "stateStartedAt": (NOW - GRACE) * 1000,
             "programStatus": {"state": "done"}});
-        assert_eq!(orca_done(&report), Some(NOW - GRACE));
-        assert_eq!(orca_done(&json!({"programStatus": {"state": "working"}})), None);
-        assert_eq!(orca_done(&Value::Null), None);
+        assert_eq!(over(report), Some(NOW - GRACE));
+        assert_eq!(over(json!({"state": "done", "programStatus": {"state": "working"}})), None);
+        assert_eq!(over(Value::Null), None);
         let landing = |since: Option<u64>| Held {
             status: Status::Landing,
             pr: Some(52),
