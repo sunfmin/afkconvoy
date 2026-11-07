@@ -113,6 +113,7 @@ pub mod resources;
 pub mod rewrite_accounts;
 pub mod role;
 pub mod roster_issue;
+pub mod run_log;
 pub mod runner_socket;
 pub mod scaffold;
 pub mod serve;
@@ -135,6 +136,7 @@ pub mod tick;
 pub mod tools;
 pub mod topic;
 pub mod tracker;
+mod transient;
 mod turn;
 mod turn_answer;
 mod unbound_issue;
@@ -1587,6 +1589,7 @@ pub fn manual() -> agent_help::Help {
         .constant("ACCOUNT_SCHEMA_VERSION", afkconvoy_core::account::SCHEMA_VERSION)
         .constant("LAND_ENDINGS", turn::endings_help())
         .constant("REMOTE_READS", remote::reads_help())
+        .constant("GH_IN_TRANSIT", gh::in_transit_help())
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
         .constant("FIRST_START_SETTINGS", first_start::settings_help())
         .constant("FIRST_START_QUESTIONS", first_start::help())
@@ -1644,7 +1647,7 @@ pub fn manual() -> agent_help::Help {
         .constant("TIMED_OUT_CODE", gate::TIMED_OUT_CODE)
         .constant("STRAYS_LISTED", gate::STRAYS_LISTED)
         .constant("DOCTOR_FAILED_SHOWN", doctor::FAILED_SHOWN)
-        .constant("DOCTOR_EVENTS_SHOWN", doctor::EVENTS_SHOWN)
+        .constant("DOCTOR_EVENTS_SHOWN", run_log::EVENTS_SHOWN)
         .constant("CUT_MINOR_LABEL", afkconvoy_core::cut::MINOR_LABEL)
         .constant("CUT_BUSY_AFTER_SECONDS", afkconvoy_core::cut::BUSY_AFTER_SECONDS);
     for (name, group) in [

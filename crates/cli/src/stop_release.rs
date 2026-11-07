@@ -227,7 +227,7 @@ fn instance_of(checkout: &Repo) -> Result<InstanceId> {
         .and_then(|holding| holding.instances.get(&checkout.dir).cloned().flatten());
     let logged = || {
         let entries = crate::log::Log::of(checkout).ok()?.read()?;
-        crate::doctor::read_log(&entries, &crate::this_host()).0
+        crate::run_log::run(&entries, &crate::this_host()).0
     };
     match held.or_else(logged) {
         Some(instance) => InstanceId::parse(&instance).map_err(|why| anyhow::anyhow!("{why}")),

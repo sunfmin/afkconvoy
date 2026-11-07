@@ -15,10 +15,11 @@ mod tokens;
 pub(crate) use tokens::Keys;
 pub use tokens::{Counts, Tokens, Usage, fold as fold_tokens};
 
-pub use data::{Gate, Host, Record, SCHEMA_VERSION, Worker, read, render};
+pub use data::{Gate, Host, Record, RecordedHarness, SCHEMA_VERSION, Worker, read, render};
 pub use goal::{CLEARED, WorkerGoal};
 
 use crate::gate::GATE;
+use crate::harness::Harness;
 use crate::record;
 use crate::stage_record::{Author, StageRecord, Stated};
 
@@ -129,7 +130,7 @@ pub struct Begun<'a> {
 
 /// Whether this start is a new row. A landing worker is not a row. A
 /// continuation or a takeover of the same harness is the same worker.
-pub fn own_row(landing: bool, continued_from: Option<&str>, harness: &str) -> bool {
+pub fn own_row(landing: bool, continued_from: Option<Harness>, harness: Harness) -> bool {
     !landing && continued_from != Some(harness)
 }
 
@@ -139,14 +140,15 @@ pub fn own_row(landing: bool, continued_from: Option<&str>, harness: &str) -> bo
 pub fn already_noted<'a>(
     bodies: impl IntoIterator<Item = &'a str>,
     claim: &str,
-    harness: &str,
+    harness: Harness,
 ) -> bool {
     bodies.into_iter().any(|body| {
         if record::read_marker(ACCOUNT, body).is_some() {
             return false;
         }
         let Some(fields) = record::read_marker(WORKER, body) else { return false };
-        fields.get("claim") == Some(claim) && fields.get("harness") == Some(harness)
+        fields.get("claim") == Some(claim)
+            && fields.get("harness").and_then(Harness::read) == Some(harness)
     })
 }
 
@@ -255,7 +257,7 @@ struct Start {
     at: u64,
     claim: String,
     since: Option<u64>,
-    harness: String,
+    harness: RecordedHarness,
     model: Option<String>,
     stage: Option<String>,
     role: Option<String>,
@@ -300,7 +302,7 @@ fn worker_starts(heard: &[Heard<'_>]) -> Vec<Start> {
             at,
             claim: claim.to_string(),
             since: fields.number("since"),
-            harness: harness.to_string(),
+            harness: RecordedHarness::read(harness),
             model: fields.get("model").map(str::to_string),
             stage: fields.get("stage").map(str::to_string),
             role: fields.get("role").map(str::to_string),
@@ -345,13 +347,13 @@ struct Cite {
     at: Option<u64>,
     stage: String,
     verdict: String,
-    harness: Option<String>,
+    harness: Option<Harness>,
     model: Option<String>,
 }
 
 fn cite(at: Option<u64>, record: &StageRecord) -> Cite {
     let (harness, model) = match &record.by {
-        Author::Worker { harness, model, .. } => (Some(harness.key().to_string()), model.clone()),
+        Author::Worker { harness, model, .. } => (Some(*harness), model.clone()),
         Author::Human | Author::Fleet => (None, None),
     };
     Cite {
@@ -366,7 +368,8 @@ fn cite(at: Option<u64>, record: &StageRecord) -> Cite {
 fn worker_row(start: &Start, cited: Option<Cite>, end: u64) -> Worker {
     let harness = cited
         .as_ref()
-        .and_then(|cite| cite.harness.clone())
+        .and_then(|cite| cite.harness)
+        .map(RecordedHarness::from)
         .unwrap_or_else(|| start.harness.clone());
     let model = cited.as_ref().and_then(|cite| cite.model.clone()).or_else(|| start.model.clone());
     let stage = cited.as_ref().map(|cite| cite.stage.clone()).or_else(|| start.stage.clone());
@@ -663,16 +666,16 @@ mod tests {
 
     #[test]
     fn a_continuation_of_the_same_harness_is_not_another_row() {
-        assert!(!own_row(false, Some("pi"), "pi"));
-        assert!(own_row(false, Some("pi"), "codex"));
-        assert!(!own_row(true, None, "pi"));
-        assert!(own_row(false, None, "pi"));
+        assert!(!own_row(false, Some(Harness::Pi), Harness::Pi));
+        assert!(own_row(false, Some(Harness::Pi), Harness::Codex));
+        assert!(!own_row(true, None, Harness::Pi));
+        assert!(own_row(false, None, Harness::Pi));
         let noted = begun(1000, "c1", 900, "pi", None, Some("build"));
-        assert!(already_noted([noted.as_str()], "c1", "pi"));
-        assert!(!already_noted([noted.as_str()], "c1", "codex"));
-        assert!(!already_noted([noted.as_str()], "c2", "pi"));
+        assert!(already_noted([noted.as_str()], "c1", Harness::Pi));
+        assert!(!already_noted([noted.as_str()], "c1", Harness::Codex));
+        assert!(!already_noted([noted.as_str()], "c2", Harness::Pi));
         let account = account(&[hear(1000, &noted)], &[], true, Some(900), 2000).unwrap();
-        assert!(!already_noted([account.as_str()], "c1", "pi"));
+        assert!(!already_noted([account.as_str()], "c1", Harness::Pi));
     }
 
     #[test]
@@ -790,11 +793,11 @@ mod tests {
             session: Some("/kept/rollout.jsonl".into()),
         };
         row.workers.push(Worker {
-            harness: Some("codex".into()),
+            harness: Some(Harness::Codex.into()),
             goal: Some(goal),
             ..Worker::default()
         });
-        row.workers.push(Worker { harness: Some("claude-code".into()), ..Worker::default() });
+        row.workers.push(Worker { harness: Some(Harness::ClaudeCode.into()), ..Worker::default() });
         let body = render(&row);
         assert_eq!(read(&body, 7).unwrap(), row);
         assert!(

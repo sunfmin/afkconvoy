@@ -666,7 +666,7 @@ fn keep_usage(current: &Queued, session: &Session, ended: u64) -> Result<()> {
     let start = prior_start(earlier_start, start);
     let usage = afkconvoy_core::accounts::Usage {
         id: current.question.id.clone(),
-        harness: Some(session.harness.key().to_string()),
+        harness: Some(session.harness.into()),
         model: session.model.clone(),
         start,
         end: Some(ended),

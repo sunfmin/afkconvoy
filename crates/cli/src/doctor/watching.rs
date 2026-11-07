@@ -415,6 +415,7 @@ fn interval(
 mod tests {
     use super::*;
     use crate::log::Tick;
+    use afkconvoy_core::harness::Harness;
 
     #[test]
     fn a_worker_whose_goal_misbehaved_is_a_finding_naming_its_issue_and_evidence() {
@@ -430,7 +431,7 @@ mod tests {
             session: Some("/kept/rollout-t.jsonl".into()),
         };
         let codex = |claim: &str, goal: WorkerGoal| Worker {
-            harness: Some("codex".into()),
+            harness: Some(Harness::Codex.into()),
             claim: Some(claim.into()),
             start: Some(100),
             goal: Some(goal),
@@ -451,7 +452,7 @@ mod tests {
                 codex("good", goal("complete", 0)),
                 codex("spent", goal("budget_limited", 0)),
                 codex("ran-on", goal("cleared", 2)),
-                Worker { harness: Some("claude-code".into()), ..Worker::default() },
+                Worker { harness: Some(Harness::ClaudeCode.into()), ..Worker::default() },
             ],
             gates: vec![],
             legacy_evidence: None,

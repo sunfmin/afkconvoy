@@ -724,8 +724,8 @@ fn note_start(
     model: Option<&str>,
 ) -> Option<String> {
     let landing = staged.is_some_and(|staged| staged.prompt() == "join");
-    let from = continuing.map(|continuing| continuing.from.key());
-    if !afkconvoy_core::account::own_row(landing, from, harness.key()) {
+    let from = continuing.map(|continuing| continuing.from);
+    if !afkconvoy_core::account::own_row(landing, from, harness) {
         return None;
     }
     let claim = fleet.scan.claim_of(number)?;
@@ -738,7 +738,7 @@ fn note_start(
     if afkconvoy_core::account::already_noted(
         comments.iter().map(|comment| comment.body.as_str()),
         &claim.id,
-        harness.key(),
+        harness,
     ) {
         return None;
     }

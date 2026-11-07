@@ -20,8 +20,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::{
-    Gate, Ticket, ahead, at_once_line, ended_line, in_order, is_fast, limit, queued_since, ready,
-    rejoins_line, runs_line, same_lane, same_repo, waits_line,
+    Gate, Ticket, Work, ahead, at_once_line, ended_line, in_order, is_fast, limit, queued_since,
+    ready, rejoins_line, runs_line, same_lane, same_repo, waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
 use anyhow::{Result, bail};
@@ -111,7 +111,7 @@ pub(crate) fn share(command: &mut Command, own: u32) {
 /// them. A queue that cannot be read is taken as one beside it.
 fn beside_another(own: u32) -> bool {
     standing().map_or(true, |tickets| {
-        tickets.iter().any(|t| t.ran.is_some() && t.repo_lane.is_none() && t.pid != own)
+        tickets.iter().any(|t| t.running() && t.repo_lane.is_none() && t.pid != own)
     })
 }
 
@@ -339,24 +339,23 @@ impl Joined {
     /// means another repo need not wait, and a repo's second turn waits
     /// only for its own first turn.
     fn waiting_for(&self, number: u64, settings: &crate::host_settings::Settings) -> usize {
-        let Some(running) = self.tickets.iter().find(|t| t.number == number && t.ran.is_some())
-        else {
+        let Some(running) = self.tickets.iter().find(|t| t.number == number && t.running()) else {
             return 0;
         };
         let limit = limit(running, settings.lanes());
         let occupied =
-            self.tickets.iter().filter(|t| t.ran.is_some() && same_lane(t, running)).count() as u64;
+            self.tickets.iter().filter(|t| t.running() && same_lane(t, running)).count() as u64;
         self.tickets
             .iter()
             .filter(|waiting| {
-                if waiting.ran.is_some()
+                if waiting.running()
                     || !(same_lane(running, waiting)
                         || (running.is_turn && waiting.is_turn && same_repo(running, waiting)))
                 {
                     return false;
                 }
                 let owner = self.tickets.iter().find(|t| {
-                    t.ran.is_some()
+                    t.running()
                         && same_repo(t, waiting)
                         && (same_lane(t, waiting) || (t.is_turn && waiting.is_turn))
                         && !(t.candidate && waiting.candidate)
@@ -374,7 +373,7 @@ impl Joined {
     /// gaps without waiters and a changing set of waiters count correctly.
     fn count(&mut self, now: Instant) {
         let settings = crate::host_settings::of_host().unwrap_or_default();
-        for running in self.tickets.iter().filter(|ticket| ticket.ran.is_some()) {
+        for running in self.tickets.iter().filter(|ticket| ticket.running()) {
             if self.waiting_for(running.number, &settings) > 0 {
                 let waited = self.waited.entry(running.number).or_default();
                 *waited = waited.saturating_add(now.duration_since(self.counted_at));
@@ -408,7 +407,7 @@ impl Queue {
         let mut joined = self.joined();
         joined.paused = true;
         self.with_leases(&joined)
-            .map_or(1, |tickets| tickets.iter().filter(|ticket| ticket.ran.is_some()).count())
+            .map_or(1, |tickets| tickets.iter().filter(|ticket| ticket.running()).count())
     }
 
     /// Lets commands start again if the installed release changed before
@@ -430,7 +429,7 @@ impl Queue {
             return Ok(tickets);
         }
         for mut inherited in crate::slots::standing()? {
-            if tickets.iter().any(|t| t.pid == inherited.pid && t.ran.is_some()) {
+            if tickets.iter().any(|t| t.pid == inherited.pid && t.running()) {
                 continue;
             }
             if let Some(validation) = joined.validations.get(&inherited.pid) {
@@ -492,7 +491,7 @@ impl Queue {
                             .unwrap_or_default()
                             .into_iter()
                             .filter(|t| {
-                                t.ran.is_some() || crate::slots::repo_available(t).unwrap_or(false)
+                                t.running() || crate::slots::repo_available(t).unwrap_or(false)
                             })
                             .collect();
                         ready(&eligible, number, settings.lanes())
@@ -619,6 +618,14 @@ impl Drop for Watch {
 /// be asked, or said no queue it holds.
 pub fn standing() -> Result<Vec<Ticket>> {
     Ok(crate::host_runner::shared()?.map(|shared| shared.exclusive).unwrap_or_default())
+}
+
+/// The work `queue`'s running tickets run, as `procs` — one reading of the
+/// process table — finds it: what admission discounts of the host's load
+/// (docs/adr/0050) and the hot sampler of a worker's memory (docs/adr/0056).
+pub(crate) fn running_work(queue: &[Ticket], procs: &[crate::hot::Proc]) -> Work {
+    let table: Vec<(u32, u32)> = procs.iter().map(|proc| (proc.pid, proc.ppid)).collect();
+    afkconvoy_core::exclusive::running_work(queue, &table)
 }
 
 /// Since when the worker in the worktree `dir` has waited in this host's
@@ -1084,7 +1091,7 @@ mod tests {
         let (mut third, said) = Asker::joins(dir.path(), ticket("c", 102));
         assert_eq!(said["ahead"], 2);
         assert_eq!(commands(&queue), ["a", "b", "c"]);
-        assert!(queue.standing()[0].ran.is_some() && queue.standing()[1].ran.is_none());
+        assert!(queue.standing()[0].running() && !queue.standing()[1].running());
         assert_eq!(second.next(), None, "waits while the first runs");
 
         drop(first);

@@ -9,10 +9,10 @@ use serde_json::{Value, json};
 
 use crate::checkout_list::{self, Entry, List};
 use crate::concurrency;
-use crate::doctor::read_broken;
 use crate::git::Repo;
 use crate::host_runner::{self, Holding};
 use crate::log::{Log, What};
+use crate::run_log;
 
 /// `afkconvoy checkouts` → {"host_runner", "checkouts"}: the host runner's
 /// {pid, version, log}, null where none runs; and each checkout on this
@@ -35,8 +35,8 @@ pub fn checkouts() -> Result<Value> {
 /// {checkout, repo, instance, state, broken, idle, holding, frontier,
 /// concurrency, harness, ticked, tick_log}.
 ///
-/// Its state is `broken` where its tick log says its fleet instance is, as
-/// `doctor` reads it (`read_broken`) of the host its `run` named; else
+/// Its state is `broken` where its tick log says its fleet instance is, of
+/// the host its `run` named (`run_log::broken`); else
 /// `running` where the host runner holds its fleet instance; else
 /// `stopped`. Its instance is the one that runs, null until its start is
 /// logged; else the last one its tick log names. That instance's last tick
@@ -54,7 +54,7 @@ fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
     let tick_log = repo.as_ref().and_then(|repo| Log::of(repo).ok());
     let entries = tick_log.as_ref().and_then(Log::read).unwrap_or_default();
     let host = listed.named.host.clone().unwrap_or_else(crate::this_host);
-    let broken = read_broken(&entries, &host, holding.is_some());
+    let broken = run_log::broken(&entries, &host, holding.is_some());
     // What the host runner holds of it: its instance, `None` until logged.
     let held = holding.and_then(|holding| holding.instances.get(root));
     let state = match (&broken, held) {

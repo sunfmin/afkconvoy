@@ -22,7 +22,7 @@ pub struct Row {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub id: String,
-    pub harness: Option<String>,
+    pub harness: Option<account::RecordedHarness>,
     pub model: Option<String>,
     pub start: Option<u64>,
     pub end: Option<u64>,
@@ -184,7 +184,7 @@ fn usage_report(rows: &[Usage]) -> UsageReport {
     let mut harnesses: BTreeMap<String, Vec<&Usage>> = BTreeMap::new();
     for row in rows {
         harnesses
-            .entry(row.harness.as_deref().unwrap_or("unknown").to_string())
+            .entry(account::RecordedHarness::named(row.harness.as_ref()).to_string())
             .or_default()
             .push(row);
     }
@@ -255,7 +255,7 @@ fn token_report(rows: &[Row]) -> TokenReport {
         let mut grouped: BTreeMap<String, (account::Counts, usize, bool)> = BTreeMap::new();
         for worker in &row.record.workers {
             let entry = grouped
-                .entry(worker.harness.as_deref().unwrap_or("unknown").to_string())
+                .entry(account::RecordedHarness::named(worker.harness.as_ref()).to_string())
                 .or_default();
             if let Some(tokens) = &worker.tokens {
                 known = true;
@@ -450,8 +450,9 @@ fn sample(row: &Row) -> Result<Sample, String> {
     if account.workers.iter().any(|worker| worker.harness.is_none() || worker.start.is_none()) {
         return Err("account worker rows cannot be read".into());
     }
-    let harness =
-        account.workers.first().and_then(|worker| worker.harness.as_deref()).unwrap_or("unknown");
+    let harness = account::RecordedHarness::named(
+        account.workers.first().and_then(|worker| worker.harness.as_ref()),
+    );
     let mut seconds = 0u64;
     for gate in &account.gates {
         let time = gate.seconds.ok_or("gate seconds were not recorded or are invalid")?;
@@ -514,5 +515,59 @@ mod stage_tests {
         issues.push(issue(22, true, 100, "escalate"));
         issues.push(issue(23, true, 30, "pass"));
         assert_eq!(stage_baselines(&issues).get("build"), Some(&(3600, 20)));
+    }
+}
+
+#[cfg(test)]
+mod harness_tests {
+    use super::*;
+
+    fn account(harness: &str) -> Issue {
+        let body = format!(
+            "<!--convoy:account -->\n```json\n{}\n```",
+            serde_json::json!({
+                "schema_version": 1, "issue": 1, "repo": null, "tracker": null,
+                "afkconvoy_version": null, "host": {"name": null, "cpu": null, "logical_cpus": null, "memory_bytes": null},
+                "start": 100, "end": 200, "wall_seconds": 100, "outcome": "landed",
+                "workers": [{"harness": harness, "model": null, "role": null, "stage": null, "claim": "c", "start": 100, "end": 200, "seconds": 100, "verdict": null,
+                    "tokens": {"m": {"input": 1, "cache_read": 0, "cache_write": 0, "output": 1, "reasoning": null}}}],
+                "gates": []
+            })
+        );
+        Issue { number: 1, closed: true, url: String::new(), account: Ok(Some(body)) }
+    }
+
+    fn usage(harness: &str) -> Usage {
+        let json = serde_json::json!({
+            "id": "w1", "harness": harness, "model": null, "start": 100, "end": 200,
+            "seconds": 100, "tokens": null, "conditions": []
+        });
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn a_harness_name_this_binary_does_not_know_is_its_own_sample_under_that_name() {
+        let report = summarize_with_usage(
+            vec![account("opencode")],
+            vec![usage("opencode")],
+            vec![],
+            vec![],
+            None,
+            1000,
+        );
+        let report = serde_json::to_value(report).unwrap();
+        assert_eq!(report["count"], 1, "{report}");
+        assert_eq!(report["unreadable"], serde_json::json!([]), "{report}");
+        assert_eq!(report["by_harness"]["opencode"]["count"], 1, "{report}");
+        assert_eq!(report["tokens"]["by_harness"]["opencode"]["totals"]["input"], 1, "{report}");
+        assert_eq!(report["watch_rounds"]["by_harness"]["opencode"]["count"], 1, "{report}");
+    }
+
+    #[test]
+    fn a_usage_record_writes_back_the_harness_name_it_was_read_with() {
+        for name in ["codex", "claude-code", "opencode"] {
+            let written = serde_json::to_value(usage(name)).unwrap();
+            assert_eq!(written["harness"], name);
+        }
     }
 }

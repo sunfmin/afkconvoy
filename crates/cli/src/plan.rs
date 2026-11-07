@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::launch::Launches;
-use crate::{admission, blockers, codex_launch, fleet_report, kit, probe};
+use crate::{admission, blockers, codex_launch, doctor, fleet_report, kit, probe};
 
 /// The plan of `repo` at `now`, with `instance`'s claims its own and the
 /// workers' `no_proxy` hosts as the command line names them.
@@ -33,7 +33,7 @@ pub(crate) fn plan(
     }
     let findings = blockers::findings(&set.unworked_blockers);
     let mut plan = serde_json::to_value(set)?;
-    plan["findings"] = serde_json::to_value(findings)?;
+    plan["findings"] = doctor::answered(doctor::checkout_at(&repo.dir), findings)?;
     if let Some(plan) = plan.as_object_mut() {
         plan.extend(report.plan_json()?);
     }

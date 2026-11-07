@@ -37,11 +37,8 @@ pub fn issue_url(watch: &crate::host_watch::Watch, condition: &str) -> Option<St
     for checkout in watch.look["checkouts"].as_array().into_iter().flatten() {
         let Some(at) = checkout["checkout"].as_str() else { continue };
         for waiting in checkout["doctor"]["waiting_on_human"].as_array().into_iter().flatten() {
-            let Ok(identity) = serde_json::from_value::<crate::doctor::HumanWait>(waiting.clone())
-            else {
-                continue;
-            };
-            if crate::host_watch::scoped_finding_id(at, &identity.watch_id()) == condition {
+            let Ok(id) = crate::doctor::waiting_id(at, waiting) else { continue };
+            if id == condition {
                 return waiting["url"].as_str().map(str::to_string);
             }
         }

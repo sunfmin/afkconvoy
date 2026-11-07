@@ -233,49 +233,29 @@ impl Admission {
 }
 
 /// Attribute the one-minute load in proportion to CPU currently used by the
-/// running queue trees. This is an estimate: the kernel exposes no per-tree
+/// queue's running work, as the exclusive queue finds it in one reading of
+/// the process table. This is an estimate: the kernel exposes no per-tree
 /// load average. On an unreadable queue or process table, subtract nothing.
 fn queue_load(load: u64, queue: &[Ticket]) -> Result<u64> {
-    let roots: BTreeSet<u32> =
-        queue.iter().filter(|ticket| ticket.ran.is_some()).map(|ticket| ticket.pid).collect();
-    if roots.is_empty() {
+    if !queue.iter().any(Ticket::running) {
         return Ok(0);
     }
-    let said = output("ps", &["-A", "-o", "pid=,ppid=,pcpu="])?;
-    let rows: Vec<(u32, u32, f64)> = said
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let (pid, parent, cpu) = (
-                fields.next()?.parse().ok()?,
-                fields.next()?.parse().ok()?,
-                fields.next()?.parse::<f64>().ok()?,
-            );
-            (cpu.is_finite() && cpu >= 0.0).then_some((pid, parent, cpu))
-        })
-        .collect();
-    anyhow::ensure!(
-        !rows.is_empty() && roots.iter().all(|root| rows.iter().any(|row| row.0 == *root)),
-        "queue process table incomplete"
-    );
-    let mut tree = roots;
-    loop {
-        let before = tree.len();
-        for &(pid, parent, _) in &rows {
-            if tree.contains(&parent) {
-                tree.insert(pid);
-            }
-        }
-        if tree.len() == before {
-            break;
-        }
+    let procs = crate::hot::listed_checked()?;
+    let work = crate::exclusive::running_work(queue, &procs);
+    anyhow::ensure!(work.whole, "queue process table incomplete");
+    Ok(share_of(load, &procs, &work.pids))
+}
+
+/// The part of `load` that the processes `of` take, by the share of a core
+/// each of `procs` takes now.
+fn share_of(load: u64, procs: &[crate::hot::Proc], of: &BTreeSet<u32>) -> u64 {
+    let total: u64 = procs.iter().map(|proc| proc.cpu_share).sum();
+    let queued: u64 =
+        procs.iter().filter(|proc| of.contains(&proc.pid)).map(|proc| proc.cpu_share).sum();
+    if total == 0 {
+        return 0;
     }
-    let total: f64 = rows.iter().map(|row| row.2).sum();
-    let queued: f64 = rows.iter().filter(|row| tree.contains(&row.0)).map(|row| row.2).sum();
-    if total <= 0.0 {
-        return Ok(0);
-    }
-    Ok(((load as f64 * queued / total).round() as u64).min(load))
+    ((load as f64 * queued as f64 / total as f64).round() as u64).min(load)
 }
 
 /// `hundredths` as a load is written: `105.43`.

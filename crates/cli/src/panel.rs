@@ -36,7 +36,7 @@ use crate::kit::Kit;
 use crate::log::Log;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
-use crate::{doctor, host_runner, host_settings};
+use crate::{host_runner, host_settings, run_log};
 
 /// The stage of an unbound repo's one lane a worker writes its PR at.
 const WORK: &str = "work";
@@ -716,7 +716,7 @@ fn logged(repo: &Repo) -> Vec<crate::log::Entry> {
 /// The break of the fleet instance of `host` its tick log `entries` hold,
 /// where it is broken; `runs`: whether a host runner runs to start it again.
 fn broken_in(entries: &[crate::log::Entry], host: &str, runs: bool) -> Option<Broken> {
-    let broken = doctor::read_broken(entries, host, runs)?;
+    let broken = run_log::broken(entries, host, runs)?;
     Some(Broken { why: broken.why, since: broken.since, next: broken.next })
 }
 
@@ -731,7 +731,7 @@ fn rebuilt(
     now: u64,
     readings: &Readings,
 ) -> Result<Panel> {
-    let (logged, ..) = doctor::read_log(entries, host);
+    let (logged, ..) = run_log::run(entries, host);
     let logged = logged.and_then(|logged| InstanceId::parse(&logged).ok());
     let instance = instance.cloned().or(logged);
     let me = instance.map(|instance| Me { instance, host: host.to_string(), now });
@@ -739,7 +739,7 @@ fn rebuilt(
     let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
     let report = FleetReport::read(&fleet, &flows, &set, readings);
     let mut panel = read(&fleet, me.as_ref(), &set, &flows, &[], &report);
-    panel.hot = doctor::read_hot(entries, host)
+    panel.hot = run_log::hot(entries, host)
         .into_iter()
         .map(|hot| Hot { worker: hot.worker, since: hot.since, why: hot.why, held: hot.held })
         .collect();
@@ -1248,7 +1248,7 @@ fn exclusive(out: &mut String, host: &Host) {
         }
         out.push_str("<ul class=\"cards\">");
         for request in requests {
-            let class = if request.ticket.ran.is_some() { "busy" } else { "queued" };
+            let class = if request.ticket.running() { "busy" } else { "queued" };
             let _ = write!(
                 out,
                 "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
