@@ -1590,7 +1590,7 @@ fn orcas_failed_turn_is_classified_on_its_first_observation() {
         let health = world.afk(&["plan", "--now", "801"]).ok();
         let worker = &health["host_kit"]["worker_health"]["workers"][0];
         assert_eq!(worker["source"] == "jev", failure, "{worker}");
-        assert_eq!(worker["orca"]["state"], "done");
+        assert_eq!(worker["orca"]["state"], "error");
         assert_eq!(worker["orca"]["agentType"], "codex");
         assert_eq!(worker["orca"]["stateStartedAt"], 799000);
     }

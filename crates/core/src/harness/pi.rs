@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Link, SessionFile, SessionLayout};
+use crate::account::{Counts, Keys, Usage};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
@@ -22,6 +23,26 @@ use crate::turn::{Marker, Note, Turn};
 pub(super) const NAME: &str = "pi";
 pub(super) const KEY: &str = "pi";
 pub(super) const PROGRAM: &str = "pi";
+/// The line that installs it: its native installer, which keeps it up to date.
+pub(super) const INSTALL: &str = "curl -fsSL https://pi.dev/install.sh | sh";
+/// pi logs in to providers, and lists the models of those it holds
+/// credentials for: which one a worker uses is its stage's to say. It logs
+/// in to a provider at its own prompt: its words say how, since no line does.
+pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
+    question: "pi --list-models",
+    logged_out: "holds credentials for no provider (`/login` at its prompt logs it in)",
+    line: "pi",
+});
+
+/// What pi lists in place of its models when it holds credentials for no
+/// provider.
+const NO_MODELS: &str = "No models available";
+
+/// Whether the answer to its login question says it holds credentials: it
+/// listed a model at all.
+pub(super) fn logged_in(succeeded: bool, printed: &str) -> bool {
+    succeeded && !printed.trim().is_empty() && !printed.contains(NO_MODELS)
+}
 /// Where it reads its user's global instructions, under the user's home.
 pub(super) const INSTRUCTIONS: &str = ".pi/agent/AGENTS.md";
 /// The agent `npx skills` installs its user's skills for.
@@ -527,6 +548,36 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
     }]
 }
 
+/// The names pi gives the counts of a message's usage.
+const USAGE_KEYS: Keys = Keys {
+    input: "input",
+    cache_read: "cacheRead",
+    cache_write: "cacheWrite",
+    output: "output",
+    reasoning: "reasoning",
+};
+
+/// What one pi session line says of usage: each assistant message, keyed by
+/// its id, as a repeated line repeats it.
+pub(super) fn usage(value: &Value, line: usize) -> Option<Usage> {
+    let message = &value["message"];
+    if value["type"] != "message" || message["role"] != "assistant" {
+        return None;
+    }
+    let usage = &message["usage"];
+    if !usage.is_object() {
+        return None;
+    }
+    let Some(counts) = Counts::read(usage, &USAGE_KEYS, false) else {
+        return Some(Usage::Uncounted);
+    };
+    Some(Usage::Message {
+        key: super::claude_code::message_key(value, line),
+        model: message["model"].as_str().unwrap_or("").to_string(),
+        counts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,5 +775,41 @@ mod tests {
         for unread in [r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#, "{}", "[]", ""] {
             assert!(judged(unread).is_err(), "{unread}");
         }
+    }
+
+    #[test]
+    fn pi_installs_natively_and_holds_credentials_when_it_lists_a_model() {
+        let pi = Harness::Pi;
+        assert_eq!(pi.install(), "curl -fsSL https://pi.dev/install.sh | sh");
+        let login = pi.login().unwrap();
+        assert_eq!((login.question, login.line), ("pi --list-models", "pi"));
+        let listed = "provider      model    context\nopenai-codex  gpt-5.5  272K\n";
+        assert!(pi.logged_in(true, listed));
+        assert!(!pi.logged_in(false, listed));
+        let none = "No models available. Use /login to log into a provider via OAuth or API key.";
+        assert!(!pi.logged_in(true, none));
+        assert!(!pi.logged_in(true, " \n"));
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use crate::account::Counts;
+    use crate::harness::Harness;
+
+    #[test]
+    fn a_repeated_message_is_counted_once() {
+        let text = r#"{"type":"message","id":"1","message":{"role":"assistant","model":"a","usage":{"input":10,"cacheRead":20,"cacheWrite":3,"output":5}}}
+{"type":"message","id":"1","message":{"role":"assistant","model":"a","usage":{"input":10,"cacheRead":20,"cacheWrite":3,"output":5}}}
+{"type":"message","id":"2","message":{"role":"assistant","model":"b","usage":{"input":6,"cacheRead":7,"cacheWrite":1,"output":2}}}"#;
+        let tokens = Harness::Pi.tokens(text, None).unwrap();
+        assert_eq!(
+            tokens["a"],
+            Counts { input: 10, cache_read: 20, cache_write: 3, output: 5, reasoning: None }
+        );
+        assert_eq!(
+            tokens["b"],
+            Counts { input: 6, cache_read: 7, cache_write: 1, output: 2, reasoning: None }
+        );
     }
 }

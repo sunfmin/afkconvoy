@@ -22,7 +22,6 @@ mod kimi;
 mod pi;
 mod session;
 
-pub(crate) use grok::not_authenticated as grok_not_authenticated;
 pub(crate) use session::{epoch_number, parse_iso};
 
 /// A file or a directory of the host user's that a directory the host keeps
@@ -117,6 +116,11 @@ pub struct SessionPlace {
     pub under_home: &'static str,
     /// How the files of this worktree are laid out under that directory.
     pub layout: SessionLayout,
+    /// Another layout under the same directory whose sessions are this
+    /// worktree's only when they record its turn: a bound Claude Code
+    /// worker's words are filed under its role copy's project, not the
+    /// worktree's.
+    pub also: Option<SessionLayout>,
 }
 
 /// How the files of one worktree are laid out under the harness directory.
@@ -128,7 +132,9 @@ pub enum SessionLayout {
     /// Each file of `extension` anywhere under `dir` is one session.
     Tree { dir: String, extension: &'static str },
     /// Each `dir/*/<name>` is one session. `compressed` means the bytes are zstd.
-    Named { dir: String, name: &'static str, compressed: bool },
+    /// `usage` names the file beside it whose text holds the session's usage,
+    /// where the session keeps it apart.
+    Named { dir: String, name: &'static str, compressed: bool, usage: Option<&'static str> },
     /// `file` names the session files ([`Harness::indexed_sessions`]).
     Index { file: String },
 }
@@ -244,6 +250,19 @@ pub struct GoalRow {
     pub status: Goal,
     pub tokens_used: u64,
     pub token_budget: Option<u64>,
+}
+
+/// How a harness is asked whether it is logged in, and what logs it in
+/// (`crate::tools`): what a start that finds it logged out names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Login {
+    /// The shell line whose answer says whether it is logged in
+    /// (`Harness::logged_in` reads it).
+    pub question: &'static str,
+    /// What it is said to be when it is not.
+    pub logged_out: &'static str,
+    /// The line that logs it in.
+    pub line: &'static str,
 }
 
 /// A harness the fleet can start a worker of a bound repo on.
@@ -377,6 +396,96 @@ impl Harness {
             Harness::Dsh => dsh::PROGRAM,
             Harness::Kimi => kimi::PROGRAM,
             Harness::Grok => grok::PROGRAM,
+        }
+    }
+
+    /// Whether `launch`, a worker launch command of it, runs it by its own
+    /// name: a harness is looked for only as that command's first word —
+    /// what a wrapper runs and logs in to is its own business.
+    pub fn runs_itself(self, launch: &str) -> bool {
+        crate::launch::first_word(launch) == Some(self.program())
+    }
+
+    /// The line that installs it.
+    pub const fn install(self) -> &'static str {
+        match self {
+            Harness::ClaudeCode => claude_code::INSTALL,
+            Harness::Pi => pi::INSTALL,
+            Harness::Codex => codex::INSTALL,
+            Harness::Dsh => dsh::INSTALL,
+            Harness::Kimi => kimi::INSTALL,
+            Harness::Grok => grok::INSTALL,
+        }
+    }
+
+    /// How it is asked whether it is logged in, and logged in; `None`: it
+    /// logs in to nothing a start asks about.
+    pub const fn login(self) -> Option<Login> {
+        match self {
+            Harness::ClaudeCode => claude_code::LOGIN,
+            Harness::Pi => pi::LOGIN,
+            Harness::Codex => codex::LOGIN,
+            Harness::Dsh => dsh::LOGIN,
+            Harness::Kimi => kimi::LOGIN,
+            Harness::Grok => grok::LOGIN,
+        }
+    }
+
+    /// Whether the answer to its login question (`Login::question`) says it
+    /// is logged in: whether that shell line `succeeded`, and what it
+    /// `printed`.
+    pub fn logged_in(self, succeeded: bool, printed: &str) -> bool {
+        match self {
+            Harness::ClaudeCode => claude_code::logged_in(succeeded, printed),
+            Harness::Pi => pi::logged_in(succeeded, printed),
+            Harness::Codex => codex::logged_in(succeeded, printed),
+            Harness::Dsh => dsh::logged_in(succeeded, printed),
+            Harness::Kimi => kimi::logged_in(succeeded, printed),
+            Harness::Grok => grok::logged_in(succeeded, printed),
+        }
+    }
+
+    /// The program besides itself a worker of it cannot start without, which
+    /// a start looks for once it is found ready: dsh-tui runs dsh's own.
+    pub const fn needs(self) -> Option<crate::tools::Tool> {
+        match self {
+            Harness::Dsh => Some(crate::tools::Tool::Dsh),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// Whether a session of it outside a role gets a home of its own: one
+    /// whose generated hook files a probe or asking launch must not write
+    /// into a home a worker or a watch shares.
+    pub const fn own_home_outside_role(self) -> bool {
+        match self {
+            Harness::Kimi => kimi::OWN_HOME_OUTSIDE_ROLE,
+            Harness::Grok => grok::OWN_HOME_OUTSIDE_ROLE,
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Dsh => false,
+        }
+    }
+
+    /// The hosts its worker's login shell reaches without a proxy unless the
+    /// host says otherwise (`crate::proxy`); `None`: none.
+    pub const fn no_proxy(self) -> Option<&'static str> {
+        match self {
+            Harness::Dsh => Some(dsh::NO_PROXY),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Kimi | Harness::Grok => {
+                None
+            }
+        }
+    }
+
+    /// Where, under the directory a host keeps for it (`kept`), the package
+    /// of its installed program is linked, where one is; `None`: nowhere.
+    pub const fn kept_package(self) -> Option<&'static str> {
+        match self {
+            Harness::Dsh => Some(dsh::KEPT_PACKAGE),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex | Harness::Kimi | Harness::Grok => {
+                None
+            }
         }
     }
 
@@ -1179,7 +1288,7 @@ impl Harness {
             Harness::Kimi => (kimi::HOME, kimi::session_layout(cwd)),
             Harness::Grok => (grok::HOME, grok::session_layout(cwd)),
         };
-        SessionPlace { under_home, layout }
+        SessionPlace { under_home, layout, also: None }
     }
 
     /// The turn one session file's `text` records for the worktree `cwd`.
@@ -1204,6 +1313,26 @@ impl Harness {
             Harness::Dsh => dsh::recorded_turn(cwd, text, not_before),
             Harness::Kimi => kimi::recorded_turn(cwd, text, not_before),
             Harness::Grok => grok::recorded_turn(cwd, text, not_before),
+        }
+    }
+
+    /// The token use one session file's `text` records: the whole session, or
+    /// from `window.0` through `window.1` inclusive. `None` is no usage
+    /// evidence, not zero (`account::fold_tokens`). A session that keeps its
+    /// usage apart is read from the file its layout names beside it.
+    pub fn tokens(self, text: &str, window: Option<(u64, u64)>) -> Option<crate::account::Tokens> {
+        crate::account::fold_tokens(text, window, |line, n| self.usage(line, n))
+    }
+
+    /// What one session line, the `n`th, says of token use.
+    fn usage(self, line: &serde_json::Value, n: usize) -> Option<crate::account::Usage> {
+        match self {
+            Harness::ClaudeCode => claude_code::usage(line, n),
+            Harness::Pi => pi::usage(line, n),
+            Harness::Codex => codex::usage(line, n),
+            Harness::Kimi => kimi::usage(line, n),
+            Harness::Grok => grok::usage(line, n),
+            Harness::Dsh => None,
         }
     }
 
@@ -1373,9 +1502,10 @@ impl Harness {
             Harness::ClaudeCode => SessionPlace {
                 under_home: claude_code::HOME,
                 layout: claude_code::note_layout(cwd),
+                also: Some(claude_code::session_layout(cwd)),
             },
             Harness::Grok => {
-                SessionPlace { under_home: grok::HOME, layout: grok::note_layout(cwd) }
+                SessionPlace { under_home: grok::HOME, layout: grok::note_layout(cwd), also: None }
             }
             Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => self.session_place(cwd),
         }
@@ -1450,6 +1580,29 @@ fn whole(listed: &[String], model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_harness_is_looked_for_only_as_the_first_word_of_its_launch_command() {
+        let claude = |launch| Harness::ClaudeCode.runs_itself(launch);
+        assert!(claude("claude --dangerously-skip-permissions"));
+        assert!(claude("  claude"));
+        // a wrapper, an alias that ends in claude, another agent, a path
+        for other in ["kim --yolo", "wrap claude", "aider", "/usr/local/bin/claude", "claudex", ""]
+        {
+            assert!(!claude(other), "{other:?}");
+        }
+        assert!(Harness::Pi.runs_itself("pi --thinking high"));
+        for other in ["wrap pi", "pip install", "/opt/homebrew/bin/pi", "claude"] {
+            assert!(!Harness::Pi.runs_itself(other), "{other:?}");
+        }
+        // …and only as its own harness's: pi starts no Claude Code worker
+        assert!(!claude("pi"));
+        let codex = |launch| Harness::Codex.runs_itself(launch);
+        assert!(codex("codex --dangerously-bypass-approvals-and-sandbox"));
+        for other in ["wrap codex", "codexx", "claude", "pi"] {
+            assert!(!codex(other), "{other:?}");
+        }
+    }
 
     #[test]
     fn a_model_is_probed_through_the_command_with_one_line_and_nothing_else() {
@@ -1595,7 +1748,7 @@ mod tests {
         ));
         assert!(matches!(
             Harness::Dsh.session_place(CWD).layout,
-            SessionLayout::Named { dir, name, compressed: true }
+            SessionLayout::Named { dir, name, compressed: true, usage: None }
                 if dir == "sessions/--Users-sunfmin-Developments-chessmirror--"
                     && name == "session.v4.jsonl.zstd"
         ));
@@ -1605,7 +1758,7 @@ mod tests {
         ));
         assert!(matches!(
             Harness::Grok.session_place(CWD).layout,
-            SessionLayout::Named { dir, name, compressed: false }
+            SessionLayout::Named { dir, name, compressed: false, usage: Some("updates.jsonl") }
                 if dir == "sessions/%2FUsers%2Fsunfmin%2FDevelopments%2Fchessmirror"
                     && name == "events.jsonl"
         ));

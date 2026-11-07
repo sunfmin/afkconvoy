@@ -23,19 +23,17 @@ use crate::copies::cache;
 /// rules too (`Kept::host_user`); without, the one that holds none of them.
 pub fn keep(harness: Harness, host_user: bool) -> Result<PathBuf> {
     let dir = keep_under(&cache()?, home().as_deref(), harness, host_user)?;
-    if harness == Harness::Dsh {
-        // Prefer the installed program's package to an editable profile copy,
-        // as the login shell a worker gets finds it. No terminal is opened.
-        let asked = crate::launch::ask_host("command -v dsh-tui", crate::launch::SHELL_TIMEOUT);
+    if let Some(kept_package) = harness.kept_package() {
+        // The installed program, as the login shell a worker gets finds it.
+        // No terminal is opened.
+        let question = format!("command -v {}", harness.program());
+        let asked = crate::launch::ask_host(&question, crate::launch::SHELL_TIMEOUT);
         let (_, path) = asked.ok().flatten().unwrap_or_default();
         if let Ok(program) = std::fs::canonicalize(path.trim())
             && let Some(package) = program.parent().and_then(Path::parent)
             && package.join("package.json").is_file()
         {
-            point(
-                &dir.join("profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui"),
-                Some(package),
-            )?;
+            point(&dir.join(kept_package), Some(package))?;
         }
     }
     Ok(dir)
@@ -55,7 +53,7 @@ pub(crate) fn outside_role(
     guard: Option<&str>,
 ) -> Result<String> {
     let shared = keep(harness, true)?;
-    if has_own_home(harness) {
+    if harness.own_home_outside_role() {
         let dir = worktree
             .join(crate::worker_tmp::TMP_DIR)
             .join(format!("{OWN_HOME}{}", crate::unique()));
@@ -69,16 +67,11 @@ pub(crate) fn outside_role(
 /// The name every home `outside_role` makes starts with.
 const OWN_HOME: &str = "guard-";
 
-/// Whether a session of `harness` outside a role gets a home of its own.
-fn has_own_home(harness: Harness) -> bool {
-    matches!(harness, Harness::Kimi | Harness::Grok)
-}
-
 /// Every home `outside_role` made for a session of `harness` in `worktree`:
 /// the harness keeps that session's record there, so whoever reads the
 /// session reads these too. A worktree with none has none.
 pub(crate) fn outside_role_homes(harness: Harness, worktree: &Path) -> Result<Vec<PathBuf>> {
-    if !has_own_home(harness) {
+    if !harness.own_home_outside_role() {
         return Ok(Vec::new());
     }
     let dir = worktree.join(crate::worker_tmp::TMP_DIR);
