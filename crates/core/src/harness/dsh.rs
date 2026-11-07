@@ -304,6 +304,7 @@ pub(super) fn session_layout(cwd: &str) -> SessionLayout {
         dir: format!("sessions/{}", session::wrapped_dir(cwd)),
         name: SESSION_FILE,
         compressed: true,
+        usage: None,
     }
 }
 

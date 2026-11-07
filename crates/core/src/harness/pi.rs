@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Link, SessionFile, SessionLayout};
+use crate::account::{Counts, Keys, Usage};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
@@ -547,6 +548,36 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
     }]
 }
 
+/// The names pi gives the counts of a message's usage.
+const USAGE_KEYS: Keys = Keys {
+    input: "input",
+    cache_read: "cacheRead",
+    cache_write: "cacheWrite",
+    output: "output",
+    reasoning: "reasoning",
+};
+
+/// What one pi session line says of usage: each assistant message, keyed by
+/// its id, as a repeated line repeats it.
+pub(super) fn usage(value: &Value, line: usize) -> Option<Usage> {
+    let message = &value["message"];
+    if value["type"] != "message" || message["role"] != "assistant" {
+        return None;
+    }
+    let usage = &message["usage"];
+    if !usage.is_object() {
+        return None;
+    }
+    let Some(counts) = Counts::read(usage, &USAGE_KEYS, false) else {
+        return Some(Usage::Uncounted);
+    };
+    Some(Usage::Message {
+        key: super::claude_code::message_key(value, line),
+        model: message["model"].as_str().unwrap_or("").to_string(),
+        counts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,5 +789,27 @@ mod tests {
         let none = "No models available. Use /login to log into a provider via OAuth or API key.";
         assert!(!pi.logged_in(true, none));
         assert!(!pi.logged_in(true, " \n"));
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use crate::account::Counts;
+    use crate::harness::Harness;
+
+    #[test]
+    fn a_repeated_message_is_counted_once() {
+        let text = r#"{"type":"message","id":"1","message":{"role":"assistant","model":"a","usage":{"input":10,"cacheRead":20,"cacheWrite":3,"output":5}}}
+{"type":"message","id":"1","message":{"role":"assistant","model":"a","usage":{"input":10,"cacheRead":20,"cacheWrite":3,"output":5}}}
+{"type":"message","id":"2","message":{"role":"assistant","model":"b","usage":{"input":6,"cacheRead":7,"cacheWrite":1,"output":2}}}"#;
+        let tokens = Harness::Pi.tokens(text, None).unwrap();
+        assert_eq!(
+            tokens["a"],
+            Counts { input: 10, cache_read: 20, cache_write: 3, output: 5, reasoning: None }
+        );
+        assert_eq!(
+            tokens["b"],
+            Counts { input: 6, cache_read: 7, cache_write: 1, output: 2, reasoning: None }
+        );
     }
 }

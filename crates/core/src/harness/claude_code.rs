@@ -15,6 +15,7 @@ use serde::{Deserialize, Deserializer};
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Link, SessionFile, SessionLayout};
+use crate::account::{Counts, Keys, Usage};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
@@ -694,6 +695,48 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
     }]
 }
 
+/// The names Claude Code gives the counts of a message's usage.
+const USAGE_KEYS: Keys = Keys {
+    input: "input_tokens",
+    cache_read: "cache_read_input_tokens",
+    cache_write: "cache_creation_input_tokens",
+    output: "output_tokens",
+    reasoning: "reasoning_tokens",
+};
+
+/// What one Claude Code session line says of usage: each assistant message,
+/// keyed by its id, as a streamed message repeats it. Thinking, where stated,
+/// is its reasoning.
+pub(super) fn usage(value: &serde_json::Value, line: usize) -> Option<Usage> {
+    let message = &value["message"];
+    if value["type"] != "assistant" || message["role"] != "assistant" {
+        return None;
+    }
+    let usage = &message["usage"];
+    if !usage.is_object() {
+        return None;
+    }
+    let Some(mut counts) = Counts::read(usage, &USAGE_KEYS, false) else {
+        return Some(Usage::Uncounted);
+    };
+    counts.reasoning =
+        usage["output_tokens_details"]["thinking_tokens"].as_u64().or(counts.reasoning);
+    Some(Usage::Message {
+        key: message_key(value, line),
+        model: message["model"].as_str().unwrap_or("").to_string(),
+        counts,
+    })
+}
+
+/// The message's id, else the line's, else its line number.
+pub(super) fn message_key(value: &serde_json::Value, line: usize) -> String {
+    value["message"]["id"]
+        .as_str()
+        .or_else(|| value["id"].as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("line:{line}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1045,5 +1088,39 @@ mod tests {
         }
         assert!(!claude.own_home_outside_role());
         assert_eq!(claude.no_proxy(), None);
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use crate::account::Counts;
+    use crate::harness::Harness;
+
+    #[test]
+    fn a_streamed_message_is_counted_once() {
+        let text = r#"{"type":"assistant","message":{"id":"1","role":"assistant","model":"a","usage":{"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":3,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"1","role":"assistant","model":"a","usage":{"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":3,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"2","role":"assistant","model":"b","usage":{"input_tokens":6,"cache_read_input_tokens":7,"cache_creation_input_tokens":1,"output_tokens":2}}}"#;
+        let tokens = Harness::ClaudeCode.tokens(text, None).unwrap();
+        assert_eq!(
+            tokens["a"],
+            Counts { input: 10, cache_read: 20, cache_write: 3, output: 5, reasoning: None }
+        );
+        assert_eq!(
+            tokens["b"],
+            Counts { input: 6, cache_read: 7, cache_write: 1, output: 2, reasoning: None }
+        );
+    }
+
+    #[test]
+    fn a_round_window_counts_only_its_messages() {
+        let claude = r#"{"timestamp":"1970-01-01T00:01:35Z","type":"assistant","message":{"id":"before","role":"assistant","model":"claude","usage":{"input_tokens":10,"cache_read_input_tokens":2,"output_tokens":3}}}
+{"timestamp":"1970-01-01T00:01:45Z","type":"assistant","message":{"id":"round","role":"assistant","model":"claude","usage":{"input_tokens":7,"cache_read_input_tokens":5,"cache_creation_input_tokens":1,"output_tokens":4}}}
+{"timestamp":"1970-01-01T00:01:55Z","type":"assistant","message":{"id":"after","role":"assistant","model":"claude","usage":{"input_tokens":20,"cache_read_input_tokens":8,"output_tokens":9}}}"#;
+        let tokens = Harness::ClaudeCode.tokens(claude, Some((100, 110))).unwrap();
+        assert_eq!(
+            tokens["claude"],
+            Counts { input: 7, cache_read: 5, cache_write: 1, output: 4, reasoning: None }
+        );
     }
 }
