@@ -141,7 +141,10 @@ fn a_running_checkout_names_kimi_and_another_checkout_stays_on_the_host_kit() {
     assert!(unlabelled.contains("kimi --auto"), "{unlabelled}");
     let labelled = wait_command(&world, 9, "--model 'kimi-code/k2'");
     assert!(labelled.contains("kimi --auto"), "{labelled}");
-    assert!(!labelled.contains("claude"), "{labelled}");
+    // What it runs is kimi, not claude: the paths before it may hold any
+    // word, as a checkout under `.claude/worktrees` does.
+    let runs = labelled.rsplit(" && ").next().unwrap_or_default();
+    assert!(runs.starts_with("kimi ") && !runs.contains("claude"), "{labelled}");
 
     let other = world.second_repo();
     issue_on_second(&world, 11);
