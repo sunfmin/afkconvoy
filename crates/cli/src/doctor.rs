@@ -679,7 +679,7 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                 Kind::ToolMissing,
                 format!("`{name}` is not installed: the fleet cannot work without it"),
                 format!("no `{name}` was found on this host{called}"),
-                tool.install().to_string(),
+                tool.when_missing(),
             ),
             Found::LoggedOut(answer) => (
                 if *tool == Tool::Pi { Kind::NoProvider } else { Kind::ToolLoggedOut },
@@ -3065,7 +3065,7 @@ mod tests {
         ];
         let found = found(&lacking, &run(vec![]), &state());
         assert_eq!(fixes(&found, "`gh` is not logged in"), ["gh auth login"]);
-        assert_eq!(fixes(&found, "`orca` is not installed"), [Tool::Orca.install()]);
+        assert_eq!(fixes(&found, "`orca` is not installed"), [Tool::Orca.when_missing()]);
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found.iter().all(|finding| finding.severity == Severity::Critical));
 
