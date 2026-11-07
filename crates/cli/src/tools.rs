@@ -1,14 +1,15 @@
 //! Finds the commands a fleet cannot work without (`afkconvoy_core::tools`):
-//! `git`, `gh` and `orca` on this process's `PATH`, which runs them, a
+//! `git`, `gh` and `orca` on this process's `PATH`, which runs them — orca
+//! also where Orca's SSH remote runtime puts its CLI (`reach_orca`) — a
 //! harness and every login in a login shell, which is where a worker runs; and of an orca
 //! that is there, whether it is running and knows the checkout a command is
 //! about. It only looks: nothing is installed, started or added and nobody is
 //! logged in.
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use afkconvoy_core::tools::{ALWAYS, Found, Tool, refusal, remote_host};
+use afkconvoy_core::tools::{ALWAYS, Found, ORCA_REMOTE_CLI, Tool, refusal, remote_host};
 use anyhow::{Result, bail};
 
 use crate::git::{REMOTE, Repo};
@@ -199,9 +200,77 @@ pub fn check(repo: &Repo, launches: &Launches) -> Result<()> {
 
 /// Whether a directory of this process's `PATH` holds a program by this name.
 pub fn on_path(name: &str) -> bool {
+    found_on_path(name).is_some()
+}
+
+/// The program by this name the first directory of this process's `PATH`
+/// that holds one holds.
+fn found_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path).any(|dir| {
-        std::fs::metadata(dir.join(name))
-            .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
-    })
+    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|file| runnable(file))
+}
+
+fn runnable(file: &Path) -> bool {
+    std::fs::metadata(file)
+        .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+}
+
+/// Where Orca's SSH remote runtime puts its CLI's directory on this host:
+/// under the home directory. `None`: no home.
+fn orca_remote_cli() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|home| !home.is_empty())?;
+    Some(Path::new(&home).join(ORCA_REMOTE_CLI))
+}
+
+/// Where this process finds orca, and how: the first `orca` on its `PATH`,
+/// which wins, or else the CLI Orca's SSH remote runtime put on this host,
+/// which only the terminals Orca opens itself have on theirs. `None`:
+/// neither.
+pub fn orca_place() -> Option<(PathBuf, OrcaFrom)> {
+    let remote = orca_remote_cli().map(|dir| dir.join(Tool::Orca.name()));
+    match found_on_path(Tool::Orca.name()) {
+        Some(found) if remote.as_ref().is_some_and(|remote| same_file(remote, &found)) => {
+            Some((found, OrcaFrom::RemoteCli))
+        }
+        Some(found) => Some((found, OrcaFrom::Path)),
+        None => {
+            remote.filter(|remote| runnable(remote)).map(|remote| (remote, OrcaFrom::RemoteCli))
+        }
+    }
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// How this process found orca (`orca_place`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrcaFrom {
+    /// On its `PATH`, put there by whoever started it.
+    Path,
+    /// Where Orca's SSH remote runtime puts its CLI (`ORCA_REMOTE_CLI`).
+    RemoteCli,
+}
+
+/// Has every orca call of this process and of what it starts — workers,
+/// worktrees, terminals, the watch, the asking session — go to the CLI of
+/// Orca's SSH remote runtime, where no `orca` is on its `PATH` and that CLI
+/// is on this host: its directory is put at the end of the `PATH`, so an
+/// `orca` put on it later still wins. Called once, first thing, before this
+/// process starts a thread.
+pub fn reach_orca() {
+    if on_path(Tool::Orca.name()) {
+        return;
+    }
+    let Some(dir) = orca_remote_cli().filter(|dir| runnable(&dir.join(Tool::Orca.name()))) else {
+        return;
+    };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::env::split_paths(&path).filter(|dir| !dir.as_os_str().is_empty());
+    let dirs = dirs.chain([dir]);
+    if let Ok(path) = std::env::join_paths(dirs) {
+        // SAFETY: called first thing in `main`, before any thread starts.
+        unsafe { std::env::set_var("PATH", path) };
+    }
 }
