@@ -578,7 +578,7 @@ impl Fleet {
     /// view was opened on it (`Fleet::read`) → it, the read of the issues
     /// that follow a workflow it was assembled from, and what it read of the
     /// claimed issues besides. Reads only. A claimed issue that cannot be
-    /// read costs only itself: it is taken for open, and noted in `unread`.
+    /// read costs only itself: it is taken for open, and noted in `Claimed::unread`.
     pub fn rebuild(
         &self,
         open: &Open,

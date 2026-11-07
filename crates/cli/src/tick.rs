@@ -11,9 +11,11 @@ use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{
-    Outcome, Pass, TickStep, empty_streak, idle, pace, run_pass, sleeps_skipped,
+    Fact, First, Outcome, Pass, Seen, TickStep, Unread, empty_streak, first, idle, pace, run_pass,
+    sleeps_skipped,
 };
 use afkconvoy_core::wake::turn;
+use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
@@ -32,6 +34,7 @@ use crate::host_runner::Shared;
 use crate::hot::{self, Hot};
 use crate::judge::judge;
 use crate::log::{self, Cause, Log};
+use crate::orca::Worktree;
 use crate::panel::{self, Panel};
 use crate::patrol;
 use crate::settle::settle;
@@ -387,68 +390,50 @@ fn carry_out(
     read: &Read,
     step: TickStep,
 ) -> Result<Outcome> {
-    // Handle the last turn first: ask a wait again without a harness, or
-    // hand an answer needing tree changes to its worker without waiting for
-    // a silence judgment. Worker health must not hide that answer.
-    if let TickStep::Watch { issue, start } = step {
-        let dependencies =
-            read.issues.blockers.get(&issue).map_or(&[][..], |edges| edges.as_slice());
-        if let Some(outcome) =
-            crate::watch::answer_turn(fleet, found, me, agent, issue, start, dependencies)?
-        {
-            return Ok(outcome);
-        }
-    }
-    // A terminal left by an incomplete dispatch is no worker to judge for
-    // silence. Continue the same claim before health holds or the nudge
-    // ladder can mistake its shell for a harness.
-    let retry = match step {
-        TickStep::Judge { issue, start: true }
-        | TickStep::Watch { issue, start: true }
-        | TickStep::Advance { issue } => Some(issue),
-        _ => None,
-    };
-    if let Some(issue) = retry
-        && crate::dispatch::incomplete(fleet, issue)?
+    // What a step on a claim of mine sees to first is the core's to say
+    // (`tick::first`), by what is read of the claim now.
+    if let TickStep::Judge { issue, .. }
+    | TickStep::Watch { issue, .. }
+    | TickStep::Advance { issue } = step
     {
-        dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
-        return Ok(Outcome::Continued);
-    }
-    // A shared harness outage is no worker's silence. Keep the claim and
-    // progress, including its one nudge, until its pending prompt can probe.
-    let issue = match step {
-        TickStep::Judge { issue, .. }
-        | TickStep::Watch { issue, .. }
-        | TickStep::Advance { issue } => Some(issue),
-        _ => None,
-    };
-    if let Some(issue) = issue {
-        let source = crate::orca::Source::of(&fleet.repo)?;
-        if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)? {
-            let state = worktree.state(fleet.now)?;
-            if state != afkconvoy_core::worker::WorkerState::Gone
-                && crate::health::holding(&worktree)
-            {
-                // An open turn has no since. A later wait starts when seen again.
-                if state == afkconvoy_core::worker::WorkerState::Busy {
-                    worktree.background_since(false, None, fleet.now)?;
-                    return Ok(Outcome::Nothing);
-                }
-                // The stamp worker health's one read wrote. Missing, that
-                // read has not run: one read then answers both.
-                if let Some(since) = worktree.background_at() {
-                    return Ok(Outcome::Waiting(since));
-                }
-                if let Some(background) = crate::judge::own_background(
+        let turn = match step {
+            TickStep::Watch { .. } => crate::watch::turn(fleet, me, issue),
+            _ => Ok(None),
+        };
+        let incomplete = crate::dispatch::incomplete(fleet, issue);
+        let held = held(fleet, issue);
+        let seen = Seen {
+            answered: fact(turn.as_ref().map(Option::is_some)),
+            incomplete: fact(incomplete.as_ref().copied()),
+            held: fact(held.as_ref().map(Option::is_some)),
+        };
+        match (first(step, seen), turn, incomplete, held) {
+            (First::Answer, Ok(Some(turn)), ..) => {
+                let start = matches!(step, TickStep::Watch { start: true, .. });
+                let dependencies =
+                    read.issues.blockers.get(&issue).map_or(&[][..], |edges| edges.as_slice());
+                let watch = (me, agent);
+                return crate::watch::answer_turn(
                     fleet,
-                    &worktree,
-                    true,
-                    crate::judge::Look::Acting,
-                )? {
-                    return Ok(Outcome::Waiting(background.since));
-                }
-                return Ok(Outcome::Nothing);
+                    found,
+                    watch,
+                    issue,
+                    turn,
+                    start,
+                    dependencies,
+                );
             }
+            (First::Continue, ..) => {
+                dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
+                return Ok(Outcome::Continued);
+            }
+            (First::Hold, .., Ok(Some((worktree, state)))) => {
+                return hold(fleet, &worktree, state);
+            }
+            (First::Unread(Unread::Answered), Err(error), ..)
+            | (First::Unread(Unread::Incomplete), _, Err(error), _)
+            | (First::Unread(Unread::Held), .., Err(error)) => return Err(error),
+            _ => {}
         }
     }
     match step {
@@ -515,6 +500,47 @@ fn carry_out(
             Ok(Outcome::Done)
         }
     }
+}
+
+/// A fact of a claim as it was read (`tick::Fact`).
+fn fact(read: Result<bool, &anyhow::Error>) -> Fact {
+    match read {
+        Ok(true) => Fact::Yes,
+        Ok(false) => Fact::No,
+        Err(_) => Fact::Unread,
+    }
+}
+
+/// The worktree of `issue` on this host and the state of its worker, where
+/// that worker, not gone, is on a harness worker health holds. Reads only.
+fn held(fleet: &Fleet, issue: u64) -> Result<Option<(Worktree, WorkerState)>> {
+    let source = crate::orca::Source::of(&fleet.repo)?;
+    let Some(worktree) = Worktree::of_issue(&source, issue)? else { return Ok(None) };
+    let state = worktree.state(fleet.now)?;
+    let held = state != WorkerState::Gone && crate::health::holding(&worktree);
+    Ok(held.then_some((worktree, state)))
+}
+
+/// Holds a claim whose worker, in `worktree` and `state`, is on a held
+/// harness (`tick::First::Hold`): a shared harness outage is no worker's
+/// silence, and the claim keeps its progress, its one nudge among it, until
+/// the harness's pending prompt can probe it → how it waits.
+fn hold(fleet: &Fleet, worktree: &Worktree, state: WorkerState) -> Result<Outcome> {
+    // An open turn has no since. A later wait starts when seen again.
+    if state == WorkerState::Busy {
+        worktree.background_since(false, None, fleet.now)?;
+        return Ok(Outcome::Nothing);
+    }
+    // The stamp worker health's one read wrote. Missing, that read has not
+    // run: one read then answers both.
+    if let Some(since) = worktree.background_at() {
+        return Ok(Outcome::Waiting(since));
+    }
+    let look = crate::judge::Look::Acting;
+    if let Some(background) = crate::judge::own_background(fleet, worktree, true, look)? {
+        return Ok(Outcome::Waiting(background.since));
+    }
+    Ok(Outcome::Nothing)
 }
 
 fn words(step: TickStep) -> (&'static str, Option<u64>) {

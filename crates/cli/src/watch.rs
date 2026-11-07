@@ -77,23 +77,21 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, pr, worktree, record, comments, route }))))
 }
 
-/// Handles a landing claim's turn before worker health can hold its harness.
-/// A stopped or gone worker whose turn answered a wait needs no harness or
-/// judgment to ask again, unless an unchanged blocked answer holds the turn.
-/// An answer needing tree changes is handed to the
-/// worker before silence can mistake the fleet's merge for worker progress;
-/// that handoff takes a free slot. An open harness turn asking for a wait is
-/// left to its worker.
-/// `None` leaves ordinary harness recovery to the tick.
-pub(crate) fn answer_turn(
-    fleet: &mut Fleet,
-    found: &mut Found,
-    me: &Me,
-    agent: &Agent,
-    issue: u64,
-    start: bool,
-    dependencies: &[crate::gh::BlockedBy],
-) -> Result<Option<Outcome>> {
+/// The last turn of a landing claim of mine, as the tick reads it just
+/// before the `Watch` step on it (`turn`).
+pub(crate) struct Turn {
+    worktree: Worktree,
+    answered: Answered,
+    /// An answer needing tree changes, still to hand to the worker.
+    handoff: Option<crate::turn_answer::Handoff>,
+}
+
+/// The last turn of my landing claim on `issue`, where it answered what the
+/// tick handles before worker health can hold its harness: a turn still
+/// asking, an answer to hand to the worker, or a wait to ask again for
+/// while its worker is not at work. `None` leaves the claim to the step's
+/// own look at its worker. Reads only.
+pub(crate) fn turn(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Turn>> {
     if mine(fleet, me, issue)?.is_none() {
         return Ok(None);
     }
@@ -102,18 +100,49 @@ pub(crate) fn answer_turn(
     };
     let answered = crate::turn_answer::read(&worktree)?;
     if answered == Answered::Asking {
-        return Ok(Some(Outcome::Nothing));
+        return Ok(Some(Turn { worktree, answered, handoff: None }));
     }
-    if let Some(handoff) = crate::turn_answer::pending(&worktree)? {
+    let handoff = crate::turn_answer::pending(&worktree)?;
+    if handoff.is_none()
+        && (!answered.waits()
+            || worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Busy)
+    {
+        return Ok(None);
+    }
+    Ok(Some(Turn { worktree, answered, handoff }))
+}
+
+/// Handles `turn`, the last turn of my landing claim on `issue`, before
+/// worker health can hold its harness (`afkconvoy_core::tick::First::Answer`).
+/// A stopped or gone worker whose turn answered a wait needs no harness or
+/// judgment to ask again, unless an unchanged blocked answer holds the turn.
+/// An answer needing tree changes is handed to the
+/// worker before silence can mistake the fleet's merge for worker progress;
+/// that handoff takes a free slot. An open harness turn asking for a wait is
+/// left to its worker.
+pub(crate) fn answer_turn(
+    fleet: &mut Fleet,
+    found: &mut Found,
+    (me, agent): (&Me, &Agent),
+    issue: u64,
+    turn: Turn,
+    start: bool,
+    dependencies: &[crate::gh::BlockedBy],
+) -> Result<Outcome> {
+    let Turn { worktree, answered, handoff } = turn;
+    if answered == Answered::Asking {
+        return Ok(Outcome::Nothing);
+    }
+    if let Some(handoff) = handoff {
         if !start {
-            return Ok(Some(Outcome::Nothing));
+            return Ok(Outcome::Nothing);
         }
         if worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Gone
             || crate::dispatch::incomplete(fleet, issue)?
         {
             let started = dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?;
             if started["started"] != true {
-                return Ok(Some(Outcome::Nothing));
+                return Ok(Outcome::Nothing);
             }
         } else {
             let terminal = worktree.terminal()?.ok_or_else(|| {
@@ -122,16 +151,12 @@ pub(crate) fn answer_turn(
             worktree.hand_note(&terminal, &handoff.line, &handoff.mark, 0)?;
         }
         handoff.taken(&worktree, fleet.now)?;
-        return Ok(Some(Outcome::Told));
-    }
-    if !answered.waits() || worktree.state(fleet.now)? == afkconvoy_core::worker::WorkerState::Busy
-    {
-        return Ok(None);
+        return Ok(Outcome::Told);
     }
     if matches!(&answered, Answered::Said(outcome) if outcome == Ending::Blocked.word())
         && crate::turn_answer::blocked_unchanged(&worktree, dependencies)?
     {
-        return Ok(Some(Outcome::Nothing));
+        return Ok(Outcome::Nothing);
     }
     // A pass asks after no landing a standing lock keeps it off: one that
     // stopped at a lock is asked here only once that lock is gone.
@@ -140,7 +165,7 @@ pub(crate) fn answer_turn(
     if matches!(&answered, Answered::Said(outcome) if outcome == Ending::Locked.word()) {
         found.after_locks.push((issue, locks));
     }
-    Ok(Some(Outcome::Asked))
+    Ok(Outcome::Asked)
 }
 
 /// The join record of `pr`, and the PR's comments it was read from.
