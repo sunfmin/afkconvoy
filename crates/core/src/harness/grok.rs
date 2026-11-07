@@ -15,6 +15,7 @@ use toml::Value as Toml;
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Keystroke, Link, SessionFile, SessionLayout};
+use crate::account::{Counts, Keys, Usage};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::{Rules, Start, Told};
@@ -551,12 +552,14 @@ pub(super) const HOME: &str = ".grok";
 const EVENTS: &str = "events.jsonl";
 
 /// Where Grok keeps the session of `cwd`: one events file in each session
-/// directory under the worktree's directory.
+/// directory under the worktree's directory, its usage in the updates
+/// beside them.
 pub(super) fn session_layout(cwd: &str) -> SessionLayout {
     SessionLayout::Named {
         dir: format!("sessions/{}", dir_name(cwd)),
         name: EVENTS,
         compressed: false,
+        usage: Some(UPDATES),
     }
 }
 
@@ -570,6 +573,7 @@ pub(super) fn note_layout(cwd: &str) -> SessionLayout {
         dir: format!("sessions/{}", dir_name(cwd)),
         name: CHAT,
         compressed: false,
+        usage: None,
     }
 }
 
@@ -708,6 +712,37 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
             replaces: None,
         },
     ]
+}
+
+/// The file beside a session's events whose updates state its usage.
+const UPDATES: &str = "updates.jsonl";
+
+/// The names Grok gives the counts of one model's usage. Its input includes
+/// the cached input.
+const USAGE_KEYS: Keys = Keys {
+    input: "inputTokens",
+    cache_read: "cachedReadTokens",
+    cache_write: "cacheCreationTokens",
+    output: "outputTokens",
+    reasoning: "reasoningTokens",
+};
+
+/// What one line of a Grok session's updates says of usage: every model's
+/// running usage so far.
+pub(super) fn usage(value: &serde_json::Value, _line: usize) -> Option<Usage> {
+    let usage = &value["params"]["update"]["usage"];
+    if !usage.is_object() {
+        return None;
+    }
+    let Some(models) = usage["modelUsage"].as_object() else { return Some(Usage::Uncounted) };
+    Some(Usage::Snapshot(
+        models
+            .iter()
+            .filter_map(|(name, usage)| {
+                Some((name.clone(), Counts::read(usage, &USAGE_KEYS, true)?))
+            })
+            .collect(),
+    ))
 }
 
 #[cfg(test)]
@@ -978,5 +1013,38 @@ hooks = [{ type = "command", command = "role hook", timeout = 5 }]
         );
         assert!(!text.contains("base_prompt"));
         assert!(system(&Told::default()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use crate::account::Counts;
+    use crate::harness::Harness;
+
+    #[test]
+    fn the_last_usage_update_is_the_sessions() {
+        let text = r#"{"params":{"update":{"usage":{"modelUsage":{"a":{"inputTokens":33,"cachedReadTokens":20,"cacheCreationTokens":3,"outputTokens":5}}}}}}
+{"params":{"update":{"usage":{"modelUsage":{"a":{"inputTokens":33,"cachedReadTokens":20,"cacheCreationTokens":3,"outputTokens":5},"b":{"inputTokens":14,"cachedReadTokens":7,"cacheCreationTokens":1,"outputTokens":2}}}}}}"#;
+        let tokens = Harness::Grok.tokens(text, None).unwrap();
+        assert_eq!(
+            tokens["a"],
+            Counts { input: 10, cache_read: 20, cache_write: 3, output: 5, reasoning: None }
+        );
+        assert_eq!(
+            tokens["b"],
+            Counts { input: 6, cache_read: 7, cache_write: 1, output: 2, reasoning: None }
+        );
+    }
+
+    #[test]
+    fn a_round_window_subtracts_the_update_before_it() {
+        let grok = r#"{"ts":95,"params":{"update":{"usage":{"modelUsage":{"grok":{"inputTokens":130,"cachedReadTokens":30,"outputTokens":10}}}}}}
+{"ts":105,"params":{"update":{"usage":{"modelUsage":{"grok":{"inputTokens":190,"cachedReadTokens":45,"outputTokens":18}}}}}}
+{"ts":115,"params":{"update":{"usage":{"modelUsage":{"grok":{"inputTokens":255,"cachedReadTokens":55,"outputTokens":25}}}}}}"#;
+        let tokens = Harness::Grok.tokens(grok, Some((100, 110))).unwrap();
+        assert_eq!(
+            tokens["grok"],
+            Counts { input: 45, cache_read: 15, cache_write: 0, output: 8, reasoning: None }
+        );
     }
 }

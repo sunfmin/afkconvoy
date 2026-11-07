@@ -117,6 +117,11 @@ pub struct SessionPlace {
     pub under_home: &'static str,
     /// How the files of this worktree are laid out under that directory.
     pub layout: SessionLayout,
+    /// Another layout under the same directory whose sessions are this
+    /// worktree's only when they record its turn: a bound Claude Code
+    /// worker's words are filed under its role copy's project, not the
+    /// worktree's.
+    pub also: Option<SessionLayout>,
 }
 
 /// How the files of one worktree are laid out under the harness directory.
@@ -128,7 +133,9 @@ pub enum SessionLayout {
     /// Each file of `extension` anywhere under `dir` is one session.
     Tree { dir: String, extension: &'static str },
     /// Each `dir/*/<name>` is one session. `compressed` means the bytes are zstd.
-    Named { dir: String, name: &'static str, compressed: bool },
+    /// `usage` names the file beside it whose text holds the session's usage,
+    /// where the session keeps it apart.
+    Named { dir: String, name: &'static str, compressed: bool, usage: Option<&'static str> },
     /// `file` names the session files ([`Harness::indexed_sessions`]).
     Index { file: String },
 }
@@ -1179,7 +1186,7 @@ impl Harness {
             Harness::Kimi => (kimi::HOME, kimi::session_layout(cwd)),
             Harness::Grok => (grok::HOME, grok::session_layout(cwd)),
         };
-        SessionPlace { under_home, layout }
+        SessionPlace { under_home, layout, also: None }
     }
 
     /// The turn one session file's `text` records for the worktree `cwd`.
@@ -1204,6 +1211,26 @@ impl Harness {
             Harness::Dsh => dsh::recorded_turn(cwd, text, not_before),
             Harness::Kimi => kimi::recorded_turn(cwd, text, not_before),
             Harness::Grok => grok::recorded_turn(cwd, text, not_before),
+        }
+    }
+
+    /// The token use one session file's `text` records: the whole session, or
+    /// from `window.0` through `window.1` inclusive. `None` is no usage
+    /// evidence, not zero (`account::fold_tokens`). A session that keeps its
+    /// usage apart is read from the file its layout names beside it.
+    pub fn tokens(self, text: &str, window: Option<(u64, u64)>) -> Option<crate::account::Tokens> {
+        crate::account::fold_tokens(text, window, |line, n| self.usage(line, n))
+    }
+
+    /// What one session line, the `n`th, says of token use.
+    fn usage(self, line: &serde_json::Value, n: usize) -> Option<crate::account::Usage> {
+        match self {
+            Harness::ClaudeCode => claude_code::usage(line, n),
+            Harness::Pi => pi::usage(line, n),
+            Harness::Codex => codex::usage(line, n),
+            Harness::Kimi => kimi::usage(line, n),
+            Harness::Grok => grok::usage(line, n),
+            Harness::Dsh => None,
         }
     }
 
@@ -1373,9 +1400,10 @@ impl Harness {
             Harness::ClaudeCode => SessionPlace {
                 under_home: claude_code::HOME,
                 layout: claude_code::note_layout(cwd),
+                also: Some(claude_code::session_layout(cwd)),
             },
             Harness::Grok => {
-                SessionPlace { under_home: grok::HOME, layout: grok::note_layout(cwd) }
+                SessionPlace { under_home: grok::HOME, layout: grok::note_layout(cwd), also: None }
             }
             Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi => self.session_place(cwd),
         }
@@ -1595,7 +1623,7 @@ mod tests {
         ));
         assert!(matches!(
             Harness::Dsh.session_place(CWD).layout,
-            SessionLayout::Named { dir, name, compressed: true }
+            SessionLayout::Named { dir, name, compressed: true, usage: None }
                 if dir == "sessions/--Users-sunfmin-Developments-chessmirror--"
                     && name == "session.v4.jsonl.zstd"
         ));
@@ -1605,7 +1633,7 @@ mod tests {
         ));
         assert!(matches!(
             Harness::Grok.session_place(CWD).layout,
-            SessionLayout::Named { dir, name, compressed: false }
+            SessionLayout::Named { dir, name, compressed: false, usage: Some("updates.jsonl") }
                 if dir == "sessions/%2FUsers%2Fsunfmin%2FDevelopments%2Fchessmirror"
                     && name == "events.jsonl"
         ));

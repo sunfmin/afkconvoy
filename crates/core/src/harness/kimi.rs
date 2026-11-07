@@ -11,6 +11,7 @@ use toml::Value as Toml;
 
 use super::session::{self, json_lines};
 use super::{Held, Indexed, Kept, Link, SessionFile, SessionLayout};
+use crate::account::{Counts, Keys, Usage};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::{Rules, Start, Told};
@@ -614,6 +615,31 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
     }]
 }
 
+/// The names Kimi gives the counts of a usage record.
+const USAGE_KEYS: Keys = Keys {
+    input: "inputOther",
+    cache_read: "inputCacheRead",
+    cache_write: "inputCacheCreation",
+    output: "output",
+    reasoning: "reasoning",
+};
+
+/// What one Kimi session line says of usage: each usage record, keyed by
+/// its time and agent. The loop events that repeat a usage are not records.
+pub(super) fn usage(value: &Json, _line: usize) -> Option<Usage> {
+    if value["type"] != "usage.record" || !value["usage"].is_object() {
+        return None;
+    }
+    let Some(counts) = Counts::read(&value["usage"], &USAGE_KEYS, false) else {
+        return Some(Usage::Uncounted);
+    };
+    Some(Usage::Message {
+        key: format!("{}:{}", value["time"], value["agentId"]),
+        model: value["model"].as_str().unwrap_or("").to_string(),
+        counts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,5 +811,27 @@ pattern = "Bash(rm -rf*)"
         assert!(!shows_background(&screen(&["❯", "[1 tasks running]"])));
         assert!(!shows_background(&screen(&["❯", "[0 tasks running]"])));
         assert!(!shows_background(&screen(&[])));
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use crate::account::Counts;
+    use crate::harness::Harness;
+
+    #[test]
+    fn only_a_usage_record_counts() {
+        let text = r#"{"type":"usage.record","time":1,"model":"a","usage":{"inputOther":10,"inputCacheRead":20,"inputCacheCreation":3,"output":5}}
+{"type":"context.append_loop_event","event":{"usage":{"inputOther":10,"inputCacheRead":20,"inputCacheCreation":3,"output":5}}}
+{"type":"usage.record","time":2,"model":"b","usage":{"inputOther":6,"inputCacheRead":7,"inputCacheCreation":1,"output":2}}"#;
+        let tokens = Harness::Kimi.tokens(text, None).unwrap();
+        assert_eq!(
+            tokens["a"],
+            Counts { input: 10, cache_read: 20, cache_write: 3, output: 5, reasoning: None }
+        );
+        assert_eq!(
+            tokens["b"],
+            Counts { input: 6, cache_read: 7, cache_write: 1, output: 2, reasoning: None }
+        );
     }
 }
