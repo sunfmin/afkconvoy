@@ -199,7 +199,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
 /// - {const:FIRST_START_SETTINGS}
 /// - `gh` logged in as a user who may push to the repo.
-/// - `orca`, which starts every worker: on the PATH, or Orca's SSH remote runtime as it is, its CLI at `~/.orca/cli/bin/orca`. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
+/// - `orca`, which starts every worker: on the PATH, or Orca's SSH remote runtime as is, its CLI at `~/.orca/cli/bin/orca`. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
 /// - `claude` on the PATH and logged in, when it is what starts a worker.
 /// - `pi` there too, holding credentials for a provider (`/login` at its prompt), or `codex`, logged in (`codex login`): each when a stage or a patrol is on it, only then.
 ///
