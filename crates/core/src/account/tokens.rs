@@ -118,76 +118,104 @@ pub fn fold(
     window: Option<(u64, u64)>,
     usage: impl Fn(&Value, usize) -> Option<Usage>,
 ) -> Option<Tokens> {
-    let mut result = Tokens::new();
-    let mut messages: BTreeMap<String, (u64, String, Counts)> = BTreeMap::new();
-    let mut model = String::new();
-    let mut previous = Counts::default();
-    let mut previous_snapshot = Tokens::new();
-    let mut latest_snapshot = Tokens::new();
-    let mut found = false;
+    let mut sum = Sum { window, ..Sum::default() };
     for (line_no, line) in text.lines().enumerate() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         let Some(record) = usage(&v, line_no) else { continue };
-        let at = match window {
-            None => 0,
-            Some(_) if !record.timed() => 0,
-            Some(_) => usage_at(&v)?,
-        };
-        // Before the window, after it, or (with no window) inside it.
-        let place = window.map_or(std::cmp::Ordering::Equal, |(start, end)| {
-            if at < start {
-                std::cmp::Ordering::Less
-            } else if at > end {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Equal
-            }
-        });
+        let at = if window.is_some() && record.timed() { usage_at(&v)? } else { 0 };
+        sum.take(record, at);
+    }
+    sum.total()
+}
+
+/// Where a record falls against the window. With no window, every record is in it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Before,
+    In,
+    After,
+}
+
+/// The records of one session read so far.
+#[derive(Default)]
+struct Sum {
+    window: Option<(u64, u64)>,
+    result: Tokens,
+    messages: BTreeMap<String, (u64, String, Counts)>,
+    model: String,
+    previous: Counts,
+    previous_snapshot: Tokens,
+    latest_snapshot: Tokens,
+    found: bool,
+}
+
+impl Sum {
+    fn place(&self, at: u64) -> Place {
+        match self.window {
+            Some((start, _)) if at < start => Place::Before,
+            Some((_, end)) if at > end => Place::After,
+            _ => Place::In,
+        }
+    }
+
+    fn take(&mut self, record: Usage, at: u64) {
+        let place = self.place(at);
         match record {
-            Usage::Model(name) => model = name,
-            Usage::Running(current) => match place {
-                std::cmp::Ordering::Less => previous = current,
-                std::cmp::Ordering::Greater => {}
-                std::cmp::Ordering::Equal => {
-                    result.entry(model.clone()).or_default().add(&current.delta(&previous));
-                    previous = current;
-                    found = true;
-                }
-            },
+            Usage::Model(name) => self.model = name,
+            Usage::Running(current) => self.running(current, place),
             Usage::Message { key, model, counts } => {
-                if window.is_none() {
-                    messages.insert(key, (at, model, counts));
+                if self.window.is_none() {
+                    self.messages.insert(key, (at, model, counts));
                 } else {
-                    messages.entry(key).or_insert((at, model, counts));
+                    self.messages.entry(key).or_insert((at, model, counts));
                 }
             }
-            Usage::Snapshot(snapshot) => {
-                if snapshot.is_empty() {
-                    continue;
-                }
-                match place {
-                    std::cmp::Ordering::Less => previous_snapshot = snapshot,
-                    std::cmp::Ordering::Greater => {}
-                    std::cmp::Ordering::Equal => {
-                        latest_snapshot = snapshot;
-                        found = true;
-                    }
-                }
-            }
+            Usage::Snapshot(snapshot) => self.snapshot(snapshot, place),
             Usage::Uncounted => {}
         }
     }
-    for (at, model, counts) in messages.into_values() {
-        if window.is_none_or(|(start, end)| at >= start && at <= end) {
-            result.entry(model).or_default().add(&counts);
-            found = true;
+
+    fn running(&mut self, current: Counts, place: Place) {
+        match place {
+            Place::Before => self.previous = current,
+            Place::After => {}
+            Place::In => {
+                let delta = current.delta(&self.previous);
+                self.result.entry(self.model.clone()).or_default().add(&delta);
+                self.previous = current;
+                self.found = true;
+            }
         }
     }
-    for (model, counts) in latest_snapshot {
-        let delta = counts.delta(previous_snapshot.get(&model).unwrap_or(&Counts::default()));
-        result.entry(model).or_default().add(&delta);
+
+    fn snapshot(&mut self, snapshot: Tokens, place: Place) {
+        if snapshot.is_empty() {
+            return;
+        }
+        match place {
+            Place::Before => self.previous_snapshot = snapshot,
+            Place::After => {}
+            Place::In => {
+                self.latest_snapshot = snapshot;
+                self.found = true;
+            }
+        }
     }
-    found.then_some(result)
+
+    fn total(mut self) -> Option<Tokens> {
+        for (at, model, counts) in std::mem::take(&mut self.messages).into_values() {
+            if self.place(at) == Place::In {
+                self.result.entry(model).or_default().add(&counts);
+                self.found = true;
+            }
+        }
+        for (model, counts) in std::mem::take(&mut self.latest_snapshot) {
+            let zero = Counts::default();
+            let delta = counts.delta(self.previous_snapshot.get(&model).unwrap_or(&zero));
+            self.result.entry(model).or_default().add(&delta);
+        }
+        self.found.then_some(self.result)
+    }
 }
 
 fn usage_at(value: &Value) -> Option<u64> {
