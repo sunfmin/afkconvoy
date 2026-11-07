@@ -92,7 +92,7 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
             })
             .cloned();
         let verdict_at = verdict_at(worker, &comments, before);
-        let harness = worker.harness.as_deref().and_then(afkconvoy_core::harness::Harness::read);
+        let harness = worker.harness.as_ref().and_then(account::RecordedHarness::known);
         worker.goal = worktree
             .as_ref()
             .zip(harness)
@@ -105,7 +105,7 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
         worker.tokens = worktree
             .as_ref()
             .and_then(|worktree| {
-                let harness = afkconvoy_core::harness::Harness::read(worker.harness.as_deref()?)?;
+                let harness = worker.harness.as_ref()?.known()?;
                 crate::session::tokens(&worktree.path, harness, worker.start?, before)
                     .ok()
                     .flatten()
