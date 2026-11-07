@@ -101,11 +101,11 @@ pub fn take_look(look: &mut Value) -> Result<()> {
         now: crate::clock(),
     };
     for checkout in look["checkouts"].as_array_mut().into_iter().flatten() {
-        let Some(at) = checkout["checkout"].as_str() else { continue };
+        let Some(at) = checkout["checkout"].as_str().map(str::to_string) else { continue };
         if !checkout["doctor"]["waiting_on_human"].is_array() {
             continue;
         }
-        let repo = Repo::at(std::path::Path::new(at))?;
+        let repo = Repo::at(std::path::Path::new(&at))?;
         let waiting = checkout["doctor"]["waiting_on_human"]
             .as_array()
             .into_iter()
@@ -136,8 +136,7 @@ pub fn take_look(look: &mut Value) -> Result<()> {
             let holder = (holder != host).then_some(holder);
             wait["taken_by"] = serde_json::json!(holder);
             if holder.is_some() {
-                let identity: crate::doctor::HumanWait = serde_json::from_value(wait.clone())?;
-                taken.insert(identity.watch_id());
+                taken.insert(crate::doctor::waiting_id(&at, wait)?);
             }
         }
         if let Some(findings) = checkout["doctor"]["findings"].as_array_mut() {

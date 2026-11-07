@@ -69,7 +69,7 @@ pub fn record(
             repo: repo.to_string(),
             usage: Usage {
                 id: format!("{prefix}{}", harness.key()),
-                harness: Some(harness.key().to_string()),
+                harness: Some(harness.into()),
                 model: (current == Some(harness)).then(|| model.clone()).flatten(),
                 start: Some(started),
                 end: Some(ended),

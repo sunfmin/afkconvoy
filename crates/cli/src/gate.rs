@@ -550,12 +550,12 @@ fn sent_bytes(stderr: &str) -> Option<&str> {
 
 fn push_error(stderr: &str) -> String {
     let stderr = stderr.trim();
-    if !stderr.contains("did not end within") {
+    if !stderr.contains(crate::git::PAST_LIMIT) {
         return stderr.to_string();
     }
     let timeout = stderr
         .rsplit(['\r', '\n'])
-        .find(|line| line.contains("did not end within"))
+        .find(|line| line.contains(crate::git::PAST_LIMIT))
         .unwrap_or(stderr);
     let sent = sent_bytes(stderr).unwrap_or("no pack bytes");
     format!("{timeout}; Git reported {sent} sent before the push was ended")

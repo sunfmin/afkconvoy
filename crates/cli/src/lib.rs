@@ -113,6 +113,7 @@ pub mod resources;
 pub mod rewrite_accounts;
 pub mod role;
 pub mod roster_issue;
+pub mod run_log;
 pub mod runner_socket;
 pub mod scaffold;
 pub mod serve;
@@ -134,6 +135,7 @@ pub mod tick;
 pub mod tools;
 pub mod topic;
 pub mod tracker;
+mod transient;
 mod turn;
 mod turn_answer;
 mod unbound_issue;
@@ -1341,7 +1343,7 @@ enum Command {
     ///   - `evidence`: what was read that says so
     ///   - `fix`: one command line, run as printed apart from what stands between < and > — it names the checkout as the command takes it, so the line runs from any directory, and `afkconvoy doctor --all` is run from anywhere — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit. For an escalation with no position and several workflows, `what` lists the flow labels to choose `<flow label>` from
     ///   - `see`: the command that prints the help topic explaining it: `afkconvoy help humans` where what it reports waits for a human, else `afkconvoy help troubleshooting`, which has a row for each finding
-    ///   - `watch_id`: the condition's identity, made where it is judged: the same while the condition lasts, whatever `what` says of it. `checkout:` is one of this checkout, `host:` one of the host; a resource's is its episode identity. The host's watch acts on each finding but an `info` one, or its own, by `kind` and `watch_id`, never by its words
+    ///   - `watch_id`: the condition's identity, made where it is judged and scoped to where it was found: the same while the condition lasts, whatever `what` says of it. `finding:<checkout>:` is one of that checkout, `finding:host:` one of the host, `kit-research:` a harness's unplaced models in the host kit; a resource's is its episode identity. The host's watch acts on each finding but an `info` one, or its own, by `kind` and `watch_id` as doctor says it, never by its words
     ///
     /// A finding's `severity` is one of, most first:
     ///
@@ -2182,7 +2184,7 @@ enum Command {
     /// - A landing claim — its PR open and not on the base branch — takes a slot while its worker is changing the tree: resolving a `conflict` or `speculative_conflict`, fixing a `gate_red`, or still preparing the branch for the turn. While its worker is gone or idle, or its turn is being asked for, or the last turn answered a wait (`afkconvoy land --help`), it takes none, and is still held until the PR lands. Its worker stops on a wait; the tick asks for the turn again itself (`asked for a turn again for #7` in its line), in the worktree, with no harness started. If that turn answers `conflict`, `speculative_conflict` or `gate_red`, the next tick hands its worker the answer, including the files or failing output, the ending's instructions and the worktree's full `convoy-turn.log` path. Its line says `told its turn's answer to #7`. A worker gone is continued onto its land step with that answer in its brief. Giving the worker this answer waits for a free slot; once the worker takes it, the claim takes that slot until it asks for a turn again, even while its harness still reports idle. Changes the fleet's turn made in the worktree count as no worker sign of life.
     /// - What a closed lock explains is run again, not carried out. In a bound repo, a stage whose own worker declared `escalate` before the lock closed and was not acted on since — and one whose worker stayed silent past a nudge sent before it closed — is not handed to its consult or to a human: the fleet leaves a stage record (`verdict=lock-closed by=fleet`), the claim is released (`advance`, `done`), and the next tick starts a worker on that stage, whose brief says a lock stood. It is no rework. A `pass`, a `blocked` and an `already-satisfied` stand as they are. What landed is still settled.
     /// - A step that failed is not a failed command: the exit is 0 and the failure is in `errors`. Read `errors`, not the exit code.
-    /// - A read of GitHub that failed in transit — an answer cut short, a 5xx, a connection reset, a timeout — is made again, twice more and a second apart, before anything is said. One that still fails is `GitHub could not be reached: <the call>: <what gh said>`. A 404 or a 403 is GitHub's answer, and is not asked for again.
+    /// - A read of GitHub that failed in transit — {const:GH_IN_TRANSIT} — is made again, twice more and a second apart, before anything is said. One that still fails is `GitHub could not be reached: <the call>: <what gh said>`. A 404 or a 403 is GitHub's answer, and is not asked for again.
     /// - A role whose repo GitHub could not be reached for is no fault of the team, and stops only the step that would start a worker in it: an issue at a stage another role performs is advanced, started and labelled as ever.
     /// - It does not take the claims stamped with this host: only `run` does that, at its start. A tick takes another instance's claims only once they are stale.
     /// - Do not tick as an instance whose `run` is alive: both would act on the same claims.
@@ -4193,6 +4195,7 @@ pub fn manual() -> agent_help::Help {
         .constant("ACCOUNT_SCHEMA_VERSION", afkconvoy_core::account::SCHEMA_VERSION)
         .constant("LAND_ENDINGS", turn::endings_help())
         .constant("REMOTE_READS", remote::reads_help())
+        .constant("GH_IN_TRANSIT", gh::in_transit_help())
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
         .constant("FIRST_START_SETTINGS", first_start::settings_help())
         .constant("FIRST_START_QUESTIONS", first_start::help())
@@ -4250,7 +4253,7 @@ pub fn manual() -> agent_help::Help {
         .constant("TIMED_OUT_CODE", gate::TIMED_OUT_CODE)
         .constant("STRAYS_LISTED", gate::STRAYS_LISTED)
         .constant("DOCTOR_FAILED_SHOWN", doctor::FAILED_SHOWN)
-        .constant("DOCTOR_EVENTS_SHOWN", doctor::EVENTS_SHOWN)
+        .constant("DOCTOR_EVENTS_SHOWN", run_log::EVENTS_SHOWN)
         .constant("CUT_MINOR_LABEL", afkconvoy_core::cut::MINOR_LABEL)
         .constant("CUT_BUSY_AFTER_SECONDS", afkconvoy_core::cut::BUSY_AFTER_SECONDS);
     for (name, group) in [
@@ -5030,7 +5033,7 @@ fn run(
             }
             let findings = blockers::findings(&set.unworked_blockers);
             let mut plan = serde_json::to_value(set)?;
-            plan["findings"] = serde_json::to_value(findings)?;
+            plan["findings"] = doctor::answered(doctor::checkout_at(&repo.dir), findings)?;
             if let Some(plan) = plan.as_object_mut() {
                 plan.extend(report.plan_json()?);
             }
