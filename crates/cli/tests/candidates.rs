@@ -76,8 +76,10 @@ sleep 120 &
 echo $! > "$root/child-$name"
 touch "$root/start-$name"
 while test -d "$root" && test ! -f "$root/release-$name"; do sleep 0.02; done
+{said}
 test ! -f "$root/fail-$name"
-"#
+"#,
+        said = said("$name")
     );
     commit(&world.clone, "gate.sh", &script);
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
@@ -125,6 +127,20 @@ fn finish(child: Child) -> Value {
         String::from_utf8_lossy(&out.stderr)
     );
     serde_json::from_slice(&out.stdout).unwrap()
+}
+
+/// The gate script's lines that end it red on one TIMEOUT where the test
+/// put `overloaded-<at>` (the gate says the host is overloaded) or
+/// `timeout-<at>` (it says it is quiet) in its root.
+fn said(at: &str) -> String {
+    let timeout = "echo '     TIMEOUT [   6.004s] (40/669) afkconvoy::cli dsh::the_line'";
+    format!(
+        "if test -f \"$root/overloaded-{at}\"; then {timeout}; echo 'gate: host overloaded or \
+         load unavailable (load 23.57, CPUs 12); cannot classify TIMEOUT tests. Retry on a quiet \
+         host.' >&2; exit 100; fi\nif test -f \"$root/timeout-{at}\"; then {timeout}; echo \
+         'gate: afkconvoy::cli dsh::the_line was still TIMEOUT at 2s on a quiet host.' >&2; exit \
+         100; fi"
+    )
 }
 
 fn release(world: &World, name: &str, red: bool) {
@@ -1329,8 +1345,10 @@ case "${{AFKCONVOY_ISSUE:-}}" in 1) name=a;; 2) name=b;; 3) name=c;; 4) name=d;;
 test -n "$name" || exit 0
 touch "$root/start-$part-$name"
 while test -d "$root" && test ! -f "$root/release-$part-$name"; do sleep 0.02; done
+{said}
 test ! -f "$root/fail-$part-$name"
-"#
+"#,
+        said = said("$part-$name")
     );
     commit(&world.clone, "gate.sh", &script);
     let afk = afkconvoy_core::line::Line::new().program(env!("CARGO_BIN_EXE_afkconvoy")).own();
@@ -1706,4 +1724,93 @@ fn a_quiet_hosts_candidate_is_taken_over_past_the_lease_and_its_turn_learns_it_o
     gone(&world, "a");
     assert_eq!(candidate_of(&world, 1)["stopped"], true, "its own host confirmed them gone");
     assert!(!world.root.join("release-a").exists(), "gate a was stopped, never released");
+}
+
+/// A candidate's fast gate red only on TIMEOUTs it cannot classify on an
+/// overloaded host says nothing of it (sunfmin/control#617): its turn answers
+/// `gate_unsettled`, naming the TIMEOUT and the load, nothing lands and
+/// nothing is recorded red, and the candidate merged onto it goes with it
+/// unsettled, not failed. Its next turn on a quieter host lands it.
+#[test]
+fn a_candidate_red_only_on_timeouts_under_overload_is_unsettled_not_red() {
+    let world = world(2);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let bb = start(&world, &b, &world.cache(), 2);
+    began(&world, "b");
+    let overloaded = world.root.join("overloaded-a");
+    std::fs::write(&overloaded, "").unwrap();
+    release(&world, "a", false);
+    let (unsettled, cancelled) = (finish(aa), finish(bb));
+    assert_eq!(unsettled["outcome"], "gate_unsettled", "{unsettled}");
+    assert_eq!(unsettled["gate"], "fast");
+    let detail = unsettled["detail"].as_str().unwrap();
+    assert!(detail.contains("afkconvoy::cli dsh::the_line"), "{detail}");
+    assert!(detail.contains("load 23.57, CPUs 12"), "{detail}");
+    assert_eq!(cancelled["outcome"], "cancelled", "{cancelled}");
+    assert_eq!(cancelled["cause"], "predecessor_unsettled");
+    assert_eq!(cancelled["cancelled_by"], unsettled["candidate"]);
+    let candidates = chain(&world)["candidates"].clone();
+    assert!(candidates.as_array().unwrap().iter().all(|c| c["phase"] != "red"), "{candidates}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base, "nothing landed");
+    assert!(
+        !world
+            .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/gate/"])
+            .contains("/red-1-"),
+        "an unsettled run is not recorded red"
+    );
+    assert_eq!(world.state(1), "open");
+    std::fs::remove_file(&overloaded).unwrap();
+    let landed = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+}
+
+/// A TIMEOUT the gate classified — it said the host was quiet — is a red
+/// gate, as a FAIL is.
+#[test]
+fn a_candidate_red_on_a_timeout_the_gate_classified_is_gate_red() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    let _runner = world.host_held();
+    std::fs::write(world.root.join("timeout-a"), "").unwrap();
+    let aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    release(&world, "a", false);
+    let red = finish(aa);
+    assert_eq!(red["outcome"], "gate_red", "{red}");
+    assert!(red["unsettled"].is_null(), "{red}");
+}
+
+/// A round's slow gate red only on TIMEOUTs it cannot classify on an
+/// overloaded host fails no round (sunfmin/control#617): its tip answers
+/// `gate_unsettled`, the candidate before it is not stopped `round_red` but
+/// is the round's tip now, and its round lands it.
+#[test]
+fn an_unsettled_round_fails_no_round_and_the_candidate_before_it_lands() {
+    let world = split_world(3);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    let bb = start(&world, &b, &world.cache(), 2);
+    until(|| started(&world, "fast", "b"));
+    let_go(&world, "fast", "a", false);
+    let_go(&world, "fast", "b", false);
+    until(|| started(&world, "slow", "b"));
+    std::fs::write(world.root.join("overloaded-slow-b"), "").unwrap();
+    let_go(&world, "slow", "b", false);
+    let unsettled = finish(bb);
+    assert_eq!(unsettled["outcome"], "gate_unsettled", "{unsettled}");
+    assert_eq!(unsettled["gate"], "slow");
+    until(|| started(&world, "slow", "a"));
+    let_go(&world, "slow", "a", false);
+    let landed = finish(aa);
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+    assert!(files.lines().any(|f| f == "a.txt") && !files.lines().any(|f| f == "b.txt"));
 }
