@@ -20,12 +20,13 @@
 //! thread of its own (`evidence`), and the `run` is woken. The resource
 //! reading becomes a doctor finding for the host watch's next look.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::hot::{
     CPU_HELD, Episode, Limits, SAMPLE_EVERY, Sample, Turned, WRITTEN_WITHIN, Watch, Why, millicores,
 };
@@ -233,6 +234,9 @@ pub(crate) struct Proc {
     pub(crate) resident: u64,
     /// The CPU it has taken since it started, in milliseconds.
     pub(crate) cpu_ms: u64,
+    /// The share of a core it takes now, as `ps` says it, in hundredths of
+    /// a percent: what admission apportions the load by (docs/adr/0050).
+    pub(crate) cpu_share: u64,
     /// The bytes it has written to disk since it started.
     pub(crate) written: u64,
     /// Its command line, then its environment, where that can be read.
@@ -262,7 +266,7 @@ pub(crate) fn listed_checked() -> anyhow::Result<Vec<Proc>> {
     let out = crate::process::output(Command::new("ps").args([
         "axeww",
         "-o",
-        "pid=,ppid=,rss=,time=,command=",
+        "pid=,ppid=,pcpu=,rss=,time=,command=",
     ]))?;
     anyhow::ensure!(out.status.success(), "cannot confirm worker termination: ps failed");
     let mut rows: Vec<_> = String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect();
@@ -280,7 +284,8 @@ pub(crate) fn listed_checked() -> anyhow::Result<Vec<Proc>> {
     Ok(rows)
 }
 
-/// One row of `ps`: pid, ppid, resident KiB, CPU time, then the rest.
+/// One row of `ps`: pid, ppid, share of a core, resident KiB, CPU time,
+/// then the rest. A share that is no number counts as none.
 fn parse(row: &str) -> Option<Proc> {
     let mut rest = row.trim_start();
     let mut field = || {
@@ -290,9 +295,12 @@ fn parse(row: &str) -> Option<Proc> {
     };
     let pid = field().parse().ok()?;
     let ppid = field().parse().ok()?;
+    let share = field().parse::<f64>().ok().filter(|share| share.is_finite() && *share >= 0.0);
+    let cpu_share = share.map_or(0, |share| (share * 100.0).round() as u64);
     let resident = field().parse::<u64>().ok()?.saturating_mul(1024);
     let cpu_ms = cpu_time(field())?;
-    Some(Proc { pid, ppid, resident, cpu_ms, written: 0, line: rest.to_string(), cwd: None })
+    let line = rest.to_string();
+    Some(Proc { pid, ppid, resident, cpu_ms, cpu_share, written: 0, line, cwd: None })
 }
 
 /// `[[dd-]hh:]mm:ss[.cc]`, as `ps` says CPU time → milliseconds.
@@ -459,7 +467,7 @@ struct Took {
 
 /// What a worker's processes `procs` took, those of `exclusive` held under an
 /// exclusive command.
-fn took(watched: &mut Watched, procs: &[&Proc], exclusive: &HashSet<u32>) -> Took {
+fn took(watched: &mut Watched, procs: &[&Proc], exclusive: &BTreeSet<u32>) -> Took {
     let now: HashMap<u32, (u64, u64)> =
         procs.iter().map(|proc| (proc.pid, (proc.cpu_ms, proc.written))).collect();
     // A process new since the sample before took all it has since then.
@@ -492,25 +500,6 @@ fn took(watched: &mut Watched, procs: &[&Proc], exclusive: &HashSet<u32>) -> Too
             .map(|proc| proc.resident)
             .sum(),
     }
-}
-
-/// The pids of `procs` under an exclusive command: each of `running` — the
-/// processes of the queue's running tickets — and every one under those.
-pub(crate) fn exclusive(procs: &[Proc], running: &[u32]) -> HashSet<u32> {
-    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-    for proc in procs {
-        children.entry(proc.ppid).or_default().push(proc.pid);
-    }
-    let mut found: Vec<u32> = running.to_vec();
-    let mut seen: HashSet<u32> = found.iter().copied().collect();
-    while let Some(pid) = found.pop() {
-        for child in children.get(&pid).into_iter().flatten() {
-            if seen.insert(*child) {
-                found.push(*child);
-            }
-        }
-    }
-    seen
 }
 
 /// What was known of `watched` as it turned hot in `episode`, under `limits`.
@@ -554,9 +543,9 @@ struct Sampler {
 
 impl Sampler {
     /// Takes one sample of every worker, `every` seconds after the one before
-    /// on the run's clock and `wall_ms` on the wall's, at `at`, `running` the
-    /// processes of the exclusive queue's running tickets and `pressure` the
-    /// host's memory pressure level, where it can be read → each turn,
+    /// on the run's clock and `wall_ms` on the wall's, at `at`, `queue` the
+    /// exclusive queue's tickets and `pressure` the host's memory pressure
+    /// level, where it can be read → each turn,
     /// as a line of the log, and what is to be taken down of each worker that
     /// turned hot.
     fn sample(
@@ -565,7 +554,7 @@ impl Sampler {
         at: u64,
         every: u64,
         wall_ms: u64,
-        (running, pressure): (&[u32], Option<u64>),
+        (queue, pressure): (&[Ticket], Option<u64>),
     ) -> (Vec<What>, Vec<(Worktree, Taken)>) {
         let measuring = self.samples.is_multiple_of(LISTED_FOR);
         if measuring {
@@ -598,7 +587,7 @@ impl Sampler {
             }
         }
         let procs = processes();
-        let exclusive = exclusive(&procs, running);
+        let exclusive = crate::exclusive::running_work(queue, &procs).pids;
         let mut taken = vec![];
         let mut hot_now = vec![];
         for (path, worker, worktree, issue) in &self.listed {
@@ -791,15 +780,10 @@ pub fn watch(
                 sampler.limits = limits(sampler.said, &repo.dir);
             }
             // A queue that cannot be read leaves every process counted.
-            let running: Vec<u32> = queue.observation().map_or_else(
-                |_| vec![],
-                |(tickets, _)| {
-                    tickets.iter().filter(|ticket| ticket.ran.is_some()).map(|t| t.pid).collect()
-                },
-            );
+            let tickets = queue.observation().map_or_else(|_| vec![], |(tickets, _)| tickets);
             let pressure = crate::resources::pressure_level();
             let (turned, to_take) =
-                sampler.sample(source, at, SAMPLE_EVERY, wall_ms, (&running, pressure));
+                sampler.sample(source, at, SAMPLE_EVERY, wall_ms, (&tickets, pressure));
             for turned in turned {
                 hears.turned(at, turned);
             }
@@ -848,18 +832,29 @@ mod tests {
 
     #[test]
     fn a_row_of_ps_is_its_numbers_then_its_line() {
-        let row = "  630 94216   3024   0:01.50 /bin/zsh -c x TMPDIR=/w/.afkconvoy-tmp HOME=/u";
+        let row =
+            "  630 94216  12.3   3024   0:01.50 /bin/zsh -c x TMPDIR=/w/.afkconvoy-tmp HOME=/u";
         let proc = parse(row).unwrap();
         assert_eq!(
-            (proc.pid, proc.ppid, proc.resident, proc.cpu_ms),
-            (630, 94216, 3024 * 1024, 1500)
+            (proc.pid, proc.ppid, proc.cpu_share, proc.resident, proc.cpu_ms),
+            (630, 94216, 1230, 3024 * 1024, 1500)
         );
+        assert_eq!(parse("1 0 nan 8 0:00.00 launchd").map(|proc| proc.cpu_share), Some(0));
         assert_eq!(proc.line, "/bin/zsh -c x TMPDIR=/w/.afkconvoy-tmp HOME=/u");
         assert_eq!(parse("not a row"), None);
     }
 
     fn proc(pid: u32, ppid: u32, line: &str) -> Proc {
-        Proc { pid, ppid, resident: 1024, cpu_ms: 0, written: 0, line: line.to_string(), cwd: None }
+        Proc {
+            pid,
+            ppid,
+            resident: 1024,
+            cpu_ms: 0,
+            cpu_share: 0,
+            written: 0,
+            line: line.to_string(),
+            cwd: None,
+        }
     }
 
     /// A process handed to pid 1, started with `line`, working in `cwd`.
@@ -973,10 +968,26 @@ mod tests {
             proc(14, 13, "rustc"),
             proc(20, 10, "afkconvoy exclusive -- make"),
         ];
-        let mut under: Vec<u32> = exclusive(&procs, &[12]).into_iter().collect();
-        under.sort();
-        assert_eq!(under, [12, 13, 14]);
-        assert!(exclusive(&procs, &[]).is_empty());
+        let ticket = |number: u64, pid: u32, ran: Option<u64>| Ticket {
+            number,
+            pid,
+            command: String::new(),
+            dir: "/w/a".into(),
+            issue: None,
+            cut: false,
+            repo_lane: None,
+            repo: None,
+            is_turn: false,
+            candidate: false,
+            validation: None,
+            gate: None,
+            asked: 0,
+            ran,
+        };
+        let queue = [ticket(1, 12, Some(0)), ticket(2, 20, None)];
+        let under = crate::exclusive::running_work(&queue, &procs).pids;
+        assert_eq!(under.into_iter().collect::<Vec<_>>(), [12, 13, 14]);
+        assert!(crate::exclusive::running_work(&queue[1..], &procs).pids.is_empty());
     }
 
     #[test]
@@ -993,14 +1004,14 @@ mod tests {
         };
         let first = at(&[(1, 5000, 1 << 20), (2, 700, 0)]);
         assert_eq!(
-            took(&mut watched, &first.iter().collect::<Vec<_>>(), &HashSet::from([2])),
+            took(&mut watched, &first.iter().collect::<Vec<_>>(), &BTreeSet::from([2])),
             Took { cpu_ms: None, written: None, resident: 2048, exclusive: 1024 }
         );
         // 1 took 2000 more and wrote 1 KiB more, 2 ended, 3 started and took
         // 300, writing 4 KiB
         let second = at(&[(1, 7000, (1 << 20) + 1024), (3, 300, 4096)]);
         assert_eq!(
-            took(&mut watched, &second.iter().collect::<Vec<_>>(), &HashSet::new()),
+            took(&mut watched, &second.iter().collect::<Vec<_>>(), &BTreeSet::new()),
             Took { cpu_ms: Some(2300), written: Some(5120), resident: 2048, exclusive: 0 }
         );
         // 1 took the most since the sample before

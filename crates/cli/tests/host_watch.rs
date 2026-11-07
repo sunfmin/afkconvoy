@@ -1587,7 +1587,7 @@ fn resource_host(world: &World) {
     std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::write(
         world.root.join("host-processes"),
-        "999990 2 10485760 0:00.00 outside-memory-holder\n",
+        "999990 2 0.0 10485760 0:00.00 outside-memory-holder\n",
     )
     .unwrap();
     // The runner takes its PATH from the login profile. Keep a hostvitals
@@ -1659,7 +1659,7 @@ fn resource_worker(world: &World, issue: u64, mib: u64) -> PathBuf {
     });
     let tmp = world.tmp(&path);
     std::fs::write(world.root.join("host-processes"), format!(
-        "999990 2 10485760 0:00.00 outside-memory-holder\n999980 2 {} 0:00.00 worker TMPDIR={}\n",
+        "999990 2 0.0 10485760 0:00.00 outside-memory-holder\n999980 2 0.0 {} 0:00.00 worker TMPDIR={}\n",
         mib * 1024, tmp.display())).unwrap();
     path
 }

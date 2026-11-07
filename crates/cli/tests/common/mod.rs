@@ -1827,15 +1827,19 @@ echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 
 /// The stand-in `ps`: the real one, but where asked for the uids of the
 /// machine's processes it lists this account's alone, and then the rows in
-/// `other-accounts`: of another account's, as a test says them.
+/// `other-accounts`: of another account's, as a test says them. Where
+/// `admission-processes` says each a pid, its parent and its share of a
+/// core, the share of a core each process takes is the one it says, and
+/// none for every other; a pid it says that no process has is listed too.
 const PS: &str = r#"#!/bin/sh
+table=${0%/*}/../admission-processes
 case "$*" in
 *pid=,ppid=,pcpu=*)
-    if test -f "${0%/*}/../admission-processes"; then
-        cat "${0%/*}/../admission-processes"
-    else
-        exec /bin/ps "$@"
-    fi
+    test -f "$table" || exec /bin/ps "$@"
+    /bin/ps "$@" | awk -v table="$table" '
+        BEGIN { while ((getline row < table) > 0) { split(row, f, " "); share[f[1]] = f[3]; parent[f[1]] = f[2] } }
+        { if ($1 in share) { $3 = share[$1]; seen[$1] = 1 } else { $3 = "0.0" } print }
+        END { for (pid in share) if (!(pid in seen)) print pid, parent[pid], share[pid], 0, "0:00.00", "stand-in" }'
     ;;
 *uid=*)
     me=$(id -u)
