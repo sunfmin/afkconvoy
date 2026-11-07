@@ -11,6 +11,7 @@ pub enum Ending {
     Merged,
     Conflict,
     GateRed,
+    GateUnsettled,
     BaseRed,
     BaseUncertified,
     TargetMoved,
@@ -26,10 +27,11 @@ pub enum Ending {
 
 impl Ending {
     /// Every ending, in the order a reader is told them.
-    pub const ALL: [Ending; 14] = [
+    pub const ALL: [Ending; 15] = [
         Ending::Merged,
         Ending::Conflict,
         Ending::GateRed,
+        Ending::GateUnsettled,
         Ending::BaseRed,
         Ending::BaseUncertified,
         Ending::TargetMoved,
@@ -49,6 +51,7 @@ impl Ending {
             Ending::Merged => "merged",
             Ending::Conflict => "conflict",
             Ending::GateRed => "gate_red",
+            Ending::GateUnsettled => "gate_unsettled",
             Ending::BaseRed => "base_red",
             Ending::BaseUncertified => "base_uncertified",
             Ending::TargetMoved => "target_moved",
@@ -74,6 +77,9 @@ impl Ending {
             }
             Ending::GateRed => {
                 "the candidate gated red, or green without a written record (`detail` says what prevented recording); nothing landed: fix your change, commit and run this again. Where the slow gate ran red on a round at your candidate, `round` lists its PRs and issues and your branch already holds the round: do not split it; read those issues' requirements and the failing tests, fix the round, commit and run this again"
+            }
+            Ending::GateUnsettled => {
+                "the candidate's gate, fast or slow, ran red only on TIMEOUTs it cannot classify on an overloaded host (`detail` names them and the load); that says nothing of your change, nothing landed and nothing is recorded red: ask for a turn again"
             }
             Ending::BaseRed => {
                 "the target tip has no recorded green run and gated red alone; nothing of this PR ran: ask for a turn again once the fleet's repair of that tip has landed"

@@ -590,13 +590,9 @@ fn failed_status_of(line: &str) -> Option<&str> {
 /// cannot classify TIMEOUT tests.` — or one of them, naming it — `gate: host
 /// overloaded (load 13, CPUs 12); cannot classify afkconvoy cutting::a_test.`
 fn cannot_classify(line: &str, test: &str) -> bool {
-    let line = line.trim();
-    let Some((before, after)) = line.split_once("cannot classify ") else {
+    let Some(after) = classifies_not(line) else {
         return false;
     };
-    if !before.contains("host overloaded") {
-        return false;
-    }
     after.starts_with("TIMEOUT tests")
         || after.strip_prefix(test).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
 }
@@ -620,6 +616,20 @@ pub fn overloaded_timeouts(lines: &[String]) -> bool {
         });
         timed_out && lines.iter().any(|line| cannot_classify(line, test))
     })
+}
+
+/// The last line of a gate's output `lines` that says the host is overloaded
+/// and it cannot classify a TIMEOUT, with the load it read: what an
+/// unsettled run is told by.
+pub fn overload_said(lines: &[String]) -> Option<&str> {
+    lines.iter().map(|line| line.trim()).rfind(|line| classifies_not(line).is_some())
+}
+
+/// What a gate's line says it cannot classify on an overloaded host, where
+/// it says so: the rest of the line after `cannot classify `.
+fn classifies_not(line: &str) -> Option<&str> {
+    let (before, after) = line.trim().split_once("cannot classify ")?;
+    before.contains("host overloaded").then_some(after)
 }
 
 /// What a red gate's output `lines` is quoted by: `QUOTE_LINES` from the
@@ -678,10 +688,12 @@ mod tests {
                    dsh::the_line. Retry on a quiet host.";
         assert!(overloaded_timeouts(&said(&[timeout, timeout, all])));
         assert!(overloaded_timeouts(&said(&[timeout, one])));
+        assert_eq!(overload_said(&said(&[timeout, all, timeout])), Some(all));
         // A TIMEOUT on a host the gate did not say is overloaded is red.
         let quiet = "gate: afkconvoy::cli dsh::the_line was still TIMEOUT at 2s on a quiet host.";
         assert!(!overloaded_timeouts(&said(&[timeout, quiet])));
         assert!(!overloaded_timeouts(&said(&[timeout])));
+        assert_eq!(overload_said(&said(&[timeout, quiet])), None);
         // A FAIL beside it is red, and so is a red that names no test.
         let fail = "        FAIL [   0.208s] (2/3) afkconvoy cutting::a_named_test";
         assert!(!overloaded_timeouts(&said(&[timeout, fail, all])));
