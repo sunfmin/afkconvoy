@@ -8,7 +8,7 @@ use crate::remote::{Fresh, Push};
 use afkconvoy_core::account::End;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
-use afkconvoy_core::gate::{GateCommand, Tree};
+use afkconvoy_core::gate::{GateCommand, Judged, Tree};
 use afkconvoy_core::landing::Of;
 use afkconvoy_core::lock::{keeps_off, named};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
@@ -31,14 +31,16 @@ pub(crate) fn tip_config(repo: &Repo, tip: &str) -> Result<Config> {
 /// How the base tip's gate run alone came out.
 pub enum Certified {
     Green,
-    /// Red, and recorded red: worker turns wait for its repair.
-    Red,
+    /// Red, and recorded red: worker turns wait for its repair. A run made
+    /// by this turn says how it went red (`red_tip`); a tip recorded red
+    /// before says nothing more.
+    Red(Option<String>),
     /// Red only on TIMEOUTs the gate said it cannot classify on an
-    /// overloaded host (`gate::overloaded_timeouts`): it says nothing of the
+    /// overloaded host (`gate::Judged::Unsettled`): it says nothing of the
     /// tip, which is recorded neither green nor red, and is gated alone again
     /// by the next turn. `output` keeps the run's whole log.
     Unsettled {
-        tests: Vec<String>,
+        unsettled: afkconvoy_core::gate::Unsettled,
         output: std::path::PathBuf,
     },
 }
@@ -65,64 +67,66 @@ pub fn certify(
     if crate::gate::recorded(repo, &tree, &command, now)?.is_some() {
         return Ok(Certified::Green);
     }
-    let unique = crate::unique();
-    let path = std::env::temp_dir().join(format!("afkconvoy-base-tip-{unique}"));
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    let output = repo.common_dir()?.join(format!("convoy-base-tip-gate-{now}-{unique}.log"));
-    repo.git(&["worktree", "add", "--quiet", "--detach", &path.to_string_lossy(), tip])?;
-    let checkout = Repo::new(path.clone());
-    let run = crate::gate::run_and_record(
-        &checkout,
-        &command,
-        host,
-        now,
-        Duration::from_secs(config.gate_seconds()),
-        None,
-        Some(&output),
-    );
+    let output =
+        repo.common_dir()?.join(format!("convoy-base-tip-gate-{now}-{}.log", crate::unique()));
+    let (run, removal) = crate::gate::detached(repo, tip, "base-tip", |checkout| {
+        crate::gate::run_and_record(
+            checkout,
+            &command,
+            host,
+            now,
+            Duration::from_secs(config.gate_seconds()),
+            None,
+            Some(&output),
+        )
+    })?;
     // A worktree that cannot be removed does not hide the verdict: why is
     // added to `unremoved`, beside it (sunfmin/control#610).
-    if let Err(error) = repo.remove_worktree(&path) {
+    if let Some(error) = removal {
         eprintln!("warning: {error:#}");
         unremoved.push(format!("{error:#}"));
     }
     let run = run?;
-    if run.ran.green() {
-        let _ = std::fs::remove_file(&output);
-    }
-    if run.ran.green() && (run.green.is_none() || run.not_recorded.is_some()) {
-        bail!(
-            "the base tip gated green without a record: {}; run this again",
-            run.not_recorded
-                .unwrap_or_else(|| format!("uncommitted files: {}", run.strays.join(", ")))
-        );
-    }
-    if !run.ran.green() {
-        let shown = output.display();
-        if let Some(unsettled) = run.unsettled {
-            let tests = unsettled.tests;
+    let shown = output.display();
+    match run.judged {
+        Judged::Green => {
+            let _ = std::fs::remove_file(&output);
+            if run.green.is_none() || run.not_recorded.is_some() {
+                bail!(
+                    "the base tip gated green without a record: {}; run this again",
+                    run.not_recorded
+                        .unwrap_or_else(|| format!("uncommitted files: {}", run.strays.join(", ")))
+                );
+            }
+        }
+        Judged::Unsettled(unsettled) => {
             Acting::new("gate").in_checkout(Some(repo.clone())).say(
                 crate::clock(),
                 format!(
-                    "base tip {tip} is unsettled: red only on TIMEOUTs it cannot classify on an \
-                     overloaded host ({}); not recorded red, the next turn gates it again; its \
-                     output is in {shown}",
-                    tests.join(", ")
+                    "base tip {tip} is unsettled: {}; not recorded red, the next turn gates it \
+                     again; its output is in {shown}",
+                    unsettled.how()
                 ),
             );
-            return Ok(Certified::Unsettled { tests, output });
+            return Ok(Certified::Unsettled { unsettled, output });
         }
-        let red = crate::repair::red_ref(repo, &config.base_branch);
-        repo.remote().push(&Push::set(tip, &red).force())?;
-        Acting::new("gate").in_checkout(Some(repo.clone())).say(
-            crate::clock(),
-            format!(
-                "base tip {tip} is red; worker turns wait for its repair; its output is in {shown}"
-            ),
-        );
-        return Ok(Certified::Red);
+        Judged::Red(red) => {
+            let red_ref = crate::repair::red_ref(repo, &config.base_branch);
+            repo.remote().push(&Push::set(tip, &red_ref).force())?;
+            let said = red_tip(tip, &red);
+            Acting::new("gate")
+                .in_checkout(Some(repo.clone()))
+                .say(crate::clock(), format!("{said}; its output is in {shown}"));
+            return Ok(Certified::Red(Some(said)));
+        }
     }
     Ok(Certified::Green)
+}
+
+/// What a base tip gated alone red is told by: the one red wording
+/// (`Red::said`) and what the fleet does of it.
+fn red_tip(tip: &str, red: &afkconvoy_core::gate::Red) -> String {
+    format!("{}; worker turns wait for its repair", red.said(&format!("base tip {tip}")))
 }
 
 /// Acquires one repo's turn on its current certified base tip. A repair
@@ -145,6 +149,7 @@ fn take(
     unremoved: &mut Vec<String>,
 ) -> Result<Certified> {
     let mut tried = None;
+    let mut said = None;
     loop {
         let gh = GitHub::of(repo)?;
         let locks = standing_locks(&gh, config)?;
@@ -173,14 +178,15 @@ fn take(
                     // A tip no run settled is not waited on as red: the
                     // turn ends, and the next one gates it alone again.
                     unsettled @ Certified::Unsettled { .. } => return Ok(unsettled),
-                    Certified::Red => {
+                    Certified::Red(red) => {
+                        said = red;
                         tried = Some(tip);
                         let _ = crate::wake::wake(repo, "red base tip");
                     }
                 }
             }
             if matches!(on_red, OnRedBase::Return) {
-                return Ok(Certified::Red);
+                return Ok(Certified::Red(said));
             }
             std::thread::sleep(Duration::from_secs(2));
             continue;
@@ -491,17 +497,19 @@ fn run(
     }
     match taken {
         Certified::Green => {}
-        Certified::Red => {
+        Certified::Red(said) => {
             answer["outcome"] = json!(Ending::BaseRed);
+            if let Some(said) = said {
+                answer["detail"] = json!(said);
+            }
             return Ok(answer);
         }
-        Certified::Unsettled { tests, output } => {
+        Certified::Unsettled { unsettled, output } => {
             answer["outcome"] = json!(Ending::BaseUncertified);
             answer["detail"] = json!(format!(
-                "the base tip gated alone red only on TIMEOUTs it cannot classify on an \
-                 overloaded host ({}): it is recorded neither green nor red, and the next turn \
-                 gates it alone again; its output is in {}",
-                tests.join(", "),
+                "the base tip gated alone {}: it is recorded neither green nor red, and the next \
+                 turn gates it alone again; its output is in {}",
+                unsettled.how(),
                 output.display()
             ));
             return Ok(answer);
@@ -539,9 +547,14 @@ mod tests {
     use super::*;
 
     /// The words the turn's own code sets as `outcome`: each through an
-    /// ending, never as a bare string.
+    /// ending, never as a bare string — its own, or the one the chain
+    /// decided (`candidate::Decision::ending`).
     fn returned() -> BTreeSet<&'static str> {
-        let code = [include_str!("turn.rs"), include_str!("candidates.rs")];
+        let code = [
+            include_str!("turn.rs"),
+            include_str!("candidates.rs"),
+            include_str!("../../core/src/candidate.rs"),
+        ];
         let mut words = BTreeSet::new();
         for text in code {
             let code = text.split("#[cfg(test)]").next().unwrap();
@@ -555,6 +568,25 @@ mod tests {
             }
         }
         words
+    }
+
+    /// A base tip gated alone red says how in the one red wording, as a
+    /// candidate's `gate_red` does (sunfmin/control#619): its `base_red`
+    /// answer and its log line carry it.
+    #[test]
+    fn a_base_tip_gated_red_is_told_by_the_one_red_wording() {
+        let lines: Vec<String> =
+            ["        FAIL [   0.208s] (2/3) nx a_test".to_string(), "end".to_string()].to_vec();
+        let afkconvoy_core::gate::Judged::Red(red) =
+            afkconvoy_core::gate::judge(1, false, 600, None, &lines)
+        else {
+            panic!("a FAIL is red");
+        };
+        assert_eq!(
+            red_tip("abc", &red),
+            "base tip abc is red: it exited 1; failing: nx a_test; worker turns wait for its repair"
+        );
+        assert!(red_tip("abc", &red).starts_with(&red.said("base tip abc")));
     }
 
     /// The land step teaches each word the turn returns, and no other.

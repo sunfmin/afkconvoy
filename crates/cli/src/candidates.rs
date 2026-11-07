@@ -2,11 +2,13 @@
 //! writer's child cannot fast-forward it. Publishing the base and the next
 //! record is one atomic push, so invalidation and publication cannot both win.
 use afkconvoy_core::account::End;
-use afkconvoy_core::candidate::{Barrier, Candidate, Chain, Phase, Process, Publication, Slow};
+use afkconvoy_core::candidate::{
+    Barrier, Candidate, Chain, Decision, Evidence, Phase, Process, Publication, Slow,
+};
 use afkconvoy_core::claims::{HEARTBEAT_KIND, read_heartbeat};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
-use afkconvoy_core::gate::{GateCommand, Proven, Tree};
+use afkconvoy_core::gate::{GateCommand, Judged, Proven, Tree, Unsettled};
 use afkconvoy_core::landing::{Of, merge_message};
 use afkconvoy_core::lease::stamp_stale;
 use afkconvoy_core::lock::keeps_off;
@@ -228,9 +230,9 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
         "round": chain.round_of(&c.id).map(|tip| &tip.id),
     });
     if matches!(c.phase, Phase::Validating | Phase::Slow)
-        && let Some(excerpt) = c.result.as_ref().and_then(|result| result.get("excerpt"))
+        && let Some(result) = &c.result
     {
-        row["excerpt"] = excerpt.clone();
+        row["excerpt"] = json!(result.excerpt);
     }
     row
 }
@@ -720,11 +722,11 @@ impl Gate<'_> {
         exit_code: i32,
         timed_out: bool,
         seconds: u64,
-        termination: Option<crate::gate::Termination>,
+        termination: Option<afkconvoy_core::gate::Termination>,
     ) -> Result<()> {
-        let evidence = json!({"status":"red", "exit_code":exit_code, "timed_out":timed_out, "seconds":seconds, "termination":termination});
+        let evidence = Evidence::red(exit_code, timed_out, seconds, termination);
         let chain =
-            change(self.repo, self.config, |chain| chain.finish(self.id, false, evidence.clone()))?;
+            change(self.repo, self.config, |chain| chain.finish(self.id, evidence.clone()))?;
         cleanup(self.repo, self.config, &chain)
     }
     pub fn process_marker(&self) -> &str {
@@ -774,45 +776,42 @@ fn settle(repo: &Repo, gh: &GitHub, issue: Option<u64>, now: u64, answer: &mut V
     }
 }
 
-/// Puts a candidate's gate `result` on the chain: green or red
-/// (`Chain::finish`), or unsettled (`Chain::unsettle`) where the run was red
-/// only on TIMEOUTs it cannot classify on an overloaded host.
-fn settled(chain: &mut Chain, id: &str, result: &Value) {
-    if result["unsettled"].is_null() {
-        let green = result["status"] == "green" && result["recorded"] == true;
-        chain.finish(id, green, result.clone());
-    } else {
-        chain.unsettle(id, result.clone());
+/// A turn's answer of a candidate's gate `evidence`: the evidence's keys,
+/// then the turn's own, `answer`'s, beside and over them.
+fn answered(evidence: &Evidence, answer: &Value) -> Value {
+    let mut result = json!(evidence);
+    for (key, value) in answer.as_object().into_iter().flatten() {
+        result[key] = value.clone();
     }
+    result
 }
 
-/// Whether `c` left the chain unsettled by its own gate run, `id`'s.
-fn unsettled_by(c: &Candidate, id: &str) -> bool {
-    c.cause.as_deref() == Some("gate_unsettled") && c.cancelled_by.as_deref() == Some(id)
+/// Says in `answer` the ending the chain decided for `c`
+/// (`Candidate::decision`): its turn's ending is set nowhere else.
+fn decided(answer: &mut Value, c: &Candidate) {
+    answer["outcome"] = json!(c.decision().map(Decision::ending));
 }
 
 /// The answer of a turn whose candidate's `gate` (fast or slow) said nothing
 /// of it (sunfmin/control#617): it names the TIMEOUTs and the gate's line,
-/// with the load it read.
-fn unsettled(mut result: Value, gate: &str, repo: &Repo, issue: Option<u64>) -> Value {
-    let tests: Vec<&str> = result["unsettled"]["tests"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    let said = result["unsettled"]["said"].as_str().unwrap_or_default();
+/// with the load it read (`Unsettled::how`).
+fn unsettled(
+    mut result: Value,
+    (gate, c): (&str, &Candidate),
+    unsettled: &Unsettled,
+    repo: &Repo,
+    issue: Option<u64>,
+) -> Value {
     let detail = format!(
-        "the {gate} gate ran red only on TIMEOUTs it cannot classify on an overloaded host ({}) \
-         — `{said}`; that says nothing of this change: it is recorded neither green nor red and \
-         nothing landed; nothing in your tree is to change: ask for a turn again",
-        tests.join(", ")
+        "the {gate} gate ran {}; that says nothing of this change: it is recorded neither green \
+         nor red and nothing landed; nothing in your tree is to change: ask for a turn again",
+        unsettled.how()
     );
     crate::acting::Acting::new("land")
         .on_issue(issue)
         .in_checkout(Some(repo.clone()))
         .say(crate::clock(), format!("candidate {}", detail));
-    result["outcome"] = json!(Ending::GateUnsettled);
+    decided(&mut result, c);
     result["gate"] = json!(gate);
     result["detail"] = json!(detail);
     result
@@ -821,7 +820,7 @@ fn unsettled(mut result: Value, gate: &str, repo: &Repo, issue: Option<u64>) -> 
 fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
     if c.cause.as_deref() == Some("round_red") {
         let tip = chain.candidates.iter().find(|t| Some(&t.id) == c.cancelled_by.as_ref());
-        answer["outcome"] = json!(Ending::RoundRed);
+        decided(&mut answer, c);
         answer["status"] = json!("cancelled");
         answer["recorded"] = json!(false);
         answer["candidate"] = json!(c.id);
@@ -833,11 +832,7 @@ fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
         );
         return answer;
     }
-    answer["outcome"] = json!(if c.cause.as_deref() == Some("base_moved") {
-        Ending::TargetMoved
-    } else {
-        Ending::Cancelled
-    });
+    decided(&mut answer, c);
     answer["status"] = json!("cancelled");
     answer["recorded"] = json!(false);
     answer["candidate"] = json!(c.id);
@@ -1112,9 +1107,18 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             chain.candidates.iter().rev().find(|c| c.pr == pr.number && c.original_head == original)
         {
             if c.phase == Phase::Landed {
-                let mut result = c.result.clone().unwrap_or(answer);
+                let mut result = match &c.result {
+                    Some(evidence) => {
+                        let mut answer = answer;
+                        answer["candidate"] = json!(c.id);
+                        answer["merged"] = json!(c.predecessor);
+                        answer["predecessor"] = json!(c.predecessor);
+                        answered(evidence, &answer)
+                    }
+                    None => answer,
+                };
                 settle(repo, &gh, issue, clock(), &mut result);
-                result["outcome"] = json!(Ending::Merged);
+                decided(&mut result, c);
                 result["commit"] = json!(c.commit);
                 return Ok(result);
             }
@@ -1282,8 +1286,9 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     answer["candidate"] = json!(id);
     answer["merged"] = json!(candidate.predecessor);
     answer["predecessor"] = json!(candidate.predecessor);
-    let mut result = if recovering {
-        candidate.result.clone().expect("a fast-green candidate has its gate result")
+    // A recovered candidate is fast-green: what its run said is not kept.
+    let (evidence, judged) = if recovering {
+        (candidate.result.clone().expect("a fast-green candidate has its gate result"), None)
     } else {
         std::fs::create_dir_all(path.parent().expect("candidate parent"))?;
         repo.git(&[
@@ -1307,31 +1312,35 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             &hook,
         );
         match result {
-            Ok(result) => result,
+            Ok((evidence, judged)) => (evidence, Some(judged)),
             Err(error) => {
                 invalidate(repo, config, &id, "gate_interrupted")?;
                 return Err(error);
             }
         }
     };
-    for (key, value) in answer.as_object().into_iter().flatten() {
-        result[key] = value.clone();
-    }
+    let mut result = answered(&evidence, &answer);
     let chain = if recovering {
         read(repo, config)?.chain
     } else {
-        let chain = change(repo, config, |chain| settled(chain, &id, &result))?;
+        let chain = change(repo, config, |chain| chain.finish(&id, evidence.clone()))?;
         cleanup(repo, config, &chain)?;
         stop_candidate(repo, config, &id)?;
         chain
     };
     let current = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
-    if current.phase == Phase::Red {
-        result["outcome"] = json!(Ending::GateRed);
+    if current.decision() == Some(Decision::Red) {
+        decided(&mut result, current);
+        if let Some(Judged::Red(red)) = &judged {
+            let gate = if candidate.slow.is_some() { "the fast gate" } else { "the gate" };
+            result["detail"] = json!(red.said(gate));
+        }
         return Ok(result);
     }
-    if unsettled_by(current, &id) {
-        return Ok(unsettled(result, "fast", repo, issue));
+    if let Some(Judged::Unsettled(said)) = &judged
+        && current.decision() == Some(Decision::Unsettled)
+    {
+        return Ok(unsettled(result, ("fast", current), said, repo, issue));
     }
     // A green candidate waits for its round, or its predecessor, holding no
     // worker lane: the lanes bound the gates running, not the PRs waiting.
@@ -1345,7 +1354,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         // A round at a candidate behind this one may have landed it.
         if c.phase == Phase::Landed {
             settle(repo, &gh, issue, clock(), &mut result);
-            result["outcome"] = json!(Ending::Merged);
+            decided(&mut result, c);
             result["commit"] = json!(c.commit);
             result["detail"] = json!(
                 "landed with the round at a candidate behind it, as a fast-forward; source head preserved — stop"
@@ -1443,7 +1452,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             continue;
         }
         settle(repo, &gh, issue, clock(), &mut result);
-        result["outcome"] = json!(Ending::Merged);
+        let published = snapshot.chain.candidates.iter().find(|c| c.id == id);
+        decided(&mut result, published.expect("the published candidate"));
         result["commit"] = json!(landed);
         result["landed"] = json!(members.iter().map(|m| m.pr).collect::<Vec<_>>());
         result["detail"] = json!(
@@ -1513,34 +1523,38 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
         issue,
         &hook,
     );
-    let mut result = match result {
-        Ok(result) => result,
+    let (mut evidence, judged) = match result {
+        Ok(ran) => ran,
         Err(error) => {
             invalidate(repo, config, id, "gate_interrupted")?;
             return Err(error);
         }
     };
-    if result["status"] == "green" && result["recorded"] == true {
+    if evidence.green() {
         let tree = Tree::named(&tip.tree);
         let parts = (&GateCommand::new(&slow.whole), &GateCommand::new(&tip.command), &command);
         if let Some(why) =
             crate::gate::record_whole(repo, &tree, &tip.commit, parts, issue, clock())?
         {
-            result["recorded"] = json!(false);
-            result["not_recorded"] = json!(why);
+            evidence.recorded = false;
+            evidence.not_recorded = Some(why);
         }
     }
-    let chain = change(repo, config, |chain| settled(chain, id, &result))?;
+    let chain = change(repo, config, |chain| chain.finish(id, evidence.clone()))?;
+    let mut result = json!(evidence);
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
-    if chain.candidates.iter().any(|c| c.id == id && unsettled_by(c, id)) {
-        return Ok(Some(unsettled(result, "slow", repo, issue)));
+    let at = chain.candidates.iter().find(|c| c.id == id).context("round tip disappeared")?;
+    if let Judged::Unsettled(said) = &judged
+        && at.decision() == Some(Decision::Unsettled)
+    {
+        return Ok(Some(unsettled(result, ("slow", at), said, repo, issue)));
     }
-    if chain.candidates.iter().any(|c| c.id == id && c.phase != Phase::Red) {
+    if at.decision() != Some(Decision::Red) {
         return Ok(None);
     }
     let files = crate::turn::merge_in(repo, &tip.commit, "the round's tip")?;
-    result["outcome"] = json!(Ending::GateRed);
+    decided(&mut result, at);
     result["gate"] = json!("slow");
     result["round"] = json!(
         members
@@ -1549,10 +1563,20 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
             .collect::<Vec<_>>()
     );
     result["files"] = json!(files);
+    let red = match &judged {
+        Judged::Red(red) => red.said("the slow gate on the round at this candidate"),
+        Judged::Green | Judged::Unsettled(_) => {
+            "the slow gate ran red on the round at this candidate".to_string()
+        }
+    };
     result["detail"] = json!(if files.is_empty() {
-        "the slow gate ran red on the round at this candidate; your branch now holds the round's tip, every change of it: do not split it; read the issues of `round` and the failing tests, fix the round, commit and ask for a turn again"
+        format!(
+            "{red}; your branch now holds the round's tip, every change of it: do not split it; read the issues of `round` and the failing tests, fix the round, commit and ask for a turn again"
+        )
     } else {
-        "the slow gate ran red on the round at this candidate; bringing your branch up to the round's tip conflicts: resolve `files`, commit, then fix the round from the issues of `round` and the failing tests, and ask for a turn again"
+        format!(
+            "{red}; bringing your branch up to the round's tip conflicts: resolve `files`, commit, then fix the round from the issues of `round` and the failing tests, and ask for a turn again"
+        )
     });
     Ok(Some(result))
 }
