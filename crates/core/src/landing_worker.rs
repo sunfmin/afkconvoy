@@ -46,7 +46,7 @@ impl Switch {
     /// One the record's field wrote; `None` for anything else.
     fn read(written: &str) -> Option<Switch> {
         let mut parts = written.splitn(4, '/');
-        let at = record::fleet_number(parts.next()?)?;
+        let at = record::canonical_number(parts.next()?)?;
         let (from, to, by) = (parts.next()?, parts.next()?, parts.next()?);
         if [from, to, by].iter().any(|part| part.is_empty()) {
             return None;

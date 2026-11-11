@@ -54,7 +54,7 @@ fn reference(word: &str) -> Option<u64> {
     if after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
         return None;
     }
-    crate::record::fleet_number(number)
+    crate::record::canonical_number(number)
 }
 
 /// The body without what GitHub shows as code: fenced blocks and `inline` spans.

@@ -11,7 +11,9 @@ extern crate flux_alloc;
 extern crate flux_core;
 
 pub mod declared;
+pub mod exclusive;
 pub mod gate;
 pub mod layout;
 pub mod record;
+pub mod shell;
 pub mod slow_gate;

@@ -1769,7 +1769,7 @@ fn blocker(text: &str) -> Result<Blocker, String> {
     if text == CUT {
         return Ok(Blocker::Cut);
     }
-    afkconvoy_core::record::fleet_number(text.strip_prefix('#').unwrap_or(text))
+    afkconvoy_core::record::canonical_number(text.strip_prefix('#').unwrap_or(text))
         .map(Blocker::Issue)
         .ok_or_else(|| format!("names neither an issue's number nor `{CUT}`"))
 }

@@ -5,7 +5,7 @@ use flux_rs::attrs::*;
 
 use crate::config::Config;
 use crate::plan::{LabelBar, label_bar};
-use crate::record::fleet_number;
+use crate::record::canonical_number;
 use crate::team::FlowLabels;
 
 /// The word a `blocked` verdict names the next cut of its repo by, in place of
@@ -34,7 +34,7 @@ impl BlockedOn {
         for item in raw.unwrap_or_default().split(',').map(str::trim) {
             if item == CUT {
                 on.cut = true;
-            } else if let Some(number) = fleet_number(item.strip_prefix('#').unwrap_or(item)) {
+            } else if let Some(number) = canonical_number(item.strip_prefix('#').unwrap_or(item)) {
                 on.issues.push(number);
             }
         }

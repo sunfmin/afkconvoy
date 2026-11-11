@@ -10,7 +10,7 @@ use flux_rs::attrs::*;
 use crate::closing::issues_closed_by;
 use crate::config::RepoName;
 use crate::line::Line;
-use crate::record::fleet_number;
+use crate::record::canonical_number;
 use crate::worker::worktree_name;
 
 /// What a repo label begins with: `repo:<owner>/<repo>`.
@@ -194,7 +194,7 @@ impl Tracker {
                 number
             }
         };
-        fleet_number(number)
+        canonical_number(number)
     }
 
     /// What the claim on issue `number` is kept under, after `claim/`: `7`
@@ -211,7 +211,7 @@ impl Tracker {
     pub fn claimed(&self, key: &str) -> Claimed {
         let issue = match key.rsplit_once('/') {
             Some((tracker, number)) => Some((Some(tracker), number)),
-            None => fleet_number(key).map(|_| (None, key)),
+            None => canonical_number(key).map(|_| (None, key)),
         };
         let Some((of, number)) = issue else { return Claimed::Run };
         let mine = match (self, of) {
@@ -219,7 +219,7 @@ impl Tracker {
             (Tracker::Other { tracker, .. }, Some(of)) => of == lowered(tracker),
             _ => false,
         };
-        match fleet_number(number) {
+        match canonical_number(number) {
             Some(number) if mine => Claimed::Issue(number),
             _ => Claimed::Elsewhere,
         }

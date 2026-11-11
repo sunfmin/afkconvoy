@@ -694,7 +694,7 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     let limit = config.gate_seconds();
     let issue = std::env::var(afkconvoy_core::role::ISSUE_ENV)
         .ok()
-        .and_then(|raw| afkconvoy_core::record::fleet_number(&raw));
+        .and_then(|raw| afkconvoy_core::record::canonical_number(&raw));
     let run = run_and_record(repo, &command, host, now, Duration::from_secs(limit), issue, None)?;
     // A worker's fresh build is what its worktree holds after its first green
     // run — one that built everything — by the train worktree's measure: what

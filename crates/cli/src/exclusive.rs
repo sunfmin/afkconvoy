@@ -216,13 +216,15 @@ impl Permit {
             pid: std::process::id(),
             command: command.into(),
             dir: canonical(&repo.dir),
-            issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
             cut: is_cut(repo),
             repo_lane: if heavy { None } else { Some(canonical(repo.common_dir()?)) },
             repo: Some(canonical(repo.common_dir()?)),
             is_turn,
             candidate,
-            validation: None,
+            note: afkconvoy_core::exclusive::Note {
+                issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
+                validation: None,
+            },
             gate: (slow && heavy).then_some(afkconvoy_core::exclusive::Gate::Slow),
             asked: crate::clock(),
             ran: None,
@@ -390,7 +392,7 @@ impl Queue {
         joined.validations.insert(pid, validation.clone());
         for ticket in &mut joined.tickets {
             if ticket.pid == pid && ticket.is_turn {
-                ticket.validation = Some(validation.clone());
+                ticket.note.validation = Some(validation.clone());
             }
         }
     }
@@ -433,7 +435,7 @@ impl Queue {
                 continue;
             }
             if let Some(validation) = joined.validations.get(&inherited.pid) {
-                inherited.validation = Some(validation.clone());
+                inherited.note.validation = Some(validation.clone());
             }
             tickets.push(inherited);
         }
@@ -741,13 +743,15 @@ pub fn exclusive(
         pid: std::process::id(),
         command: shown.join(" "),
         dir: canonical(checkout.as_ref().map_or(dir, |repo| &repo.dir)),
-        issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
         cut: checkout.as_ref().is_some_and(is_cut),
         repo_lane: None,
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         is_turn: false,
         candidate: false,
-        validation: None,
+        note: afkconvoy_core::exclusive::Note {
+            issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
+            validation: None,
+        },
         gate: told_gate(),
         asked: now(),
         ran: None,
@@ -960,13 +964,12 @@ mod tests {
             pid: std::process::id(),
             command: command.into(),
             dir: "/w/issue-7".into(),
-            issue: Some(7),
             cut: false,
             repo_lane: None,
             repo: None,
             is_turn: false,
             candidate: false,
-            validation: None,
+            note: afkconvoy_core::exclusive::Note { issue: Some(7), validation: None },
             gate: None,
             asked,
             ran: None,

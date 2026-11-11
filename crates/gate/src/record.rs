@@ -1,4 +1,4 @@
-//! The one encoding of every record the fleet keeps: on a ref, as a commit's
+//! The one encoding of every record kept on a ref, as a commit's
 //! subject; in a comment, as a marker. A word, then `field=value` pairs.
 //! Whatever was written reads back exactly.
 
@@ -14,9 +14,9 @@ impl Fields {
         self.0.iter().find(|(field, _)| field == name).map(|(_, value)| value.as_str())
     }
 
-    /// `name` as a number the fleet wrote (`fleet_number`).
+    /// `name` as a number as one is written (`canonical_number`).
     pub fn number(&self, name: &str) -> Option<u64> {
-        self.get(name).and_then(fleet_number)
+        self.get(name).and_then(canonical_number)
     }
 
     /// `name` as a comma-separated list of numbers; a hand may write `#3`.
@@ -24,15 +24,15 @@ impl Fields {
     pub fn numbers(&self, name: &str) -> Vec<u64> {
         let Some(raw) = self.get(name) else { return vec![] };
         raw.split(',')
-            .filter_map(|item| fleet_number(item.strip_prefix('#').unwrap_or(item)))
+            .filter_map(|item| canonical_number(item.strip_prefix('#').unwrap_or(item)))
             .collect()
     }
 }
 
-/// A number as the fleet writes one: ASCII digits, no sign, no leading zero,
+/// A number as a record writes one: ASCII digits, no sign, no leading zero,
 /// at most 18 of them. Anyone can write a ref name or a comment, so every other
 /// spelling is not a number rather than another name for one.
-pub fn fleet_number(raw: &str) -> Option<u64> {
+pub fn canonical_number(raw: &str) -> Option<u64> {
     let plain = raw.bytes().all(|b| b.is_ascii_digit());
     let canonical = raw == "0" || !raw.starts_with('0');
     if raw.is_empty() || raw.len() > 18 || !plain || !canonical {
@@ -207,11 +207,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_fleets_spelling_is_a_number() {
-        assert_eq!(fleet_number("0"), Some(0));
-        assert_eq!(fleet_number("42"), Some(42));
+    fn only_the_canonical_spelling_is_a_number() {
+        assert_eq!(canonical_number("0"), Some(0));
+        assert_eq!(canonical_number("42"), Some(42));
         for odd in ["", "007", "+1", "-1", "1.0", "٧", "1234567890123456789", " 1"] {
-            assert_eq!(fleet_number(odd), None, "{odd:?}");
+            assert_eq!(canonical_number(odd), None, "{odd:?}");
         }
     }
 
