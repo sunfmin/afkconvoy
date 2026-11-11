@@ -59,6 +59,13 @@ pub enum Outcome<R> {
     Waiting,
 }
 
+/// A change assigned its candidate, by the candidate's id; or why not.
+pub type Assigned<R> = Result<String, Outcome<R>>;
+/// The changes a publication landed, each with what its forge said when told.
+pub type Told<E> = Vec<(u64, Result<(), E>)>;
+/// What became of each change, by its number.
+pub type Outcomes<R> = Vec<(u64, Outcome<R>)>;
+
 /// One program's landing on one remote, by plain git.
 pub struct Lander<'a, F: Forge> {
     /// A checkout of the repo: the candidates are made in its object store,
@@ -221,10 +228,7 @@ where
     /// Assigns `change` a candidate: its source's head merged onto the
     /// chain's last valid candidate, or the target's tip, as one merge
     /// commit → the candidate's id.
-    pub fn assign(
-        &self,
-        change: &Change,
-    ) -> Result<Result<String, Outcome<F::Refusal>>, Error<F::Error>> {
+    pub fn assign(&self, change: &Change) -> Result<Assigned<F::Refusal>, Error<F::Error>> {
         let Some(change) = self.forge.current(change).map_err(Error::Forge)? else {
             return Ok(Err(Outcome::Gone));
         };
@@ -406,7 +410,7 @@ where
         target: &str,
         id: &str,
         changes: &[Change],
-    ) -> Result<Vec<(u64, Result<(), F::Error>)>, Error<F::Error>> {
+    ) -> Result<Told<F::Error>, Error<F::Error>> {
         let read = self.read(target)?;
         if !read.chain.ripe(id, &read.base) {
             return Ok(vec![]);
@@ -482,14 +486,11 @@ where
     /// alone: assigns each a candidate in the order given, gates each, runs
     /// the round at the chain's tip where their commits split their gate,
     /// and lands what is ripe, in order → what became of each.
-    pub fn land(
-        &self,
-        changes: &[Change],
-    ) -> Result<Vec<(u64, Outcome<F::Refusal>)>, Error<F::Error>> {
+    pub fn land(&self, changes: &[Change]) -> Result<Outcomes<F::Refusal>, Error<F::Error>> {
         let Some(target) = changes.first().map(|c| c.target.clone()) else {
             return Ok(vec![]);
         };
-        let mut outcomes: Vec<(u64, Outcome<F::Refusal>)> = vec![];
+        let mut outcomes: Outcomes<F::Refusal> = vec![];
         let mut ids: Vec<(u64, String)> = vec![];
         for change in changes {
             match self.assign(change)? {
