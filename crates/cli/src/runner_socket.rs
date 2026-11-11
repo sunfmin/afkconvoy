@@ -566,8 +566,13 @@ mod tests {
         let exclusive = serde_json::to_string(&Request::Exclusive { ticket }).unwrap();
         assert_eq!(
             exclusive,
-            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"asked":1000,"ran":null}}"#
+            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","asked":1000,"ran":null,"issue":46}}"#
         );
+        // A key's place says nothing: what an older afkconvoy wrote, with the
+        // issue before when it asked, reads as the same request.
+        let older = r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"asked":1000,"ran":null}}"#;
+        let read: Request = serde_json::from_str(older).unwrap();
+        assert_eq!(serde_json::to_string(&read).unwrap(), exclusive);
     }
 
     #[test]
