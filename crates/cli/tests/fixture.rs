@@ -191,6 +191,83 @@ fn two_publishers_of_the_same_inputs_leave_one_seed() {
 }
 
 #[test]
+fn a_seed_swept_of_its_manifest_is_rebuilt() {
+    let files = [("a directory/skill.md", "swept of its manifest\n")];
+    let builder = format!("a builder whose manifest is swept {}", std::process::id());
+    let broken = common::publish_repository_template(&files, &builder);
+    let kept = broken.parent().unwrap();
+    sweep(kept, |path| path == kept.join("manifest.json"));
+    assert!(!kept.join("manifest.json").exists());
+
+    let rebuilt = common::publish_repository_template(&files, &builder);
+    assert_complete_seed(&rebuilt, "swept of its manifest\n");
+    assert!(kept.is_dir(), "the broken seed is left aside, not removed");
+    assert_eq!(common::publish_repository_template(&files, &builder), rebuilt);
+    std::fs::remove_dir_all(kept).unwrap();
+}
+
+#[test]
+fn a_seed_swept_of_its_repo_files_is_rebuilt() {
+    let files = [("a directory/skill.md", "swept of its repo files\n")];
+    let builder = format!("a builder whose repo files are swept {}", std::process::id());
+    let broken = common::publish_repository_template(&files, &builder);
+    let kept = broken.parent().unwrap().to_path_buf();
+    sweep(&kept, |path| path.starts_with(&broken));
+    assert!(broken.join(".git").is_dir(), "the sweep leaves directories");
+    assert!(!broken.join("a directory/skill.md").exists());
+
+    let rebuilt = common::publish_repository_template(&files, &builder);
+    assert_ne!(rebuilt, broken);
+    assert_complete_seed(&rebuilt, "swept of its repo files\n");
+    assert!(broken.is_dir(), "the broken seed is left aside, not removed");
+    std::fs::remove_dir_all(&kept).unwrap();
+}
+
+#[test]
+fn a_world_takes_a_rebuilt_seed_in_place_of_a_swept_one() {
+    let world = World::new();
+    world.reuse_repository_templates();
+    let text = format!("a world past a swept seed in {}\n", world.root.display());
+    let files = [("a directory/skill.md", text.as_str())];
+    let broken = common::repository_template(&files);
+    let kept = broken.parent().unwrap().to_path_buf();
+    sweep(&kept, |path| path.is_file());
+
+    let repo = world.repo("acme/past a sweep", &files);
+    assert_eq!(git(&repo, &["rev-list", "--count", "HEAD"]), "2");
+    assert_eq!(git(&repo, &["status", "--porcelain"]), "");
+    assert_eq!(std::fs::read_to_string(repo.join("a directory/skill.md")).unwrap(), text);
+    std::fs::remove_dir_all(&kept).unwrap();
+}
+
+/// Deletes the files under the seed `kept` that `swept` picks, as the OS's
+/// `/tmp` sweep does, and leaves every directory. Thaws the seed to do so.
+fn sweep(kept: &Path, swept: impl Fn(&Path) -> bool) {
+    let thawed = Command::new("chmod").args(["-R", "u+w"]).arg(kept).status().unwrap();
+    assert!(thawed.success(), "thawing the seed to sweep it");
+    let mut pending = vec![kept.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                pending.push(path);
+            } else if swept(&path) {
+                std::fs::remove_file(&path).unwrap();
+            }
+        }
+    }
+}
+
+/// `seed` is a published, read-only repo holding `text`, whose history a
+/// clone reads in full.
+fn assert_complete_seed(seed: &Path, text: &str) {
+    assert_eq!(std::fs::read_to_string(seed.join("a directory/skill.md")).unwrap(), text);
+    assert_eq!(git(seed, &["rev-list", "--count", "HEAD"]), "2");
+    assert_eq!(git(seed, &["fsck", "--no-progress"]), "");
+    assert_read_only(seed.parent().unwrap());
+}
+
+#[test]
 fn a_losing_publisher_thaws_its_scratch_and_that_scratch_is_removed() {
     let templates = tempfile::tempdir().unwrap();
     let kept = templates.path().join("kept");
