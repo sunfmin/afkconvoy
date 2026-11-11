@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use afkconvoy_core::config::{Config, GATES_BLOCK, GateNeed, Gates, HEAVY_BLOCK, Settings};
+use afkconvoy_core::config::{Config, GateNeed, Settings};
 use afkconvoy_core::cut;
+use afkconvoy_gate::declared::{self, Fault, fenced_all};
 use anyhow::{Context, Result, anyhow};
 
 use crate::git::Repo;
@@ -19,12 +20,6 @@ pub const BUDGET_BLOCK: &str = "```yaml gate-budget";
 #[serde(deny_unknown_fields)]
 struct GateBudget {
     gate_budget_seconds: u64,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HeavyCommands {
-    commands: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -68,20 +63,9 @@ pub fn parse(markdown: &str) -> Result<Config> {
         true => None,
     };
     let config = Config::new(settings)?.cutting(steps);
-    let blocks = fenced_all(markdown, GATES_BLOCK);
-    let gates = match blocks.is_empty() {
-        false => Some(
-            serde_yaml::from_str::<Gates>(&blocks.join("\n"))
-                .map_err(anyhow::Error::from)
-                .and_then(|gates| {
-                    gates
-                        .checked(config.gate_seconds(), config.gate_budget_seconds)
-                        .map_err(|why| anyhow!(why))
-                })
-                .context("its ```yaml gates block")?,
-        ),
-        true => None,
-    };
+    let gates = declared::gates(markdown, config.gate_seconds(), config.gate_budget_seconds)
+        .map_err(said)
+        .context("its ```yaml gates block")?;
     let mut config = config.split(gates);
     for (block, target) in
         [("gate-needs", &mut config.gate_needs), ("cut-needs", &mut config.cut_needs)]
@@ -135,21 +119,20 @@ pub fn parse(markdown: &str) -> Result<Config> {
 /// heavy-commands ```` blocks (`HEAVY_BLOCK`): none where it has none. Each
 /// is a pattern of words, nonempty and declared once.
 pub fn heavy_commands(markdown: &str) -> Result<Vec<String>> {
-    let blocks = fenced_all(markdown, HEAVY_BLOCK);
-    if blocks.is_empty() {
-        return Ok(vec![]);
+    declared::heavy_commands(markdown).map_err(|fault| match fault {
+        Fault::Yaml(error) => {
+            anyhow::Error::from(error).context("its ```yaml heavy-commands block")
+        }
+        Fault::Said(why) => anyhow!(why),
+    })
+}
+
+/// A fault of a block, as the error it is.
+fn said(fault: Fault) -> anyhow::Error {
+    match fault {
+        Fault::Yaml(error) => anyhow::Error::from(error),
+        Fault::Said(why) => anyhow!(why),
     }
-    let heavy: HeavyCommands =
-        serde_yaml::from_str(&blocks.join("\n")).context("its ```yaml heavy-commands block")?;
-    let mut said = std::collections::HashSet::new();
-    let mut commands = vec![];
-    for pattern in heavy.commands {
-        let words = pattern.split_whitespace().collect::<Vec<_>>().join(" ");
-        anyhow::ensure!(!words.is_empty(), "heavy-commands: a command is empty");
-        anyhow::ensure!(said.insert(words.clone()), "heavy-commands: `{words}` is declared twice");
-        commands.push(words);
-    }
-    Ok(commands)
 }
 
 /// The heavy commands the config file `file` declares, read off their block
@@ -164,13 +147,7 @@ pub fn heavy_commands_of(file: &Path) -> Result<Vec<String>> {
     }
 }
 
-/// Whether the repo puts its gate in the host's worker lane. The wrapper
-/// may use an absolute executable path or pass a directory with `-C`.
-pub fn heavy_gate(command: &str) -> bool {
-    let words: Vec<_> = command.split_whitespace().collect();
-    words.iter().any(|word| word.trim_matches(['\'', '"']).ends_with("afkconvoy"))
-        && words.contains(&"exclusive")
-}
+pub use afkconvoy_gate::declared::heavy_gate;
 
 /// The cut steps a ```` ```yaml cut ```` block says: `set` and `publish`,
 /// each something to run, and optionally `initial`, three version numbers.
@@ -192,25 +169,6 @@ pub fn yaml_block(markdown: &str) -> Option<String> {
 /// is `opening`, and nothing else but trailing space.
 fn fenced(markdown: &str, opening: &str) -> Option<String> {
     fenced_all(markdown, opening).into_iter().next()
-}
-
-/// Complete blocks with this opening, in their document order. The bodies
-/// form one YAML mapping, so each setting still has exactly one home.
-fn fenced_all(markdown: &str, opening: &str) -> Vec<String> {
-    let mut lines = markdown.lines();
-    let mut blocks = Vec::new();
-    while lines.by_ref().any(|line| line.trim_end() == opening) {
-        let mut block = String::new();
-        for line in lines.by_ref() {
-            if line.trim_end() == "```" {
-                blocks.push(block);
-                break;
-            }
-            block.push_str(line);
-            block.push('\n');
-        }
-    }
-    blocks
 }
 
 /// What a markdown text says above its first ```` ```yaml ```` block, with no
