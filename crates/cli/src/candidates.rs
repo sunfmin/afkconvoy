@@ -1,15 +1,14 @@
 //! Remote candidate ownership. Every write extends one ref; a competing
 //! writer's child cannot fast-forward it. Publishing the base and the next
 //! record is one atomic push, so invalidation and publication cannot both win.
-use afkconvoy_core::account::End;
 use afkconvoy_core::candidate::{
-    Barrier, Candidate, Chain, Decision, Evidence, Phase, Process, Publication, Slow,
+    Barrier, Candidate, Chain, Decision, Evidence, Phase, Process, Publication,
 };
 use afkconvoy_core::claims::{HEARTBEAT_KIND, read_heartbeat};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::ending::Ending;
 use afkconvoy_core::gate::{GateCommand, Judged, Proven, Tree, Unsettled};
-use afkconvoy_core::landing::{Of, merge_message};
+use afkconvoy_core::landing::Of;
 use afkconvoy_core::lease::stamp_stale;
 use afkconvoy_core::lock::keeps_off;
 use afkconvoy_core::plan::PullRequest;
@@ -19,10 +18,19 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use afkconvoy_landing::forge::{Change, Forge};
+use afkconvoy_landing::turn::{Declared, Next};
+
 use crate::exclusive::Permit;
+use crate::forge::{Pulls, Refusal};
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::remote::{Fresh, Push};
+
+/// What a turn says when the issue's pinned target moved off the branch it
+/// lands on.
+const RETARGETED: &str =
+    "pinned target changed during validation; restore its record before continuing";
 
 /// How long a turn waiting on the chain first waits before it reads it again.
 const EVERY: Duration = Duration::from_millis(100);
@@ -76,7 +84,7 @@ pub(crate) fn has_task(repo: &Repo, issue: u64) -> Result<bool> {
 }
 
 fn refname(repo: &Repo, config: &Config) -> String {
-    repo.layout().under(&format!("candidates/{}", config.base_branch))
+    afkconvoy_landing::turn::record_ref(repo.layout(), &config.base_branch)
 }
 
 pub(crate) struct Snapshot {
@@ -767,11 +775,10 @@ impl Gate<'_> {
 /// landing is published: what fails here is said in `settle_error`, and the
 /// tick settles a landed issue still open (sunfmin/control#247), so the turn
 /// still answers `merged`.
-fn settle(repo: &Repo, gh: &GitHub, issue: Option<u64>, now: u64, answer: &mut Value) {
-    let Some(n) = issue else { return };
-    let settled =
-        gh.close_issue(n).and_then(|()| crate::account::leave(repo, gh, n, End::Landed, now));
-    if let Err(error) = settled {
+/// Tells the forge the PR landed at `commit`: a failure to settle what
+/// follows is said in `answer`, which stays `merged`.
+fn settle(forge: &Pulls<'_>, change: &Change, commit: &str, answer: &mut Value) {
+    if let Err(error) = forge.landed(change, commit) {
         answer["settle_error"] = json!(format!("{error:#}"));
     }
 }
@@ -1014,7 +1021,9 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let began = std::time::Instant::now();
     let clock = || now.saturating_add(began.elapsed().as_secs());
     let gh = GitHub::of(repo)?;
-    let issue = if let Of::Issue(n) = of { Some(*n) } else { None };
+    let forge = Pulls { repo, config, gh: &gh, tracker, of, clock: &clock };
+    let asked = crate::forge::change(pr);
+    let issue = forge.issue();
     let original = repo
         .remote()
         .fetched(&format!("refs/heads/{}", pr.head_branch), Fresh::Process)?
@@ -1025,13 +1034,14 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
         return Ok(crate::turn::locked(answer, &locks));
     }
-    if let Some(n) = issue {
-        let blockers = gh.open_blockers(n)?;
-        if !blockers.is_empty() {
+    match forge.may_land(&asked)? {
+        Ok(()) => {}
+        Err(Refusal::Blocked(blockers)) => {
             answer["outcome"] = json!(Ending::Blocked);
             answer["blocked_by"] = json!(blockers);
             return Ok(answer);
         }
+        Err(Refusal::Retargeted) => bail!(RETARGETED),
     }
     let root = prepare_worktree_root(repo)?;
     let barrier = !locks.is_empty() || !matches!(of, Of::Issue(_));
@@ -1120,7 +1130,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                     }
                     None => answer,
                 };
-                settle(repo, &gh, issue, clock(), &mut result);
+                settle(&forge, &asked, &c.commit, &mut result);
                 decided(&mut result, c);
                 result["commit"] = json!(c.commit);
                 return Ok(result);
@@ -1197,7 +1207,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             }
             snapshot.chain.observe_base(&current);
             let predecessor = snapshot.chain.predecessor(&current);
-            let message = merge_message(&pr.title, pr.number, of, tracker);
+            let message = forge.message(&asked);
             // A cut adds one commit: the set commit stays on the cut's branch.
             // An issue turn and a watch still land a merge.
             let built = match of {
@@ -1241,29 +1251,23 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
             // Where the commit splits its gate, the candidate runs the fast gate,
             // and a round at it the slow one (docs/adr/0048).
-            let (command, seconds, slow) = match &declared.gates {
-                Some(gates) => (
-                    gates.fast.command.clone(),
-                    gates.fast.seconds,
-                    Some(Slow {
-                        command: gates.slow.command.clone(),
-                        seconds: gates.slow.seconds,
-                        whole: declared.gate_command.clone(),
-                    }),
-                ),
-                None => (declared.gate_command.clone(), declared.gate_seconds(), None),
-            };
+            let own = Declared {
+                whole: declared.gate_command.clone(),
+                seconds: declared.gate_seconds(),
+                gates: declared.gates.clone(),
+            }
+            .own();
             let c = Candidate {
                 id: id.clone(),
                 change: pr.number,
-                note: afkconvoy_core::candidate::Note { issue },
+                note: forge.note(&asked),
                 branch: pr.head_branch.clone(),
                 original_head: original.clone(),
                 predecessor,
                 commit,
                 tree,
-                command,
-                seconds,
+                command: own.command,
+                seconds: own.seconds,
                 phase: Phase::Building,
                 owner: owner.clone(),
                 gate: None,
@@ -1275,12 +1279,10 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 stopped: false,
                 abandoned: false,
                 result: None,
-                slow,
+                slow: own.slow,
                 slowed: false,
             };
-            snapshot.chain.candidates.push(c.clone());
-            snapshot.chain.barriers.retain(|b| b.id != id);
-            snapshot.chain.pending.retain(|b| b.id != id);
+            snapshot.chain.assign(c.clone());
             if write(repo, config, &snapshot)? {
                 break c;
             }
@@ -1354,9 +1356,10 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     loop {
         let chain = reconcile(repo, config, clock())?;
         let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
+        let next = chain.next(&id).expect("assigned candidate");
         // A round at a candidate behind this one may have landed it.
-        if c.phase == Phase::Landed {
-            settle(repo, &gh, issue, clock(), &mut result);
+        if next == Next::Landed {
+            settle(&forge, &asked, &c.commit, &mut result);
             decided(&mut result, c);
             result["commit"] = json!(c.commit);
             result["detail"] = json!(
@@ -1364,7 +1367,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             );
             return Ok(result);
         }
-        if !c.valid() {
+        if next == Next::Ended {
             return Ok(cancelled(result, c, &chain));
         }
         let locks = crate::lock::standing_locks(&gh, config)?;
@@ -1372,7 +1375,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             invalidate(repo, config, &id, "fleet_lock")?;
             return Ok(crate::turn::locked(result, &locks));
         }
-        if chain.round_tip().is_some_and(|tip| tip.id == id) {
+        if next == Next::Round {
             let round_of = Round { repo, config, tracker, id: &id, host, issue, heavy };
             if let Some(red) = round(round_of, clock)? {
                 for (key, value) in red.as_object().into_iter().flatten() {
@@ -1387,27 +1390,24 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             waiting.after(&chain);
             continue;
         }
-        if let Some(n) = issue {
-            let blockers = gh.open_blockers(n)?;
-            if !blockers.is_empty() {
+        match forge.may_land(&asked)? {
+            Ok(()) => {}
+            Err(Refusal::Blocked(blockers)) => {
                 invalidate(repo, config, &id, "issue_blocked")?;
                 result["outcome"] = json!(Ending::Blocked);
                 result["blocked_by"] = json!(blockers);
                 return Ok(result);
             }
+            Err(Refusal::Retargeted) => bail!(RETARGETED),
         }
-        let current_pr = gh.pr_of_branch(&pr.head_branch)?.context(
+        let current = forge.current(&asked)?.context(
             "internal PR disappeared before publication; restore it before requesting another turn",
         )?;
-        if let Err(error) = crate::turn::ensure_base(&current_pr, &config.base_branch) {
+        if let Err(error) =
+            crate::turn::ensure_target(current.number, &current.target, &config.base_branch)
+        {
             invalidate(repo, config, &id, "pr_base_changed")?;
             return Err(error);
-        }
-        if let Some(n) = issue {
-            ensure!(
-                crate::target::branch(repo, config, n)? == config.base_branch,
-                "pinned target changed during validation; restore its record before continuing"
-            );
         }
         let mut snapshot = read(repo, config)?;
         let members: Vec<Candidate> = snapshot.chain.members(&id).into_iter().cloned().collect();
@@ -1415,7 +1415,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             bail!("candidate record disappeared");
         };
         // The whole gate on its tree: its own gate, or its round's two parts.
-        let whole = GateCommand::new(c.slow.as_ref().map_or(&c.command, |slow| &slow.whole));
+        let whole = GateCommand::new(afkconvoy_landing::turn::whole(c));
         let tree = Tree::named(&c.tree);
         let run = crate::gate::recorded(repo, &tree, &whole, clock())?;
         let mut heads = true;
@@ -1423,14 +1423,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             let head = repo.remote().sha(&format!("refs/heads/{}", m.branch), Fresh::Live)?;
             heads &= head.as_deref() == Some(&m.original_head);
         }
-        let Some(publication) = Publication::new(
-            members.iter().all(Candidate::valid),
-            snapshot.chain.ripe(&id, &base) && run.is_some(),
-            members.first().is_some_and(|m| m.predecessor == base),
-            true,
-            heads,
-            members.iter().all(|m| m.stopped),
-        ) else {
+        let Some(publication) = snapshot.chain.publication(&id, &base, run.is_some(), heads) else {
             invalidate(repo, config, &id, "publication_evidence_changed")?;
             let chain = read(repo, config)?.chain;
             let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
@@ -1454,7 +1447,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             }
             continue;
         }
-        settle(repo, &gh, issue, clock(), &mut result);
+        settle(&forge, &asked, &landed, &mut result);
         let published = snapshot.chain.candidates.iter().find(|c| c.id == id);
         decided(&mut result, published.expect("the published candidate"));
         result["commit"] = json!(landed);
@@ -1599,39 +1592,31 @@ fn publish(
     let (Some(first), Some(last)) = (members.first(), members.last()) else {
         bail!("a landing takes at least one candidate");
     };
-    let base = &first.predecessor;
     let old_state = snapshot.sha.as_deref().context("candidate record disappeared")?;
     ensure!(
         repo.git(&["rev-parse", &format!("{}^{{tree}}", last.commit)])? == proven.tree(),
         "candidate tree differs from recorded proof"
     );
-    let mut expected = base;
-    for m in members {
-        ensure!(
-            m.predecessor == *expected
-                && repo.git(&["rev-parse", &format!("{}^1", m.commit)])? == *expected,
-            "candidate does not fast-forward its expected predecessor"
-        );
-        expected = &m.commit;
-    }
+    let members: Vec<&Candidate> = members.iter().collect();
+    let parent = |commit: &str| repo.git(&["rev-parse", &format!("{commit}^1")]);
+    ensure!(
+        afkconvoy_landing::turn::fast_forwards(&members, &first.predecessor, parent)?,
+        "candidate does not fast-forward its expected predecessor"
+    );
     ensure!(
         repo.git(&["rev-parse", &format!("{state}^1")])? == old_state,
         "candidate state does not extend its expected record"
     );
     let state_ref = refname(repo, config);
-    let base_ref = format!("refs/heads/{}", config.base_branch);
-    let sources: Vec<String> = members.iter().map(|m| format!("refs/heads/{}", m.branch)).collect();
-    let mut updates: Vec<crate::remote::Update<'_>> = members
+    let all = afkconvoy_landing::turn::updates(
+        &members,
+        (&state_ref, old_state, state),
+        &config.base_branch,
+    );
+    let updates: Vec<crate::remote::Update<'_>> = all
         .iter()
-        .zip(&sources)
-        .map(|(m, name)| crate::remote::Update {
-            name,
-            old: &m.original_head,
-            new: &m.original_head,
-        })
+        .map(|u| crate::remote::Update { name: &u.name, old: &u.old, new: &u.new })
         .collect();
-    updates.push(crate::remote::Update { name: &state_ref, old: old_state, new: state });
-    updates.push(crate::remote::Update { name: &base_ref, old: base, new: &last.commit });
     repo.remote().publish(&updates)
 }
 
