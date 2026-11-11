@@ -12,6 +12,8 @@ cp "$root/.config/nextest.toml" "$tmp/repo/.config/nextest.toml"
 cat > "$tmp/repo/verify.sh" <<'MOCK'
 #!/bin/sh
 echo 'summary. 0 errors; 0 trusted; 0 ignored.'
+echo '{"reason":"compiler-artifact","package_id":"path+file:///repo/crates/harness#afkconvoy-harness@0.0.0"}'
+echo 'summary. 0 errors; 0 trusted; 0 ignored.'
 echo '{"reason":"compiler-artifact"}'
 MOCK
 cat > "$tmp/home/.cargo/bin/cargo" <<'MOCK'
