@@ -13,6 +13,7 @@ flux-rs = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe
 # Both are empty under a plain `cargo build`.
 flux-alloc = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
 flux-core = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+afkconvoy-harness = { path = "../harness" }
 serde.workspace = true
 serde_json.workspace = true
 toml = "0.8"

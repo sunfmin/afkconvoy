@@ -1,0 +1,26 @@
+[package]
+name = "afkconvoy-harness"
+description = "What afkconvoy knows of each harness, with no fleet concept in its API: how one starts, where it reads its rules and skills, how a hook reaches it, where it keeps its session and what its usage lines count (docs/adr/0058)"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+# Refinement attributes; they expand to nothing under a plain `cargo build`.
+# The same revision crates/core pins, beside which ../../verify.sh checks both.
+flux-rs = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+flux-alloc = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+flux-core = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+
+# `cargo flux` (through ../../verify.sh) checks every refinement in this crate.
+[package.metadata.flux]
+enabled = true
+check_overflow = "strict"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }
