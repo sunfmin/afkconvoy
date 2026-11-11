@@ -14,7 +14,7 @@ use afkconvoy_core::config::{Config, Which};
 pub use afkconvoy_core::gate::Termination;
 use afkconvoy_core::gate::{
     Ended, GateCommand, GreenRun, Judged, Ran, Recording, Red, Tree, Unsettled, after_run,
-    believed_among, judge, record_ref, red_ref, red_subject,
+    believed_among, judge, red_ref, red_subject,
 };
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::lock::named;
@@ -26,6 +26,7 @@ use crate::git::Repo;
 use crate::lock::standing_locks;
 use crate::measure;
 use crate::remote::{Fresh, Push};
+use afkconvoy_gate::run::{self, Records, Settled};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
 /// untracked paths as `git status --porcelain` lists them, and — given the
@@ -358,8 +359,6 @@ fn controlled_run(
         clean_after: after.is_empty(),
         seconds: command_run.seconds,
     };
-    // A new record is written on the noted layout and not also on the other.
-    let refname = record_ref(repo.layout(), &tree, command);
     let strays = if before.is_empty() { after } else { before };
     let mut run = GateRun {
         ran,
@@ -384,25 +383,17 @@ fn controlled_run(
         Judged::Unsettled(_) => Recording::Leave,
         _ => after_run(&tree, command, ran, host, now),
     };
-    match recording {
-        Recording::Write(green) => {
-            let sha = repo.record_commit_on(
-                tree.name(),
-                &run.head,
-                &afkconvoy_core::gate::write_issued(&green, &tree, command, issue),
-            )?;
+    let issued = issue.map(|issue| issue.to_string());
+    let more = afkconvoy_core::gate::noted(issued.as_deref());
+    // A new record is written on the noted layout and not also on the other;
+    // a red run's goes from both (`afkconvoy_gate::run::settle`).
+    match run::settle(&OnRemote(repo), &tree, &run.head, command, recording, &more)? {
+        Settled::Written { green, not_recorded } => {
             // Soft: a record that cannot be written costs the landing a run of the gate.
-            run.not_recorded = push_record(repo, &sha, &refname)?;
+            run.not_recorded = not_recorded;
             run.green = Some(green);
         }
-        Recording::Drop => {
-            // Soft: none there is what was wanted. Both layouts, so a red run
-            // is not believed from the one the record was left on.
-            for layout in Layout::ALL {
-                let name = record_ref(layout, &tree, command);
-                let limit = Some(record_push_limit());
-                let _ = repo.remote().try_push_retried(&Push::delete(&name), limit, || Ok(false));
-            }
+        Settled::Dropped => {
             // A red run of this issue's tree is kept on its own ref until the
             // work account cites it. A base-branch certification names no issue.
             if let Some(issue) = issue {
@@ -417,7 +408,7 @@ fn controlled_run(
                 }
             }
         }
-        Recording::Leave => {}
+        Settled::Left => {}
     }
     Ok(run)
 }
@@ -498,23 +489,9 @@ pub(crate) fn record_whole(
     issue: Option<u64>,
     now: u64,
 ) -> Result<Option<String>> {
-    let (Some(f), Some(s)) = (recorded(repo, tree, fast, now)?, recorded(repo, tree, slow, now)?)
-    else {
-        return Ok(Some(format!(
-            "the fast or the slow gate's run of {} is not on record",
-            tree.name()
-        )));
-    };
-    let Some(run) = GreenRun::joined(tree, whole, fast, &f, slow, &s) else {
-        return Ok(Some("the fast and the slow gate are one command".into()));
-    };
-    let sha = repo.record_commit_on(
-        tree.name(),
-        head,
-        &afkconvoy_core::gate::write_issued(&run, tree, whole, issue),
-    )?;
-    let refname = record_ref(repo.layout(), tree, whole);
-    push_record(repo, &sha, &refname)
+    let issued = issue.map(|issue| issue.to_string());
+    let more = afkconvoy_core::gate::noted(issued.as_deref());
+    run::record_whole(&OnRemote(repo), tree, head, (whole, fast, slow), &more, now)
 }
 
 /// How long one gate-record push may take before its process group is ended.
@@ -570,6 +547,38 @@ fn push_error(stderr: &str) -> String {
     format!("{timeout}; Git reported {sent} sent before the push was ended")
 }
 
+/// A checkout's remote as the gate crate writes and reads its records:
+/// pushes tried again on the remote's own faults and bounded in time
+/// (`push_record`), listings read once per process.
+struct OnRemote<'a>(&'a Repo);
+
+impl Records for OnRemote<'_> {
+    type Error = anyhow::Error;
+
+    fn layout(&self) -> Layout {
+        self.0.layout()
+    }
+
+    fn read(&self, names: &[&str]) -> Result<Vec<(String, String)>> {
+        let found = self.0.remote().records(names, Fresh::Process)?;
+        Ok(found.into_iter().map(|record| (record.name, record.subject)).collect())
+    }
+
+    fn commit(&self, tree: &str, parent: &str, subject: &str) -> Result<String> {
+        self.0.record_commit_on(tree, parent, subject)
+    }
+
+    fn put(&self, sha: &str, refname: &str) -> Result<Option<String>> {
+        push_record(self.0, sha, refname)
+    }
+
+    // Soft: none there is what was wanted.
+    fn delete(&self, refname: &str) {
+        let limit = Some(record_push_limit());
+        let _ = self.0.remote().try_push_retried(&Push::delete(refname), limit, || Ok(false));
+    }
+}
+
 /// The green run of `command` on `tree` the remote has on record and still
 /// believes at `now`, from either ref layout; `None` when it holds none that
 /// stands. One listing reads both records.
@@ -579,12 +588,7 @@ pub fn recorded(
     command: &GateCommand,
     now: u64,
 ) -> Result<Option<GreenRun>> {
-    let noted = repo.layout();
-    let names: Vec<String> =
-        Layout::ALL.into_iter().map(|layout| record_ref(layout, tree, command)).collect();
-    let patterns: Vec<&str> = names.iter().map(String::as_str).collect();
-    let found = repo.remote().records(&patterns, Fresh::Process)?;
-    Ok(recorded_among(&found, noted, tree, command, now))
+    run::recorded(&OnRemote(repo), tree, command, now)
 }
 
 /// The still-valid green run among an existing remote snapshot's records,

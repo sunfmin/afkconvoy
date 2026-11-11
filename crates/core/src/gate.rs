@@ -7,20 +7,15 @@ pub use afkconvoy_gate::gate::*;
 use crate::layout::{GATE_KIND, Layout};
 use crate::record;
 
-/// The record `GreenRun::write` makes, naming `issue` when the run was of
-/// that issue's own tree. No issue is the record `write` makes: a
-/// base-branch certification names none.
-pub fn write_issued(
-    run: &GreenRun,
-    tree: &Tree,
-    command: &GateCommand,
-    issue: Option<u64>,
-) -> String {
-    match issue {
-        Some(issue) => run.write_with(tree, command, &[("issue", &issue.to_string())]),
-        None => run.write(tree, command),
-    }
+/// What a fleet's gate record notes beside the run (`GreenRun::write_with`):
+/// the issue, written as `issue`, when the run was of that issue's own tree.
+/// No issue is noted of a base-branch certification.
+pub fn noted(issue: Option<&str>) -> Vec<(&'static str, &str)> {
+    issue.map(|issue| (ISSUE_FIELD, issue)).into_iter().collect()
 }
+
+/// The field a gate record names its issue in.
+const ISSUE_FIELD: &str = "issue";
 
 /// The record of a red run of `command` on `tree` for `issue`, finished at
 /// `at`. It is not a green run: `GreenRun::recorded` reads one back as none.
@@ -44,7 +39,7 @@ pub fn red_subject(
             ("at", &at),
             ("seconds", &seconds),
             ("host", host),
-            ("issue", &issue),
+            (ISSUE_FIELD, &issue),
             ("red", "1"),
         ],
     )
@@ -112,8 +107,8 @@ mod tests {
     fn a_record_names_the_issue_its_run_was_of_and_a_red_one_is_no_green_run() {
         let (tree, command) = (tree(), command());
         let subject = written(1000).write(&tree, &command);
-        assert_eq!(write_issued(&written(1000), &tree, &command, None), subject);
-        let issued = write_issued(&written(1000), &tree, &command, Some(7));
+        assert_eq!(written(1000).write_with(&tree, &command, &noted(None)), subject);
+        let issued = written(1000).write_with(&tree, &command, &noted(Some("7")));
         assert!(issued.ends_with(" host=mini issue=7"), "{issued}");
         assert_eq!(GreenRun::recorded(&issued, &tree, &command).map(|run| run.at()), Some(1000));
         let red = red_subject(&tree, &command, 17, "other", 1900, 7);

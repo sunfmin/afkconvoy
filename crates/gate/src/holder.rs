@@ -285,6 +285,20 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
         self.held.1.notify_all();
     }
 
+    /// Runs `work` in the lane of `ticket`, once its turn came, and leaves →
+    /// what `work` returned, given when its turn came; `None` where its turn
+    /// never came: the holder was closed. What reaches the bound is not
+    /// ended here: `overdue` says so, to whoever watches it.
+    pub fn alone<T>(&self, ticket: Ticket<N>, work: impl FnOnce(u64) -> T) -> Option<T> {
+        let (number, _) = self.join(ticket);
+        let done = match self.turn(number) {
+            Turn::Runs(ran) => Some(work(ran)),
+            Turn::Left | Turn::Closed => None,
+        };
+        self.leave(number);
+        done
+    }
+
     /// Changes what is noted of each ticket `which` picks, by `change`. No
     /// rule of the queue reads a note.
     pub fn note(&self, which: impl Fn(&Ticket<N>) -> bool, change: impl Fn(&mut N)) {

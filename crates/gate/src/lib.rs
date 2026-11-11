@@ -16,5 +16,6 @@ pub mod gate;
 pub mod holder;
 pub mod layout;
 pub mod record;
+pub mod run;
 pub mod shell;
 pub mod slow_gate;
