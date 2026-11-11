@@ -68,7 +68,7 @@ pub(crate) fn has_task(repo: &Repo, issue: u64) -> Result<bool> {
     let prefix = repo.layout().under("candidates/");
     for record in repo.remote().records(&[&format!("{prefix}*")], Fresh::Process)? {
         let chain: Chain = serde_json::from_str(&record.subject)?;
-        if chain.candidates.iter().any(|c| c.issue == Some(issue) && c.active()) {
+        if chain.candidates.iter().any(|c| c.note.issue == Some(issue) && c.active()) {
             return Ok(true);
         }
     }
@@ -219,8 +219,8 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
     let mut row = json!({
         "phase": c.phase,
         "commit": c.commit,
-        "issue": c.issue,
-        "pr": c.pr,
+        "issue": c.note.issue,
+        "pr": c.change,
         "predecessor": c.predecessor,
         "waiting": c.waiting(),
         "target_branch": branch,
@@ -789,7 +789,7 @@ fn answered(evidence: &Evidence, answer: &Value) -> Value {
 /// Says in `answer` the ending the chain decided for `c`
 /// (`Candidate::decision`): its turn's ending is set nowhere else.
 fn decided(answer: &mut Value, c: &Candidate) {
-    answer["outcome"] = json!(c.decision().map(Decision::ending));
+    answer["outcome"] = json!(c.decision().map(afkconvoy_core::candidate::ending));
 }
 
 /// The answer of a turn whose candidate's `gate` (fast or slow) said nothing
@@ -826,7 +826,7 @@ fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
         answer["candidate"] = json!(c.id);
         answer["cancelled_by"] = json!(c.cancelled_by);
         answer["cause"] = json!(c.cause);
-        answer["round_pr"] = json!(tip.map(|t| t.pr));
+        answer["round_pr"] = json!(tip.map(|t| t.change));
         answer["detail"] = json!(
             "the slow gate ran red on the round at PR `round_pr`, which holds this change; its worker fixes the round: stop"
         );
@@ -1069,7 +1069,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         .candidates
         .iter()
         .rev()
-        .find(|c| c.pr == pr.number && c.original_head == original && c.adoptable())
+        .find(|c| c.change == pr.number && c.original_head == original && c.adoptable())
         .cloned();
     let mut adopted = None;
     if let Some(c) = existing
@@ -1104,7 +1104,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             chain = change(repo, config, reserve)?;
         }
         if let Some(c) =
-            chain.candidates.iter().rev().find(|c| c.pr == pr.number && c.original_head == original)
+            chain.candidates.iter().rev().find(|c| c.change == pr.number && c.original_head == original)
         {
             if c.phase == Phase::Landed {
                 let mut result = match &c.result {
@@ -1162,7 +1162,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             let barrier = barrier || !locks.is_empty();
             let mut snapshot = read(repo, config)?;
             let current = snapshot.base.clone();
-            if snapshot.chain.candidates.iter().any(|c| c.pr == pr.number && c.active()) {
+            if snapshot.chain.candidates.iter().any(|c| c.change == pr.number && c.active()) {
                 answer["outcome"] = json!(Ending::CandidateActive);
                 answer["detail"] = json!(
                     "this PR already has an active candidate; its owner alone may validate and publish it"
@@ -1252,8 +1252,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             };
             let c = Candidate {
                 id: id.clone(),
-                pr: pr.number,
-                issue,
+                change: pr.number,
+                note: afkconvoy_core::candidate::Note { issue },
                 branch: pr.head_branch.clone(),
                 original_head: original.clone(),
                 predecessor,
@@ -1455,11 +1455,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let published = snapshot.chain.candidates.iter().find(|c| c.id == id);
         decided(&mut result, published.expect("the published candidate"));
         result["commit"] = json!(landed);
-        result["landed"] = json!(members.iter().map(|m| m.pr).collect::<Vec<_>>());
+        result["landed"] = json!(members.iter().map(|m| m.change).collect::<Vec<_>>());
         result["detail"] = json!(
             "landed the exact recorded candidate as a fast-forward; source head preserved — stop"
         );
-        let prs: Vec<String> = members.iter().map(|m| format!("#{}", m.pr)).collect();
+        let prs: Vec<String> = members.iter().map(|m| format!("#{}", m.change)).collect();
         crate::acting::Acting::new("land").on_issue(issue).in_checkout(Some(repo.clone())).say(
             crate::clock(),
             format!("turn landed PR {} on {} at {landed}", prs.join(", "), config.base_branch),
@@ -1559,7 +1559,7 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
     result["round"] = json!(
         members
             .iter()
-            .map(|m| json!({"pr": m.pr, "issue": m.issue.map(|n| tracker.issue(n))}))
+            .map(|m| json!({"pr": m.change, "issue": m.note.issue.map(|n| tracker.issue(n))}))
             .collect::<Vec<_>>()
     );
     result["files"] = json!(files);
