@@ -13,6 +13,7 @@ extern crate flux_core;
 pub mod declared;
 pub mod exclusive;
 pub mod gate;
+pub mod holder;
 pub mod layout;
 pub mod record;
 pub mod shell;
