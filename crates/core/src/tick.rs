@@ -1449,12 +1449,14 @@ mod tests {
 
     #[test]
     fn a_pass_opens_the_issue_for_a_slow_gate_that_has_none() {
-        use crate::slow_gate::SlowGate;
+        use crate::slow_gate::{Slow, SlowGate};
         let slow = |issue| SlowGate {
-            gate_seconds: 600,
-            gate_budget_seconds: None,
-            host: "mini".into(),
-            runs: vec![],
+            slow: Slow {
+                gate_seconds: 600,
+                gate_budget_seconds: None,
+                host: "mini".into(),
+                runs: vec![],
+            },
             issue,
         };
         let mut unreported = set(&[5], &[]);

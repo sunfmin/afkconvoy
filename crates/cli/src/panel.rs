@@ -980,7 +980,7 @@ fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
             )
         }
     };
-    if let Some(validation) = &ticket.validation {
+    if let Some(validation) = &ticket.note.validation {
         doing.push_str(&format!(
             " · candidate {} · predecessor {} · {}",
             validation.id, validation.predecessor, validation.waiting
@@ -993,7 +993,7 @@ fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
         }
     }
     let dir = ticket.dir.rsplit('/').next().unwrap_or_default();
-    match ticket.issue {
+    match ticket.note.issue {
         Some(issue) => format!("{doing} · #{issue} in {dir}"),
         None => format!("{doing} · in {dir}"),
     }
@@ -1938,13 +1938,12 @@ mod tests {
                 pid: 4000 + number as u32,
                 command: format!("cmd-{number}"),
                 dir: format!("/w/{number}"),
-                issue: None,
                 cut: false,
                 repo_lane: repo_lane.map(String::from),
                 repo: repo_lane.map(String::from),
                 is_turn: false,
                 candidate: false,
-                validation: None,
+                note: afkconvoy_core::exclusive::Note { issue: None, validation: None },
                 gate: None,
                 asked: 900 + number,
                 ran,

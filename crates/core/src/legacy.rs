@@ -58,8 +58,8 @@ impl Proposal {
     fn tagged(tag: &str) -> Option<Self> {
         let (issue, comment) = tag.split_once("-c")?;
         Some(Self {
-            issue: crate::record::fleet_number(issue)?,
-            comment: crate::record::fleet_number(comment)?,
+            issue: crate::record::canonical_number(issue)?,
+            comment: crate::record::canonical_number(comment)?,
         })
     }
 

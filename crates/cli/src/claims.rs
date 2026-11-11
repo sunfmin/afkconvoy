@@ -12,7 +12,7 @@ use afkconvoy_core::layout::Layout;
 use afkconvoy_core::patrol::{
     ASKED_KIND, RUN_KIND, Ran, asked_ref, read_asked, read_run, write_asked,
 };
-use afkconvoy_core::record::fleet_number;
+use afkconvoy_core::record::canonical_number;
 use afkconvoy_core::takeover::{held, holds};
 use afkconvoy_core::tracker::{Claimed, Tracker};
 use anyhow::{Result, bail};
@@ -56,7 +56,7 @@ pub fn on_this_host(repo: &Repo, issue: u64, host: &str, fresh: Fresh) -> Result
 /// A standalone gate has no issue argument: the worker's environment names it.
 pub fn own_issue_on_this_host(repo: &Repo) -> Result<()> {
     if let Some(issue) =
-        std::env::var(afkconvoy_core::role::ISSUE_ENV).ok().and_then(|raw| fleet_number(&raw))
+        std::env::var(afkconvoy_core::role::ISSUE_ENV).ok().and_then(|raw| canonical_number(&raw))
     {
         on_this_host(repo, issue, &crate::host_settings::host_name(), Fresh::Live)?;
     }
@@ -543,7 +543,7 @@ pub fn drop_ask(repo: &Repo, scan: &mut Scan, name: &str, ask: &Ask) -> Result<(
 /// (`crate::acting`), and its next tick ends the run. An error when no run is claimed under `key` — an issue's claim is no
 /// run's: a stage ends with a verdict.
 pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
-    if fleet_number(key).is_some() {
+    if canonical_number(key).is_some() {
         bail!(
             "{key} is an issue, and no run: the stage of a worker on an issue ends with \
              `afkconvoy verdict`. Only a patrol's run is declared over"

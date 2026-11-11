@@ -1,6 +1,6 @@
 //! A PR's merge identity, recoverable from base history, and worktree builds.
 use crate::config::RepoName;
-use crate::record::fleet_number;
+use crate::record::canonical_number;
 use crate::tracker::Tracker;
 use flux_rs::attrs::*;
 /// Whose PR a merge commit names.
@@ -109,7 +109,7 @@ pub fn read_landings(commits: &[Logged], tracker: &Tracker) -> Vec<LandedPr> {
         let pr = subject
             .strip_suffix(')')
             .and_then(|rest| rest.rsplit_once(" (#"))
-            .and_then(|(_, number)| fleet_number(number));
+            .and_then(|(_, number)| canonical_number(number));
         let closes = commit.message.lines().find_map(|line| line.strip_prefix(CLOSES));
         let issue = closes.map(str::trim).and_then(|named| match tracker.issue_named(named) {
             Some(issue) => Some(Of::Issue(issue)),
@@ -141,7 +141,7 @@ pub fn read_landings(commits: &[Logged], tracker: &Tracker) -> Vec<LandedPr> {
 /// `owner/repo#7`.
 fn names_an_issue(named: &str) -> bool {
     let Some((repo, number)) = named.rsplit_once('#') else { return false };
-    fleet_number(number).is_some() && (repo.is_empty() || RepoName::read(repo).is_some())
+    canonical_number(number).is_some() && (repo.is_empty() || RepoName::read(repo).is_some())
 }
 
 /// A worker's worktree has outgrown its build when what it built is more

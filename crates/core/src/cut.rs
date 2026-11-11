@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::claims::{Holder, InstanceId, RunClaim};
 use crate::plan::Issue;
-use crate::record::{self, fleet_number};
+use crate::record::{self, canonical_number};
 
 /// What the claim on a cut is keyed by: one cut of a repo runs at a time,
 /// across its hosts.
@@ -142,7 +142,7 @@ pub struct Version {
 
 impl Version {
     /// The version the tag `name` names: `v`, then three numbers as the fleet
-    /// writes them (`record::fleet_number`), parted by `.`. Any other tag
+    /// writes them (`record::canonical_number`), parted by `.`. Any other tag
     /// names none — `v1.2`, `v1.2.3-rc1`, `release-1`.
     pub fn tagged(name: &str) -> Option<Version> {
         Version::parse(name.strip_prefix('v')?)
@@ -151,9 +151,9 @@ impl Version {
     /// Three version numbers without a tag's `v`, each as the fleet writes it.
     pub fn parse(name: &str) -> Option<Version> {
         let mut parts = name.split('.');
-        let major = fleet_number(parts.next()?)?;
-        let minor = fleet_number(parts.next()?)?;
-        let patch = fleet_number(parts.next()?)?;
+        let major = canonical_number(parts.next()?)?;
+        let minor = canonical_number(parts.next()?)?;
+        let patch = canonical_number(parts.next()?)?;
         match parts.next() {
             Some(_) => None,
             None => Some(Version { major, minor, patch }),
@@ -209,7 +209,7 @@ pub fn prs_of<'a>(subjects: impl IntoIterator<Item = &'a str>) -> Vec<u64> {
         .into_iter()
         .filter_map(|subject| {
             let (_, number) = subject.trim_end().strip_suffix(')')?.rsplit_once(" (#")?;
-            fleet_number(number)
+            canonical_number(number)
         })
         .collect();
     prs.sort_unstable();
@@ -785,7 +785,7 @@ pub fn branch_prefix(version: &str) -> String {
 pub fn pushed(heads: &[(String, String)], version: &str) -> Option<(String, String)> {
     let prefix = branch_prefix(version);
     let stamped = heads.iter().filter_map(|(name, commit)| {
-        let stamp = fleet_number(name.strip_prefix(&prefix)?)?;
+        let stamp = canonical_number(name.strip_prefix(&prefix)?)?;
         Some((stamp, name, commit))
     });
     let latest = stamped.max_by_key(|(stamp, _, _)| *stamp)?;

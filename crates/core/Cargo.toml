@@ -11,6 +11,7 @@ flux-rs.workspace = true
 flux-alloc.workspace = true
 flux-core.workspace = true
 afkconvoy-harness = { path = "../harness" }
+afkconvoy-gate = { path = "../gate" }
 serde.workspace = true
 serde_json.workspace = true
 toml = "0.8"

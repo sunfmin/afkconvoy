@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 afkconvoy-core = { path = "../core" }
+afkconvoy-gate = { path = "../gate" }
 agent-help = { git = "https://github.com/sunfmin/agent-cli" }
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }

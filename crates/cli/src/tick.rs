@@ -1085,7 +1085,7 @@ impl Ticked {
                 .set
                 .slow_gate
                 .as_ref()
-                .map(afkconvoy_core::slow_gate::said)
+                .map(|slow| afkconvoy_core::slow_gate::said(slow))
                 .unwrap_or_default();
             parts.push(format!("opened an issue for the slow gate: {evidence}"));
         }

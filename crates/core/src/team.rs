@@ -1010,7 +1010,7 @@ pub fn duration(text: &str) -> Option<u64> {
     let units = [('m', 60), ('h', 3600), ('d', 86400)];
     let (count, unit) =
         units.iter().find_map(|(unit, lasts)| Some((text.strip_suffix(*unit)?, *lasts)))?;
-    let count = crate::record::fleet_number(count)?;
+    let count = crate::record::canonical_number(count)?;
     if count == 0 { None } else { count.checked_mul(unit) }
 }
 

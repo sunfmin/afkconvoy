@@ -3,6 +3,8 @@
 
 use std::num::NonZeroUsize;
 
+pub use afkconvoy_gate::declared::{GATES_BLOCK, Gate, Gates, HEAVY_BLOCK, Which};
+
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
@@ -176,10 +178,6 @@ pub struct Config {
     pub heavy_commands: Vec<String>,
 }
 
-/// The opening line of the block that declares a repo's heavy commands: one
-/// of its own, which an older afkconvoy skips.
-pub const HEAVY_BLOCK: &str = "```yaml heavy-commands";
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateNeed {
@@ -193,77 +191,6 @@ pub struct GateNeed {
     /// The install's limit, required with `install`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_seconds: Option<u64>,
-}
-
-/// The opening line of the block that splits a repo's gate in two: one of
-/// its own, which an older afkconvoy skips, so the version that reads it can
-/// still be landed and cut by the one before.
-pub const GATES_BLOCK: &str = "```yaml gates";
-
-/// The fast gate and the slow gate: the repo's gate as two, each checking
-/// what the other does not, and together what `gate_command` checks.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Gates {
-    /// What a worker passes before it opens or updates its PR.
-    pub fast: Gate,
-    /// Everything else the gate checks.
-    pub slow: Gate,
-}
-
-/// One of the two gates: what it runs, its limit and its warning budget,
-/// as `gate_command`, `gate_seconds` and `gate_budget_seconds` are the
-/// whole gate's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Gate {
-    pub command: String,
-    /// The limit: a run still going after it is ended, and red.
-    pub seconds: u64,
-    /// The warning budget: a run past it is said to be slow, and is not red.
-    pub budget_seconds: u64,
-}
-
-impl Gates {
-    /// These gates, or why they cannot be run on, naming the key at fault.
-    /// Neither may name nothing to run, have no time, or a budget not below
-    /// its limit; together they are the gate split, so their limits may not
-    /// add up past `gate_seconds`, nor their budgets past
-    /// `gate_budget_seconds`, where it is declared.
-    pub fn checked(
-        self,
-        gate_seconds: u64,
-        gate_budget_seconds: Option<u64>,
-    ) -> Result<Gates, String> {
-        for (name, gate) in [("fast", &self.fast), ("slow", &self.slow)] {
-            if gate.command.trim().is_empty() {
-                return Err(format!("{name}.command: names nothing to run"));
-            }
-            if gate.seconds == 0 {
-                return Err(format!(
-                    "{name}.seconds: must be a whole number of seconds, at least 1"
-                ));
-            }
-            if gate.budget_seconds == 0 || gate.budget_seconds >= gate.seconds {
-                return Err(format!(
-                    "{name}.budget_seconds: must be a whole number of seconds, at least 1 and below {name}.seconds"
-                ));
-            }
-        }
-        if self.fast.seconds.saturating_add(self.slow.seconds) > gate_seconds {
-            return Err(format!(
-                "fast.seconds and slow.seconds: together {}s, past gate_seconds, {gate_seconds}s: the two gates are the gate split, and neither limit is raised by it",
-                self.fast.seconds.saturating_add(self.slow.seconds)
-            ));
-        }
-        let budgets = self.fast.budget_seconds.saturating_add(self.slow.budget_seconds);
-        if let Some(budget) = gate_budget_seconds.filter(|budget| budgets > *budget) {
-            return Err(format!(
-                "fast.budget_seconds and slow.budget_seconds: together {budgets}s, past gate_budget_seconds, {budget}s: the two gates are the gate split, and neither budget is raised by it"
-            ));
-        }
-        Ok(self)
-    }
 }
 
 /// Why a repo's settings are no config. Each names the key at fault.
@@ -455,22 +382,6 @@ impl Config {
     #[spec(fn(&Config[@c]) -> u64[c.gate_seconds])]
     pub fn gate_seconds(&self) -> u64 {
         self.gate_seconds
-    }
-}
-
-/// One of the two gates a repo's gate is split into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Which {
-    Fast,
-    Slow,
-}
-
-impl Which {
-    pub fn word(self) -> &'static str {
-        match self {
-            Which::Fast => "fast",
-            Which::Slow => "slow",
-        }
     }
 }
 

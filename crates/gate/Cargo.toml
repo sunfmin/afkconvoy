@@ -1,0 +1,27 @@
+[package]
+name = "afkconvoy-gate"
+description = "The gate and the exclusive queue, with no fleet concept in their API: a repo's fast and slow gate, recorded gate runs, heavy commands and the host's lanes (docs/adr/0059)"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+# Flux's attributes and refinements of the standard library (../../Cargo.toml).
+flux-rs.workspace = true
+flux-alloc.workspace = true
+flux-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+
+[dev-dependencies]
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+tempfile = "3"
+
+# `cargo flux` (through ../../verify.sh) checks every refinement in this crate.
+[package.metadata.flux]
+enabled = true
+check_overflow = "strict"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }
