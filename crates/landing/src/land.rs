@@ -79,10 +79,11 @@ pub struct Lander<'a, F: Forge> {
     pub owner: Process,
     /// Where each candidate's worktree is made, one directory each.
     pub worktrees: PathBuf,
-    /// What the commit named declares of its gate.
-    pub declared: &'a dyn Fn(&str) -> Result<Declared, String>,
+    /// What the commit named declares of its gate, read in the checkout
+    /// named.
+    pub declared: fn(&Path, &str) -> Result<Declared, String>,
     /// The time now, in epoch seconds.
-    pub now: &'a dyn Fn() -> u64,
+    pub now: fn() -> u64,
 }
 
 /// The chain of one target as read: its record's commit, the target's tip,
@@ -261,7 +262,7 @@ where
                 self.dir(),
                 &["commit-tree", &tree, "-p", &predecessor, "-p", &original, "-m", &message],
             )?;
-            let own = (self.declared)(&commit)?.own();
+            let own = (self.declared)(self.dir(), &commit)?.own();
             let id = format!(
                 "{}-{}-{}",
                 change.number,

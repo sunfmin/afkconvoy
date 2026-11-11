@@ -1,12 +1,12 @@
 #!/bin/sh
-# Checks the refinement types of the core crate, and of the harness crate and
-# gate crate it depends on, with Flux (docs/adr/0007, docs/adr/0058,
-# docs/adr/0059).
+# Checks the refinement types of the core crate, and of the harness, gate and
+# landing crates it depends on, with Flux (docs/adr/0007, docs/adr/0058,
+# docs/adr/0059, docs/adr/0060).
 # Needs `cargo-flux`, `fixpoint` and `z3` installed, each the one
 # Cargo.toml (the Flux revision) and crates/core/Cargo.toml (the checker)
 # pin: it refuses to check with any other.
 #
-#   ./verify.sh                 check the whole core, harness and gate crates
+#   ./verify.sh                 check the whole core, harness, gate and landing crates
 #   ./verify.sh free_slots      check the functions whose path contains a name
 #   ./verify.sh --toolchain     check only that the three tools are the pinned
 #                               ones, and exit: the gate need that

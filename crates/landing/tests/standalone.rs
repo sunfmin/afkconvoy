@@ -100,24 +100,17 @@ fn change(work: &Path, number: u64, source: &str, file: &str) -> Change {
 }
 
 /// What a candidate's commit declares of its gate, read off it.
-fn declared(work: &Path) -> impl Fn(&str) -> Result<Declared, String> + '_ {
-    move |commit| {
-        let text = git(work, &["show", &format!("{commit}:gate.md")]);
-        let gates = declared::gates(&text, 180, None).map_err(|fault| fault.to_string())?;
-        Ok(Declared { whole: "./gate.sh".into(), seconds: 180, gates })
-    }
+fn declared(work: &Path, commit: &str) -> Result<Declared, String> {
+    let text = git(work, &["show", &format!("{commit}:gate.md")]);
+    let gates = declared::gates(&text, 180, None).map_err(|fault| fault.to_string())?;
+    Ok(Declared { whole: "./gate.sh".into(), seconds: 180, gates })
 }
 
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
 }
 
-fn lander<'a>(
-    work: &Path,
-    worktrees: &Path,
-    forge: &'a Fake,
-    declared: &'a dyn Fn(&str) -> Result<Declared, String>,
-) -> Lander<'a, Fake> {
+fn lander<'a>(work: &Path, worktrees: &Path, forge: &'a Fake) -> Lander<'a, Fake> {
     Lander {
         git: Git { worktree: work.into(), remote: "origin".into(), layout: Layout::Hidden },
         forge,
@@ -129,7 +122,7 @@ fn lander<'a>(
         },
         worktrees: worktrees.into(),
         declared,
-        now: &now,
+        now,
     }
 }
 
@@ -158,9 +151,8 @@ fn two_changes_land_in_one_round_with_one_slow_gate_at_its_tip() {
     let b = change(&work, 2, "b", "b.txt");
     let heads = (git(&work, &["rev-parse", "a"]), git(&work, &["rev-parse", "b"]));
     let forge = Fake::default();
-    let declared = declared(&work);
     let worktrees = root.path().join("candidates");
-    let lander = lander(&work, &worktrees, &forge, &declared);
+    let lander = lander(&work, &worktrees, &forge);
 
     let outcomes = lander.land(&[a, b]).unwrap();
 
@@ -207,9 +199,8 @@ fn a_red_round_lands_nothing_and_cancels_the_chain() {
     let breaking = change(&work, 1, "a", "breaks");
     let other = change(&work, 2, "b", "b.txt");
     let forge = Fake::default();
-    let declared = declared(&work);
     let worktrees = root.path().join("candidates");
-    let lander = lander(&work, &worktrees, &forge, &declared);
+    let lander = lander(&work, &worktrees, &forge);
 
     let outcomes = lander.land(&[breaking, other]).unwrap();
 
