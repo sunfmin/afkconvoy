@@ -48,7 +48,7 @@ const SWEEP: &str = "```yaml\nby: dev\ndo: implement\nevery: 1h\nmax_open: 1\n``
 const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
 
 /// The fleet's extension for pi, as the tool carries it.
-const EXTENSION: &str = include_str!("../../core/src/harness/pi/extension.js");
+const EXTENSION: &str = include_str!("../../harness/src/harness/pi/extension.js");
 /// Where orca installs its own, under the home of its host's user.
 const ORCA_S: &str = ".pi/agent/extensions/orca-agent-status.ts";
 

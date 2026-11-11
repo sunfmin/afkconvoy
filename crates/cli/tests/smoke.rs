@@ -164,7 +164,7 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
              CLAUDE_CONFIG_DIR={} && {} -p {} \
              --output-format stream-json --verbose --include-hook-events --no-session-persistence",
             quoted(&text(&config)),
-            Harness::ClaudeCode.in_role(&launch, &start),
+            start.in_role(Harness::ClaudeCode, &launch),
             quoted(PROMPT)
         );
         let out = Command::new(&shell).args(["-lic", &line]).stdin(Stdio::null()).output().unwrap();
@@ -354,7 +354,7 @@ fn real_interactive_claude_takes_its_brief_without_persisting_workspace_trust() 
                     team_commit: "def",
                 },
             };
-            let line = Harness::ClaudeCode.in_role(launch, &start);
+            let line = start.in_role(Harness::ClaudeCode, launch);
             assert_eq!(line.matches("--settings ").count(), 2);
             line
         };

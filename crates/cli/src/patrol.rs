@@ -315,7 +315,7 @@ fn in_role(
             team_commit: &kept.copy.commit,
         },
     };
-    Ok(harness.in_role(launch, &start))
+    Ok(start.in_role(harness, launch))
 }
 
 /// Ends the worker of my run of the patrol `name` and starts one in its

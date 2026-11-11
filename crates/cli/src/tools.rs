@@ -72,7 +72,7 @@ pub fn harness(launch: &Proposed) -> Option<(Tool, Found)> {
         Some(question) => asked(launch.dir(), tool, &question),
     };
     if state == Found::Ready
-        && let Some(needed) = harness.needs()
+        && let Some(needed) = harness.needs().map(Tool::from)
     {
         let question = format!("command -v {}", needed.name());
         let (ok, _) = ask_login_shell(launch.dir(), &question).unwrap_or_default();

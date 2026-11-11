@@ -179,6 +179,15 @@ pub fn add_checkout(path: &str) -> String {
     format!("orca repo add --path {}", quoted(path))
 }
 
+/// The tool a program a harness cannot start without is (`Harness::needs`).
+impl From<crate::harness::Needed> for Tool {
+    fn from(needed: crate::harness::Needed) -> Tool {
+        match needed {
+            crate::harness::Needed::Dsh => Tool::Dsh,
+        }
+    }
+}
+
 impl Tool {
     /// The word it is run by.
     pub fn name(self) -> &'static str {

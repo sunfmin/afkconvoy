@@ -173,11 +173,11 @@ fn a_real_kimi_worker_loads_its_role_and_refuses_what_the_role_and_guard_refuse(
 
     let told = Told {
         repo: Some(Rules { file: &project.join("AGENTS.md").display().to_string(), text: &own }),
-        team: Some(Rules {
+        added: Some(Rules {
             file: &team.join("CLAUDE.md").display().to_string(),
             text: &team_rules,
         }),
-        role: None,
+        own: None,
     };
     let guard = format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy"));
     let (kept, _) = for_worker_under(
@@ -217,7 +217,7 @@ fn a_real_kimi_worker_loads_its_role_and_refuses_what_the_role_and_guard_refuse(
         },
     };
     let line =
-        format!("stty rows 50 cols 160; {}", Harness::Kimi.in_role(Harness::Kimi.stock(), &start));
+        format!("stty rows 50 cols 160; {}", start.in_role(Harness::Kimi, Harness::Kimi.stock()));
     let mut terminal = Command::new("script");
     if cfg!(target_os = "macos") {
         terminal.args(["-q", "/dev/null", "/bin/sh", "-c", &line]);

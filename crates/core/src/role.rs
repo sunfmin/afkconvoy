@@ -23,8 +23,9 @@ pub const FLAGS: &[&str] = Harness::DEFAULT.flags();
 pub const ROLE_COMMIT_ENV: &str = "AFKCONVOY_ROLE_COMMIT";
 pub const TEAM_COMMIT_ENV: &str = "AFKCONVOY_TEAM_COMMIT";
 /// The variable it carries the harness the worker is a session of in: the
-/// command that declares a verdict reads it too.
-pub const HARNESS_ENV: &str = "AFKCONVOY_HARNESS";
+/// command that declares a verdict reads it too, and the guard. The harness
+/// crate's, whose hooks read it.
+pub use afkconvoy_harness::HARNESS_ENV;
 /// The variable it carries the model the worker runs in, where it was
 /// started on one: the command that declares a verdict reads it too.
 pub const MODEL_ENV: &str = "AFKCONVOY_MODEL";
@@ -278,26 +279,41 @@ pub struct Start<'a> {
     pub facts: Facts<'a>,
 }
 
-/// One set of rules as it was read: the file it is in, and what that holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rules<'a> {
-    pub file: &'a str,
-    pub text: &'a str,
-}
+/// One set of rules as it was read, and the rules a worker is given from
+/// outside the directory it starts in, read for a harness that loads none
+/// from there itself (`Harness::told`): the repo's own, the team rules
+/// (`Told::added`, from the team's copy) and the role's (`Told::own`, from
+/// the file its harness names, `Harness::role_file`).
+pub use afkconvoy_harness::{Rules, Told};
 
-/// The rules a worker is given from outside the directory it starts in, read
-/// for a harness that loads none from there itself (`Harness::told`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Told<'a> {
-    /// The repo's own rules, in the worktree. `None`: the repo holds none.
-    pub repo: Option<Rules<'a>>,
-    /// The team rules, in the team's copy. `None` of a team that has none.
-    pub team: Option<Rules<'a>>,
-    /// The role's own rules, from the file its harness names
-    /// (`Harness::role_file`). `None` of a harness that names none: it loads
-    /// them from the role's copy, which is where it starts. A harness that
-    /// starts in the worktree names the file (ADR-0043).
-    pub role: Option<Rules<'a>>,
+impl Start<'_> {
+    /// The line a terminal opened on the issue's worktree runs to start this
+    /// worker of `harness` in its role with the worker launch command
+    /// `command` (`Harness::in_role`): from the role's copy, with the team's
+    /// added and the guard as the hook before each tool call, and the stage's
+    /// facts, the harness and the model in its environment.
+    pub fn in_role(&self, harness: Harness, command: &str) -> String {
+        let mut env = self.facts.env();
+        env.push((HARNESS_ENV, harness.key().to_string()));
+        if let Some(model) = self.model {
+            env.push((MODEL_ENV, model.to_string()));
+        }
+        let start = afkconvoy_harness::Start {
+            dir: self.role_dir,
+            worktree: self.worktree,
+            added: self.team_dir,
+            model: self.model,
+            hook: self.guard,
+            kept: self.kept,
+            host_user: self.host_user,
+            host_rules: self.host_rules,
+            dsh_profile: self.dsh_profile,
+            shadowed: self.shadowed,
+            told: self.told,
+            env,
+        };
+        harness.in_role(command, &start)
+    }
 }
 
 #[cfg(test)]
@@ -308,6 +324,79 @@ mod tests {
     use crate::stage_record::{Author, Stated};
     use crate::team::{File, RoleDir, Sources, TEAM_FILE, load};
     use crate::transition::escalation_comment;
+
+    /// A worker's start in its role, put to its harness as a neutral start:
+    /// the stage's facts, the harness and the model are the variables of its
+    /// environment, in that order, after the harness's own.
+    #[test]
+    fn a_start_in_a_role_is_put_to_every_harness_with_its_facts_harness_and_model() {
+        let start = Start {
+            role_dir: "/copies/acme/dev/abc",
+            worktree: "/wt/issue 7",
+            team_dir: "/copies/acme/team/def",
+            model: Some("opus"),
+            guard: "/bin/afkconvoy guard",
+            kept: "/cache/harness/claude-code",
+            host_user: false,
+            host_rules: &[],
+            dsh_profile: crate::team::DshProfile::Fleet,
+            shadowed: &[],
+            told: Told::default(),
+            facts: Facts {
+                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
+                role: "dev",
+                skill: "implement",
+                writes: false,
+                consult: false,
+                base_branch: "main",
+                target_branch: None,
+                escalate_label: "ready-for-human",
+                lock_label: "fleet-lock",
+                role_commit: "abc",
+                team_commit: "def",
+            },
+        };
+        let mut env = start.facts.env();
+        env.extend([(HARNESS_ENV, String::new()), (MODEL_ENV, "opus".to_string())]);
+        for harness in Harness::ALL {
+            let at = env.len() - 2;
+            env[at].1 = harness.key().to_string();
+            let neutral = afkconvoy_harness::Start {
+                dir: "/copies/acme/dev/abc",
+                worktree: "/wt/issue 7",
+                added: "/copies/acme/team/def",
+                model: Some("opus"),
+                hook: "/bin/afkconvoy guard",
+                kept: "/cache/harness/claude-code",
+                host_user: false,
+                host_rules: &[],
+                dsh_profile: crate::team::DshProfile::Fleet,
+                shadowed: &[],
+                told: Told::default(),
+                env: env.clone(),
+            };
+            assert_eq!(
+                start.in_role(harness, "kim --yolo"),
+                harness.in_role("kim --yolo", &neutral),
+                "{}",
+                harness.key()
+            );
+        }
+        // DSH quotes the whole line once more, as one word of its start script.
+        for harness in Harness::ALL.into_iter().filter(|harness| *harness != Harness::Dsh) {
+            let line = start.in_role(harness, "kim --yolo");
+            let facts = " AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' AFKCONVOY_STAGE='build' \
+                 AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' AFKCONVOY_WRITES='false' \
+                 AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
+                 AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
+                 AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' ";
+            let ended = format!(
+                "{facts}AFKCONVOY_HARNESS='{}' AFKCONVOY_MODEL='opus' && kim --yolo",
+                harness.key()
+            );
+            assert!(line.contains(&ended), "{}: {line}", harness.key());
+        }
+    }
 
     const TEAM: &str = "roles:\n  dev: acme/dev\n  boss: acme/boss\n";
     const FEATURE: &str = "\

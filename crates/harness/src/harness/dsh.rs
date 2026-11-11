@@ -5,9 +5,9 @@ use serde::{Deserialize, Deserializer};
 
 use super::session::{self, json_lines};
 use super::{Kept, Link, SessionFile, SessionLayout};
-use crate::guard::Call;
+use crate::harness::Call;
 use crate::line::Line;
-use crate::role::Start;
+use crate::start::Start;
 use crate::turn::{Marker, Note, Turn};
 
 pub(super) const KEY: &str = "dsh";
@@ -222,10 +222,10 @@ pub(super) fn listing_failure(answer: &str) -> Option<String> {
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn environment(line: Line, start: &Start) -> Line {
     let line = match start.dsh_profile {
-        crate::team::DshProfile::HostUser => line
+        crate::start::DshProfile::HostUser => line
             .fixed(" DSH_HOME=\"${DSH_HOME:-$HOME/.dsh}\"")
             .fixed(" DSH_AGENTS_HOME=\"${DSH_AGENTS_HOME:-$HOME/.agents}\""),
-        crate::team::DshProfile::Fleet => line
+        crate::start::DshProfile::Fleet => line
             .fixed(" DSH_HOME=")
             .word(start.kept)
             .fixed(" DSH_AGENTS_HOME=")
@@ -237,11 +237,11 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
         .word(start.kept)
         .fixed(" DSH_TUI_PROFILE=dsh-tui")
         .fixed(" AFKCONVOY_GUARD=")
-        .word(start.guard)
+        .word(start.hook)
         .fixed(" AFKCONVOY_WORKTREE=")
         .word(start.worktree)
         .fixed(" AFKCONVOY_TEAM_DIR=")
-        .word(start.team_dir);
+        .word(start.added);
     match start.model {
         Some(model) => line.fixed(" AFKCONVOY_DSH_MODEL=").word(model),
         None => line,
@@ -259,7 +259,7 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .word(start.kept)
         .fixed(" ")
-        .word(start.role_dir)
+        .word(start.dir)
         .fixed(" ")
         .word(start.worktree)
         .fixed(" ")
@@ -395,7 +395,7 @@ AFKCONVOY_DSH_LISTED {"models":[{"id":"deepseek-flash","name":"DeepSeek V4.1 Fla
         assert_eq!(dsh.login(), None, "it is asked about no login");
         assert!(dsh.logged_in(true, ""));
         assert!(!dsh.logged_in(false, ""));
-        assert_eq!(dsh.needs(), Some(crate::tools::Tool::Dsh));
+        assert_eq!(dsh.needs(), Some(crate::Needed::Dsh));
         assert_eq!(dsh.no_proxy(), Some("api.deepseek.com"));
         assert_eq!(
             dsh.kept_package(),

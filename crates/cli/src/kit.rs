@@ -1318,17 +1318,17 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
             root.path().join("models.mjs"),
-            include_str!("../../core/src/harness/dsh/models.mjs"),
+            include_str!("../../harness/src/harness/dsh/models.mjs"),
         )
         .unwrap();
         std::fs::write(
             root.path().join("test.mjs"),
-            include_str!("../../core/src/harness/dsh/models-test.mjs"),
+            include_str!("../../harness/src/harness/dsh/models-test.mjs"),
         )
         .unwrap();
         std::fs::write(
             root.path().join("probe.mjs"),
-            include_str!("../../core/src/harness/dsh/probe.mjs"),
+            include_str!("../../harness/src/harness/dsh/probe.mjs"),
         )
         .unwrap();
         for mode in ["list", "key", "refused", "truncated", "none", "malformed", "redirect"] {

@@ -10,7 +10,7 @@ use crate::turn::{Note, Turn, latest};
 /// A fractional second is dropped. The offset is `Z` or zero.
 // Compared, not `RangeInclusive::contains`: Flux cannot see that it never panics.
 #[allow(clippy::manual_range_contains)]
-pub(crate) fn parse_iso(text: &str) -> Option<u64> {
+pub fn parse_iso(text: &str) -> Option<u64> {
     let bytes = text.as_bytes();
     if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
         return None;
@@ -53,7 +53,7 @@ pub(super) fn format_iso(at: u64) -> String {
 }
 
 /// Epoch seconds. A value past year 2286 is milliseconds.
-pub(crate) fn epoch_number(value: u64) -> u64 {
+pub fn epoch_number(value: u64) -> u64 {
     if value > 10_000_000_000 { value / 1000 } else { value }
 }
 
@@ -227,10 +227,10 @@ pub(super) fn holds_note(text: &str, mark: &str) -> bool {
 /// messages may associate their primary session with a worker; this match
 /// is shared by readers whose workers start in a role copy.
 pub(super) fn brief_match(line: &Value, brief: &str) -> Option<bool> {
-    let expected = crate::prompt::brief_pointer(brief);
+    let expected = crate::brief::brief_pointer(brief);
     user_texts(line)
         .into_iter()
-        .find(|said| said.starts_with(crate::prompt::BRIEF_POINTER_PREFIX))
+        .find(|said| said.starts_with(crate::brief::BRIEF_POINTER_PREFIX))
         .map(|said| said == expected)
 }
 

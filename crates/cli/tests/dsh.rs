@@ -117,7 +117,7 @@ fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted
     };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    write(root, "plugin.mjs", include_str!("../../core/src/harness/dsh/plugin.mjs"));
+    write(root, "plugin.mjs", include_str!("../../harness/src/harness/dsh/plugin.mjs"));
     write(root, "CLAUDE.md", "role-rules");
     write(root, "team/CLAUDE.md", "team-rules");
     write(root, "project/AGENTS.md", "project-rules");
@@ -292,7 +292,7 @@ process.stdin.once('data', input => {
         .fixed(" ")
         .word(root.join("worker.mjs").to_str().unwrap())
         .own();
-    let line = Harness::Dsh.in_role(&launch, &start);
+    let line = start.in_role(Harness::Dsh, &launch);
     let run = |line: &str| {
         let mut child = Command::new("sh")
             .args(["-c", line])
@@ -332,7 +332,7 @@ process.stdin.once('data', input => {
     write(&host, "profiles/dsh-tui/cordis.patch.yml", "host profile patch");
     write(&host, "cordis.patch.yml", "host home patch");
     let host_start = Start { dsh_profile: afkconvoy_core::team::DshProfile::HostUser, ..start };
-    let host_line = Harness::Dsh.in_role(&launch, &host_start);
+    let host_line = host_start.in_role(Harness::Dsh, &launch);
     let output = Command::new("sh")
         .args(["-c", &host_line])
         .env("DSH_HOME", &host)
@@ -459,7 +459,7 @@ fn native_dsh_loader_refuses_a_worker_without_its_guard_service() {
     assert!(!kept.join("started").exists());
     // Exercise native filesystem discovery too: all three roots have the
     // same name, and the canonical role skill must be the selected one.
-    write(&kept, "afkconvoy.mjs", include_str!("../../core/src/harness/dsh/plugin.mjs"));
+    write(&kept, "afkconvoy.mjs", include_str!("../../harness/src/harness/dsh/plugin.mjs"));
     for (dir, description) in [
         (root.join(".claude/skills/shared"), "role-skill"),
         (kept.join("host-skills/shared"), "host-skill"),
@@ -576,7 +576,7 @@ export function apply(ctx, config) {
             team_commit: "def",
         },
     };
-    let line = Harness::Dsh.in_role("dsh --profile dsh-tui", &start);
+    let line = start.in_role(Harness::Dsh, "dsh --profile dsh-tui");
     let run = || {
         Command::new("sh")
             .args(["-c", &line])

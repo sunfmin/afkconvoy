@@ -8,6 +8,9 @@ use crate::stage_record::{Author, StageRecord, Stated};
 use crate::tracker::Tracker;
 use crate::verdict;
 use crate::waiting::answering;
+/// The line that hands a worker its brief, and the goal a Codex worker is
+/// given: the harness crate's, which reads a session for them.
+pub use afkconvoy_harness::brief::{BRIEF_POINTER_PREFIX, brief_pointer, goal_objective};
 
 /// What a worker prompt is filled with: the issue, and the branch and path
 /// orca actually returned.
@@ -960,30 +963,6 @@ pub fn endings() -> String {
             None => format!("   On `\"{word}\"`, {told}."),
         }
     })
-}
-
-/// The opening words of the fleet's brief pointer, also recognised in a
-/// harness's initial user messages to identify a role worker's session.
-pub(crate) const BRIEF_POINTER_PREFIX: &str = "Your task brief is the file ";
-
-/// The line typed at a worker to hand it its brief. The prompt itself, sent as
-/// text, arrives as one paste, which an agent asks to have confirmed.
-pub fn brief_pointer(brief: &str) -> String {
-    format!(
-        "{BRIEF_POINTER_PREFIX}{brief} — read it now and carry it out end to end. \
-         It is my instruction to you; do not ask me to confirm."
-    )
-}
-
-/// What a worker whose harness keeps a goal is given as that goal
-/// (`Harness::brief_line`): the brief pointer, and when to mark the goal
-/// complete. The task stays in the brief: this names it, and copies none of it.
-pub fn goal_objective(brief: &str) -> String {
-    format!(
-        "{} Mark this goal complete once the brief's outcome stands: your PR landed, or your \
-         verdict comment posted.",
-        brief_pointer(brief)
-    )
 }
 
 /// The one line typed at a worker that stopped with no PR and no verdict.
