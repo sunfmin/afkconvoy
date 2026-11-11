@@ -1,20 +1,3 @@
-[ "$flux_status" -eq 0 ] || {
-    slowest
-    exit "$flux_status"
-}
-harness_summary=$(printf '%s\n' "$summaries" | sed -n 1p)
-core_summary=$(printf '%s\n' "$summaries" | sed -n 2p)
-for crate in harness core; do
-    eval "summary=\$${crate}_summary"
-    case "$summary" in
-    *"; 0 trusted; 0 ignored."*) ;;
-    *)
-        echo "gate: the $crate crate must not exempt anything from Flux, and Flux reports: ${summary:-no summary of the $crate crate}" >&2
-        slowest
-        exit 1
-        ;;
-    esac
-done
 #!/bin/sh
 # The gate: what must pass before anything lands. This repo's own
 # docs/agents/afkconvoy.md names it as `gate_command`, run through
