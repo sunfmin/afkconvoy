@@ -457,6 +457,10 @@ _Avoid_: batch (a tick's), bisection, merge train, rollup
 Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker and watches all land in a turn; watches retain the configured base branch. A cut lands nothing.
 _Avoid_: join, enqueue
 
+**Forge**:
+Where a program's changes ask to land, as a landing asks it (ADR-0060): the change as it stands now — its source branch, its target, its title — whether it may land, the message of the commit that lands it, and what follows once it landed. afkconvoy's is GitHub's pull requests, with the issue each closes, its open blockers and its pinned target; another program's may be Forgejo's, or its own tasks. The forge never merges: a turn lands the exact candidate the gate passed.
+_Avoid_: tracker (where issues are kept), remote (where git refs are kept)
+
 **Repair**:
 A change the fleet starts to restore a red target tip or finish retained work from an older release. Its operator worker owns an issue and a worktree, works outside product workflows and human stages, and lands through the same recorded turn as every other change.
 _Avoid_: manual repair

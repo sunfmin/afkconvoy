@@ -1,0 +1,26 @@
+[package]
+name = "afkconvoy-landing"
+description = "Candidates, candidate chains, rounds and landing, with the forge behind an interface and no fleet concept in their API (docs/adr/0060)"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+# Flux's attributes and refinements of the standard library (../../Cargo.toml).
+flux-rs.workspace = true
+flux-alloc.workspace = true
+flux-core.workspace = true
+afkconvoy-gate = { path = "../gate" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+# `cargo flux` (through ../../verify.sh) checks every refinement in this crate.
+[package.metadata.flux]
+enabled = true
+check_overflow = "strict"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }

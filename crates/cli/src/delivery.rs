@@ -509,7 +509,7 @@ fn candidate_blocks(repo: &Repo, issue: u64) -> Result<Vec<String>> {
                 record.name
             )
         })?;
-        let Some(last) = chain.candidates.iter().rfind(|c| c.issue == Some(issue)) else {
+        let Some(last) = chain.candidates.iter().rfind(|c| c.note.issue == Some(issue)) else {
             continue;
         };
         let reason = match last.phase {

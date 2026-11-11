@@ -524,17 +524,21 @@ fn run(
 }
 
 pub(crate) fn ensure_base(pr: &PullRequest, target: &str) -> Result<()> {
-    if pr.base_branch != target {
+    ensure_target(pr.number, &pr.base_branch, target)
+}
+
+/// Refuses PR `number` whose base is `base` where its pinned target is
+/// `target`.
+pub(crate) fn ensure_target(number: u64, base: &str, target: &str) -> Result<()> {
+    if base != target {
         let fix = afkconvoy_core::line::Line::new()
             .fixed("gh pr edit ")
-            .number(pr.number)
+            .number(number)
             .fixed(" --base ")
             .word(target)
             .own();
         bail!(
-            "PR #{} has base {:?}, but its pinned target is {target:?}; restore it with {fix}",
-            pr.number,
-            pr.base_branch
+            "PR #{number} has base {base:?}, but its pinned target is {target:?}; restore it with {fix}"
         );
     }
     Ok(())

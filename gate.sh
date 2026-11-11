@@ -218,13 +218,15 @@ fi
 step tracked-temp
 cargo fmt --all --check
 step fmt
-# Every function of the core crate and of the harness crate and gate crate it
-# depends on (docs/adr/0058, docs/adr/0059) is checked: none is taken on trust.
+# Every function of the core crate and of the harness, gate and landing
+# crates it depends on (docs/adr/0058, docs/adr/0059, docs/adr/0060) is
+# checked: none is taken on trust.
 # Flux says so itself, in the summary that ends its run on a crate, so an
 # exemption counts however it is written. Flux summarises every dependency:
 # the core's summary is the one before cargo's last artifact message, the core
 # being the crate checked and so the last one finished, and the harness
-# crate's and the gate crate's each the one before its own.
+# crate's, the gate crate's and the landing crate's each the one before its
+# own.
 #
 # Flux reports the slowest functions of each crate too. The gate holds the
 # reports back and says the core's once Flux has ended, green or red, so its
@@ -246,7 +248,7 @@ flux_log=$(mktemp)
 trap 'rm -f "$flux_log"; steps' EXIT
 ./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 && flux_status=0 || flux_status=$?
 summaries=$(awk '
-    /^\{/ { if (/"reason":"compiler-artifact"/) { if (/#afkconvoy-harness@/) harness = last; if (/#afkconvoy-gate@/) gate = last; core = last; last = "" }; next }
+    /^\{/ { if (/"reason":"compiler-artifact"/) { if (/#afkconvoy-harness@/) harness = last; if (/#afkconvoy-gate@/) gate = last; if (/#afkconvoy-landing@/) landing = last; core = last; last = "" }; next }
     /Timing Report/ { timings = ""; in_timings = 1 }
     in_timings && !/^(───|Total running time:|Functions checked:|Min:|Max:|Mean:|Std\. Dev\.:|Top 5 Functions|• )/ { in_timings = 0 }
     in_timings { timings = timings $0 "\n"; next }
@@ -255,6 +257,7 @@ summaries=$(awk '
     END {
         print harness
         print gate
+        print landing
         print core
         printf "%s", timings > "'"$flux_log.timings"'"
     }' "$flux_log")
@@ -268,11 +271,12 @@ slowest() {
     slowest
     exit "$flux_status"
 }
-for crate in harness gate core; do
+for crate in harness gate landing core; do
     case "$crate" in
     harness) summary=$(printf '%s\n' "$summaries" | sed -n 1p) ;;
     gate) summary=$(printf '%s\n' "$summaries" | sed -n 2p) ;;
-    core) summary=$(printf '%s\n' "$summaries" | sed -n 3p) ;;
+    landing) summary=$(printf '%s\n' "$summaries" | sed -n 3p) ;;
+    core) summary=$(printf '%s\n' "$summaries" | sed -n 4p) ;;
     esac
     case "$summary" in
     *"; 0 trusted; 0 ignored."*) ;;

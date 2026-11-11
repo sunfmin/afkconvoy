@@ -59,6 +59,7 @@ pub mod first_start;
 pub mod fleet;
 pub mod fleet_report;
 pub mod flows;
+mod forge;
 pub mod forget;
 pub mod found;
 pub mod gate;
