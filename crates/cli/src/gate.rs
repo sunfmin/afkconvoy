@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use afkconvoy_core::candidate::{Evidence, Overloaded, Status};
+use afkconvoy_core::candidate::{Evidence, Observed};
 use afkconvoy_core::config::{Config, Which};
 pub use afkconvoy_core::gate::Termination;
 use afkconvoy_core::gate::{
@@ -418,31 +418,18 @@ pub(crate) fn candidate_gate(
     candidate: &crate::candidates::Gate<'_>,
 ) -> Result<(Evidence, Judged)> {
     let run = controlled_run(repo, command, host, now, limit, issue, Some(candidate), None)?;
-    let unsettled = match &run.judged {
-        Judged::Unsettled(unsettled) => {
-            Some(Overloaded { said: unsettled.said.clone(), tests: unsettled.tests().to_vec() })
-        }
-        Judged::Green | Judged::Red(_) => None,
-    };
-    let status = match () {
-        _ if run.cancelled => Status::Cancelled,
-        _ if run.ran.green() => Status::Green,
-        _ => Status::Red,
-    };
-    let evidence = Evidence {
-        command: Some(command.text().to_string()),
-        exit_code: run.ran.exit_code,
+    let evidence = Evidence::of(Observed {
+        command: command.text(),
+        ran: run.ran,
+        judged: &run.judged,
+        head: run.head,
         excerpt: run.excerpt,
-        head: Some(run.head),
-        recorded: run.green.is_some() && run.not_recorded.is_none(),
+        strays: run.strays,
+        written: run.green.is_some(),
         not_recorded: run.not_recorded,
-        seconds: run.ran.seconds,
-        status,
         termination: run.termination,
-        timed_out: run.ran.timed_out,
-        uncommitted: run.strays,
-        unsettled,
-    };
+        cancelled: run.cancelled,
+    });
     Ok((evidence, run.judged))
 }
 

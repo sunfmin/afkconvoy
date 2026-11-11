@@ -1103,8 +1103,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         if adopted.is_none() && !chain.barriers.iter().chain(&chain.pending).any(|b| b.id == id) {
             chain = change(repo, config, reserve)?;
         }
-        if let Some(c) =
-            chain.candidates.iter().rev().find(|c| c.change == pr.number && c.original_head == original)
+        if let Some(c) = chain
+            .candidates
+            .iter()
+            .rev()
+            .find(|c| c.change == pr.number && c.original_head == original)
         {
             if c.phase == Phase::Landed {
                 let mut result = match &c.result {

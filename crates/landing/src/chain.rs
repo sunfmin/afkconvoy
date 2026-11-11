@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
-use afkconvoy_gate::gate::Termination;
+use afkconvoy_gate::gate::{Judged, Ran, Termination};
 
 use crate::lease::{stamp_due, stamp_stale};
 
@@ -161,6 +161,63 @@ impl Evidence {
     }
 }
 
+/// One gate run of a candidate, as its runner saw it end: what its
+/// evidence is made of (`Evidence::of`).
+#[derive(Debug)]
+pub struct Observed<'a> {
+    /// The command it ran.
+    pub command: &'a str,
+    pub ran: Ran,
+    /// What the run says of its tree.
+    pub judged: &'a Judged,
+    /// The commit the run was of.
+    pub head: String,
+    /// The end of its output.
+    pub excerpt: Vec<String>,
+    /// What kept the run from being of the committed tree.
+    pub strays: Vec<String>,
+    /// A green run of it was written on record…
+    pub written: bool,
+    /// …and why it is not on the remote, where it is not.
+    pub not_recorded: Option<String>,
+    pub termination: Option<Termination>,
+    /// The candidate was cancelled while its gate ran.
+    pub cancelled: bool,
+}
+
+impl Evidence {
+    /// The evidence of a candidate's run `run`: green where it ran green
+    /// and was not cancelled, on record where its record was written and
+    /// reached the remote; unsettled where it says nothing of its tree.
+    pub fn of(run: Observed<'_>) -> Evidence {
+        let unsettled = match run.judged {
+            Judged::Unsettled(unsettled) => {
+                Some(Overloaded { said: unsettled.said.clone(), tests: unsettled.tests().to_vec() })
+            }
+            Judged::Green | Judged::Red(_) => None,
+        };
+        let status = match () {
+            _ if run.cancelled => Status::Cancelled,
+            _ if run.ran.green() => Status::Green,
+            _ => Status::Red,
+        };
+        Evidence {
+            command: Some(run.command.to_string()),
+            exit_code: run.ran.exit_code,
+            excerpt: run.excerpt,
+            head: Some(run.head),
+            recorded: run.written && run.not_recorded.is_none(),
+            not_recorded: run.not_recorded,
+            seconds: run.ran.seconds,
+            status,
+            termination: run.termination,
+            timed_out: run.ran.timed_out,
+            uncommitted: run.strays,
+            unsettled,
+        }
+    }
+}
+
 /// The slow gate a candidate's commit declares, and its whole gate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Slow {
@@ -294,12 +351,7 @@ pub struct Barrier {
 
 impl<N> Default for Chain<N> {
     fn default() -> Chain<N> {
-        Chain {
-            candidates: vec![],
-            barriers: vec![],
-            pending: vec![],
-            heartbeats: BTreeMap::new(),
-        }
+        Chain { candidates: vec![], barriers: vec![], pending: vec![], heartbeats: BTreeMap::new() }
     }
 }
 
