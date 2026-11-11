@@ -14,6 +14,8 @@ cat > "$tmp/repo/verify.sh" <<'MOCK'
 echo 'summary. 0 errors; 0 trusted; 0 ignored.'
 echo '{"reason":"compiler-artifact","package_id":"path+file:///repo/crates/harness#afkconvoy-harness@0.0.0"}'
 echo 'summary. 0 errors; 0 trusted; 0 ignored.'
+echo '{"reason":"compiler-artifact","package_id":"path+file:///repo/crates/gate#afkconvoy-gate@0.0.0"}'
+echo 'summary. 0 errors; 0 trusted; 0 ignored.'
 echo '{"reason":"compiler-artifact"}'
 MOCK
 cat > "$tmp/home/.cargo/bin/cargo" <<'MOCK'

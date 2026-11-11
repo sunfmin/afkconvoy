@@ -341,6 +341,16 @@ impl Host<Note> for Hosted {
         Ok(leases)
     }
 
+    // A landing turn's candidate, as it last reported it.
+    fn shown(&self, ticket: &mut Ticket) {
+        if ticket.is_turn
+            && let Some(validation) =
+                self.validations.lock().unwrap_or_else(PoisonError::into_inner).get(&ticket.pid)
+        {
+            ticket.note.validation = Some(validation.clone());
+        }
+    }
+
     fn grantable(&self, ticket: &Ticket) -> bool {
         crate::slots::repo_available(ticket).unwrap_or(false)
     }
@@ -378,11 +388,7 @@ impl Queue {
             .validations
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(pid, validation.clone());
-        self.holder.note(
-            |ticket| ticket.pid == pid && ticket.is_turn,
-            |note| note.validation = Some(validation.clone()),
-        );
+            .insert(pid, validation);
     }
 
     /// Sends waiting commands to the next host runner. None is running when

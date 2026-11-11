@@ -52,6 +52,12 @@ pub trait Host<N>: Send + Sync {
         true
     }
 
+    /// What is shown of `ticket` of this queue, as an observation reads it:
+    /// its note as its host keeps it now. No rule of the queue reads a note.
+    fn shown(&self, ticket: &mut Ticket<N>) {
+        let _ = ticket;
+    }
+
     /// Done as `ticket` leaves the queue → whether it may leave: `false`
     /// keeps its lane held, as what it ran could not be confirmed ended.
     fn leaving(&self, ticket: &Ticket<N>) -> bool {
@@ -126,47 +132,63 @@ impl<N> Joined<N> {
     /// lane means another repo need not wait, and a repo's second turn waits
     /// only for its own first turn.
     fn waiting_for(&self, number: u64, lanes: Lanes) -> usize {
-        let Some(running) = self.tickets.iter().find(|t| t.number == number && t.running()) else {
+        let mut found = None;
+        for ticket in &self.tickets {
+            if ticket.number == number && ticket.running() {
+                found = Some(ticket);
+            }
+        }
+        let Some(running) = found else {
             return 0;
         };
         let limit = limit(running, lanes);
-        let occupied =
-            self.tickets.iter().filter(|t| t.running() && same_lane(t, running)).count() as u64;
-        self.tickets
-            .iter()
-            .filter(|waiting| {
-                if waiting.running()
-                    || !(same_lane(running, waiting)
-                        || (running.is_turn && waiting.is_turn && same_repo(running, waiting)))
+        let mut occupied: u64 = 0;
+        for ticket in &self.tickets {
+            if ticket.running() && same_lane(ticket, running) {
+                occupied = occupied.saturating_add(1);
+            }
+        }
+        let mut held: usize = 0;
+        for waiting in &self.tickets {
+            if waiting.running()
+                || !(same_lane(running, waiting)
+                    || (running.is_turn && waiting.is_turn && same_repo(running, waiting)))
+            {
+                continue;
+            }
+            let mut owner = None;
+            for ticket in &self.tickets {
+                if owner.is_none()
+                    && ticket.running()
+                    && same_repo(ticket, waiting)
+                    && (same_lane(ticket, waiting) || (ticket.is_turn && waiting.is_turn))
+                    && !(ticket.candidate && waiting.candidate)
+                    && !(is_fast(ticket) && is_fast(waiting))
                 {
-                    return false;
+                    owner = Some(ticket.number);
                 }
-                let owner = self.tickets.iter().find(|t| {
-                    t.running()
-                        && same_repo(t, waiting)
-                        && (same_lane(t, waiting) || (t.is_turn && waiting.is_turn))
-                        && !(t.candidate && waiting.candidate)
-                        && !(is_fast(t) && is_fast(waiting))
-                });
-                match owner {
-                    Some(owner) => owner.number == number,
-                    None => occupied >= limit,
-                }
-            })
-            .count()
+            }
+            let holds = match owner {
+                Some(owner) => owner == number,
+                None => occupied >= limit,
+            };
+            if holds {
+                held = held.saturating_add(1);
+            }
+        }
+        held
     }
 
     /// Accounts for the interval before any queue change, so short waits,
     /// gaps without waiters and a changing set of waiters count correctly.
     fn count(&mut self, now: Instant, lanes: Lanes) {
         let since = now.saturating_duration_since(self.counted_at);
-        let holding: Vec<u64> = self
-            .tickets
-            .iter()
-            .filter(|ticket| ticket.running())
-            .map(|ticket| ticket.number)
-            .filter(|number| self.waiting_for(*number, lanes) > 0)
-            .collect();
+        let mut holding: Vec<u64> = vec![];
+        for ticket in &self.tickets {
+            if ticket.running() && self.waiting_for(ticket.number, lanes) > 0 {
+                holding.push(ticket.number);
+            }
+        }
         for number in holding {
             let waited = self.waited.entry(number).or_default();
             *waited = waited.saturating_add(since);
@@ -195,7 +217,10 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
             joined.count(Instant::now(), lanes);
             joined.next = joined.next.saturating_add(1);
             let number = joined.next;
-            joined.tickets.push(Ticket { number, ran: None, ..ticket });
+            let mut ticket = ticket;
+            ticket.number = number;
+            ticket.ran = None;
+            joined.tickets.push(ticket);
             (number, ahead(&joined.tickets, number).unwrap_or(0))
         };
         self.held.1.notify_all();
@@ -299,15 +324,6 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
         done
     }
 
-    /// Changes what is noted of each ticket `which` picks, by `change`. No
-    /// rule of the queue reads a note.
-    pub fn note(&self, which: impl Fn(&Ticket<N>) -> bool, change: impl Fn(&mut N)) {
-        let mut joined = self.joined();
-        for ticket in joined.tickets.iter_mut().filter(|ticket| which(ticket)) {
-            change(&mut ticket.note);
-        }
-    }
-
     /// Sends waiting commands to the next holder: none is granted here any
     /// more. None is running when a move to another holder calls this;
     /// closing also works when that move fails.
@@ -338,12 +354,20 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
     /// cannot be read.
     pub fn observation(&self) -> Result<(Vec<Ticket<N>>, bool), String> {
         let joined = self.joined();
-        Ok((in_order(self.with_beside(&joined)?), joined.paused || joined.closed))
+        let mut tickets = joined.tickets.clone();
+        for ticket in &mut tickets {
+            self.host.shown(ticket);
+        }
+        Ok((in_order(self.besides(tickets)?), joined.paused || joined.closed))
     }
 
     /// The queue's own tickets and those `Host::beside` it.
     fn with_beside(&self, joined: &Joined<N>) -> Result<Vec<Ticket<N>>, String> {
-        let mut tickets = joined.tickets.clone();
+        self.besides(joined.tickets.clone())
+    }
+
+    /// `tickets`, and those `Host::beside` them.
+    fn besides(&self, mut tickets: Vec<Ticket<N>>) -> Result<Vec<Ticket<N>>, String> {
         for beside in self.host.beside()? {
             if !tickets.iter().any(|t| t.pid == beside.pid && t.running()) {
                 tickets.push(beside);

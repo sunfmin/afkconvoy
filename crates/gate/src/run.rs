@@ -186,7 +186,11 @@ pub fn off_commit(dir: &Path, head: Option<&str>) -> Result<Vec<String>, String>
         off.push(format!("HEAD moved from {head} to {now}"));
     }
     let status = git(dir, &["status", "--porcelain"], &[])?;
-    off.extend(status.lines().filter(|line| !line.is_empty()).map(str::to_string));
+    for line in status.lines() {
+        if !line.is_empty() {
+            off.push(line.to_string());
+        }
+    }
     Ok(off)
 }
 
@@ -255,6 +259,18 @@ pub struct Run {
     pub output: Vec<String>,
 }
 
+/// Sends each line `stream` says to `send`, as it comes, until it ends.
+fn read_lines(
+    stream: impl Read + Send + 'static,
+    send: mpsc::Sender<String>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+            let _ = send.send(line);
+        }
+    })
+}
+
 /// The exit code of a run ended at the gate limit: `timeout`'s.
 pub const TIMED_OUT_CODE: i32 = 124;
 
@@ -289,21 +305,13 @@ pub fn gate(
         .spawn()
         .map_err(|error| format!("`{}` could not be started: {error}", command.text()))?;
     let (send, lines) = mpsc::channel();
-    let readers: Vec<_> = [
-        child.stdout.take().map(|out| Box::new(out) as Box<dyn Read + Send>),
-        child.stderr.take().map(|err| Box::new(err) as Box<dyn Read + Send>),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|stream| {
-        let send = send.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                let _ = send.send(line);
-            }
-        })
-    })
-    .collect();
+    let mut readers = vec![];
+    if let Some(out) = child.stdout.take() {
+        readers.push(read_lines(out, send.clone()));
+    }
+    if let Some(err) = child.stderr.take() {
+        readers.push(read_lines(err, send.clone()));
+    }
     drop(send);
     let mut timed_out = false;
     let status = loop {
