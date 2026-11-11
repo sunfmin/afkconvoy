@@ -37,4 +37,4 @@ The crate keeps its Flux refinements (ADR-0007). `./verify.sh` checks it as the 
 - A change to the crate's API is a change to another program's dependency: it stays neutral, and a fleet fact it needs is noted beside it or mapped by the core, not named in the crate.
 - A test of the crate from outside embeds a holder, runs a repo's fast gate in the fast lane on a scratch repo and reads the recorded run back — its tree, duration and host — from another worktree; heavy commands wait their turn in the order they asked; and the crate depends on nothing of the fleet, nor names a fleet concept in a public item.
 - Which tests are slow, and the line a fast gate's test is ended at, stay the repo's own gate script's and nextest's (`./gate.sh`, `.config/slow-tests`, `.config/nextest.toml`); the crate reads what the gate's output says of them.
-- Candidates, rounds and landing follow in sunfmin/control#696.
+- Candidates, rounds and landing followed in sunfmin/control#696 (ADR-0060), on the gate crate.
