@@ -268,7 +268,7 @@ impl Staged {
                 team_commit: &self.team_copy.commit,
             },
         };
-        Ok(self.harness().in_role(launch, &start))
+        Ok(start.in_role(self.harness(), launch))
     }
 
     /// Keeps, for a stage that writes nothing and for a consult, where the
@@ -471,8 +471,8 @@ impl ToldRules {
         }
         Told {
             repo: self.repo.as_ref().map(rules),
-            team: self.team.as_ref().map(rules),
-            role: self.role.as_ref().map(rules),
+            added: self.team.as_ref().map(rules),
+            own: self.role.as_ref().map(rules),
         }
     }
 }
@@ -726,19 +726,19 @@ mod tests {
             let told = read.told();
             match harness.role_file() {
                 Some(name) => {
-                    let rules = told.role.unwrap_or_else(|| panic!("{}", harness.key()));
+                    let rules = told.own.unwrap_or_else(|| panic!("{}", harness.key()));
                     assert!(rules.file.ends_with(name), "{}: {}", harness.key(), rules.file);
                     assert_eq!(rules.text, format!("the role file {name}\n"), "{}", harness.key());
                 }
-                None => assert!(told.role.is_none(), "{}", harness.key()),
+                None => assert!(told.own.is_none(), "{}", harness.key()),
             }
             if harness.told().is_empty() {
-                assert!(told.repo.is_none() && told.team.is_none(), "{}", harness.key());
+                assert!(told.repo.is_none() && told.added.is_none(), "{}", harness.key());
             } else {
                 let repo = told.repo.unwrap_or_else(|| panic!("{}", harness.key()));
                 assert!(repo.file.ends_with("AGENTS.md"), "{}: {}", harness.key(), repo.file);
                 assert_eq!(repo.text, "the repo's own rules\n");
-                let team_rules = told.team.unwrap_or_else(|| panic!("{}", harness.key()));
+                let team_rules = told.added.unwrap_or_else(|| panic!("{}", harness.key()));
                 assert_eq!(team_rules.text, "the team rules\n");
             }
         }
@@ -760,9 +760,9 @@ mod tests {
         for harness in Harness::ALL {
             let read = ToldRules::read(harness, &worktree, team.to_str(), &role).unwrap();
             let told = read.told();
-            assert!(told.role.is_none(), "{}", harness.key());
+            assert!(told.own.is_none(), "{}", harness.key());
             if !harness.told().is_empty() {
-                assert!(told.repo.is_some() && told.team.is_some(), "{}", harness.key());
+                assert!(told.repo.is_some() && told.added.is_some(), "{}", harness.key());
             }
         }
     }

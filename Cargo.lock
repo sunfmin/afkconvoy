@@ -27,6 +27,21 @@ dependencies = [
 name = "afkconvoy-core"
 version = "0.5.64"
 dependencies = [
+ "afkconvoy-harness",
+ "flux-alloc",
+ "flux-core",
+ "flux-rs",
+ "proptest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "toml",
+]
+
+[[package]]
+name = "afkconvoy-harness"
+version = "0.5.64"
+dependencies = [
  "flux-alloc",
  "flux-core",
  "flux-rs",

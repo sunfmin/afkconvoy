@@ -14,17 +14,14 @@ pub const TEAM_FILE: &str = "team.md";
 pub const WORKFLOWS: &str = "workflows";
 /// The directory of a team's repo that holds one file per patrol.
 pub const PATROLS: &str = "patrols";
-/// The directory of a role's repo that holds one entry per skill.
-pub const SKILLS: &str = ".claude/skills";
-/// The file of a skill's directory that says what the skill is.
-pub const SKILL_FILE: &str = "SKILL.md";
+/// The directory of a role's repo that holds one entry per skill, the file
+/// of a skill's directory that says what the skill is, and a directory's
+/// rules — in a role's directory the role's, and in a team's the team rules:
+/// where every harness reads them (docs/adr/0013), the harness crate's.
+pub use afkconvoy_harness::start::{RULES, SKILL_FILE, SKILLS};
 /// The keys of a skill's frontmatter every harness reads: what `skill-file`,
 /// the help topic, must name.
 pub const SKILL_KEYS: [&str; 2] = ["name", "description"];
-/// A directory's rules: the file every harness loads them from, so that they
-/// are written once (docs/adr/0013). In a role's directory they are the
-/// role's, and in a team's the team rules.
-pub const RULES: &str = "CLAUDE.md";
 /// What a workflow's flow label is made of where nothing names another: this,
 /// then the workflow's name. A label made so is a flow label though it names
 /// no workflow of the team.
@@ -72,21 +69,7 @@ const HOST_USER_KEY: &str = "host_user";
 const DSH_PROFILE_KEY: &str = "dsh_profile";
 
 /// The profile a DSH worker loads, independent of host skills and rules.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum DshProfile {
-    #[default]
-    Fleet,
-    HostUser,
-}
-
-impl DshProfile {
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Fleet => "fleet",
-            Self::HostUser => "host-user",
-        }
-    }
-}
+pub use afkconvoy_harness::DshProfile;
 
 /// The key of a role named as a map that names its directory.
 const DIR_KEY: &str = "dir";

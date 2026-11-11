@@ -11,11 +11,11 @@ use toml::Value as Toml;
 
 use super::session::{self, json_lines};
 use super::{Held, Indexed, Kept, Link, SessionFile, SessionLayout};
-use crate::account::{Counts, Keys, Usage};
-use crate::guard::Call;
+use crate::harness::Call;
 use crate::line::Line;
-use crate::role::{Rules, Start, Told};
-use crate::team::RULES;
+use crate::start::RULES;
+use crate::start::{Rules, Start, Told};
+use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 
 pub(super) const NAME: &str = "Kimi Code";
@@ -251,14 +251,14 @@ const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/kimi-hook.sh\"; if [ -x 
 /// The fleet supplements the role's own rules with the repo's and team's.
 /// `${base_prompt}` keeps Kimi's normal prompt, including the role AGENTS.md.
 pub(super) fn system(told: &Told) -> Option<String> {
-    if told.repo.is_none() && told.team.is_none() {
+    if told.repo.is_none() && told.added.is_none() {
         return None;
     }
     let mut text = String::from("${base_prompt}");
     if let Some(rules) = told.repo {
         told_rules(&mut text, "The repo's own rules", rules);
     }
-    if let Some(rules) = told.team {
+    if let Some(rules) = told.added {
         told_rules(&mut text, "The team rules", rules);
     }
     Some(text)
@@ -291,11 +291,11 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(ADD_DIR)
         .fixed(" ")
-        .word(start.team_dir)
+        .word(start.added)
         .fixed(" ")
         .fixed(SKILLS_DIR)
         .fixed(" ")
-        .word(&format!("{}/{}", start.role_dir, crate::team::SKILLS));
+        .word(&format!("{}/{}", start.dir, crate::start::SKILLS));
     if start.host_user {
         for skills in HOST_SKILLS {
             line = line
@@ -679,34 +679,21 @@ mod tests {
         assert!(Harness::Codex.account_quota(&screen).is_none());
         assert!(Harness::ClaudeCode.account_quota(&wrapped).is_none());
     }
-    use crate::role::{Facts, On};
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
-            role_dir: "/copies/acme/dev/abc",
+            dir: "/copies/acme/dev/abc",
             worktree: "/wt/issue 7",
-            team_dir: "/copies/acme/team/def",
+            added: "/copies/acme/team/def",
             model,
-            guard: "/bin/afkconvoy guard",
+            hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/kimi-role",
             host_user: false,
-            dsh_profile: crate::team::DshProfile::Fleet,
+            dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],
             told: Told::default(),
-            facts: Facts {
-                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
-                role: "dev",
-                skill: "implement",
-                writes: false,
-                consult: false,
-                base_branch: "main",
-                target_branch: None,
-                escalate_label: "ready-for-human",
-                lock_label: "fleet-lock",
-                role_commit: "abc",
-                team_commit: "def",
-            },
+            env: crate::harness::stage_env(crate::harness::Harness::Kimi, model),
         }
     }
 
@@ -846,8 +833,8 @@ pattern = "Bash(rm -rf*)"
 
 #[cfg(test)]
 mod usage_tests {
-    use crate::account::Counts;
     use crate::harness::Harness;
+    use crate::tokens::Counts;
 
     #[test]
     fn only_a_usage_record_counts() {

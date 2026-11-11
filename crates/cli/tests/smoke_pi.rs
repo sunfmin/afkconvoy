@@ -202,7 +202,7 @@ fn real_pi_started_in_a_role_sees_the_role_and_the_project_and_nothing_of_the_us
             team_commit: "def",
         },
     };
-    let line = format!("{} -p --no-session --offline 'go'", Harness::Pi.in_role(&launch, &start));
+    let line = format!("{} -p --no-session --offline 'go'", start.in_role(Harness::Pi, &launch));
     let out = Command::new("/bin/sh")
         .args(["-c", &line])
         .env("HOME", &home)

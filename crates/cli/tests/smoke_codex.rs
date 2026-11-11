@@ -123,8 +123,8 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_t
         shadowed: &[],
         told: Told {
             repo: Some(Rules { file: &text(&held), text: &own }),
-            team: Some(Rules { file: &text(&team.join("CLAUDE.md")), text: &team_rules }),
-            role: None,
+            added: Some(Rules { file: &text(&team.join("CLAUDE.md")), text: &team_rules }),
+            own: None,
         },
         facts: Facts {
             on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
@@ -142,7 +142,7 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_t
     };
     // The very line a bound repo's dispatch hands orca, and what has Codex
     // say what it would show the model instead of starting a session.
-    let line = format!("{} debug prompt-input go", Harness::Codex.in_role(&launch, &start));
+    let line = format!("{} debug prompt-input go", start.in_role(Harness::Codex, &launch));
     let out = Command::new("/bin/sh")
         .args(["-c", &line])
         .env("HOME", &home)
@@ -339,8 +339,8 @@ fn a_real_codex_worker_starts_on_its_brief_and_makes_no_call_its_role_or_the_gua
         shadowed: &[],
         told: Told {
             repo: Some(Rules { file: &text(&project.join("AGENTS.md")), text: &own }),
-            team: Some(Rules { file: &text(&team.join("CLAUDE.md")), text: &team_rules }),
-            role: None,
+            added: Some(Rules { file: &text(&team.join("CLAUDE.md")), text: &team_rules }),
+            own: None,
         },
         facts: Facts {
             on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
@@ -361,7 +361,7 @@ fn a_real_codex_worker_starts_on_its_brief_and_makes_no_call_its_role_or_the_gua
     // starts a session at nothing else. `script` is that terminal.
     let line = format!(
         "stty rows 50 cols 160; {} '{BRIEF_WORD} go'",
-        Harness::Codex.in_role(&launch, &start)
+        start.in_role(Harness::Codex, &launch)
     );
     let mut terminal = Command::new("script");
     if cfg!(target_os = "macos") {

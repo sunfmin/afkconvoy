@@ -63,22 +63,9 @@ const LABEL_AT_CREATE: [&str; 2] = ["--label", "-l"];
 /// What an option of `gh api` that sends a field starts with.
 const API_FIELDS: [&str; 5] = ["-f", "-F", "--field", "--raw-field", "--input"];
 
-/// One tool call a worker is about to make, as far as a guard judges it. How
-/// a harness describes one is the harness's own (`Harness::call`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Call {
-    /// It runs this shell line: the only kind a guard judges.
-    Shell(String),
-    /// It runs none.
-    Other,
-}
-
-impl Call {
-    /// The call that runs the shell line `line`.
-    pub fn shell(line: &str) -> Call {
-        Call::Shell(line.to_string())
-    }
-}
+/// One tool call a worker is about to make, as far as a guard judges it: the
+/// harness crate's, as each harness describes one (`Harness::call`).
+pub use afkconvoy_harness::Call;
 
 /// What a worker is on, as far as its limits say it.
 #[derive(Debug, Clone, PartialEq, Eq)]

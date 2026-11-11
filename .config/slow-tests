@@ -6,8 +6,8 @@
 # One test a line: its binary, a space, and its whole name, as nextest lists
 # them (`cargo nextest list`). A test the fast gate ends past 6 seconds is checked alone before it is
 # added here; one that has become fast may be taken out, with its time.
-afkconvoy-core line::tests::a_shell_reads_a_program_of_any_text_as_that_one_word
-afkconvoy-core line::tests::a_shell_reads_the_quoted_form_of_any_text_as_that_one_word
+afkconvoy-harness line::tests::a_shell_reads_a_program_of_any_text_as_that_one_word
+afkconvoy-harness line::tests::a_shell_reads_the_quoted_form_of_any_text_as_that_one_word
 afkconvoy exclusive::tests::one_runs_at_a_time_in_the_order_asked_and_each_leaves_as_its_line_closes
 afkconvoy launch::tests::a_grandchild_holding_stdout_does_not_keep_the_login_question_waiting
 afkconvoy process::tests::a_grandchild_holding_stdout_does_not_keep_output_waiting

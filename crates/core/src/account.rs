@@ -11,9 +11,7 @@ use flux_rs::attrs::*;
 mod data;
 mod goal;
 pub mod rewrite;
-mod tokens;
-pub(crate) use tokens::Keys;
-pub use tokens::{Counts, Tokens, Usage, fold as fold_tokens};
+pub use afkconvoy_harness::tokens::{Counts, Tokens, Usage, fold as fold_tokens};
 
 pub use data::{Gate, Host, Record, RecordedHarness, SCHEMA_VERSION, Worker, read, render};
 pub use goal::{CLEARED, WorkerGoal};

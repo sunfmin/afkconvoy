@@ -15,11 +15,11 @@ use toml::Value as Toml;
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Keystroke, Link, SessionFile, SessionLayout};
-use crate::account::{Counts, Keys, Usage};
-use crate::guard::Call;
+use crate::harness::Call;
 use crate::line::Line;
-use crate::role::{Rules, Start, Told};
-use crate::team::RULES;
+use crate::start::RULES;
+use crate::start::{Rules, Start, Told};
+use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 
 pub(super) const NAME: &str = "Grok";
@@ -311,17 +311,17 @@ const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/grok-hook.sh\"; \
 /// worker starts in the worktree, so the role's `CLAUDE.md` is told here
 /// rather than loaded as the start directory's own rules.
 pub(super) fn system(told: &Told) -> Option<String> {
-    if told.role.is_none() && told.repo.is_none() && told.team.is_none() {
+    if told.own.is_none() && told.repo.is_none() && told.added.is_none() {
         return None;
     }
     let mut text = String::new();
-    if let Some(rules) = told.role {
+    if let Some(rules) = told.own {
         told_rules(&mut text, "The role's own rules", rules);
     }
     if let Some(rules) = told.repo {
         told_rules(&mut text, "The repo's own rules", rules);
     }
-    if let Some(rules) = told.team {
+    if let Some(rules) = told.added {
         told_rules(&mut text, "The team rules", rules);
     }
     Some(text)
@@ -765,34 +765,21 @@ pub(super) fn usage(value: &serde_json::Value, _line: usize) -> Option<Usage> {
 mod tests {
     use super::*;
     use crate::harness::{Harness, Keystroke};
-    use crate::role::{Facts, On};
 
     fn start<'a>(model: Option<&'a str>, host_user: bool) -> Start<'a> {
         Start {
-            role_dir: "/copies/acme/dev/abc",
+            dir: "/copies/acme/dev/abc",
             worktree: "/wt/issue 7",
-            team_dir: "/copies/acme/team/def",
+            added: "/copies/acme/team/def",
             model,
-            guard: "/bin/afkconvoy guard",
+            hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/grok-role",
             host_user,
-            dsh_profile: crate::team::DshProfile::Fleet,
+            dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],
             told: Told::default(),
-            facts: Facts {
-                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
-                role: "dev",
-                skill: "implement",
-                writes: false,
-                consult: false,
-                base_branch: "main",
-                target_branch: None,
-                escalate_label: "ready-for-human",
-                lock_label: "fleet-lock",
-                role_commit: "abc",
-                team_commit: "def",
-            },
+            env: crate::harness::stage_env(crate::harness::Harness::Grok, model),
         }
     }
 
@@ -1012,9 +999,9 @@ hooks = [{ type = "command", command = "role hook", timeout = 5 }]
     #[test]
     fn told_rules_are_markdown_with_no_base_prompt() {
         let told = Told {
-            role: Some(Rules { file: "CLAUDE.md", text: "role rules" }),
+            own: Some(Rules { file: "CLAUDE.md", text: "role rules" }),
             repo: Some(Rules { file: "AGENTS.md", text: "repo rules" }),
-            team: Some(Rules { file: "CLAUDE.md", text: "team rules" }),
+            added: Some(Rules { file: "CLAUDE.md", text: "team rules" }),
         };
         let text = system(&told).unwrap();
         assert!(
@@ -1051,8 +1038,8 @@ hooks = [{ type = "command", command = "role hook", timeout = 5 }]
 
 #[cfg(test)]
 mod usage_tests {
-    use crate::account::Counts;
     use crate::harness::Harness;
+    use crate::tokens::Counts;
 
     #[test]
     fn the_last_usage_update_is_the_sessions() {

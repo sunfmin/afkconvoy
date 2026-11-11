@@ -13,11 +13,11 @@ use serde_json::Value;
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Link, SessionFile, SessionLayout};
-use crate::account::{Counts, Keys, Usage};
-use crate::guard::Call;
+use crate::harness::Call;
 use crate::line::Line;
-use crate::role::Start;
-use crate::team::SKILLS;
+use crate::start::SKILLS;
+use crate::start::Start;
+use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 
 pub(super) const NAME: &str = "pi";
@@ -202,7 +202,7 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(GUARD_ENV)
         .fixed("=")
-        .word(start.guard)
+        .word(start.hook)
         .fixed(" ")
         .fixed(WORKTREE_ENV)
         .fixed("=")
@@ -210,7 +210,7 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(TEAM_ENV)
         .fixed("=")
-        .word(start.team_dir)
+        .word(start.added)
 }
 
 /// `line`, which starts the worker launch command, with what pi is given to
@@ -227,7 +227,7 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(SKILL)
         .fixed(" ")
-        .word(&format!("{}/{SKILLS}", start.role_dir));
+        .word(&format!("{}/{SKILLS}", start.dir));
     let line = if start.host_user {
         line.fixed(" ").fixed(SKILL).fixed(" ").word(&format!("{}/{HOST_SKILLS}", start.kept))
     } else {
@@ -582,7 +582,7 @@ pub(super) fn usage(value: &Value, line: usize) -> Option<Usage> {
 mod tests {
     use super::*;
     use crate::harness::Harness;
-    use crate::role::{Facts, On, Told};
+    use crate::start::Told;
 
     fn lines(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|line| (*line).to_string()).collect()
@@ -615,30 +615,18 @@ mod tests {
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
-            role_dir: "/copies/acme/dev/abc",
+            dir: "/copies/acme/dev/abc",
             worktree: "/wt/issue 7",
-            team_dir: "/copies/acme/team/def",
+            added: "/copies/acme/team/def",
             model,
-            guard: "/bin/afkconvoy guard",
+            hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/pi",
             host_user: false,
-            dsh_profile: crate::team::DshProfile::Fleet,
+            dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],
             told: Told::default(),
-            facts: Facts {
-                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
-                role: "dev",
-                skill: "implement",
-                writes: false,
-                consult: false,
-                base_branch: "main",
-                target_branch: None,
-                escalate_label: "ready-for-human",
-                lock_label: "fleet-lock",
-                role_commit: "abc",
-                team_commit: "def",
-            },
+            env: crate::harness::stage_env(crate::harness::Harness::Pi, model),
         }
     }
 
@@ -683,7 +671,7 @@ mod tests {
             assert!(extension.contains(&format!("\"{variable}\"")), "it reads no {variable}");
         }
         // The team rules are the file every harness loads them from.
-        let team_rules = format!("const TEAM_RULES = [\"{}\"]", crate::team::RULES);
+        let team_rules = format!("const TEAM_RULES = [\"{}\"]", crate::start::RULES);
         assert!(extension.contains(&team_rules), "{extension}");
         // None of what is linked to is where pi would find the guard itself.
         assert!(KEPT.links.iter().all(|link| link.kept != EXTENSION_FILE));
@@ -794,8 +782,8 @@ mod tests {
 
 #[cfg(test)]
 mod usage_tests {
-    use crate::account::Counts;
     use crate::harness::Harness;
+    use crate::tokens::Counts;
 
     #[test]
     fn a_repeated_message_is_counted_once() {

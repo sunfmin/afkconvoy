@@ -29,11 +29,11 @@ use serde::{Deserialize, Deserializer};
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Link, SessionFile, SessionLayout};
-use crate::account::{Counts, Keys, Usage};
-use crate::guard::Call;
+use crate::harness::Call;
 use crate::line::Line;
-use crate::role::{Rules, Start, Told};
-use crate::team::RULES;
+use crate::start::RULES;
+use crate::start::{Rules, Start, Told};
+use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 
 /// Codex's task-refusal screen reported on sunfmin/control#98, 2026-10-26.
@@ -363,7 +363,7 @@ fn told_rules(whose: &str, rules: Rules) -> String {
 /// configuration. `None` when there are none to tell.
 fn told(told: &Told) -> Option<String> {
     let repo = told.repo.map(|rules| told_rules(REPO_S_OWN, rules));
-    let team = told.team.map(|rules| told_rules(TEAM_S, rules));
+    let team = told.added.map(|rules| told_rules(TEAM_S, rules));
     if repo.is_none() && team.is_none() {
         return None;
     }
@@ -584,7 +584,7 @@ pub(super) const GOAL_STORE: super::GoalStore = super::GoalStore {
 
 /// The line typed at a worker to hand it the brief at `brief`: set as its goal.
 pub(super) fn brief_line(brief: &str) -> String {
-    format!("{GOAL}{}", crate::prompt::goal_objective(brief))
+    format!("{GOAL}{}", crate::brief::goal_objective(brief))
 }
 
 /// `line` with a worker goal's budget.
@@ -743,7 +743,7 @@ fn isolated(line: Line) -> Line {
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
     let line = line.fixed(" ").fixed(ADD_DIR).fixed(" ").word(start.worktree);
-    let line = trust(line, start.role_dir)
+    let line = trust(line, start.dir)
         .fixed(" ")
         .fixed(CONFIG)
         .fixed(" ")
@@ -757,7 +757,7 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         None => line,
     };
     let line =
-        isolated(line.fixed(" ").fixed(CONFIG).fixed(" ").word(&added_hooks(start.guard, REPORT)));
+        isolated(line.fixed(" ").fixed(CONFIG).fixed(" ").word(&added_hooks(start.hook, REPORT)));
     let line = match turned_off(start.shadowed) {
         Some(off) => line.fixed(" ").fixed(CONFIG).fixed(" ").word(&off),
         None => line,
@@ -977,7 +977,7 @@ pub(super) fn names_brief(text: &str, brief: &str) -> bool {
         // objective, exactly (`brief_line`).
         if value["type"] == "event_msg" && payload["type"] == "thread_goal_updated" {
             let objective = payload["goal"]["objective"].as_str();
-            return objective == Some(crate::prompt::goal_objective(brief).as_str());
+            return objective == Some(crate::brief::goal_objective(brief).as_str());
         }
         if let Some(matches) = session::brief_match(&value, brief) {
             return matches;
@@ -1092,7 +1092,7 @@ mod tests {
     use super::*;
     use crate::harness::{Harness, Keystroke};
     use crate::line::quoted;
-    use crate::role::{Facts, On, Told};
+    use crate::start::Told;
 
     fn lines(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|line| (*line).to_string()).collect()
@@ -1135,30 +1135,18 @@ mod tests {
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
-            role_dir: "/copies/acme/dev/abc",
+            dir: "/copies/acme/dev/abc",
             worktree: "/wt/issue 7",
-            team_dir: "/copies/acme/team/def",
+            added: "/copies/acme/team/def",
             model,
-            guard: "/bin/afkconvoy guard",
+            hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/codex",
             host_user: false,
-            dsh_profile: crate::team::DshProfile::Fleet,
+            dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],
             told: Told::default(),
-            facts: Facts {
-                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
-                role: "dev",
-                skill: "implement",
-                writes: false,
-                consult: false,
-                base_branch: "main",
-                target_branch: None,
-                escalate_label: "ready-for-human",
-                lock_label: "fleet-lock",
-                role_commit: "abc",
-                team_commit: "def",
-            },
+            env: crate::harness::stage_env(crate::harness::Harness::Codex, model),
         }
     }
 
@@ -1189,8 +1177,8 @@ mod tests {
     #[test]
     fn a_stage_with_no_model_names_none_and_nothing_is_read_by_the_shell_or_as_toml() {
         let odd = Start {
-            role_dir: "/it's \"here\"/a\\b/$HOME",
-            guard: "/it's \"here\"/afkconvoy guard",
+            dir: "/it's \"here\"/a\\b/$HOME",
+            hook: "/it's \"here\"/afkconvoy guard",
             kept: "/it's kept/$HOME",
             ..start(None)
         };
@@ -1201,10 +1189,10 @@ mod tests {
         let ends = " --config features.memories=false --config skills.bundled.enabled=false";
         assert!(line.ends_with(ends), "{line}");
         assert_eq!(
-            trusted(odd.role_dir),
+            trusted(odd.dir),
             r#"projects={"/it's \"here\"/a\\b/$HOME"={trust_level="trusted"}}"#
         );
-        let hooks = added_hooks(odd.guard, r#"tell "$HOME""#);
+        let hooks = added_hooks(odd.hook, r#"tell "$HOME""#);
         assert!(
             hooks.contains(r#"command="said=$(/it's \"here\"/afkconvoy guard 2>&1 "#),
             "{hooks}"
@@ -1251,7 +1239,7 @@ mod tests {
         // told, and the worker starts all the same.
         assert_eq!(told(Told::default()), "");
         assert_eq!(
-            told(Told { repo: Some(repo), team: Some(team), role: None }),
+            told(Told { repo: Some(repo), added: Some(team), own: None }),
             format!(
                 "--config 'developer_instructions=\"{TOLD_OPENS}\\u000A\\u000A\
                  # The repo'\\''s own rules: /wt/issue 7/AGENTS.md\\u000A\\u000A\
@@ -1261,9 +1249,9 @@ mod tests {
                 TOLD_OPENS = TOLD_OPENS.replace('\'', "'\\''")
             )
         );
-        let one = told(Told { repo: None, team: Some(team), role: None });
+        let one = told(Told { repo: None, added: Some(team), own: None });
         assert!(one.contains("# The team rules: ") && !one.contains("own rules"), "{one}");
-        let one = told(Told { repo: Some(repo), team: None, role: None });
+        let one = told(Told { repo: Some(repo), added: None, own: None });
         assert!(one.contains("s own rules: ") && !one.contains("The team rules"), "{one}");
     }
 
@@ -1488,14 +1476,14 @@ mod tests {
     fn a_codex_worker_is_handed_its_brief_as_its_goal_and_every_other_its_pointer() {
         let brief = "/repo/.git/worktrees/w/convoy-worker-prompt.md";
         let line = Harness::Codex.brief_line(brief);
-        let objective = crate::prompt::goal_objective(brief);
+        let objective = crate::brief::goal_objective(brief);
         assert_eq!(line, format!("/goal {objective}"));
-        assert!(objective.starts_with(&crate::prompt::brief_pointer(brief)), "{objective}");
+        assert!(objective.starts_with(&crate::brief::brief_pointer(brief)), "{objective}");
         assert!(objective.contains("Mark this goal complete"), "{objective}");
         for harness in
             [Harness::ClaudeCode, Harness::Pi, Harness::Dsh, Harness::Kimi, Harness::Grok]
         {
-            assert_eq!(harness.brief_line(brief), crate::prompt::brief_pointer(brief));
+            assert_eq!(harness.brief_line(brief), crate::brief::brief_pointer(brief));
             assert_eq!(harness.with_goal_budget("agent"), "agent");
             assert_eq!(harness.goal_store(), None);
             assert_eq!(harness.goal_end(), None);
@@ -1516,7 +1504,7 @@ mod tests {
         let brief = "/repo/.git/worktrees/w/convoy-worker-prompt.md";
         let other = "/repo/.git/worktrees/v/convoy-worker-prompt.md";
         let role = "/cache/copies/acme/dev/hash-role+codex-";
-        let mine = goal_rollout(role, &crate::prompt::goal_objective(brief), &[]);
+        let mine = goal_rollout(role, &crate::brief::goal_objective(brief), &[]);
         assert!(names_brief(&mine, brief));
         assert!(!names_brief(&mine, other));
         let turn = Harness::Codex.recorded_turn("/repo/w", &mine, Some(1_793_677_856), Some(brief));
@@ -1526,7 +1514,7 @@ mod tests {
 
     #[test]
     fn a_turn_codex_begins_on_its_goal_after_one_ended_is_a_continuation_and_a_sign_of_life() {
-        let objective = crate::prompt::goal_objective("/b.md");
+        let objective = crate::brief::goal_objective("/b.md");
         let first = goal_rollout("/wt", &objective, &[]);
         assert!(!goal_continued(&first), "the goal's setting starts the brief's own turn");
         let stopped = goal_rollout("/wt", &objective, &[ended(1_793_677_865)]);
@@ -1582,7 +1570,7 @@ mod tests {
     #[test]
     fn a_rollout_says_its_thread_its_goal_s_objective_and_each_goal_turn() {
         use crate::harness::{Goal, GoalRow, GoalSession};
-        let objective = crate::prompt::goal_objective("/b.md");
+        let objective = crate::brief::goal_objective("/b.md");
         let rollout = goal_rollout(
             "/wt",
             &objective,
@@ -1653,8 +1641,8 @@ mod tests {
 
 #[cfg(test)]
 mod usage_tests {
-    use crate::account::Counts;
     use crate::harness::Harness;
+    use crate::tokens::Counts;
 
     #[test]
     fn a_running_token_count_is_counted_once_by_the_model_it_ran_on() {

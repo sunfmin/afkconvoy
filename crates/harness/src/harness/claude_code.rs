@@ -15,10 +15,10 @@ use serde::{Deserialize, Deserializer};
 
 use super::session::{self, json_lines};
 use super::{Held, Kept, Link, SessionFile, SessionLayout};
-use crate::account::{Counts, Keys, Usage};
-use crate::guard::Call;
+use crate::harness::Call;
 use crate::line::Line;
-use crate::role::Start;
+use crate::start::Start;
+use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 
 pub(super) const NAME: &str = "Claude Code";
@@ -459,7 +459,7 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(ADD_DIR)
         .fixed(" ")
-        .word(start.team_dir);
+        .word(start.added);
     let line = if start.host_user {
         line.fixed(" ").fixed(ADD_DIR).fixed(" ").word(start.kept)
     } else {
@@ -473,7 +473,7 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(SETTINGS)
         .fixed(" ")
-        .word(&added_settings(start.guard, REPORT, excluded));
+        .word(&added_settings(start.hook, REPORT, excluded));
     match start.model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
@@ -742,13 +742,13 @@ mod tests {
     use super::*;
     use crate::harness::Harness;
     use crate::line::quoted;
-    use crate::role::{Facts, On, Told};
+    use crate::start::Told;
 
     #[test]
     fn only_the_first_primary_prompt_can_name_a_role_workers_brief() {
         let harness = Harness::ClaudeCode;
         let brief = "/repo/.git/worktrees/issue-7/convoy-worker-prompt.md";
-        let pointer = crate::prompt::brief_pointer(brief);
+        let pointer = crate::brief::brief_pointer(brief);
         let user = |content: serde_json::Value| {
             serde_json::json!({
             "type": "user", "isSidechain": false, "message": {"role": "user", "content": content}
@@ -762,7 +762,7 @@ mod tests {
             "/repo/.git/worktrees/issue-70/convoy-worker-prompt.md",
             "/elsewhere/repo/.git/worktrees/issue-7/convoy-worker-prompt.md",
         ] {
-            let other = user(crate::prompt::brief_pointer(other).into());
+            let other = user(crate::brief::brief_pointer(other).into());
             assert!(!harness.names_brief(&format!("{other}\n{prompt}"), brief));
         }
         let tool = user(serde_json::json!([{"type": "tool_result", "content": pointer}]));
@@ -828,30 +828,18 @@ mod tests {
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
-            role_dir: "/copies/acme/dev/abc",
+            dir: "/copies/acme/dev/abc",
             worktree: "/wt/issue 7",
-            team_dir: "/copies/acme/team/def",
+            added: "/copies/acme/team/def",
             model,
-            guard: "/bin/afkconvoy guard",
+            hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/claude-code",
             host_user: false,
-            dsh_profile: crate::team::DshProfile::Fleet,
+            dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],
             told: Told::default(),
-            facts: Facts {
-                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
-                role: "dev",
-                skill: "implement",
-                writes: false,
-                consult: false,
-                base_branch: "main",
-                target_branch: None,
-                escalate_label: "ready-for-human",
-                lock_label: "fleet-lock",
-                role_commit: "abc",
-                team_commit: "def",
-            },
+            env: crate::harness::stage_env(crate::harness::Harness::ClaudeCode, model),
         }
     }
 
@@ -880,14 +868,13 @@ mod tests {
     fn the_line_has_claude_code_load_the_team_rules() {
         // They are the `CLAUDE.md` of the team's copy: the directory is
         // added, and the rules of added directories are on — for every
-        // worker, whatever it is on.
-        for on in [On::Stage { issue: 7, flow: "feature", stage: "land" }, On::Patrol("sweep")] {
-            let mut start = start(None);
-            start.facts.on = on;
+        // session, whatever its environment.
+        for env in [Vec::new(), start(None).env] {
+            let start = Start { env, ..start(None) };
             let line = in_role("claude", &start);
             let (environment, started) = line.split_once(" && claude ").unwrap();
             assert!(environment.contains(&format!(" export {ADDED_RULES}=1 ")), "{line}");
-            assert!(started.contains(&format!("{ADD_DIR} '{}' ", start.team_dir)), "{line}");
+            assert!(started.contains(&format!("{ADD_DIR} '{}' ", start.added)), "{line}");
         }
     }
 
@@ -903,16 +890,16 @@ mod tests {
 
     #[test]
     fn nothing_a_path_or_a_name_holds_is_read_by_the_shell() {
-        let odd = Start { role_dir: "/it's here/$HOME", ..start(Some("a b;c")) };
+        let odd = Start { dir: "/it's here/$HOME", ..start(Some("a b;c")) };
         let line = in_role("claude", &odd);
         assert!(line.starts_with("cd '/it'\\''s here/$HOME' && "), "{line}");
         assert!(line.ends_with("--model 'a b;c'"), "{line}");
         // Nor by Claude Code, of the line that runs the guard.
-        let odd = Start { guard: "/it's \"here\"/afk\\convoy guard", ..start(None) };
-        let settings = added_settings(odd.guard, r#"tell "$HOME""#, &[]);
+        let odd = Start { hook: "/it's \"here\"/afk\\convoy guard", ..start(None) };
+        let settings = added_settings(odd.hook, r#"tell "$HOME""#, &[]);
         assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
         assert!(settings.contains(r#""command":"tell \"$HOME\"","timeout":10"#), "{settings}");
-        let settings = added_settings(odd.guard, REPORT, &[]);
+        let settings = added_settings(odd.hook, REPORT, &[]);
         assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
     }
 
@@ -1093,8 +1080,8 @@ mod tests {
 
 #[cfg(test)]
 mod usage_tests {
-    use crate::account::Counts;
     use crate::harness::Harness;
+    use crate::tokens::Counts;
 
     #[test]
     fn a_streamed_message_is_counted_once() {

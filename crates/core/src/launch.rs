@@ -21,9 +21,7 @@ const UNATTENDED: [&str; 8] = [
 ];
 
 /// The word whose resolving decides whether the command can run at all.
-pub fn first_word(command: &str) -> Option<&str> {
-    command.split_whitespace().next()
-}
+pub use afkconvoy_harness::first_word;
 
 /// `fault`, of the worker launch command of `harness`, said with the harness
 /// and what calls for it (`Team::harnesses`): the stage or the patrol a human

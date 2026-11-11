@@ -1,0 +1,27 @@
+[package]
+name = "afkconvoy-harness"
+description = "What afkconvoy knows of each harness, with no fleet concept in its API: how one starts, where it reads its rules and skills, how a hook reaches it, where it keeps its session and what its usage lines count (docs/adr/0058)"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+# Flux's attributes and refinements of the standard library (../../Cargo.toml).
+flux-rs.workspace = true
+flux-alloc.workspace = true
+flux-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+
+[dev-dependencies]
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+serde_yaml = "0.9"
+
+# `cargo flux` (through ../../verify.sh) checks every refinement in this crate.
+[package.metadata.flux]
+enabled = true
+check_overflow = "strict"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }

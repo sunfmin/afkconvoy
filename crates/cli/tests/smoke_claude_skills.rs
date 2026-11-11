@@ -169,7 +169,7 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
                  CLAUDE_CONFIG_DIR={} && {} -p {} --output-format stream-json \
                  --verbose --include-hook-events --no-session-persistence --debug-file {}",
                 quoted(&text(&home.join(".claude"))),
-                Harness::ClaudeCode.in_role(&launch, &start),
+                start.in_role(Harness::ClaudeCode, &launch),
                 quoted(&format!("/{SHARED}")),
                 quoted(&text(&debug)),
             );
