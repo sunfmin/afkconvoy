@@ -1199,8 +1199,18 @@ pub(crate) fn repository_template(files: &[(&str, &str)]) -> PathBuf {
     publish_repository_template(files, include_str!("mod.rs"))
 }
 
+/// How many broken seeds of one input are passed over before giving up.
+const SEED_GENERATIONS: usize = 64;
+
 /// `repository_template`, hashing `builder` in place of this file. A test
 /// passes another source to prove a change publishes a new seed.
+///
+/// A seed whose manifest or inventory cannot be read, differs from the
+/// inputs, or names a path that is gone is not a seed: the OS's `/tmp`
+/// sweep deletes old files and leaves their directories. Such a seed is left
+/// where it is, for whoever can remove it, and a fresh one is published by
+/// the same one-rename publish under the next generation's name. A seed is
+/// never moved, so a path handed to a reader stays valid.
 pub(crate) fn publish_repository_template(files: &[(&str, &str)], builder: &str) -> PathBuf {
     use std::hash::{DefaultHasher, Hash, Hasher};
     use std::os::unix::fs::PermissionsExt;
@@ -1214,15 +1224,54 @@ pub(crate) fn publish_repository_template(files: &[(&str, &str)], builder: &str)
     // writable, so a later publisher can add one.
     let held = std::fs::metadata(&templates).unwrap().permissions().mode();
     assert_ne!(held & 0o200, 0, "the repository template directory is not writable by its owner");
-    let kept = templates.join(format!("{:016x}", hash.finish()));
-    if !kept.exists() {
-        let scratch = tempfile::tempdir_in(&templates).unwrap();
-        create_repository(&scratch.path().join("repo"), files);
-        std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
-        publish_scratch(scratch.path(), &kept);
+    let name = format!("{:016x}", hash.finish());
+    for generation in 0..SEED_GENERATIONS {
+        let kept = match generation {
+            0 => templates.join(&name),
+            n => templates.join(format!("{name}-{n}")),
+        };
+        if !kept.exists() {
+            let scratch = tempfile::tempdir_in(&templates).unwrap();
+            create_repository(&scratch.path().join("repo"), files);
+            std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
+            let inventory = serde_json::to_vec(&inventory(&scratch.path().join("repo"))).unwrap();
+            std::fs::write(scratch.path().join("inventory.json"), inventory).unwrap();
+            publish_scratch(scratch.path(), &kept);
+        }
+        if seed_is_complete(&kept, &manifest) {
+            return kept.join("repo");
+        }
     }
-    assert_eq!(std::fs::read(kept.join("manifest.json")).unwrap(), manifest);
-    kept.join("repo")
+    panic!("{SEED_GENERATIONS} seeds of {name} in {} are broken; remove them", templates.display());
+}
+
+/// Every path under `repo`, relative to it, directories included.
+fn inventory(repo: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        for entry in std::fs::read_dir(repo.join(&relative)).unwrap() {
+            let entry = entry.unwrap();
+            let path = relative.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(path.clone());
+            }
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Whether `kept` holds this manifest and every path its inventory names.
+fn seed_is_complete(kept: &Path, manifest: &[u8]) -> bool {
+    if std::fs::read(kept.join("manifest.json")).ok().as_deref() != Some(manifest) {
+        return false;
+    }
+    let Ok(listed) = std::fs::read(kept.join("inventory.json")) else { return false };
+    let Ok(paths) = serde_json::from_slice::<Vec<PathBuf>>(&listed) else { return false };
+    let repo = kept.join("repo");
+    repo.is_dir() && paths.iter().all(|path| std::fs::symlink_metadata(repo.join(path)).is_ok())
 }
 
 /// Freezes `scratch` and publishes it as `kept` by one rename. A publisher
