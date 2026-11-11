@@ -1,9 +1,11 @@
 #!/bin/sh
-# Checks the core crate's refinement types with Flux (docs/adr/0007).
+# Checks the refinement types of the core crate, and of the harness crate it
+# depends on, with Flux (docs/adr/0007, docs/adr/0058).
 # Needs `cargo-flux`, `fixpoint` and `z3` installed, each the one
-# crates/core/Cargo.toml pins: it refuses to check with any other.
+# Cargo.toml (the Flux revision) and crates/core/Cargo.toml (the checker)
+# pin: it refuses to check with any other.
 #
-#   ./verify.sh                 check the whole core crate
+#   ./verify.sh                 check the whole core crate and harness crate
 #   ./verify.sh free_slots      check the functions whose path contains a name
 #   ./verify.sh --toolchain     check only that the three tools are the pinned
 #                               ones, and exit: the gate need that
@@ -31,11 +33,11 @@ export PATH RUSTUP_TOOLCHAIN
 #   fixpoint    reports its version and its whole commit: both are compared.
 #   z3          reports its version, which is compared, and nothing of its
 #               build.
-flux_rev=$(sed -n 's/^flux-rs = .*rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml)
+flux_rev=$(sed -n 's/^flux-rs = .*rev = "\([0-9a-f]*\)".*/\1/p' ../../Cargo.toml)
 fixpoint_pin=$(sed -n 's/^fixpoint = "\(.*\)"$/\1/p' Cargo.toml)
 z3_pin=$(sed -n 's/^z3 = "\(.*\)"$/\1/p' Cargo.toml)
 if [ -z "$flux_rev" ] || [ -z "$fixpoint_pin" ] || [ -z "$z3_pin" ]; then
-    echo "verify: crates/core/Cargo.toml must pin the Flux revision, fixpoint and z3, and one of them is not read from it" >&2
+    echo "verify: Cargo.toml must pin the Flux revision, and crates/core/Cargo.toml fixpoint and z3, and one of them is not read from it" >&2
     exit 1
 fi
 flux_is() { cargo flux --version 2>/dev/null | cut -d' ' -f2; }
@@ -141,7 +143,7 @@ pinned=yes
 if ! flux_pinned; then
     pinned=
     cat >&2 <<EOF
-verify: cargo-flux is built from Flux ${flux_is:-(nothing reported)}, and crates/core/Cargo.toml pins $flux_rev. Install the pinned one, with ./verify.sh install, or:
+verify: cargo-flux is built from Flux ${flux_is:-(nothing reported)}, and Cargo.toml pins $flux_rev. Install the pinned one, with ./verify.sh install, or:
     git clone https://github.com/flux-rs/flux && cd flux && git checkout $flux_rev && cargo xtask install
 EOF
 fi

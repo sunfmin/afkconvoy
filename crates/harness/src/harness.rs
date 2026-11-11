@@ -1349,7 +1349,7 @@ impl Harness {
 
     /// The token use one session file's `text` records: the whole session, or
     /// from `window.0` through `window.1` inclusive. `None` is no usage
-    /// evidence, not zero (`account::fold_tokens`). A session that keeps its
+    /// evidence, not zero (`tokens::fold`). A session that keeps its
     /// usage apart is read from the file its layout names beside it.
     pub fn tokens(self, text: &str, window: Option<(u64, u64)>) -> Option<crate::tokens::Tokens> {
         crate::tokens::fold(text, window, |line, n| self.usage(line, n))

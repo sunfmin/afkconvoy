@@ -6,11 +6,10 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-# Refinement attributes; they expand to nothing under a plain `cargo build`.
-# The same revision crates/core pins, beside which ../../verify.sh checks both.
-flux-rs = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
-flux-alloc = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
-flux-core = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+# Flux's attributes and refinements of the standard library (../../Cargo.toml).
+flux-rs.workspace = true
+flux-alloc.workspace = true
+flux-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml = "0.8"

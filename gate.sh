@@ -1,3 +1,20 @@
+[ "$flux_status" -eq 0 ] || {
+    slowest
+    exit "$flux_status"
+}
+harness_summary=$(printf '%s\n' "$summaries" | sed -n 1p)
+core_summary=$(printf '%s\n' "$summaries" | sed -n 2p)
+for crate in harness core; do
+    eval "summary=\$${crate}_summary"
+    case "$summary" in
+    *"; 0 trusted; 0 ignored."*) ;;
+    *)
+        echo "gate: the $crate crate must not exempt anything from Flux, and Flux reports: ${summary:-no summary of the $crate crate}" >&2
+        slowest
+        exit 1
+        ;;
+    esac
+done
 #!/bin/sh
 # The gate: what must pass before anything lands. This repo's own
 # docs/agents/afkconvoy.md names it as `gate_command`, run through
@@ -218,11 +235,12 @@ fi
 step tracked-temp
 cargo fmt --all --check
 step fmt
-# Every function of the core crate is checked: none is taken on trust. Flux
-# says so itself, in the summary that ends its run on a crate, so an exemption
-# counts however it is written. Flux summarises a dependency too: the core's
-# summary is the one before cargo's last artifact message, the core being the
-# crate checked and so the last one finished.
+# Every function of the core crate and of the harness crate it depends on
+# (docs/adr/0058) is checked: none is taken on trust. Flux says so itself, in
+# the summary that ends its run on a crate, so an exemption counts however it
+# is written. Flux summarises every dependency: the core's summary is the one
+# before cargo's last artifact message, the core being the crate checked and so
+# the last one finished, and the harness crate's the one before its own.
 #
 # Flux reports the slowest functions of each crate too. The gate holds the
 # reports back and says the core's once Flux has ended, green or red, so its
@@ -243,14 +261,15 @@ step fmt
 flux_log=$(mktemp)
 trap 'rm -f "$flux_log"; steps' EXIT
 ./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 && flux_status=0 || flux_status=$?
-core_summary=$(awk '
-    /^\{/ { if (/"reason":"compiler-artifact"/) { core = last; last = "" }; next }
+summaries=$(awk '
+    /^\{/ { if (/"reason":"compiler-artifact"/) { if (/#afkconvoy-harness@/) harness = last; core = last; last = "" }; next }
     /Timing Report/ { timings = ""; in_timings = 1 }
     in_timings && !/^(───|Total running time:|Functions checked:|Min:|Max:|Mean:|Std\. Dev\.:|Top 5 Functions|• )/ { in_timings = 0 }
     in_timings { timings = timings $0 "\n"; next }
     { print > "/dev/stderr" }
     /^summary\./ { last = $0 }
     END {
+        print harness
         print core
         printf "%s", timings > "'"$flux_log.timings"'"
     }' "$flux_log")
@@ -264,14 +283,19 @@ slowest() {
     slowest
     exit "$flux_status"
 }
-case "$core_summary" in
-*"; 0 trusted; 0 ignored."*) ;;
-*)
-    echo "gate: the core crate must not exempt anything from Flux, and Flux reports: ${core_summary:-no summary of the core crate}" >&2
-    slowest
-    exit 1
-    ;;
-esac
+harness_summary=$(printf '%s\n' "$summaries" | sed -n 1p)
+core_summary=$(printf '%s\n' "$summaries" | sed -n 2p)
+for crate in harness core; do
+    if [ "$crate" = harness ]; then summary=$harness_summary; else summary=$core_summary; fi
+    case "$summary" in
+    *"; 0 trusted; 0 ignored."*) ;;
+    *)
+        echo "gate: the $crate crate must not exempt anything from Flux, and Flux reports: ${summary:-no summary of the $crate crate}" >&2
+        slowest
+        exit 1
+        ;;
+    esac
+done
 slowest
 step flux
 cargo clippy --workspace --all-targets --quiet -- -D warnings

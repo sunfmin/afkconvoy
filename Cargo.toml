@@ -8,6 +8,14 @@ edition = "2024"
 repository = "https://github.com/sunfmin/afkconvoy"
 
 [workspace.dependencies]
+# Refinement attributes, which expand to nothing under a plain `cargo build`,
+# and Flux's refinements of the standard library, at the same revision: without
+# them a `Vec` has no length Flux knows of, and an index into one goes
+# unchecked. ./verify.sh reads the revision here, and refuses a `cargo-flux`
+# built from any other. Every crate Flux checks names these (docs/adr/0007).
+flux-rs = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+flux-alloc = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+flux-core = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 
