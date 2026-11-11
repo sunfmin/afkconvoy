@@ -46,7 +46,7 @@ pub mod position;
 pub mod prompt;
 pub mod proxy;
 pub mod question;
-pub mod record;
+pub use afkconvoy_gate::record;
 pub mod recovery;
 #[cfg(flux)]
 mod rejected;

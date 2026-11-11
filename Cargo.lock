@@ -7,6 +7,7 @@ name = "afkconvoy"
 version = "0.5.64"
 dependencies = [
  "afkconvoy-core",
+ "afkconvoy-gate",
  "agent-help",
  "anyhow",
  "clap",
@@ -27,6 +28,7 @@ dependencies = [
 name = "afkconvoy-core"
 version = "0.5.64"
 dependencies = [
+ "afkconvoy-gate",
  "afkconvoy-harness",
  "flux-alloc",
  "flux-core",
@@ -36,6 +38,18 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "toml",
+]
+
+[[package]]
+name = "afkconvoy-gate"
+version = "0.5.64"
+dependencies = [
+ "flux-alloc",
+ "flux-core",
+ "flux-rs",
+ "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

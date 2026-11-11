@@ -6,8 +6,9 @@ use flux_rs::attrs::*;
 /// half an hour. Past it, whatever it holds — its claims, and its members of
 /// a candidate chain — is any other host's to take.
 pub const LEASE: u64 = 1800;
-/// How far ahead of the reader a stamp may be and still count as "just now".
-pub const SKEW: u64 = 300;
+/// How far ahead of the reader a stamp may be and still count as "just now":
+/// the gate's, which believes a record by the same skew.
+pub const SKEW: u64 = afkconvoy_gate::gate::SKEW;
 /// An owner refreshes its heartbeat once it is older than this: a third of the lease.
 pub const BEAT_EVERY: u64 = 600;
 

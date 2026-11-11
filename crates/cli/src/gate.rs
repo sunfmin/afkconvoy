@@ -389,7 +389,7 @@ fn controlled_run(
             let sha = repo.record_commit_on(
                 tree.name(),
                 &run.head,
-                &green.write_issued(&tree, command, issue),
+                &afkconvoy_core::gate::write_issued(&green, &tree, command, issue),
             )?;
             // Soft: a record that cannot be written costs the landing a run of the gate.
             run.not_recorded = push_record(repo, &sha, &refname)?;
@@ -508,7 +508,11 @@ pub(crate) fn record_whole(
     let Some(run) = GreenRun::joined(tree, whole, fast, &f, slow, &s) else {
         return Ok(Some("the fast and the slow gate are one command".into()));
     };
-    let sha = repo.record_commit_on(tree.name(), head, &run.write_issued(tree, whole, issue))?;
+    let sha = repo.record_commit_on(
+        tree.name(),
+        head,
+        &afkconvoy_core::gate::write_issued(&run, tree, whole, issue),
+    )?;
     let refname = record_ref(repo.layout(), tree, whole);
     push_record(repo, &sha, &refname)
 }
