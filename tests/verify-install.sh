@@ -1,8 +1,8 @@
 #!/bin/sh
 # Exercise `verify.sh install` with stand-ins for every download and build:
-# it installs what the pins in crates/core/Cargo.toml name, asks for a pin's
-# new version once it changes, and leaves alone a tool at its pin. Nothing
-# is fetched.
+# it installs what the pins in Cargo.toml and crates/core/Cargo.toml name,
+# asks for a pin's new version once it changes, and leaves alone a tool at
+# its pin. Nothing is fetched.
 set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 mkdir -p "$root/.afkconvoy-tmp"
@@ -10,6 +10,7 @@ tmp=$(mktemp -d "$root/.afkconvoy-tmp/verify-install.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/repo/crates/core" "$tmp/home/.cargo/bin" "$tmp/bin"
 cp "$root/verify.sh" "$tmp/repo/verify.sh"
+cp "$root/Cargo.toml" "$tmp/repo/Cargo.toml"
 cp "$root/crates/core/Cargo.toml" "$tmp/repo/crates/core/Cargo.toml"
 log="$tmp/log"
 : >"$log"
@@ -102,7 +103,7 @@ asked() { grep -qF -- "$1" "$log" || fail "never asked: $1"; }
 pin() { sed -i.bak "s|^$1 = .*|$1 = \"$2\"|" "$tmp/repo/crates/core/Cargo.toml"; }
 pin z3 7.7.7
 pin fixpoint "$fixpoint_version (1111111111111111111111111111111111111111)"
-sed -i.bak 's|^\(flux-rs = .*rev = "\)[0-9a-f]*"|\1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"|' "$tmp/repo/crates/core/Cargo.toml"
+sed -i.bak 's|^\(flux-rs = .*rev = "\)[0-9a-f]*"|\1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"|' "$tmp/repo/Cargo.toml"
 pin stack 9.9.1
 
 verify --toolchain && fail "a host with none of the three passed the check"
@@ -134,7 +135,7 @@ verify --toolchain && fail "the check passed with z3 at its old pin"
 verify install || fail "install of a changed z3 pin failed"
 asked "z3-8.8.8"
 grep -qv 'z3' "$log" && fail "install of a changed z3 pin did more than fetch z3"
-sed -i.bak 's|^\(flux-rs = .*rev = "\)[0-9a-f]*"|\1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"|' "$tmp/repo/crates/core/Cargo.toml"
+sed -i.bak 's|^\(flux-rs = .*rev = "\)[0-9a-f]*"|\1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"|' "$tmp/repo/Cargo.toml"
 : >"$log"
 verify install || fail "install of a changed Flux revision failed"
 asked "checkout --quiet --force bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
