@@ -13,3 +13,4 @@ extern crate flux_core;
 pub mod gate;
 pub mod layout;
 pub mod record;
+pub mod slow_gate;
