@@ -150,6 +150,11 @@ const RECORD_IDENTITY: [(&str, &str); 4] = [
 
 /// One git call in `dir` with `env` that must succeed → its stdout, trimmed.
 fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
+    git_raw(dir, args, env).map(|out| out.trim().to_string())
+}
+
+/// One git call in `dir` with `env` that must succeed → its stdout, whole.
+fn git_raw(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
     let out = Command::new("git")
         .current_dir(dir)
         .args(args)
@@ -166,7 +171,7 @@ fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// The commit the worktree `dir` is at, and the tree it holds.
@@ -176,16 +181,18 @@ pub fn head(dir: &Path) -> Result<(String, Tree), String> {
     Ok((head, Tree::named(&tree)))
 }
 
-/// What keeps the worktree `dir` from being exactly its commit — and the
-/// commit `head`, where one is given: a HEAD that moved, and each path
-/// uncommitted or untracked. Empty when it is that commit.
+/// What keeps the worktree `dir` from being exactly a commit: its uncommitted
+/// and untracked paths as `git status --porcelain` lists them, and — given
+/// the commit `head` it was at — a HEAD that moved. Empty when it is the
+/// commit and nothing else. Ignored files are not listed: a gate's own
+/// artifacts belong in `.gitignore`.
 pub fn off_commit(dir: &Path, head: Option<&str>) -> Result<Vec<String>, String> {
     let mut off = vec![];
     let now = git(dir, &["rev-parse", "HEAD"], &[])?;
     if let Some(head) = head.filter(|head| *head != now) {
         off.push(format!("HEAD moved from {head} to {now}"));
     }
-    let status = git(dir, &["status", "--porcelain"], &[])?;
+    let status = git_raw(dir, &["status", "--porcelain"], &[])?;
     for line in status.lines() {
         if !line.is_empty() {
             off.push(line.to_string());

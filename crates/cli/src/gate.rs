@@ -28,20 +28,11 @@ use crate::measure;
 use crate::remote::{Fresh, Push};
 use afkconvoy_gate::run::{self, Records, Settled};
 
-/// What keeps a worktree from being exactly a commit: its uncommitted and
-/// untracked paths as `git status --porcelain` lists them, and — given the
-/// commit it was at — a HEAD that moved. Empty when it is the commit and
-/// nothing else. Ignored files are not listed: a gate's own artifacts belong
-/// in `.gitignore`.
+/// What keeps a worktree from being exactly a commit, the gate crate's rule
+/// (`afkconvoy_gate::run::off_commit`): its uncommitted and untracked paths,
+/// and — given the commit it was at — a HEAD that moved.
 pub fn off_commit(repo: &Repo, head: Option<&str>) -> Result<Vec<String>> {
-    let mut off = vec![];
-    let now = repo.git(&["rev-parse", "HEAD"])?;
-    if let Some(head) = head.filter(|head| *head != now) {
-        off.push(format!("HEAD moved from {head} to {now}"));
-    }
-    let status = repo.git_raw(&["status", "--porcelain"])?;
-    off.extend(status.lines().filter(|line| !line.is_empty()).map(str::to_string));
-    Ok(off)
+    run::off_commit(&repo.dir, head).map_err(|error| anyhow!(error))
 }
 
 /// How much of the end of a red run's log is kept, to be shown to whoever
