@@ -8,6 +8,7 @@ version = "0.5.64"
 dependencies = [
  "afkconvoy-core",
  "afkconvoy-gate",
+ "afkconvoy-host-kit",
  "afkconvoy-landing",
  "agent-help",
  "anyhow",
@@ -68,6 +69,17 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "toml",
+]
+
+[[package]]
+name = "afkconvoy-host-kit"
+version = "0.5.64"
+dependencies = [
+ "afkconvoy-harness",
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
