@@ -35,6 +35,7 @@ use crate::start::RULES;
 use crate::start::{Rules, Start, Told};
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
+use crate::window::{self, Limit, Limited, Window};
 
 /// Codex's task-refusal screen reported on sunfmin/control#98, 2026-10-26.
 pub(super) fn task_refusal(output: &[String]) -> Option<String> {
@@ -1085,6 +1086,67 @@ pub(super) fn usage(value: &serde_json::Value, _line: usize) -> Option<Usage> {
         return None;
     }
     Some(Counts::read(usage, &USAGE_KEYS, true).map_or(Usage::Uncounted, Usage::Running))
+}
+
+/// The windows Codex's `token_count` line says, under `rate_limits`: its
+/// `primary` and `secondary`, each with `used_percent` and
+/// `window_minutes`. A newer Codex says when one resets as `resets_at`; an
+/// older one said `resets_in_seconds`, counted from the line's `timestamp`.
+pub(super) fn windows(value: &serde_json::Value) -> Vec<Window> {
+    let Some(limits) = rate_limits(value) else { return Vec::new() };
+    WINDOWS
+        .into_iter()
+        .filter_map(|name| {
+            let window = &limits[name];
+            Some(Window {
+                name: name.to_string(),
+                used_percent: window::number(&window["used_percent"])?,
+                minutes: window["window_minutes"].as_u64(),
+                resets_at: window::seconds(&window["resets_at"]).or_else(|| {
+                    let after = window["resets_in_seconds"].as_u64()?;
+                    Some(window::written_at(value)?.saturating_add(after))
+                }),
+            })
+        })
+        .collect()
+}
+
+/// The limit a Codex line says it met. Its session keeps the `token_count`
+/// line, whose `rate_limits` name the limit reached
+/// (`rate_limit_reached_type`); the window used up is the one it names,
+/// with its reset. The error Codex reports as it happens, which its session
+/// does not keep, names a usage limit or a throttle (`codex_error_info`).
+pub(super) fn limit_event(value: &serde_json::Value) -> Option<Limit> {
+    if let Some(limits) = rate_limits(value) {
+        limits["rate_limit_reached_type"].as_str()?;
+        let spent = windows(value).into_iter().find(|window| window.used_percent >= 100.0);
+        return Some(Limit {
+            kind: Limited::Usage,
+            resets_at: spent.as_ref().and_then(|window| window.resets_at),
+            window: spent.map(|window| window.name),
+        });
+    }
+    if value["type"] != "event_msg" || value["payload"]["type"] != "error" {
+        return None;
+    }
+    let kind = match value["payload"]["codex_error_info"].as_str()? {
+        "usage_limit_exceeded" => Limited::Usage,
+        "rate_limit_exceeded" => Limited::Throttle,
+        _ => return None,
+    };
+    Some(Limit { kind, window: None, resets_at: None })
+}
+
+/// What Codex calls the windows of its `rate_limits`.
+const WINDOWS: [&str; 2] = ["primary", "secondary"];
+
+/// The `rate_limits` of a `token_count` line, the line [`usage`] reads.
+fn rate_limits(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    if value["type"] != "event_msg" || value["payload"]["type"] != "token_count" {
+        return None;
+    }
+    let limits = &value["payload"]["rate_limits"];
+    limits.is_object().then_some(limits)
 }
 
 #[cfg(test)]

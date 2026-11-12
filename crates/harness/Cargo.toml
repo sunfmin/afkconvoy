@@ -1,6 +1,6 @@
 [package]
 name = "afkconvoy-harness"
-description = "What afkconvoy knows of each harness, with no fleet concept in its API: how one starts, where it reads its rules and skills, how a hook reaches it, where it keeps its session and what its usage lines count (docs/adr/0058)"
+description = "What afkconvoy knows of each harness, with no fleet concept in its API: how one starts, where it reads its rules and skills, how a hook reaches it, where it keeps its session, what its usage lines count and what it says of its account's usage windows and limits (docs/adr/0058)"
 version.workspace = true
 edition.workspace = true
 publish = false
