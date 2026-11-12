@@ -27,14 +27,13 @@ enabled = true
 check_overflow = "strict"
 
 # The checker ../../verify.sh runs, beside the Flux revision above that
-# `cargo-flux` is built from. It refuses any other: each value is what the tool
-# reports about itself, to `fixpoint --version` and to `z3 --version`.
-# `./verify.sh install` installs these, and builds fixpoint with the stack
-# release named last, which nothing checks once fixpoint is built.
+# `cargo-flux` is built from. It refuses any other: the value is what the tool
+# reports about itself, to `z3 --version`. `./verify.sh install` installs it.
+# fixpoint is pinned to nothing: it follows liquid-fixpoint's nightly release,
+# and is pinned here again the day a change of it turns a gate result wrong
+# (sunfmin/control#732).
 [package.metadata.checker]
-fixpoint = "0.9.6.3.8 (684d0829c19fbee83b892c9f5e20c2598897297c)"
 z3 = "5.1.0"
-stack = "3.11.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }
