@@ -320,3 +320,28 @@ fn the_crate_depends_on_nothing_of_the_fleet() {
     names.sort_unstable();
     assert_eq!(names, ["flux-alloc", "flux-core", "flux-rs", "serde", "serde_json", "toml"]);
 }
+
+#[test]
+fn a_recorded_claude_code_session_says_its_steps_and_the_one_that_failed() {
+    let text = include_str!("recorded/claude-code-session-steps.jsonl");
+    let steps = Harness::ClaudeCode.steps(text);
+    // Three calls answered; the fourth has no result yet, and the request
+    // Claude Code keeps beside the session repeats a call, which is no step.
+    let said: Vec<(bool, Option<u64>)> = steps.iter().map(|step| (step.error, step.at)).collect();
+    assert_eq!(
+        said,
+        vec![(false, Some(1_794_444_749)), (false, Some(1_794_444_755)), (true, Some(1_794_444_787))]
+    );
+    for (step, called) in steps.iter().zip([
+        r#"Bash {"command":"cat /src/project/.git/convoy-worker-prompt.md"#,
+        r#"Bash {"command":"gh issue view 736 --repo sunfmin/control"#,
+        r#"Bash {"command":"cat crates/harness/src/line.rs | head -120;"#,
+    ]) {
+        assert!(step.action.starts_with(called), "{}", step.action);
+    }
+    assert!(steps[2].result.starts_with("Exit code 1 //! A shell line"), "{}", steps[2].result);
+    assert!(steps.iter().all(|step| !step.result.contains('\n') && !step.action.contains('\n')));
+    // A sidechain's lines are a child session's, not this one's.
+    let child = text.replace("\"isSidechain\":false", "\"isSidechain\":true");
+    assert_eq!(Harness::ClaudeCode.steps(&child), Vec::new());
+}

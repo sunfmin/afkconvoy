@@ -1447,6 +1447,24 @@ impl Harness {
         crate::tokens::fold(text, window, |line, n| self.usage(line, n))
     }
 
+    /// The steps one session file's `text` records, oldest first: each tool
+    /// call with what came back of it and whether the harness marked that an
+    /// error. A call with no result yet is no step, and a child session's
+    /// lines are not the session's own.
+    pub fn steps(self, text: &str) -> Vec<crate::steps::Step> {
+        crate::steps::fold(text, |line| self.said(line))
+    }
+
+    /// What one session line says of a tool call or its result.
+    fn said(self, line: &serde_json::Value) -> Vec<crate::steps::Said> {
+        match self {
+            Harness::ClaudeCode => claude_code::said(line),
+            Harness::Pi | Harness::Codex | Harness::Kimi | Harness::Grok | Harness::Dsh => {
+                Vec::new()
+            }
+        }
+    }
+
     /// What one session line, the `n`th, says of token use.
     fn usage(self, line: &serde_json::Value, n: usize) -> Option<crate::tokens::Usage> {
         match self {
