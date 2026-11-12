@@ -7,7 +7,9 @@
 //! A green successor waits on its exact predecessor, without another gate.
 //! Where the commit declares a fast gate and a slow gate, a candidate runs
 //! the fast one, and a round runs the slow one once at the chain's tip,
-//! landing every candidate up to it together (docs/adr/0048).
+//! landing every candidate up to it together (docs/adr/0048). In a batch
+//! round no candidate gates alone: the chain's tip runs both gates, and a
+//! red one is bisected to its first red candidate (docs/adr/0068).
 use std::collections::BTreeMap;
 
 use flux_rs::attrs::*;
@@ -25,6 +27,10 @@ pub enum Phase {
     Green,
     /// The round's tip, running the slow gate on its commit.
     Slow,
+    /// A candidate of a batch round not gated alone: the gate at the chain's
+    /// tip, or at a candidate the round bisects to, gates it with the rest
+    /// (docs/adr/0068).
+    Batched,
     Red,
     Cancelling,
     Cancelled,
@@ -92,6 +98,14 @@ pub struct Candidate<N = Plain> {
     /// The round at this candidate gated green.
     #[serde(default)]
     pub slowed: bool,
+    /// It was assigned for a batch round (docs/adr/0068): it is not gated
+    /// alone, and a gate at it gates every candidate up to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub batch: bool,
+    /// The gate of its batch round ran red at it: the round's first red
+    /// candidate is this one or one before it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub holds_red: bool,
 }
 
 /// How a candidate's gate run ended, as its evidence says.
@@ -278,13 +292,17 @@ impl<N> Candidate<N> {
         }
     }
     pub fn active(&self) -> bool {
-        matches!(self.phase, Phase::Building | Phase::Validating | Phase::Green | Phase::Slow)
-            || (!self.stopped && !self.abandoned)
+        matches!(
+            self.phase,
+            Phase::Building | Phase::Validating | Phase::Green | Phase::Slow | Phase::Batched
+        ) || (!self.stopped && !self.abandoned)
     }
 
     pub fn valid(&self) -> bool {
-        matches!(self.phase, Phase::Building | Phase::Validating | Phase::Green | Phase::Slow)
-            && self.cancelled_by.is_none()
+        matches!(
+            self.phase,
+            Phase::Building | Phase::Validating | Phase::Green | Phase::Slow | Phase::Batched
+        ) && self.cancelled_by.is_none()
     }
 
     /// A later turn may own this candidate's preserved evidence on the same
@@ -306,6 +324,7 @@ impl<N> Candidate<N> {
             Phase::Green if !self.whole() => "waiting_for_round",
             Phase::Green => "waiting_for_predecessor",
             Phase::Slow => "slow_gating",
+            Phase::Batched => "waiting_for_batch_gate",
             Phase::Cancelling => "confirming_process_exit",
             Phase::Cancelled => "cancelled",
             Phase::Red => "gate_red",
@@ -477,9 +496,14 @@ impl<N: Clone> Chain<N> {
     /// nothing of its tree leaves it unsettled (`unsettle`); one green and
     /// on record is green; any other is red. For the round's tip in `Slow`,
     /// the round's: green passes the whole gate at it; red fails the round.
+    /// For a candidate of a batch round, its gate says what it says of every
+    /// candidate up to it (`finish_batched`).
     pub fn finish(&mut self, id: &str, result: Evidence) {
+        let batch = self.candidates.iter().any(|c| c.id == id && c.batch && c.valid());
         if result.unsettled.is_some() {
             self.unsettle(id, result);
+        } else if batch {
+            self.finish_batched(id, result);
         } else {
             let green = result.green();
             self.green_or_red(id, green, result);
@@ -630,6 +654,95 @@ impl<N: Clone> Chain<N> {
         }
     }
 
+    /// What a batch round does next (docs/adr/0068), over the valid
+    /// candidates of the chain, every one assigned for it; `None` while a
+    /// gate at one of them runs, where the chain holds none, or where it
+    /// holds one that is not the batch round's. With no red known, its tip
+    /// is gated, and once green it lands every candidate up to it. With a
+    /// red known, the chain is bisected between the last candidate known
+    /// green before it and the first known red: the middle one is gated,
+    /// until the two are next to each other, and the red one is the first
+    /// red candidate.
+    pub fn batch_step(&self) -> Option<BatchStep> {
+        let valid: Vec<&Candidate<N>> = self.candidates.iter().filter(|c| c.valid()).collect();
+        let tip = valid.last()?;
+        if !valid.iter().all(|c| c.batch && matches!(c.phase, Phase::Batched | Phase::Green)) {
+            return None;
+        }
+        // The candidates the bisection is between: after the last known
+        // green, up to the first known red.
+        let mut open: Vec<&Candidate<N>> = vec![];
+        let mut red = false;
+        for c in &valid {
+            if c.holds_red {
+                open.push(c);
+                red = true;
+                break;
+            }
+            if c.whole() {
+                open.clear();
+            } else {
+                open.push(c);
+            }
+        }
+        if !red {
+            let id = tip.id.clone();
+            return Some(if tip.whole() { BatchStep::Land(id) } else { BatchStep::Gate(id) });
+        }
+        let (first_red, before) = open.split_last()?;
+        if before.is_empty() {
+            return Some(BatchStep::Drop(first_red.id.clone()));
+        }
+        before.get(before.len() / 2).map(|middle| BatchStep::Gate(middle.id.clone()))
+    }
+
+    /// Starts the gate of the batch round at `id`, where its round gates it
+    /// next (`batch_step`) → whether it did. Its gate process is a new one.
+    pub fn start_batched(&mut self, id: &str) -> bool {
+        if self.batch_step() != Some(BatchStep::Gate(id.to_string())) {
+            return false;
+        }
+        for c in self.candidates.iter_mut().filter(|c| c.id == id) {
+            c.phase = Phase::Validating;
+            c.stopped = false;
+            c.gate = None;
+            c.descendants.clear();
+        }
+        true
+    }
+
+    /// The gate of the batch round at `id` ended with `result`, its fast
+    /// gate's and, that green, its slow gate's: green, its tree passed the
+    /// whole gate, and it may land with every candidate before it; red, it
+    /// holds the round's first red candidate, itself or one before it, and
+    /// is not decided by it.
+    fn finish_batched(&mut self, id: &str, result: Evidence) {
+        let green = result.green();
+        for c in self.candidates.iter_mut().filter(|c| c.id == id && c.valid()) {
+            c.result = Some(result.clone());
+            c.slowed = green && c.slow.is_some();
+            c.holds_red = !green;
+            c.phase = if green { Phase::Green } else { Phase::Batched };
+        }
+    }
+
+    /// Drops `red`, a batch round's first red candidate (`batch_step`): it is
+    /// red, with the run that found it, and every candidate behind it is
+    /// cancelled `rebuilt`, for its change to be assigned again without it.
+    /// The candidates before it stay, and land.
+    pub fn drop_red(&mut self, red: &str) {
+        if self.batch_step() != Some(BatchStep::Drop(red.to_string())) {
+            return;
+        }
+        for c in self.candidates.iter_mut().filter(|c| c.id == red) {
+            c.phase = Phase::Red;
+        }
+        self.invalidate(red, "rebuilt");
+        for c in self.candidates.iter_mut().filter(|c| c.id == red) {
+            c.cause = Some("predecessor_failed".to_string());
+        }
+    }
+
     /// `id` may land now on `base`, taking every member with it: its tree
     /// passed the whole gate, every member is green, every one ahead of it
     /// is waiting for a round, and the first stands on `base`.
@@ -637,11 +750,15 @@ impl<N: Clone> Chain<N> {
         let members = self.members(id);
         let Some(first) = members.first() else { return false };
         let Some(last) = members.last() else { return false };
-        // A whole-gated candidate ahead lands by its own turn, not this one.
+        // A whole-gated candidate ahead lands by its own turn, not this one;
+        // in a batch round the tip's gate passed every one before it.
         let (ahead, _) = members.split_at(members.len() - 1);
+        let batch = last.batch;
         last.whole()
-            && members.iter().all(|c| c.phase == Phase::Green)
-            && ahead.iter().all(|c| !c.whole())
+            && members
+                .iter()
+                .all(|c| c.phase == Phase::Green || (batch && c.phase == Phase::Batched))
+            && (batch || ahead.iter().all(|c| !c.whole()))
             && first.predecessor == base
     }
 
@@ -683,6 +800,26 @@ impl<N: Clone> Chain<N> {
         {
             let id = c.id.clone();
             self.invalidate(&id, "base_moved");
+        }
+    }
+}
+
+/// What a batch round does next (`Chain::batch_step`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchStep {
+    /// Gate the candidate named, its fast gate and then its slow one.
+    Gate(String),
+    /// The candidate named is the round's first red one: drop it.
+    Drop(String),
+    /// Land the candidate named, with every candidate before it.
+    Land(String),
+}
+
+impl BatchStep {
+    /// The candidate it is of.
+    pub fn id(&self) -> &str {
+        match self {
+            BatchStep::Gate(id) | BatchStep::Drop(id) | BatchStep::Land(id) => id,
         }
     }
 }
@@ -892,6 +1029,8 @@ mod tests {
             result: None,
             slow: None,
             slowed: false,
+            batch: false,
+            holds_red: false,
         }
     }
 
@@ -1025,6 +1164,102 @@ mod tests {
         let landed: Vec<_> = chain.candidates.iter().map(|c| c.phase).collect();
         assert_eq!(landed, [Phase::Landed, Phase::Landed, Phase::Landed, Phase::Green]);
         assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c3"));
+    }
+
+    /// A candidate of a batch round, not gated alone.
+    fn batched(n: usize) -> Candidate {
+        Candidate { phase: Phase::Batched, stopped: true, batch: true, ..split(n) }
+    }
+
+    /// Runs a batch round over `n` candidates, whose gate is red at a
+    /// candidate whose tree holds one of `reds` → the candidates it gated,
+    /// in order, and the one it dropped.
+    fn bisected(n: usize, reds: &[usize]) -> (Vec<String>, Option<String>) {
+        let mut chain = Chain { candidates: (0..n).map(batched).collect(), ..Chain::default() };
+        let mut gated = vec![];
+        loop {
+            match chain.batch_step() {
+                Some(BatchStep::Gate(id)) => {
+                    assert!(chain.start_batched(&id));
+                    assert!(!chain.start_batched(&id), "one gate at a time");
+                    let at: usize = id[1..].parse().unwrap();
+                    chain.finish(&id, ran(!reds.iter().any(|&red| red <= at)));
+                    stop(&mut chain, &id);
+                    gated.push(id);
+                }
+                Some(BatchStep::Drop(id)) => {
+                    chain.drop_red(&id);
+                    let red = chain.candidates.iter().find(|c| c.id == id).unwrap();
+                    assert_eq!(red.decision(), Some(Decision::Red));
+                    assert!(red.result.is_some(), "it is sent back with the red run");
+                    let behind = chain.candidates.iter().skip_while(|c| c.id != id).skip(1);
+                    assert!(behind.clone().all(|c| c.cause.as_deref() == Some("rebuilt")));
+                    assert!(behind.clone().all(|c| c.decision() == Some(Decision::Cancelled)));
+                    let kept = chain.batch_step();
+                    let before: Vec<_> =
+                        chain.candidates.iter().take_while(|c| c.id != id).collect();
+                    match before.last() {
+                        Some(last) => {
+                            assert_eq!(kept, Some(BatchStep::Land(last.id.clone())));
+                            assert!(chain.ripe(&last.id, "base"), "the candidates before it land");
+                        }
+                        None => assert_eq!(kept, None),
+                    }
+                    return (gated, Some(id));
+                }
+                Some(BatchStep::Land(id)) => {
+                    assert!(chain.ripe(&id, "base"));
+                    return (gated, None);
+                }
+                None => panic!("the round stopped: {chain:?}"),
+            }
+        }
+    }
+
+    fn stop(chain: &mut Chain, id: &str) {
+        chain.candidates.iter_mut().filter(|c| c.id == id).for_each(|c| c.stopped = true);
+    }
+
+    #[test]
+    fn a_green_batch_round_gates_its_tip_alone_and_lands_it() {
+        assert_eq!(bisected(5, &[]), (vec!["c4".to_string()], None));
+    }
+
+    /// The first red candidate is found in at most ceil(log2 N)+1 gates,
+    /// wherever it is, and the gate is never run twice on one candidate.
+    #[test]
+    fn a_red_batch_round_is_bisected_to_its_first_red_candidate() {
+        for n in 1..=9usize {
+            let most = n.next_power_of_two().trailing_zeros() as usize + 1;
+            for red in 0..n {
+                let (gated, dropped) = bisected(n, &[red]);
+                assert_eq!(dropped, Some(format!("c{red}")), "{n} candidates, red at {red}");
+                assert!(gated.len() <= most, "{n} candidates, red at {red}: {gated:?}");
+                let mut distinct = gated.clone();
+                distinct.sort();
+                distinct.dedup();
+                assert_eq!(distinct.len(), gated.len());
+            }
+            // Two reds: the first is found; the second is the rebuilt round's.
+            if n >= 2 {
+                assert_eq!(bisected(n, &[n / 2, n - 1]).1, Some(format!("c{}", n / 2)));
+            }
+        }
+        let (gated, _) = bisected(4, &[1]);
+        assert_eq!(gated, ["c3", "c1", "c0"]);
+    }
+
+    #[test]
+    fn a_batch_round_waits_while_its_gate_runs_and_leaves_a_per_candidate_chain_alone() {
+        let mut chain = Chain { candidates: (0..3).map(batched).collect(), ..Chain::default() };
+        assert!(chain.start_batched("c2"));
+        assert_eq!(chain.batch_step(), None, "its gate runs");
+        assert!(chain.round_tip().is_none(), "a batch round runs no per-candidate round");
+        let chain = Chain { candidates: (0..3).map(split).collect(), ..Chain::default() };
+        assert_eq!(chain.batch_step(), None);
+        let mut chain = chain;
+        chain.drop_red("c0");
+        assert!(chain.candidates.iter().all(|c| c.valid()), "drops only a batch round's");
     }
 
     #[test]

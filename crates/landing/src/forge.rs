@@ -3,6 +3,8 @@
 //! is GitHub's pull requests and the issues they close; another program's
 //! may be Forgejo's, or its own tasks. Nothing here names either.
 
+use crate::chain::Evidence;
+
 /// One change that asks to land, as its forge says it: a pull request, a
 /// merge request, a task's branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,4 +48,13 @@ pub trait Forge {
     /// `change` landed on its target at `commit`: what follows of it on the
     /// forge, such as closing what it completes.
     fn landed(&self, change: &Change, commit: &str) -> Result<(), Self::Error>;
+
+    /// `change` is sent back from a batch round: its candidate was the
+    /// round's first red one, and `run` is the red run that found it
+    /// (docs/adr/0068). What follows of it on the forge, such as asking its
+    /// author to fix it; nothing, unless the program says.
+    fn sent_back(&self, change: &Change, run: Option<&Evidence>) -> Result<(), Self::Error> {
+        let _ = (change, run);
+        Ok(())
+    }
 }

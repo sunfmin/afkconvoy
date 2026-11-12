@@ -5,6 +5,7 @@
 
 use afkconvoy_gate::declared::Gates;
 use afkconvoy_gate::layout::Layout;
+use serde::{Deserialize, Serialize};
 
 use crate::chain::{Candidate, Chain, Phase, Publication, Slow};
 
@@ -14,14 +15,29 @@ pub fn record_ref(layout: Layout, target: &str) -> String {
     layout.under(&format!("candidates/{target}"))
 }
 
+/// How a repo's rounds land (docs/adr/0068): each candidate gated alone,
+/// its fast gate, and a round's slow gate once at the chain's tip
+/// (docs/adr/0048); or as a batch round, where no candidate is gated alone,
+/// the chain's tip runs both gates, and a red one is bisected to its first
+/// red candidate. A program reads it from its repo's config, `landing:
+/// batch`, and a round's caller may ask for either.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Landing {
+    #[default]
+    PerCandidate,
+    Batch,
+}
+
 /// What a candidate's commit declares of its gate: the whole gate, with its
 /// limit, and where it splits it, its fast gate and its slow gate
-/// (docs/adr/0047).
+/// (docs/adr/0047); and how its repo's rounds land.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declared {
     pub whole: String,
     pub seconds: u64,
     pub gates: Option<Gates>,
+    pub landing: Landing,
 }
 
 /// The gate a candidate runs itself, and its limit; and the slow gate a
