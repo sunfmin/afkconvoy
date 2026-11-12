@@ -49,20 +49,7 @@ pub fn holds_note(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Resul
 pub fn note_at(cwd: &Path, harness: Harness, since: u64, mark: &str) -> Result<Option<u64>> {
     let found = std::cell::Cell::new(None);
     notes_match(cwd, harness, since, |text| {
-        let at = text.lines().find_map(|line| {
-            if !harness.holds_note(line, mark) {
-                return None;
-            }
-            let entry: serde_json::Value = serde_json::from_str(line).ok()?;
-            entry["timestamp"].as_u64().or_else(|| {
-                let stamp = entry["timestamp"].as_str()?;
-                let whole = stamp
-                    .split_once('.')
-                    .filter(|_| stamp.ends_with('Z'))
-                    .map(|(whole, _)| format!("{whole}Z"));
-                crate::doctor::watching::since(whole.as_deref().unwrap_or(stamp)).ok()
-            })
-        });
+        let at = harness.noted_at(text, mark);
         if at.is_some() {
             found.set(at);
         }
@@ -109,61 +96,25 @@ fn notes_match(
 /// A write's result link identifies a worker's own comment even when it
 /// used a body file. Read commands and user messages cannot suppress one.
 pub(crate) fn posted_comment(cwd: &Path, harness: Harness, since: u64, url: &str) -> Result<bool> {
-    notes_match(cwd, harness, since, |text| posted_in(text, url))
+    notes_match(cwd, harness, since, |text| posted_in(harness, text, url))
 }
 
-fn posted_in(text: &str, url: &str) -> bool {
-    use serde_json::Value;
-    use std::collections::BTreeSet;
-    fn visit(value: &Value, writes: &mut BTreeSet<String>, url: &str) -> bool {
-        match value {
-            Value::Array(items) => items.iter().any(|item| visit(item, writes, url)),
-            Value::Object(fields) => {
-                let kind = value["type"].as_str().unwrap_or("");
-                let id = value["call_id"].as_str().or(value["id"].as_str());
-                if matches!(kind, "function_call" | "tool_use" | "toolCall" | "function") {
-                    let args = value
-                        .get("arguments")
-                        .or(value.get("input"))
-                        .or_else(|| value["function"].get("arguments"));
-                    let args = args.map(Value::to_string).unwrap_or_default();
-                    if args.contains("gh ")
-                        && (args.contains("issue comment")
-                            || args.contains("/comments")
-                                && (args.contains("POST") || args.contains("-f")))
-                        && let Some(id) = id
-                    {
-                        writes.insert(id.to_string());
-                    }
-                }
-                let reply = value["call_id"]
-                    .as_str()
-                    .or(value["tool_use_id"].as_str())
-                    .or(value["tool_call_id"].as_str())
-                    .or(value["toolCallId"].as_str());
-                let result = matches!(kind, "function_call_output" | "tool_result")
-                    || value["role"] == "toolResult"
-                    || value["role"] == "tool";
-                if result
-                    && reply.is_some_and(|id| writes.contains(id))
-                    && value.to_string().match_indices(url).any(|(at, _)| {
-                        value.to_string()[at + url.len()..]
-                            .chars()
-                            .next()
-                            .is_none_or(|next| !next.is_ascii_digit())
-                    })
-                {
-                    return true;
-                }
-                fields.values().any(|child| visit(child, writes, url))
-            }
-            _ => false,
-        }
-    }
-    let mut writes = BTreeSet::new();
-    text.lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .any(|line| visit(&line, &mut writes, url))
+fn posted_in(harness: Harness, text: &str, url: &str) -> bool {
+    harness.steps(text).iter().any(|step| writes_comment(&step.action) && links(&step.result, url))
+}
+
+/// Whether a tool call is a `gh` write of an issue comment.
+fn writes_comment(action: &str) -> bool {
+    action.contains("gh ")
+        && (action.contains("issue comment")
+            || action.contains("/comments") && (action.contains("POST") || action.contains("-f")))
+}
+
+/// Whether `result` gives `url` itself, not a longer comment id that starts with it.
+fn links(result: &str, url: &str) -> bool {
+    result.match_indices(url).any(|(at, _)| {
+        result[at + url.len()..].chars().next().is_none_or(|next| !next.is_ascii_digit())
+    })
 }
 
 /// Writes, for every harness under `home`, what it keeps of `line` typed at
@@ -618,40 +569,48 @@ mod tests {
         let url = "https://github.com/acme/tasks/issues/7#issuecomment-100";
         let calls = [
             (
-                json!({"type":"function_call", "call_id":"write", "name":"functions.exec", "arguments":"await tools.exec_command({cmd: 'gh issue comment 7 --body-file note.md'})"}),
-                json!({"type":"function_call_output", "call_id":"write", "output":url}),
+                Harness::Codex,
+                json!({"type":"response_item", "payload":{"type":"function_call", "call_id":"write", "name":"exec", "arguments":"await tools.exec_command({cmd: 'gh issue comment 7 --body-file note.md'})"}}),
+                json!({"type":"response_item", "payload":{"type":"function_call_output", "call_id":"write", "output":url}}),
             ),
             (
-                json!({"type":"tool_use", "id":"write", "name":"Bash", "input":{"command":"gh api repos/acme/tasks/issues/7/comments -f body=done"}}),
-                json!({"type":"tool_result", "tool_use_id":"write", "content":url}),
+                Harness::ClaudeCode,
+                json!({"type":"assistant", "message":{"role":"assistant", "content":[{"type":"tool_use", "id":"write", "name":"Bash", "input":{"command":"gh api repos/acme/tasks/issues/7/comments -f body=done"}}]}}),
+                json!({"type":"user", "message":{"role":"user", "content":[{"type":"tool_result", "tool_use_id":"write", "content":url}]}}),
             ),
             (
-                json!({"type":"toolCall", "id":"write", "name":"bash", "arguments":{"command":"gh issue comment 7 --body done"}}),
-                json!({"role":"toolResult", "toolCallId":"write", "content":[{"type":"text","text":url}]}),
+                Harness::Pi,
+                json!({"type":"message", "message":{"role":"assistant", "content":[{"type":"toolCall", "id":"write", "name":"bash", "arguments":{"command":"gh issue comment 7 --body done"}}]}}),
+                json!({"type":"message", "message":{"role":"toolResult", "toolCallId":"write", "content":[{"type":"text","text":url}]}}),
             ),
             (
-                json!({"type":"function", "id":"write", "function":{"name":"bash","arguments":"{\"command\":\"gh issue comment 7 --body done\"}"}}),
-                json!({"role":"tool", "tool_call_id":"write", "content":url}),
+                Harness::Kimi,
+                json!({"type":"context.append_loop_event", "agentId":"main", "event":{"type":"tool.call", "toolCallId":"write", "name":"Bash", "args":{"command":"gh issue comment 7 --body done"}}}),
+                json!({"type":"context.append_loop_event", "agentId":"main", "event":{"type":"tool.result", "toolCallId":"write", "result":{"output":url, "isError":false}}}),
             ),
         ];
-        for (call, result) in calls {
-            assert!(super::posted_in(&format!("{call}\n{result}\n"), url));
+        for (harness, call, result) in calls {
+            assert!(super::posted_in(harness, &format!("{call}\n{result}\n"), url), "{harness:?}");
             assert!(!super::posted_in(
+                harness,
                 &format!("{call}\n{}\n", result.to_string().replace(url, &format!("{url}0"))),
                 url
             ));
-            assert!(!super::posted_in(&result.to_string(), url), "a link alone proves no write");
+            assert!(
+                !super::posted_in(harness, &result.to_string(), url),
+                "a link alone proves no write"
+            );
             let read = call
                 .to_string()
                 .replace("issue comment", "issue view")
                 .replace("/comments -f", "/comments --jq");
             assert!(
-                !super::posted_in(&format!("{read}\n{result}\n"), url),
+                !super::posted_in(harness, &format!("{read}\n{result}\n"), url),
                 "a read proves no write"
             );
         }
         let quoted = json!({"type":"user", "message":{"role":"user","content":format!("gh issue comment 7: {url}")}});
-        assert!(!super::posted_in(&quoted.to_string(), url));
+        assert!(!super::posted_in(Harness::ClaudeCode, &quoted.to_string(), url));
     }
 
     use super::*;

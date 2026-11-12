@@ -18,7 +18,8 @@ use super::{Held, Kept, Link, SessionFile, SessionLayout};
 use crate::harness::Call;
 use crate::line::Line;
 use crate::start::Start;
-use crate::status::{self, Blocked, Report, Said, Status, Step};
+use crate::status::{self, Blocked, CallEnd, Reading, Report, Status};
+use crate::steps::{self, Said};
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 use crate::window::{self, Limit, Limited, StatusLine, Window};
@@ -794,6 +795,36 @@ pub(super) fn usage(value: &serde_json::Value, line: usize) -> Option<Usage> {
     })
 }
 
+/// What one Claude Code session line says of a tool call: an assistant
+/// message's `tool_use` parts are calls, and a user message's `tool_result`
+/// parts what came back, `is_error` where Claude Code marks it an error. A
+/// sidechain is a child session's, and a request Claude Code keeps beside
+/// the session (`api-request-blob`) repeats a message: neither is a step.
+pub(super) fn said(value: &serde_json::Value) -> Vec<Said> {
+    if value["isSidechain"] == true {
+        return Vec::new();
+    }
+    let Some(parts) = value["message"]["content"].as_array() else { return Vec::new() };
+    let at = value["timestamp"].as_str().and_then(session::parse_iso);
+    let kind = value["type"].as_str();
+    parts
+        .iter()
+        .filter_map(|part| match (kind, part["type"].as_str()) {
+            (Some("assistant"), Some("tool_use")) => Some(Said::Call {
+                id: part["id"].as_str()?.to_string(),
+                action: steps::action(part["name"].as_str().unwrap_or(""), &part["input"]),
+            }),
+            (Some("user"), Some("tool_result")) => Some(Said::Result {
+                id: part["tool_use_id"].as_str()?.to_string(),
+                result: steps::content(&part["content"]),
+                error: part["is_error"] == true,
+                at,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Where Claude Code reads the command its status line runs: the user's
 /// settings, under `statusLine`. It hands that command a JSON object on
 /// stdin, whose `rate_limits` [`windows`] reads.
@@ -921,56 +952,56 @@ fn question(input: &serde_json::Value) -> Option<String> {
 
 /// What Claude Code's hook event `payload` says of its session's status.
 /// Recorded from Claude Code 2.1.322 (`tests/recorded/claude-code-hooks.jsonl`).
-pub(super) fn hook_status(payload: &serde_json::Value) -> Said {
+pub(super) fn hook_status(payload: &serde_json::Value) -> Reading {
     let text = |key: &str| payload[key].as_str().and_then(status::one_line);
     let tool = payload["tool_name"].as_str().map(str::to_string);
     let input = &payload["tool_input"];
     let asks = tool.as_deref() == Some(QUESTION_TOOL);
-    let call = |status: Status, step: Option<Step>| {
+    let call = |status: Status, step: Option<CallEnd>| {
         let message = match tool.as_deref() {
             Some(QUESTION_TOOL) => question(input),
             Some(name) => Some(status::call_line(name, input, &CALL_KEYS)),
             None => None,
         };
-        Said::Is(Report { status, message, tool: tool.clone(), step })
+        Reading::Is(Report { status, message, tool: tool.clone(), end: step })
     };
     match payload["hook_event_name"].as_str().unwrap_or_default() {
-        "SessionStart" | "SessionEnd" => Said::status(Status::Idle),
-        "UserPromptSubmit" => Said::told(Status::Working, text("prompt")),
+        "SessionStart" | "SessionEnd" => Reading::status(Status::Idle),
+        "UserPromptSubmit" => Reading::told(Status::Working, text("prompt")),
         // A question is asked as a call is made, before any permission.
-        "PreToolUse" if asks => call(Status::Blocked(Blocked::Question), Some(Step::Started)),
-        "PreToolUse" => call(Status::Working, Some(Step::Started)),
+        "PreToolUse" if asks => call(Status::Blocked(Blocked::Question), Some(CallEnd::Start)),
+        "PreToolUse" => call(Status::Working, Some(CallEnd::Start)),
         "PermissionRequest" if asks => call(Status::Blocked(Blocked::Question), None),
         "PermissionRequest" => call(Status::Blocked(Blocked::Permission), None),
-        "PostToolUse" => call(Status::Working, Some(Step::Ended { error: None })),
+        "PostToolUse" => call(Status::Working, Some(CallEnd::Result { error: None })),
         "PostToolUseFailure" => {
             let error = payload["error"].as_str().map(str::to_string);
             let message = error.as_deref().and_then(status::one_line);
-            Said::Is(Report {
+            Reading::Is(Report {
                 status: Status::Working,
                 message,
                 tool,
-                step: Some(Step::Ended { error }),
+                end: Some(CallEnd::Result { error }),
             })
         }
         "Notification" => match payload["notification_type"].as_str() {
-            Some("idle_prompt") => Said::told(Status::Idle, text("message")),
+            Some("idle_prompt") => Reading::told(Status::Idle, text("message")),
             Some("elicitation_dialog") => {
-                Said::told(Status::Blocked(Blocked::Question), text("message"))
+                Reading::told(Status::Blocked(Blocked::Question), text("message"))
             }
             // A permission prompt's own `PermissionRequest` came before
             // it, naming its call; a login's success says nothing new.
-            _ => Said::Unchanged,
+            _ => Reading::Unchanged,
         },
-        "Stop" => Said::told(Status::Done, text("last_assistant_message")),
+        "Stop" => Reading::told(Status::Done, text("last_assistant_message")),
         "StopFailure" => {
             let status = match payload["error"].as_str() {
                 Some(AUTH_FAILED) => Status::Blocked(Blocked::Auth),
                 _ => Status::Error,
             };
-            Said::told(status, text("last_assistant_message").or_else(|| text("error")))
+            Reading::told(status, text("last_assistant_message").or_else(|| text("error")))
         }
-        _ => Said::Unchanged,
+        _ => Reading::Unchanged,
     }
 }
 

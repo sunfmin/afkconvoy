@@ -1447,6 +1447,29 @@ impl Harness {
         crate::tokens::fold(text, window, |line, n| self.usage(line, n))
     }
 
+    /// The steps one session file's `text` records, oldest first: each tool
+    /// call with what came back of it and whether the harness marked that an
+    /// error. A call with no result yet is no step, and a child session's
+    /// lines are not the session's own. The text is the session file the
+    /// layout names, decompressed where it is stored compressed; Grok's
+    /// calls are in the updates its layout names beside its events
+    /// (`SessionLayout::Named::usage`).
+    pub fn steps(self, text: &str) -> Vec<crate::steps::Step> {
+        crate::steps::fold(text, |line| self.said(line))
+    }
+
+    /// What one session line says of a tool call or its result.
+    fn said(self, line: &serde_json::Value) -> Vec<crate::steps::Said> {
+        match self {
+            Harness::ClaudeCode => claude_code::said(line),
+            Harness::Pi => pi::said(line),
+            Harness::Codex => codex::said(line),
+            Harness::Kimi => kimi::said(line),
+            Harness::Grok => grok::said(line),
+            Harness::Dsh => dsh::said(line),
+        }
+    }
+
     /// What one session line, the `n`th, says of token use.
     fn usage(self, line: &serde_json::Value, n: usize) -> Option<crate::tokens::Usage> {
         match self {
@@ -1658,6 +1681,13 @@ impl Harness {
         session::holds_note(text, mark)
     }
 
+    /// When the first message of `text` that holds `mark` as the user's
+    /// (as `holds_note`) was recorded, in epoch seconds. `None` when no such
+    /// message says when.
+    pub fn noted_at(self, text: &str, mark: &str) -> Option<u64> {
+        session::noted_at(text, mark)
+    }
+
     /// The files a stand-in writes under the harness directory for `line`,
     /// typed at a worker in `cwd` while it worked: given to its model when
     /// `taken`, else only queued. A harness with no stand-in for it writes
@@ -1757,9 +1787,9 @@ impl Harness {
 
     /// What one hook event's `payload` says of its session's status, in the
     /// words of OSC 7501, with the line, the tool and the end of the tool's
-    /// call it is of; `Said::Unchanged` of an event that changes nothing.
+    /// call it is of; `Reading::Unchanged` of an event that changes nothing.
     /// `None` where `status_events` is.
-    pub fn hook_status(self, payload: &serde_json::Value) -> Option<crate::status::Said> {
+    pub fn hook_status(self, payload: &serde_json::Value) -> Option<crate::status::Reading> {
         match self {
             Harness::ClaudeCode => Some(claude_code::hook_status(payload)),
             Harness::Codex => Some(codex::hook_status(payload)),

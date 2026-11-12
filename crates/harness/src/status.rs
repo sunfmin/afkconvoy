@@ -55,12 +55,12 @@ impl Status {
 
 /// Which end of a tool call an event is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Step {
+pub enum CallEnd {
     /// The call is about to be made.
-    Started,
+    Start,
     /// The call was made: its result, with the error it failed with where
     /// it failed.
-    Ended { error: Option<String> },
+    Result { error: Option<String> },
 }
 
 /// What one hook event says of its session.
@@ -73,27 +73,27 @@ pub struct Report {
     /// The tool the event is of.
     pub tool: Option<String>,
     /// Which end of the tool's call the event is, of an event of one.
-    pub step: Option<Step>,
+    pub end: Option<CallEnd>,
 }
 
 /// What one hook event's payload says (`Harness::hook_status`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Said {
+pub enum Reading {
     /// The event changes nothing of its session's status.
     Unchanged,
     /// The session's status is now this.
     Is(Report),
 }
 
-impl Said {
+impl Reading {
     /// The session is now `status`, with nothing else said.
-    pub(crate) fn status(status: Status) -> Said {
-        Said::Is(Report { status, message: None, tool: None, step: None })
+    pub(crate) fn status(status: Status) -> Reading {
+        Reading::Is(Report { status, message: None, tool: None, end: None })
     }
 
     /// The session is now `status`, said in the line `message`.
-    pub(crate) fn told(status: Status, message: Option<String>) -> Said {
-        Said::Is(Report { status, message, tool: None, step: None })
+    pub(crate) fn told(status: Status, message: Option<String>) -> Reading {
+        Reading::Is(Report { status, message, tool: None, end: None })
     }
 }
 

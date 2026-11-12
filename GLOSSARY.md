@@ -236,6 +236,10 @@ The harnesses this host can start and their models, each in order of preference,
 Research states: `research pending` is a newly listed model awaiting dated research; `not researched` is an older release's model with no dated answer, also awaiting research. Neither is started on. A settled model has a dated source and a reason research found it unsuited to workers: it is not placed, is named by no unplaced-model finding and starts no watch. The finding names exactly the models awaiting research, including models held with no dated answer; every one can be placed or settled through `afkconvoy kit --research <file>`. Placements and settlements survive routine relisting; an identity dropped from the kit and later listed anew awaits research again.
 _Avoid_: roster (the team's), host config, inventory
 
+**Guild machine**:
+A host whose user has Guild's home, `~/.guild`: a machine of Guild, the other agent system of this host's user (sunfmin/control#693), which runs no fleet of its own there but takes what every Guild machine needs from the host kit (control ADR 0009, ADR 0010). Guild runs each instance in a tmux server of its own, so writing the host kit on a Guild machine with no tmux installs one where a standard account can — `pixi global install tmux`, or Homebrew where it has bottles — and leaves an existing tmux alone; `doctor` names a Guild machine with no tmux, with the line that fixes it.
+_Avoid_: Guild host (a host is one account's, as under Host), node
+
 **Default model**:
 What a harness runs when a worker is started with no model named: its own login's model. Every worker whose model label is not followed starts on it, including one whose range holds a single model. Codex uses the model in the user's Codex config when the host kit lists that model; with none, Codex's own. A named Codex model the kit does not list, or that the role's range does not hold, refuses the start.
 _Avoid_: fallback model, the host kit's first (a model's place in the kit; the first harness keeps the phrase), `default` alone (a model id Claude Code lists)
@@ -286,6 +290,10 @@ _Avoid_: quota (the screen words of `account_quota`), capacity stop (a model at 
 **Session status**:
 What a harness's session is doing, as its hook events say it, in the words of the Program Status Protocol (OSC 7501): `idle` (it waits for a prompt, or its session ended), `working` (it works on a prompt), `blocked` with the kind `permission` (it waits for a tool call to be allowed), `question` (for its question to be answered) or `auth` (for its login), `done` (its turn ended, answered) or `error` (its turn ended in an error). With it go one line for a person — the tool and its input, the question, the prompt, the answer or the error — the tool, and whether the event is the call's start or its result, with the result's error where it failed. An event that changes nothing says so. The harness crate names, per harness, the hook events to register one command at (`Harness::status_events`, `status_hooks`) and what one event's payload says (`hook_status`); a harness whose hooks do not say it reliably — every one but Claude Code and Codex — says none, and a caller reads its session file instead. afkconvoy's own workers use none of it: their **worker state** is read from their session files.
 _Avoid_: worker state (busy or stopped, from the session file), state (Orca's own word)
+
+**Step**:
+One tool call a session made, with what came back of it, whether the harness marked that an error, and when it came back, as the harness's session file records it (`Harness::steps`): Claude Code's `tool_use` and its `tool_result`, Codex's `function_call` and its output, and each other harness's own. A call nothing has come back of yet is no step, and a child session's are not the session's. The harness crate reads them and judges none: whether a session repeats itself is for the program that reads its steps.
+_Avoid_: event (a line of a log, or what a harness records a session's state changed by), action (a step's call alone), turn (a session's span of work)
 
 **Verdict**:
 What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing. A `blocked` verdict names the issues it waits on, or the next cut of its own repo (`blocked_by=cut`, `--blocked-by cut`), when the stage can go on only once a version not installed yet is: the claim is parked under the label `convoy-waits-on-cut` instead of polling for the version, and the issue returns at the stage it left once a cut has installed one (ADR-0056).
@@ -422,7 +430,7 @@ The fixed duration a repo expects its gate to stay within. Recent recorded landi
 _Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
-The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
+The evidence that the gate passed on one committed tree, with how long the run took and on which host, and each test's wall time and CPU time where the run's output said them, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
 _Avoid_: gate cache, CI status
 
 **Fast gate**:

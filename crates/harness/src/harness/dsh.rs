@@ -8,6 +8,7 @@ use super::{Kept, Link, SessionFile, SessionLayout};
 use crate::harness::Call;
 use crate::line::Line;
 use crate::start::Start;
+use crate::steps::{self, Said};
 use crate::turn::{Marker, Note, Turn};
 
 pub(super) const KEY: &str = "dsh";
@@ -358,6 +359,47 @@ pub(super) fn session_files(cwd: &str, open: bool, at: u64) -> Vec<SessionFile> 
         compressed: true,
         replaces: None,
     }]
+}
+
+/// What one DeepSeek Harness session line says of a tool call: a
+/// `tool/call` event by its `callId`, and the `tool/result` whose message
+/// names it, `isError` where DeepSeek Harness marks it an error. Its shell
+/// does not mark a command that exited other than 0, but ends what came back
+/// with "[Command finished with exit code N]", which is an error too. A
+/// session whose header says a sub-agent started it is a child's.
+pub(super) fn said(value: &serde_json::Value) -> Vec<Said> {
+    let data = &value["data"];
+    let said = match value["type"].as_str() {
+        Some("session") => {
+            let delegated = value["delegationDepth"].as_u64().is_some_and(|depth| depth > 0);
+            if value["origin"] == "subagent" || delegated {
+                Said::Child
+            } else {
+                return Vec::new();
+            }
+        }
+        Some("tool/call") => {
+            let Some(id) = data["callId"].as_str() else { return Vec::new() };
+            Said::Call {
+                id: id.to_string(),
+                action: steps::action(data["name"].as_str().unwrap_or(""), &data["arguments"]),
+            }
+        }
+        Some("tool/result") => {
+            let message = &data["message"];
+            let Some(id) = message["toolCallId"].as_str() else { return Vec::new() };
+            let result = steps::content(&message["content"]);
+            let code = steps::exit_code(&result, "[Command finished with exit code ");
+            Said::Result {
+                id: id.to_string(),
+                error: message["isError"] == true || code.is_some_and(|code| code != 0),
+                result,
+                at: value["time"].as_u64().map(session::epoch_number),
+            }
+        }
+        _ => return Vec::new(),
+    };
+    vec![said]
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 //! (`recorded/`, whose README says where each came from).
 
 use afkconvoy_harness::brief::brief_pointer;
-use afkconvoy_harness::status::{Report, Said, Step};
+use afkconvoy_harness::status::{CallEnd, Reading, Report};
 use afkconvoy_harness::tokens::Counts;
 use afkconvoy_harness::turn::Turn;
 use afkconvoy_harness::window::{Limit, Limited, Window};
@@ -326,7 +326,7 @@ fn the_crate_depends_on_nothing_of_the_fleet() {
 /// status: its word, its kind, its message, its tool and the end of the
 /// call — `None` for an event that changes nothing.
 type Read =
-    Option<(&'static str, Option<&'static str>, Option<String>, Option<String>, Option<Step>)>;
+    Option<(&'static str, Option<&'static str>, Option<String>, Option<String>, Option<CallEnd>)>;
 
 fn statuses(harness: Harness, recorded: &str) -> Vec<Read> {
     recorded
@@ -334,9 +334,9 @@ fn statuses(harness: Harness, recorded: &str) -> Vec<Read> {
         .map(|line| {
             let payload: serde_json::Value = serde_json::from_str(line).unwrap();
             match harness.hook_status(&payload).unwrap() {
-                Said::Unchanged => None,
-                Said::Is(Report { status, message, tool, step }) => {
-                    Some((status.word(), status.kind(), message, tool, step))
+                Reading::Unchanged => None,
+                Reading::Is(Report { status, message, tool, end }) => {
+                    Some((status.word(), status.kind(), message, tool, end))
                 }
             }
         })
@@ -348,7 +348,7 @@ fn is(
     kind: Option<&'static str>,
     message: Option<&str>,
     tool: Option<&str>,
-    step: Option<Step>,
+    step: Option<CallEnd>,
 ) -> Read {
     Some((word, kind, message.map(str::to_string), tool.map(str::to_string), step))
 }
@@ -356,7 +356,7 @@ fn is(
 #[test]
 fn recorded_claude_code_hook_events_say_its_session_s_status() {
     let recorded = include_str!("recorded/claude-code-hooks.jsonl");
-    let ended = || Some(Step::Ended { error: None });
+    let ended = || Some(CallEnd::Result { error: None });
     let bash = Some("Bash");
     let ask = Some("AskUserQuestion");
     let touch = Some("Bash: touch made-by-hook-test");
@@ -372,7 +372,7 @@ fn recorded_claude_code_hook_events_say_its_session_s_status() {
             None,
             None,
         ),
-        is("working", None, touch, bash, Some(Step::Started)),
+        is("working", None, touch, bash, Some(CallEnd::Start)),
         is("blocked", Some("permission"), touch, bash, None),
         None,
         is("working", None, touch, bash, ended()),
@@ -394,7 +394,7 @@ fn recorded_claude_code_hook_events_say_its_session_s_status() {
             None,
             None,
         ),
-        is("blocked", Some("question"), question, ask, Some(Step::Started)),
+        is("blocked", Some("question"), question, ask, Some(CallEnd::Start)),
         is("blocked", Some("question"), question, ask, None),
         None,
         is("working", None, question, ask, ended()),
@@ -412,15 +412,15 @@ fn recorded_claude_code_hook_events_say_its_session_s_status() {
             None,
             None,
         ),
-        is("working", None, Some("Bash: echo hello"), bash, Some(Step::Started)),
+        is("working", None, Some("Bash: echo hello"), bash, Some(CallEnd::Start)),
         is("working", None, Some("Bash: echo hello"), bash, ended()),
-        is("working", None, Some("Bash: ls /no/such/dir"), bash, Some(Step::Started)),
+        is("working", None, Some("Bash: ls /no/such/dir"), bash, Some(CallEnd::Start)),
         is(
             "working",
             None,
             Some("Exit code 1"),
             bash,
-            Some(Step::Ended { error: Some(failed.to_string()) }),
+            Some(CallEnd::Result { error: Some(failed.to_string()) }),
         ),
         is(
             "done",
@@ -509,9 +509,9 @@ fn codex_hook_events_say_its_session_s_status() {
     let expected: Vec<Read> = vec![
         is("idle", None, None, None, None),
         is("working", None, Some("Run cargo test, then remove the build directory."), None, None),
-        is("working", None, Some("Bash: cargo test"), bash, Some(Step::Started)),
+        is("working", None, Some("Bash: cargo test"), bash, Some(CallEnd::Start)),
         // Codex hands a shell call's output alone: no error is said of it.
-        is("working", None, Some("Bash: cargo test"), bash, Some(Step::Ended { error: None })),
+        is("working", None, Some("Bash: cargo test"), bash, Some(CallEnd::Result { error: None })),
         is("blocked", Some("permission"), Some("Bash: rm -rf build"), bash, None),
         None,
         is("done", None, Some("The tests fail to compile: `x` is not defined."), None, None),
@@ -535,4 +535,143 @@ fn codex_hook_events_say_its_session_s_status() {
     for (at, (read, expected)) in read.iter().zip(&expected).enumerate() {
         assert_eq!(read, expected, "line {}", at + 1);
     }
+}
+
+#[test]
+fn a_recorded_claude_code_session_says_its_steps_and_the_one_that_failed() {
+    let text = include_str!("recorded/claude-code-session-steps.jsonl");
+    let steps = Harness::ClaudeCode.steps(text);
+    // Three calls answered; the fourth has no result yet, and the request
+    // Claude Code keeps beside the session repeats a call, which is no step.
+    let said: Vec<(bool, Option<u64>)> = steps.iter().map(|step| (step.error, step.at)).collect();
+    assert_eq!(
+        said,
+        vec![
+            (false, Some(1_794_444_749)),
+            (false, Some(1_794_444_755)),
+            (true, Some(1_794_444_787))
+        ]
+    );
+    for (step, called) in steps.iter().zip([
+        r#"Bash {"command":"cat /src/project/.git/convoy-worker-prompt.md"#,
+        r#"Bash {"command":"gh issue view 736 --repo sunfmin/control"#,
+        r#"Bash {"command":"cat crates/harness/src/line.rs | head -120;"#,
+    ]) {
+        assert!(step.action.starts_with(called), "{}", step.action);
+    }
+    assert!(steps[2].result.starts_with("Exit code 1 //! A shell line"), "{}", steps[2].result);
+    assert!(steps.iter().all(|step| !step.result.contains('\n') && !step.action.contains('\n')));
+    // A sidechain's lines are a child session's, not this one's.
+    let child = text.replace("\"isSidechain\":false", "\"isSidechain\":true");
+    assert_eq!(Harness::ClaudeCode.steps(&child), Vec::new());
+}
+
+/// Each step's action, whether it was an error, and when it came back.
+fn steps_of(harness: Harness, text: &str) -> Vec<(String, bool, Option<u64>)> {
+    harness.steps(text).into_iter().map(|step| (step.action, step.error, step.at)).collect()
+}
+
+/// 2026-11-12T02:00:00Z, when each recorded sample other than Claude Code's starts.
+const STEPS_AT: u64 = 1_794_448_800;
+
+#[test]
+fn a_codex_rollout_says_its_steps_and_a_command_that_exited_other_than_0() {
+    let text = include_str!("recorded/codex-session-steps.jsonl");
+    let at = |s: u64| Some(STEPS_AT + s);
+    assert_eq!(
+        steps_of(Harness::Codex, text),
+        vec![
+            (r#"exec_command {"cmd":"ls crates","workdir":"/src/project"}"#.into(), false, at(3)),
+            (
+                r#"exec_command {"cmd":"cargo test -p missing","workdir":"/src/project"}"#.into(),
+                true,
+                at(9)
+            ),
+            (
+                "apply_patch *** Begin Patch *** Add File: notes.txt +done *** End Patch".into(),
+                false,
+                at(11)
+            ),
+            (r#"shell {"command":["bash","-lc","false"]}"#.into(), true, at(13)),
+        ]
+    );
+    let steps = Harness::Codex.steps(text);
+    assert!(steps[0].result.ends_with("Output: cli core harness"), "{}", steps[0].result);
+    // A sub-agent's rollout is a child session's.
+    let child = text.replacen(
+        r#""source":"cli""#,
+        r#""source":{"subagent":{"thread_spawn":{"parent_thread_id":"p","depth":1}}}"#,
+        1,
+    );
+    assert_ne!(child, text);
+    assert_eq!(Harness::Codex.steps(&child), Vec::new());
+}
+
+#[test]
+fn a_kimi_wire_says_its_steps_and_not_its_sub_agents() {
+    let text = include_str!("recorded/kimi-wire-steps.jsonl");
+    let steps = Harness::Kimi.steps(text);
+    assert_eq!(
+        steps_of(Harness::Kimi, text),
+        vec![
+            (r#"Bash {"command":"git status --short"}"#.into(), false, Some(STEPS_AT + 2)),
+            (r#"Bash {"command":"cargo build -p missing"}"#.into(), true, Some(STEPS_AT + 5)),
+        ]
+    );
+    assert_eq!(steps[0].result, "M README.md");
+}
+
+#[test]
+fn a_pi_session_says_its_steps_and_the_one_that_failed() {
+    let text = include_str!("recorded/pi-session-steps.jsonl");
+    assert_eq!(
+        steps_of(Harness::Pi, text),
+        vec![
+            (r#"bash {"command":"ls"}"#.into(), false, Some(STEPS_AT + 3)),
+            (r#"bash {"command":"npm test"}"#.into(), true, Some(STEPS_AT + 6)),
+        ]
+    );
+    assert_eq!(
+        Harness::Pi.steps(text)[1].result,
+        r#"npm error Missing script: "test" Command exited with code 1"#
+    );
+}
+
+#[test]
+fn grok_s_updates_say_its_steps_a_refused_one_and_a_command_that_exited_other_than_0() {
+    let text = include_str!("recorded/grok-updates-steps.jsonl");
+    let at = |s: u64| Some(STEPS_AT + s);
+    assert_eq!(
+        steps_of(Harness::Grok, text),
+        vec![
+            (
+                r#"run_terminal_command {"command":"wc -l notes.txt","description":"Count the lines"}"#
+                    .into(),
+                false,
+                at(3)
+            ),
+            (r#"write {"content":"x","path":"notes.txt"}"#.into(), true, at(5)),
+            (r#"run_terminal_command {"command":"false"}"#.into(), true, at(7)),
+        ]
+    );
+    assert_eq!(Harness::Grok.steps(text)[0].result, "3 notes.txt");
+}
+
+#[test]
+fn a_dsh_session_says_its_steps_and_a_command_that_exited_other_than_0() {
+    let text = include_str!("recorded/dsh-session-steps.jsonl");
+    let at = |s: u64| Some(STEPS_AT + s);
+    assert_eq!(
+        steps_of(Harness::Dsh, text),
+        vec![
+            (r#"bash {"command":"ls"}"#.into(), false, at(3)),
+            (r#"bash {"command":"make"}"#.into(), true, at(6)),
+            (r#"read_file {"path":"missing.txt"}"#.into(), true, at(8)),
+        ]
+    );
+    // A session a sub-agent started is a child's.
+    let child =
+        text.replacen(r#""delegationDepth":0"#, r#""delegationDepth":1,"origin":"subagent""#, 1);
+    assert_ne!(child, text);
+    assert_eq!(Harness::Dsh.steps(&child), Vec::new());
 }

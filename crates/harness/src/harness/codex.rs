@@ -33,7 +33,8 @@ use crate::harness::Call;
 use crate::line::Line;
 use crate::start::RULES;
 use crate::start::{Rules, Start, Told};
-use crate::status::{self, Blocked, Report, Said, Status, Step};
+use crate::status::{self, Blocked, CallEnd, Reading, Report, Status};
+use crate::steps::{self, Said};
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 use crate::window::{self, Limit, Limited, Window};
@@ -1219,26 +1220,89 @@ const FAILED: &str = "failed";
 /// `PostToolUse` hands a shell call's output alone, as text, with no exit
 /// code: a call is said ended with no error, however it went, and one whose
 /// tool failed fires none.
-pub(super) fn hook_status(payload: &serde_json::Value) -> Said {
+pub(super) fn hook_status(payload: &serde_json::Value) -> Reading {
     let text = |key: &str| payload[key].as_str().and_then(status::one_line);
     let tool = payload["tool_name"].as_str().map(str::to_string);
-    let call = |status: Status, step: Option<Step>| {
+    let call = |status: Status, step: Option<CallEnd>| {
         let message =
             tool.as_deref().map(|name| status::call_line(name, &payload["tool_input"], &CALL_KEYS));
-        Said::Is(Report { status, message, tool: tool.clone(), step })
+        Reading::Is(Report { status, message, tool: tool.clone(), end: step })
     };
     match payload["hook_event_name"].as_str().unwrap_or_default() {
-        "SessionStart" | "SessionEnd" | "Interrupt" => Said::status(Status::Idle),
-        "UserPromptSubmit" => Said::told(Status::Working, text("prompt")),
-        "PreToolUse" => call(Status::Working, Some(Step::Started)),
+        "SessionStart" | "SessionEnd" | "Interrupt" => Reading::status(Status::Idle),
+        "UserPromptSubmit" => Reading::told(Status::Working, text("prompt")),
+        "PreToolUse" => call(Status::Working, Some(CallEnd::Start)),
         "PermissionRequest" => call(Status::Blocked(Blocked::Permission), None),
-        "PostToolUse" => call(Status::Working, Some(Step::Ended { error: None })),
-        "Stop" => Said::told(Status::Done, text("last_assistant_message")),
+        "PostToolUse" => call(Status::Working, Some(CallEnd::Result { error: None })),
+        "Stop" => Reading::told(Status::Done, text("last_assistant_message")),
         "PostModelRequest" if payload["status"].as_str() == Some(FAILED) => {
-            Said::told(Status::Error, text("error"))
+            Reading::told(Status::Error, text("error"))
         }
-        _ => Said::Unchanged,
+        _ => Reading::Unchanged,
     }
+}
+
+/// What one Codex rollout line says of a tool call: a `function_call`,
+/// `custom_tool_call` or `local_shell_call` response item is a call, and a
+/// `function_call_output` or `custom_tool_call_output` what came back, by
+/// its `call_id`. Codex writes no error mark of its own: a command that
+/// exited other than 0 says so in its output's text (`exec_command`'s
+/// "Process exited with code", the older shell's "Exit code:", or the
+/// older output object's `metadata.exit_code`). A sub-agent's rollout says
+/// in its `session_meta` that it was spawned: a child session's.
+pub(super) fn said(value: &serde_json::Value) -> Vec<Said> {
+    let payload = &value["payload"];
+    if value["type"] == "session_meta" {
+        let spawned = payload["source"]["subagent"].is_object();
+        return if spawned { vec![Said::Child] } else { Vec::new() };
+    }
+    if value["type"] != "response_item" {
+        return Vec::new();
+    }
+    let Some(id) = payload["call_id"].as_str().filter(|id| !id.is_empty()) else {
+        return Vec::new();
+    };
+    let id = id.to_string();
+    let name = payload["name"].as_str().unwrap_or("");
+    let said = match payload["type"].as_str() {
+        Some("function_call") => {
+            Said::Call { id, action: steps::action(name, &payload["arguments"]) }
+        }
+        Some("custom_tool_call") => {
+            Said::Call { id, action: steps::action(name, &payload["input"]) }
+        }
+        Some("local_shell_call") => {
+            Said::Call { id, action: steps::action("local_shell", &payload["action"]["command"]) }
+        }
+        Some("function_call_output" | "custom_tool_call_output") => {
+            let (result, error) = call_output(&payload["output"]);
+            let at = value["timestamp"].as_str().and_then(session::parse_iso);
+            Said::Result { id, result, error, at }
+        }
+        _ => return Vec::new(),
+    };
+    vec![said]
+}
+
+/// What a call's `output` says, on one line, and whether the command it ran
+/// exited other than 0.
+fn call_output(output: &serde_json::Value) -> (String, bool) {
+    if let Some(text) = output.as_str()
+        && let Ok(object) = serde_json::from_str::<serde_json::Value>(text)
+        && object["output"].is_string()
+    {
+        let code = object["metadata"]["exit_code"].as_i64();
+        return (steps::content(&object["output"]), code.is_some_and(|code| code != 0));
+    }
+    let result = steps::content(output);
+    let text = match output {
+        serde_json::Value::String(text) => text.clone(),
+        other => steps::content(other),
+    };
+    let code = steps::exit_code(&text, "Process exited with code ").or_else(|| {
+        text.starts_with("Exit code: ").then(|| steps::exit_code(&text, "Exit code: "))?
+    });
+    (result, code.is_some_and(|code| code != 0))
 }
 
 #[cfg(test)]
