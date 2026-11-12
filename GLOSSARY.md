@@ -50,7 +50,7 @@ _Avoid_: global config, runner flags
 
 **Tick**:
 One reconciliation pass: rebuild the working set from fleet state, then perform every transition it calls for, without waiting for the workers it started.
-_Avoid_: cycle, poll, batch
+_Avoid_: cycle, poll, batch (batch round: a landing mode)
 
 **Plan**:
 A tick stopped after its rebuild, which reports what an acting tick would do and leaves nothing written: its startup probe, when it makes one, is the only thing it pushes, and it deletes that.
