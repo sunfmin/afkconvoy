@@ -18,7 +18,9 @@ use crate::role::{
 use crate::stage_record::{STAGE_LABEL, STAGE_RECORD};
 use crate::team::FLOW_LABEL;
 
-use afkconvoy_gate::shell::{Command, WRAPPERS, commands, is_assignment, positionals};
+use afkconvoy_gate::shell::{
+    Command, QueueCommand, WRAPPERS, commands, is_assignment, positionals,
+};
 
 /// The options of `git` itself that take the next word as their value.
 const GIT_VALUES: [&str; 5] = ["-C", "-c", "--git-dir", "--work-tree", "--namespace"];
@@ -667,12 +669,22 @@ pub fn refused(
 
 /// Why `call` is refused for running one of a repo's heavy commands,
 /// `patterns`, outside the host's exclusive queue (sunfmin/control#577):
-/// the gate crate's rule (`afkconvoy_gate::shell::heavy`); `None` when it
-/// runs none bare, or is no shell call.
+/// the gate crate's rule (`afkconvoy_gate::shell::heavy`), with
+/// `afkconvoy exclusive` the way into the queue; `None` when it runs none
+/// bare, or is no shell call.
 pub fn heavy(call: &Call, patterns: &[String]) -> Option<String> {
     let Call::Shell(line) = call else { return None };
-    afkconvoy_gate::shell::heavy(line, patterns)
+    afkconvoy_gate::shell::heavy(line, patterns, &EXCLUSIVE)
 }
+
+/// afkconvoy's way into its host's exclusive queue: `afkconvoy exclusive`,
+/// with `-C` and its directory skipped before `exclusive`.
+pub const EXCLUSIVE: QueueCommand<'static> = QueueCommand {
+    program: "afkconvoy",
+    words: &["exclusive"],
+    values: &["-C"],
+    instead: &["afkconvoy", "exclusive"],
+};
 
 /// Refuses Orca input to the asking Terminal. The caller resolves an omitted
 /// Terminal through Orca; an explicit handle needs no lookup. This uses the
