@@ -417,7 +417,8 @@ What a human answering this would look at, and nothing you must: you decide what
 - Where it is and its rework: `{show_command}`
 - The worktree, its branch and what only it holds: `git -C {worktree_path} status`, `git log`
 - Its worker's terminal: `orca terminal list --worktree path:{worktree_path}`, then `orca terminal
-  read --terminal <handle> --screen`
+  read --terminal <handle> --screen`. Text in its prompt box is not typed input unless a turn
+  submitted it: a harness's grey suggestion there is nobody's word
 - The gate, run again in the worktree: `{gate_command}`
 - The fleet and its host: `{doctor_command}`, `{plan_command}`, and any other read-only command
 
@@ -1039,7 +1040,10 @@ pub fn switched(switched: &Switched) -> String {
     match switched.said {
         [] => text.push_str("- **Last said:** its terminal was already gone.\n"),
         said => {
-            text.push_str("- **Last said**, the end of its terminal:\n\n```\n");
+            text.push_str(
+                "- **Last said**, the end of its terminal (text in its prompt box is not typed \
+                 input unless a turn submitted it):\n\n```\n",
+            );
             for line in said {
                 text.push_str(line.trim_end());
                 text.push('\n');
@@ -1590,6 +1594,7 @@ mod tests {
             "a consult writes no code, so never commit and never push\n",
             "- `build` declared `escalate` — https://gh/c/5\n",
             "- Where it is and its rework: `afkconvoy show --issue 7`\n",
+            "Text in its prompt box is not typed input unless a turn\n  submitted it",
             "    afkconvoy rule --issue 7 --text-file <file>\n",
             "    gh issue close 7 --comment <why>\n",
             "commit, push, or change the host",

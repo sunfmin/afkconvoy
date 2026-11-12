@@ -447,6 +447,7 @@ fn a_stage_that_names_no_harness_starts_its_worker_as_before() {
     let begins = format!(
         "cd '{}' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
          CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 CLAUDE_CODE_SANDBOXED=1 \
+         CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false \
          AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
          AFKCONVOY_STAGE='review' ",
         role.display()
