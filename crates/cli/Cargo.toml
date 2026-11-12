@@ -10,6 +10,7 @@ autotests = false
 [dependencies]
 afkconvoy-core = { path = "../core" }
 afkconvoy-gate = { path = "../gate" }
+afkconvoy-host-kit = { path = "../host-kit" }
 afkconvoy-landing = { path = "../landing" }
 agent-help = { git = "https://github.com/sunfmin/agent-cli" }
 anyhow = "1"
