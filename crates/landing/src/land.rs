@@ -628,62 +628,41 @@ where
             let read = self.read(target)?;
             // An ended candidate leaves the record once its worktree is
             // gone: what became of it is taken as the chain decides it.
-            ids.retain(|(number, id)| {
-                let decided = read.chain.candidates.iter().find(|c| c.id == *id).and_then(|c| {
-                    let rebuilt = c.cause.as_deref() == Some("rebuilt") && c.phase != Phase::Red;
-                    match c.decision()? {
-                        _ if rebuilt => None,
-                        Decision::Landed => Some(Outcome::Landed(c.commit.clone())),
-                        decision => Some(Outcome::Decided(decision)),
-                    }
-                });
-                let keep = decided.is_none();
-                outcomes.extend(decided.map(|outcome| (*number, outcome)));
-                keep
-            });
+            ids = settled(&read.chain, ids, &mut outcomes);
             let step = read.chain.batch_step();
-            let mine = |id: &str| ids.iter().any(|(_, mine)| mine == id);
+            let Some(step) = step else {
+                if asking.is_empty() {
+                    break;
+                }
+                for change in std::mem::take(&mut asking) {
+                    match self.assign_as(&change, true)? {
+                        Ok(id) => ids.push((change.number, id)),
+                        Err(outcome) => outcomes.push((change.number, outcome)),
+                    }
+                }
+                continue;
+            };
+            if !ids.iter().any(|(_, id)| id == step.id()) {
+                break;
+            }
             match step {
-                Some(BatchStep::Gate(id)) if mine(&id) => {
+                BatchStep::Gate(id) => {
                     self.gate_batched(target, &id)?;
                 }
-                Some(BatchStep::Drop(id)) if mine(&id) => {
-                    let chain = self.change(target, |chain| chain.drop_red(&id))?;
-                    let red = chain.candidates.iter().find(|c| c.id == id);
-                    if let Some(change) =
-                        changes.iter().find(|c| red.is_some_and(|r| r.change == c.number))
-                    {
-                        let run = red.and_then(|r| r.result.as_ref());
-                        self.forge.sent_back(change, run).map_err(Error::Forge)?;
-                    }
-                    let rebuilt = |id: &str| {
-                        chain
-                            .candidates
-                            .iter()
-                            .any(|c| c.id == id && c.cause.as_deref() == Some("rebuilt"))
-                    };
-                    let (again, kept): (Vec<_>, Vec<_>) =
-                        ids.drain(..).partition(|(_, id)| rebuilt(id));
-                    ids = kept;
-                    for (number, _) in again {
-                        asking.extend(changes.iter().find(|c| c.number == number).cloned());
+                BatchStep::Drop(id) => {
+                    let again = self.drop_red(target, &id, changes)?;
+                    ids.retain(|(number, _)| !again.contains(number));
+                    for change in changes {
+                        if again.contains(&change.number) {
+                            asking.push(change.clone());
+                        }
                     }
                 }
-                Some(BatchStep::Land(id)) if mine(&id) => {
+                BatchStep::Land(id) => {
                     let landed = self.publish(target, &id, changes)?;
                     let again = self.read(target)?.chain.batch_step();
                     if landed.is_empty() && again == Some(BatchStep::Land(id)) {
                         break;
-                    }
-                }
-                Some(_) => break,
-                None if asking.is_empty() => break,
-                None => {
-                    for change in asking.drain(..) {
-                        match self.assign_as(&change, true)? {
-                            Ok(id) => ids.push((change.number, id)),
-                            Err(outcome) => outcomes.push((change.number, outcome)),
-                        }
                     }
                 }
             }
@@ -693,6 +672,32 @@ where
             changes.iter().position(|c| c.number == *number).unwrap_or(usize::MAX)
         });
         Ok(outcomes)
+    }
+
+    /// Drops `red`, the batch round's first red candidate, and sends its
+    /// change back with the red run → the changes behind it, to be assigned
+    /// again without it.
+    fn drop_red(
+        &self,
+        target: &str,
+        red: &str,
+        changes: &[Change],
+    ) -> Result<Vec<u64>, Error<F::Error>> {
+        let chain = self.change(target, |chain| chain.drop_red(red))?;
+        let mut again = vec![];
+        for c in &chain.candidates {
+            if c.id == red {
+                let run = c.result.as_ref();
+                for change in changes.iter().filter(|change| change.number == c.change) {
+                    self.forge.sent_back(change, run).map_err(Error::Forge)?;
+                }
+            } else if c.cancelled_by.as_deref() == Some(red)
+                && c.cause.as_deref() == Some("rebuilt")
+            {
+                again.push(c.change);
+            }
+        }
+        Ok(again)
     }
 
     /// What became of each change of `ids`, by its candidate, after
@@ -716,6 +721,32 @@ where
         }
         Ok(outcomes)
     }
+}
+
+/// `ids` without the candidates `chain` has decided, each one's outcome put
+/// in `outcomes`; one cancelled `rebuilt` is to be assigned again, and is
+/// kept.
+fn settled<N, R>(
+    chain: &Chain<N>,
+    ids: Vec<(u64, String)>,
+    outcomes: &mut Outcomes<R>,
+) -> Vec<(u64, String)> {
+    let mut kept = vec![];
+    for (number, id) in ids {
+        let c = chain.candidates.iter().find(|c| c.id == id);
+        let rebuilt =
+            c.is_some_and(|c| c.cause.as_deref() == Some("rebuilt") && c.phase != Phase::Red);
+        match c.and_then(Candidate::decision) {
+            Some(_) if rebuilt => kept.push((number, id)),
+            Some(Decision::Landed) => {
+                let commit = c.map(|c| c.commit.clone()).unwrap_or_default();
+                outcomes.push((number, Outcome::Landed(commit)));
+            }
+            Some(decision) => outcomes.push((number, Outcome::Decided(decision))),
+            None => kept.push((number, id)),
+        }
+    }
+    kept
 }
 
 /// The candidate `id`'s gate has returned: its processes are gone with it,

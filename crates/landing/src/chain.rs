@@ -669,19 +669,31 @@ impl<N: Clone> Chain<N> {
         if !valid.iter().all(|c| c.batch && matches!(c.phase, Phase::Batched | Phase::Green)) {
             return None;
         }
-        let Some(red) = valid.iter().position(|c| c.holds_red) else {
-            return Some(if tip.whole() {
-                BatchStep::Land(tip.id.clone())
+        // The candidates the bisection is between: after the last known
+        // green, up to the first known red.
+        let mut open: Vec<&Candidate<N>> = vec![];
+        let mut red = false;
+        for c in &valid {
+            if c.holds_red {
+                open.push(c);
+                red = true;
+                break;
+            }
+            if c.whole() {
+                open.clear();
             } else {
-                BatchStep::Gate(tip.id.clone())
-            });
-        };
-        let low = valid[..red].iter().rposition(|c| c.whole()).map_or(0, |green| green + 1);
-        Some(if low == red {
-            BatchStep::Drop(valid[red].id.clone())
-        } else {
-            BatchStep::Gate(valid[low + (red - low) / 2].id.clone())
-        })
+                open.push(c);
+            }
+        }
+        if !red {
+            let id = tip.id.clone();
+            return Some(if tip.whole() { BatchStep::Land(id) } else { BatchStep::Gate(id) });
+        }
+        let (first_red, before) = open.split_last()?;
+        if before.is_empty() {
+            return Some(BatchStep::Drop(first_red.id.clone()));
+        }
+        before.get(before.len() / 2).map(|middle| BatchStep::Gate(middle.id.clone()))
     }
 
     /// Starts the gate of the batch round at `id`, where its round gates it
@@ -801,6 +813,15 @@ pub enum BatchStep {
     Drop(String),
     /// Land the candidate named, with every candidate before it.
     Land(String),
+}
+
+impl BatchStep {
+    /// The candidate it is of.
+    pub fn id(&self) -> &str {
+        match self {
+            BatchStep::Gate(id) | BatchStep::Drop(id) | BatchStep::Land(id) => id,
+        }
+    }
 }
 
 /// The effect boundary must supply each observation anew. Flux checks that
