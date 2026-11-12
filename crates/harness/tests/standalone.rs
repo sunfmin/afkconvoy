@@ -5,10 +5,11 @@
 //! windows and structured limits are read from its recorded samples
 //! (`recorded/`, whose README says where each came from).
 
+use afkconvoy_harness::brief::brief_pointer;
 use afkconvoy_harness::tokens::Counts;
 use afkconvoy_harness::turn::Turn;
 use afkconvoy_harness::window::{Limit, Limited, Window};
-use afkconvoy_harness::{DshProfile, Harness, Start, Told};
+use afkconvoy_harness::{BriefAtStart, DshProfile, Harness, Start, Told};
 
 fn start(model: Option<&str>) -> Start<'_> {
     Start {
@@ -197,6 +198,43 @@ fn kimi_code_s_usage_answer_says_its_windows_and_its_session_none() {
     for harness in [Harness::Pi, Harness::Dsh, Harness::Grok] {
         assert!(harness.windows(&answer).is_empty(), "{}", harness.key());
     }
+}
+
+/// A session nobody types at, as Claude Code's started with its brief: the
+/// start line ends its flags and gives the brief pointer as its first prompt,
+/// and the session that prompt starts is the one found handed that brief.
+#[test]
+fn claude_code_is_handed_its_brief_on_its_start_line() {
+    let brief = "/git/worktrees/it's 7/brief.md";
+    let line = Harness::ClaudeCode.in_role("claude", &start(Some("a-model")));
+    let BriefAtStart::Started(started) = Harness::ClaudeCode.brief_at_start(&line, brief) else {
+        panic!("Claude Code takes its brief on its start line");
+    };
+    let pointer = brief_pointer(brief);
+    assert_eq!(started, format!("{line} -- '{}'", pointer.replace('\'', "'\\''")));
+    let session = format!(
+        r#"{{"type":"user","cwd":"/src/project","isSidechain":false,"message":{{"role":"user","content":{}}}}}"#,
+        serde_json::Value::String(pointer)
+    );
+    assert!(Harness::ClaudeCode.names_brief(&session, brief));
+}
+
+/// Every other harness takes its brief only typed at it once it is idle,
+/// and is answered the line to type: Codex its goal, the rest the pointer.
+#[test]
+fn every_other_harness_is_handed_its_brief_typed() {
+    let brief = "/git/worktrees/7/brief.md";
+    for harness in Harness::ALL.into_iter().filter(|h| *h != Harness::ClaudeCode) {
+        let line = harness.in_role(harness.program(), &start(None));
+        assert_eq!(
+            harness.brief_at_start(&line, brief),
+            BriefAtStart::Typed(harness.brief_line(brief)),
+            "{}",
+            harness.key()
+        );
+    }
+    assert!(Harness::Codex.brief_line(brief).starts_with("/goal "));
+    assert_eq!(Harness::Pi.brief_line(brief), brief_pointer(brief));
 }
 
 /// What the crate depends on: Flux's attributes, serde and TOML — never
