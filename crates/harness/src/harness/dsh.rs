@@ -18,6 +18,8 @@ pub(super) const PROGRAM: &str = "dsh-tui";
 pub(super) const INSTALL: &str = "npm install -g @deepseek-harness-tui/dsh-tui";
 /// It is asked about no login.
 pub(super) const LOGIN: Option<super::Login> = None;
+/// The variable that names DSH's user directory.
+pub(super) const USER_DIR: &str = "DSH_HOME";
 /// The host its worker's login shell reaches without a proxy, unless the
 /// host says otherwise.
 pub(super) const NO_PROXY: &str = "api.deepseek.com";

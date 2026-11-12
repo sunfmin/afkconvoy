@@ -21,6 +21,7 @@ fn start(model: Option<&str>) -> Start<'_> {
         hook: "/bin/check-call",
         kept: "/cache/kept",
         host_user: false,
+        kept_config: false,
         host_rules: &[],
         dsh_profile: DshProfile::default(),
         shadowed: &[],
@@ -674,4 +675,98 @@ fn a_dsh_session_says_its_steps_and_a_command_that_exited_other_than_0() {
         text.replacen(r#""delegationDepth":0"#, r#""delegationDepth":1,"origin":"subagent""#, 1);
     assert_ne!(child, text);
     assert_eq!(Harness::Dsh.steps(&child), Vec::new());
+}
+
+/// Each harness's user configuration: the variable that points it at a
+/// directory, and where that is under the home while it is unset
+/// (sunfmin/control#781).
+#[test]
+fn each_harness_says_the_variable_that_points_it_at_its_user_configuration() {
+    let named: Vec<(Harness, &str, &str)> =
+        Harness::ALL.iter().map(|h| (*h, h.config_dir().variable, h.config_dir().home)).collect();
+    assert_eq!(
+        named,
+        [
+            (Harness::ClaudeCode, "CLAUDE_CONFIG_DIR", ".claude"),
+            (Harness::Pi, "PI_CODING_AGENT_DIR", ".pi/agent"),
+            (Harness::Codex, "CODEX_HOME", ".codex"),
+            (Harness::Dsh, "DSH_HOME", ".dsh"),
+            (Harness::Kimi, "KIMI_CODE_HOME", ".kimi-code"),
+            (Harness::Grok, "GROK_HOME", ".grok"),
+        ]
+    );
+}
+
+/// A start whose kept directory is the harness's user configuration points
+/// every harness there by its variable, Claude Code too; one that does not
+/// say so leaves Claude Code on the account's own.
+#[test]
+fn a_start_with_its_kept_directory_for_configuration_points_every_harness_at_it() {
+    for harness in Harness::ALL {
+        let start = Start { kept_config: true, ..start(None) };
+        let line = harness.in_role(harness.program(), &start);
+        let variable = harness.config_dir().variable;
+        // DSH's line is handed to its start script, quoted once more.
+        let pointed =
+            [format!(" {variable}='/cache/kept'"), format!(" {variable}='\\''/cache/kept'\\''")];
+        assert!(pointed.iter().any(|p| line.contains(p)), "{}: {line}", harness.key());
+    }
+    let line = Harness::ClaudeCode.in_role("claude", &start(None));
+    assert!(!line.contains("CLAUDE_CONFIG_DIR"), "{line}");
+}
+
+/// The login question and the line that logs in, asked of one user
+/// configuration directory: each points the harness there first, and Codex's
+/// question tests the login file there, not the account's.
+#[test]
+fn a_login_is_asked_of_a_given_user_configuration() {
+    for harness in Harness::ALL {
+        let Some(login) = harness.login() else {
+            assert_eq!(harness.login_in("/engines/x"), None, "{}", harness.key());
+            continue;
+        };
+        let asked = harness.login_in("/engines/it's").unwrap();
+        let export = format!("export {}='/engines/it'\\''s' && ", harness.config_dir().variable);
+        assert_eq!(asked.line, format!("{export}{}", login.line), "{}", harness.key());
+        assert!(asked.question.starts_with(&export), "{}: {}", harness.key(), asked.question);
+        assert!(!asked.question.contains("$HOME"), "{}: {}", harness.key(), asked.question);
+    }
+    let codex = Harness::Codex.login_in("/engines/codex").unwrap();
+    assert_eq!(
+        codex.question,
+        "export CODEX_HOME='/engines/codex' && test -f \"$CODEX_HOME/auth.json\" && codex login \
+         status"
+    );
+    assert!(Harness::Codex.logged_in(true, ""));
+    assert_eq!(Harness::Dsh.login_in("/engines/dsh"), None);
+}
+
+/// What a fresh user configuration is given so that its harness asks no
+/// first-run question: Claude Code's onboarding answered in its
+/// `.claude.json`, merged with the login it holds; Kimi Code's migration
+/// declined by a file written where there is none.
+#[test]
+fn a_fresh_user_configuration_is_given_what_asks_no_first_run_question() {
+    use afkconvoy_harness::Given;
+    let [claude] = Harness::ClaudeCode.fresh() else { panic!("one file of Claude Code's") };
+    assert_eq!(claude.file, ".claude.json");
+    let fresh: serde_json::Value = serde_json::from_str(&claude.written(None).unwrap()).unwrap();
+    assert_eq!(fresh, serde_json::json!({"hasCompletedOnboarding": true}));
+    let held = r#"{"oauthAccount":{"emailAddress":"a@b"},"hasCompletedOnboarding":false}"#;
+    let merged: serde_json::Value =
+        serde_json::from_str(&claude.written(Some(held)).unwrap()).unwrap();
+    assert_eq!(
+        merged,
+        serde_json::json!({"oauthAccount": {"emailAddress": "a@b"}, "hasCompletedOnboarding": true})
+    );
+    assert!(claude.written(Some("[]")).is_err());
+    assert!(claude.written(Some("{")).is_err());
+
+    let [kimi] = Harness::Kimi.fresh() else { panic!("one file of Kimi Code's") };
+    assert_eq!(kimi.given, Given::Whole(""));
+    assert_eq!(kimi.written(None).unwrap(), "");
+    assert_eq!(kimi.written(Some("kept")).unwrap(), "kept");
+    for harness in [Harness::Pi, Harness::Codex, Harness::Dsh, Harness::Grok] {
+        assert!(harness.fresh().is_empty(), "{}", harness.key());
+    }
 }
