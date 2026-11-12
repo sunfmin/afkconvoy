@@ -1676,6 +1676,13 @@ impl Harness {
         session::holds_note(text, mark)
     }
 
+    /// When the first message of `text` that holds `mark` as the user's
+    /// (as `holds_note`) was recorded, in epoch seconds. `None` when no such
+    /// message says when.
+    pub fn noted_at(self, text: &str, mark: &str) -> Option<u64> {
+        session::noted_at(text, mark)
+    }
+
     /// The files a stand-in writes under the harness directory for `line`,
     /// typed at a worker in `cwd` while it worked: given to its model when
     /// `taken`, else only queued. A harness with no stand-in for it writes
