@@ -2,7 +2,8 @@
 //! its tree.
 //!
 //! A record says: this command passed on this tree, and how long the run took
-//! on which host. It is one ref on the remote, named for the tree and the
+//! on which host, and each test's wall time and CPU time where the run's
+//! output said them. It is one ref on the remote, named for the tree and the
 //! command, so it stands wherever the same content is about to land — in
 //! another worktree, on another machine.
 
@@ -169,6 +170,7 @@ pub struct GreenRun {
     #[field(u64[at])]
     at: u64,
     took: Option<Took>,
+    tests: Vec<TestTime>,
 }
 
 impl GreenRun {
@@ -181,6 +183,19 @@ impl GreenRun {
     /// says neither, as every record did once. It is the green run it was.
     pub fn took(&self) -> Option<&Took> {
         self.took.as_ref()
+    }
+
+    /// Each test the run's output timed, in the order it first named them;
+    /// empty for a run whose record says none, as every record did once. It
+    /// is the green run it was.
+    pub fn tests(&self) -> &[TestTime] {
+        &self.tests
+    }
+
+    /// This run, timing `tests` (`test_times` of its output).
+    #[spec(fn(GreenRun[@g], Vec<TestTime>) -> GreenRun[g])]
+    pub fn with_tests(self, tests: Vec<TestTime>) -> GreenRun {
+        GreenRun { tests, ..self }
     }
 
     /// Whether the run is still believed at `now`: no older than a day, and
@@ -209,16 +224,27 @@ impl GreenRun {
 
     /// The record `write` makes, followed by `more` fields the program that
     /// ran it notes of the run: who it was run for, say. They read back as
-    /// the same run.
+    /// the same run. Where the run timed its tests, the record is the
+    /// message of its commit: that line, its subject, then a line for each
+    /// test after a blank one, which a reader of subjects alone never sees.
     pub fn write_with(&self, tree: &Tree, command: &GateCommand, more: &[(&str, &str)]) -> String {
         let line = self.write(tree, command);
         let rest = record::write("", more);
-        format!("{line}{rest}")
+        let mut message = format!("{line}{rest}");
+        if !self.tests.is_empty() {
+            message.push('\n');
+        }
+        for test in &self.tests {
+            message.push('\n');
+            message.push_str(&test.write());
+        }
+        message
     }
 
-    /// A commit subject read at `record_ref(tree, command)` → the run it
-    /// records; `None` when it is no record of a run of this command on this
-    /// tree.
+    /// A commit subject, or its whole message, read at
+    /// `record_ref(tree, command)` → the run it records, timing the tests its
+    /// message's later lines time; `None` when it is no record of a run of
+    /// this command on this tree.
     #[spec(fn(subject: &str, tree: &Tree[@t], command: &GateCommand[@c])
         -> Option<GreenRun{g: g.tree == t && g.command == c}>)]
     pub fn recorded(subject: &str, tree: &Tree, command: &GateCommand) -> Option<GreenRun> {
@@ -235,14 +261,16 @@ impl GreenRun {
             (Some(seconds), Some(host)) => Took::on(host, seconds),
             _ => None,
         };
-        Some(GreenRun { tree: tree.key, command: command.key, at, took })
+        let tests = subject.lines().skip(1).filter_map(TestTime::read).collect();
+        Some(GreenRun { tree: tree.key, command: command.key, at, took, tests })
     }
 
     /// The whole gate's run on `tree`, from the runs of its two parts there:
     /// `fast` of `fast_command` and `slow` of `slow_command`, two commands
     /// that together check what `whole` does (docs/adr/0047). It finished
     /// when the older part did, and took both parts' seconds on the slow
-    /// part's host. `None` when either run is of another tree or command.
+    /// part's host, timing the fast part's tests, then the slow part's.
+    /// `None` when either run is of another tree or command.
     #[spec(fn(tree: &Tree[@t], whole: &GateCommand[@w], fast_command: &GateCommand,
         fast: &GreenRun, slow_command: &GateCommand, slow: &GreenRun)
         -> Option<GreenRun{g: g.tree == t && g.command == w}>)]
@@ -267,7 +295,8 @@ impl GreenRun {
             (Some(f), Some(s)) => Took::on(&s.host, f.seconds.saturating_add(s.seconds)),
             _ => None,
         };
-        Some(GreenRun { tree: tree.key, command: whole.key, at, took })
+        let tests = fast.tests.iter().chain(&slow.tests).cloned().collect();
+        Some(GreenRun { tree: tree.key, command: whole.key, at, took, tests })
     }
 }
 
@@ -388,7 +417,25 @@ pub fn after_run(tree: &Tree, command: &GateCommand, ran: Ran, host: &str, now: 
         Recording::Leave
     } else {
         let took = Took::on(host, ran.seconds);
-        Recording::Write(GreenRun { tree: tree.key, command: command.key, at: now, took })
+        Recording::Write(GreenRun {
+            tree: tree.key,
+            command: command.key,
+            at: now,
+            took,
+            tests: vec![],
+        })
+    }
+}
+
+impl Recording {
+    /// The same recording, its run (where it writes one) timing `tests`
+    /// (`test_times` of the run's output).
+    #[spec(fn(Recording[@r], Vec<TestTime>) -> Recording[r])]
+    pub fn with_tests(self, tests: Vec<TestTime>) -> Recording {
+        match self {
+            Recording::Write(green) => Recording::Write(green.with_tests(tests)),
+            other => other,
+        }
     }
 }
 
@@ -721,6 +768,115 @@ pub fn judge(
     }
     let said = overload_said(lines).unwrap_or_default().to_string();
     Judged::Unsettled(Unsettled { red, said })
+}
+
+/// The word a recorded run's line for one of its tests opens with.
+pub const TEST: &str = "convoy:test";
+
+/// What a gate's output starts a line with to say a test's CPU time, as
+/// its runner measured it (the test process's `getrusage`, say), in
+/// nextest's own spelling: `gate: cpu [   0.010s] nx tests::passes`. nextest
+/// says a test's wall time, not its CPU time.
+pub const CPU_SAID: &str = "gate: cpu ";
+
+/// One test a gate run's output timed, by its name as nextest names it —
+/// its binary, then the test: `afkconvoy cutting::a_test`. Each time is in
+/// milliseconds, as nextest says them, and `None` where the output said
+/// none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestTime {
+    pub name: String,
+    /// Its wall time, from the line nextest passed it on.
+    pub wall_ms: Option<u64>,
+    /// Its CPU time, from a line `CPU_SAID` opens.
+    pub cpu_ms: Option<u64>,
+}
+
+impl TestTime {
+    /// The line of a recorded run's message that carries this test.
+    fn write(&self) -> String {
+        let wall = self.wall_ms.map(|ms| ms.to_string()).unwrap_or_default();
+        let cpu = self.cpu_ms.map(|ms| ms.to_string()).unwrap_or_default();
+        record::write(TEST, &[("name", &self.name), ("wall_ms", &wall), ("cpu_ms", &cpu)])
+    }
+
+    /// A line of a recorded run's message → the test it carries; `None` when
+    /// it carries none.
+    fn read(line: &str) -> Option<TestTime> {
+        let fields = record::read(TEST, line)?;
+        let name = fields.get("name").filter(|name| !name.is_empty())?.to_string();
+        Some(TestTime { name, wall_ms: fields.number("wall_ms"), cpu_ms: fields.number("cpu_ms") })
+    }
+}
+
+/// A time as nextest writes one between brackets, `   0.012s` → its
+/// milliseconds; at most three decimals, as it writes them.
+fn said_ms(raw: &str) -> Option<u64> {
+    let raw = raw.trim().strip_suffix('s')?;
+    let (whole, part) = raw.split_once('.').unwrap_or((raw, ""));
+    let digits = |text: &str| text.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || whole.len() > 12 || part.len() > 3 || !digits(whole) || !digits(part) {
+        return None;
+    }
+    let whole: u64 = whole.parse().ok()?;
+    let part: u64 = format!("{part:0<3}").parse().ok()?;
+    let ms = whole.saturating_mul(1000).saturating_add(part);
+    Some(ms)
+}
+
+/// `[ time] (count) name`, the rest of a nextest status line → the time
+/// and the name. The count is nextest's progress, where it writes one.
+fn timed(rest: &str) -> Option<(u64, &str)> {
+    let rest = rest.trim_start().strip_prefix('[')?;
+    let (time, rest) = rest.split_once(']')?;
+    let ms = said_ms(time)?;
+    let mut rest = rest.trim_start();
+    if let Some(counted) = rest.strip_prefix('(') {
+        rest = counted.split_once(')')?.1.trim_start();
+    }
+    let name = rest.trim_end();
+    (!name.is_empty()).then_some((ms, name))
+}
+
+/// A line of nextest's output that passes a test, its retry's (`TRY 2
+/// PASS`) or one that leaked (`LEAK`) → the test's wall time and name.
+fn passed_test(line: &str) -> Option<(u64, &str)> {
+    let mut rest = line.trim_start();
+    if let Some(retry) = rest.strip_prefix("TRY ") {
+        rest = retry.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start();
+    }
+    let (status, rest) = rest.split_once(' ')?;
+    if !matches!(status, "PASS" | "LEAK") {
+        return None;
+    }
+    timed(rest)
+}
+
+/// Each test a gate run's output `lines` times, once, in the order it first
+/// names them: its wall time from the line nextest passed it on — the last
+/// such, of a test retried — and its CPU time from a line `CPU_SAID` opens.
+/// Empty for output that times none.
+pub fn test_times(lines: &[String]) -> Vec<TestTime> {
+    let mut tests: Vec<TestTime> = vec![];
+    for line in lines {
+        let (ms, name, cpu) = match line.trim_start().strip_prefix(CPU_SAID) {
+            Some(rest) => match timed(rest) {
+                Some((ms, name)) => (ms, name, true),
+                None => continue,
+            },
+            None => match passed_test(line) {
+                Some((ms, name)) => (ms, name, false),
+                None => continue,
+            },
+        };
+        let (wall_ms, cpu_ms) = if cpu { (None, Some(ms)) } else { (Some(ms), None) };
+        match tests.iter_mut().find(|test| test.name == name) {
+            Some(test) if cpu => test.cpu_ms = cpu_ms,
+            Some(test) => test.wall_ms = wall_ms,
+            None => tests.push(TestTime { name: name.to_string(), wall_ms, cpu_ms }),
+        }
+    }
+    tests
 }
 
 #[cfg(test)]
@@ -1078,5 +1234,101 @@ mod tests {
             believed_among(&records, Layout::Hidden, &earlier, &command, 1000).map(|run| run.at()),
             Some(1000)
         );
+    }
+
+    fn lines(said: &[&str]) -> Vec<String> {
+        said.iter().map(|line| line.to_string()).collect()
+    }
+
+    #[test]
+    fn a_runs_output_times_each_test_it_passed() {
+        let output = lines(&[
+            "    Starting 4 tests across 1 binary",
+            "        PASS [   0.012s] (  1/669) nx tests::passes",
+            "gate: cpu [   0.010s] nx tests::passes",
+            "        SLOW [> 60.000s] nx tests::slow",
+            "    TRY 1 FAIL [   1.000s] (2/4) nx tests::flaky",
+            "    TRY 2 PASS [   1.5s] (2/4) nx tests::flaky",
+            "        LEAK [1234.567s] (3/4) nx tests::leaky",
+            "gate: cpu [   2.000s] nx tests::only_cpu",
+            "        PASS [   oops] (4/4) nx tests::unreadable",
+            "     Summary [   0.017s] 4 tests run: 4 passed, 0 skipped",
+        ]);
+        let timed = |name: &str, wall_ms, cpu_ms| TestTime { name: name.into(), wall_ms, cpu_ms };
+        assert_eq!(
+            test_times(&output),
+            [
+                timed("nx tests::passes", Some(12), Some(10)),
+                timed("nx tests::flaky", Some(1500), None),
+                timed("nx tests::leaky", Some(1_234_567), None),
+                timed("nx tests::only_cpu", None, Some(2000)),
+            ]
+        );
+        assert!(test_times(&lines(&["checking fast", "gate: green"])).is_empty());
+    }
+
+    fn green(tests: Vec<TestTime>) -> GreenRun {
+        let ran = Ran {
+            exit_code: 0,
+            timed_out: false,
+            clean_before: true,
+            clean_after: true,
+            seconds: 9,
+        };
+        match after_run(&Tree::named("abc"), &GateCommand::new("./gate.sh"), ran, "mini", 1000)
+            .with_tests(tests)
+        {
+            Recording::Write(run) => run,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_recorded_run_reads_its_tests_back_exactly() {
+        let (tree, command) = (Tree::named("abc"), GateCommand::new("./gate.sh"));
+        let tests = vec![
+            TestTime { name: "nx tests::a test=odd%".into(), wall_ms: Some(12), cpu_ms: Some(10) },
+            TestTime { name: "nx 日本語".into(), wall_ms: None, cpu_ms: Some(0) },
+            TestTime { name: "nx tests::wall".into(), wall_ms: Some(7), cpu_ms: None },
+        ];
+        let run = green(tests.clone());
+        let message = run.write_with(&tree, &command, &[("issue", "7")]);
+        let subject = message.lines().next().unwrap();
+        assert_eq!(subject, green(vec![]).write_with(&tree, &command, &[("issue", "7")]));
+        assert_eq!(message.lines().nth(1), Some(""));
+        let back = GreenRun::recorded(&message, &tree, &command).unwrap();
+        assert_eq!(back, run);
+        assert_eq!(back.tests(), tests);
+        // A subject alone, as every record so far, is the same run, with no tests.
+        let alone = GreenRun::recorded(subject, &tree, &command).unwrap();
+        assert_eq!((alone.at(), alone.took(), alone.tests()), (run.at(), run.took(), &[][..]));
+        assert_eq!(
+            green(vec![]).write_with(&tree, &command, &[]),
+            green(vec![]).write(&tree, &command)
+        );
+    }
+
+    #[test]
+    fn the_whole_gate_times_its_fast_tests_then_its_slow_ones() {
+        let (tree, whole) = (Tree::named("abc"), GateCommand::new("./gate.sh"));
+        let (fast, slow) = (GateCommand::new("./gate.sh fast"), GateCommand::new("./gate.sh slow"));
+        let timed = |name: &str| TestTime { name: name.into(), wall_ms: Some(1), cpu_ms: None };
+        let ran = Ran {
+            exit_code: 0,
+            timed_out: false,
+            clean_before: true,
+            clean_after: true,
+            seconds: 1,
+        };
+        let part =
+            |command: &GateCommand, test: &str| match after_run(&tree, command, ran, "mini", 5)
+                .with_tests(vec![timed(test)])
+            {
+                Recording::Write(run) => run,
+                other => panic!("{other:?}"),
+            };
+        let (f, s) = (part(&fast, "nx quick"), part(&slow, "nx long"));
+        let joined = GreenRun::joined(&tree, &whole, &fast, &f, &slow, &s).unwrap();
+        assert_eq!(joined.tests(), [timed("nx quick"), timed("nx long")]);
     }
 }
