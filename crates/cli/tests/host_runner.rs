@@ -315,6 +315,12 @@ fn the_host_runner_starts_with_a_fresh_login_shells_environment() {
     for (call, envs) in gh.iter().chain(&orca) {
         assert_eq!(of_a_session(envs), [] as [&String; 0], "{call:?} ran with {envs:?}");
     }
+    // its login profile sets no XDG_CONFIG_HOME, nor does the host runner:
+    // a worker it starts, and the gates that worker's turn runs, read their
+    // tools' config where the host user's own shell does (sunfmin/control#765)
+    for (call, envs) in gh.iter().chain(&orca) {
+        assert!(!envs.contains(&"XDG_CONFIG_HOME".into()), "{call:?} ran with {envs:?}");
+    }
 
     // the control: a fleet held in the session's own process has them all,
     // so the check above can fail
