@@ -18,6 +18,7 @@ use super::{Held, Kept, Link, SessionFile, SessionLayout};
 use crate::harness::Call;
 use crate::line::Line;
 use crate::start::Start;
+use crate::status::{self, Blocked, CallEnd, Reading, Report, Status};
 use crate::steps::{self, Said};
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
@@ -915,6 +916,93 @@ pub(super) fn message_key(value: &serde_json::Value, line: usize) -> String {
         .or_else(|| value["id"].as_str())
         .map(str::to_string)
         .unwrap_or_else(|| format!("line:{line}"))
+}
+
+/// The events of Claude Code that say its session's status
+/// (`Harness::status_events`): one command is registered at every one of
+/// them (`status_hooks`). `PermissionRequest` names the call a permission
+/// prompt asks about, which the `Notification` after it does not; and
+/// `StopFailure` is a turn that ended in an error.
+pub(super) const STATUS_EVENTS: [&str; 10] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "Notification",
+    "Stop",
+    "StopFailure",
+    "SessionEnd",
+];
+
+/// The tool by which Claude Code asks its user a question.
+const QUESTION_TOOL: &str = "AskUserQuestion";
+/// What of a tool's input names its call, in order: a shell line, a file,
+/// a search, a page, a task.
+const CALL_KEYS: [&str; 8] =
+    ["command", "file_path", "path", "pattern", "url", "query", "description", "prompt"];
+/// The error a `StopFailure` names where the session's login was refused.
+const AUTH_FAILED: &str = "authentication_failed";
+
+/// The question a call of `QUESTION_TOOL` asks: its first.
+fn question(input: &serde_json::Value) -> Option<String> {
+    input["questions"][0]["question"].as_str().and_then(status::one_line)
+}
+
+/// What Claude Code's hook event `payload` says of its session's status.
+/// Recorded from Claude Code 2.1.322 (`tests/recorded/claude-code-hooks.jsonl`).
+pub(super) fn hook_status(payload: &serde_json::Value) -> Reading {
+    let text = |key: &str| payload[key].as_str().and_then(status::one_line);
+    let tool = payload["tool_name"].as_str().map(str::to_string);
+    let input = &payload["tool_input"];
+    let asks = tool.as_deref() == Some(QUESTION_TOOL);
+    let call = |status: Status, step: Option<CallEnd>| {
+        let message = match tool.as_deref() {
+            Some(QUESTION_TOOL) => question(input),
+            Some(name) => Some(status::call_line(name, input, &CALL_KEYS)),
+            None => None,
+        };
+        Reading::Is(Report { status, message, tool: tool.clone(), end: step })
+    };
+    match payload["hook_event_name"].as_str().unwrap_or_default() {
+        "SessionStart" | "SessionEnd" => Reading::status(Status::Idle),
+        "UserPromptSubmit" => Reading::told(Status::Working, text("prompt")),
+        // A question is asked as a call is made, before any permission.
+        "PreToolUse" if asks => call(Status::Blocked(Blocked::Question), Some(CallEnd::Start)),
+        "PreToolUse" => call(Status::Working, Some(CallEnd::Start)),
+        "PermissionRequest" if asks => call(Status::Blocked(Blocked::Question), None),
+        "PermissionRequest" => call(Status::Blocked(Blocked::Permission), None),
+        "PostToolUse" => call(Status::Working, Some(CallEnd::Result { error: None })),
+        "PostToolUseFailure" => {
+            let error = payload["error"].as_str().map(str::to_string);
+            let message = error.as_deref().and_then(status::one_line);
+            Reading::Is(Report {
+                status: Status::Working,
+                message,
+                tool,
+                end: Some(CallEnd::Result { error }),
+            })
+        }
+        "Notification" => match payload["notification_type"].as_str() {
+            Some("idle_prompt") => Reading::told(Status::Idle, text("message")),
+            Some("elicitation_dialog") => {
+                Reading::told(Status::Blocked(Blocked::Question), text("message"))
+            }
+            // A permission prompt's own `PermissionRequest` came before
+            // it, naming its call; a login's success says nothing new.
+            _ => Reading::Unchanged,
+        },
+        "Stop" => Reading::told(Status::Done, text("last_assistant_message")),
+        "StopFailure" => {
+            let status = match payload["error"].as_str() {
+                Some(AUTH_FAILED) => Status::Blocked(Blocked::Auth),
+                _ => Status::Error,
+            };
+            Reading::told(status, text("last_assistant_message").or_else(|| text("error")))
+        }
+        _ => Reading::Unchanged,
+    }
 }
 
 #[cfg(test)]
