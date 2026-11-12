@@ -228,23 +228,50 @@ enum Within {
     Comment,
 }
 
+/// The command by which a shell line enters the host's exclusive queue, as
+/// the embedder of the queue's holder names it: afkconvoy's own is
+/// `afkconvoy exclusive`, another program's daemon names its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueueCommand<'a> {
+    /// The program it runs: one with no `/` matches a program by its file
+    /// name.
+    pub program: &'a str,
+    /// The words its arguments begin with, options and their values aside.
+    pub words: &'a [&'a str],
+    /// The options before those words that take the next word as theirs.
+    pub values: &'a [&'a str],
+    /// The words a refusal puts before `--` in the line to run instead.
+    pub instead: &'a [&'a str],
+}
+
+impl QueueCommand<'_> {
+    /// Whether the command `program` run with `args` is this one: already
+    /// in the queue, whatever it runs.
+    fn runs(&self, program: &str, args: &[&str]) -> bool {
+        let ran = if self.program.contains('/') { program } else { file_name(program) };
+        ran == self.program && positionals(args, self.values).starts_with(self.words)
+    }
+}
+
 /// Why the shell line `line` is refused for running one of a repo's heavy
 /// commands, `patterns`,
 /// outside the host's exclusive queue (sunfmin/control#577); `None` when it
 /// runs none bare. A heavy command is a pattern of words: a simple command
 /// runs it when its words, from its program on, begin with the pattern's — a
 /// pattern's program with no `/` matches a program by its file name. A
-/// simple command `afkconvoy exclusive …` is already in the queue, whatever
-/// it runs. The argument after `sh -c` is judged as the line it is. The
-/// reason names the pattern and gives the line to run in its place.
-pub fn heavy(line: &str, patterns: &[String]) -> Option<String> {
+/// simple command that runs `queue`, the embedder's way into the queue, is
+/// already in the queue, whatever it runs. The argument after `sh -c` is
+/// judged as the line it is. The reason names the pattern and gives the line
+/// to run in its place, the same command behind `queue`'s `instead` words
+/// and `--`.
+pub fn heavy(line: &str, patterns: &[String], queue: &QueueCommand) -> Option<String> {
     if patterns.is_empty() {
         return None;
     }
-    commands(line).iter().find_map(|command| runs_heavy(command, patterns))
+    commands(line).iter().find_map(|command| runs_heavy(command, patterns, queue))
 }
 
-fn runs_heavy(words: &[String], patterns: &[String]) -> Option<String> {
+fn runs_heavy(words: &[String], patterns: &[String], queue: &QueueCommand) -> Option<String> {
     let mut before: Vec<&str> = vec![];
     let mut rest = words.iter().map(String::as_str);
     let mut wrapped = false;
@@ -258,22 +285,22 @@ fn runs_heavy(words: &[String], patterns: &[String]) -> Option<String> {
         before.push(word);
     };
     let args: Vec<&str> = rest.collect();
-    match file_name(program) {
-        "afkconvoy" if positionals(&args, &["-C"]).first() == Some(&"exclusive") => return None,
-        "sh" | "bash" | "zsh" | "dash" | "ksh" => {
-            let mut rest = args.iter();
-            while let Some(arg) = rest.next() {
-                if arg.starts_with('-') && !arg.starts_with("--") && arg.contains('c') {
-                    return rest.next().and_then(|line| heavy(line, patterns));
-                }
+    if queue.runs(program, &args) {
+        return None;
+    }
+    if let "sh" | "bash" | "zsh" | "dash" | "ksh" = file_name(program) {
+        let mut rest = args.iter();
+        while let Some(arg) = rest.next() {
+            if arg.starts_with('-') && !arg.starts_with("--") && arg.contains('c') {
+                return rest.next().and_then(|line| heavy(line, patterns, queue));
             }
-            return None;
         }
-        _ => {}
+        return None;
     }
     let pattern = patterns.iter().find(|pattern| runs_pattern(pattern, program, &args))?;
     let mut instead: Vec<String> = before.iter().map(|word| shell_word(word)).collect();
-    instead.extend(["afkconvoy", "exclusive", "--"].map(String::from));
+    instead.extend(queue.instead.iter().map(|word| shell_word(word)));
+    instead.push("--".to_string());
     instead.push(shell_word(program));
     instead.extend(args.iter().map(|word| shell_word(word)));
     Some(format!(
@@ -331,5 +358,49 @@ mod tests {
         assert_eq!(read("a # not; this\nb#c >out 2>&1"), ["a", "b#c·out·2", "1"]);
         assert_eq!(read("a \\\n b"), ["a·b"]);
         assert_eq!(read("  \n ;; "), [] as [String; 0]);
+    }
+
+    const GUILD: QueueCommand = QueueCommand {
+        program: "guild",
+        words: &["exclusive"],
+        values: &[],
+        instead: &["guild", "exclusive", "--fast"],
+    };
+
+    fn patterns() -> Vec<String> {
+        ["cargo test", "./gate.sh"].map(String::from).to_vec()
+    }
+
+    #[test]
+    fn an_embedders_queue_command_is_already_in_the_queue() {
+        for line in [
+            "guild exclusive -- cargo test",
+            "guild exclusive --slow -- cargo test -p x",
+            "/opt/bin/guild exclusive --fast -- ./gate.sh",
+            "sh -c 'guild exclusive -- cargo test'",
+            "RUST_LOG=debug env guild exclusive -- cargo test",
+        ] {
+            assert_eq!(heavy(line, &patterns(), &GUILD), None, "{line}");
+        }
+        for line in [
+            "cargo test -p x",
+            "afkconvoy exclusive -- true; cargo test",
+            "guild hook && ./gate.sh",
+            "guild-exclusive; cargo test",
+            "sh -c 'cargo test'",
+        ] {
+            assert!(heavy(line, &patterns(), &GUILD).is_some(), "allowed: {line}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_gives_the_line_behind_the_embedders_queue_command() {
+        let why =
+            heavy("cd x && FOO=1 cargo test -E 'a b'", &patterns(), &GUILD).expect("a refusal");
+        assert!(why.contains("`cargo test` is a heavy command"), "{why}");
+        assert!(
+            why.contains("Run `FOO=1 guild exclusive --fast -- cargo test -E 'a b'` instead"),
+            "{why}"
+        );
     }
 }
