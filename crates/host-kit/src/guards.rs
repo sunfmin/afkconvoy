@@ -1,8 +1,8 @@
 //! The agent setup's guards (sunfmin/control#529): small programs of the
 //! operator's, each run before the tool calls it applies to, that can refuse
-//! one. The operator declares them once, in a guard list the host setting
-//! `--agent-guards` names; afkconvoy owns where each harness runs its user's
-//! hooks (`Harness::user_hooks`) and wires each guard there.
+//! one. The operator declares them once, in a guard list (afkconvoy's host
+//! setting `--agent-guards` names it); the host kit owns where each harness
+//! runs its user's hooks (`Harness::user_hooks`) and wires each guard there.
 //!
 //! Wiring merges and owns nothing else: other programs write the same file
 //! (orca its hooks, the operator their settings), so only the entries whose
@@ -26,8 +26,7 @@
 
 use std::path::Path;
 
-use afkconvoy_core::harness::{Harness, UserHooks};
-use afkconvoy_core::role::HARNESS_ENV;
+use afkconvoy_harness::{HARNESS_ENV, Harness, UserHooks};
 use anyhow::{Context, Result};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
