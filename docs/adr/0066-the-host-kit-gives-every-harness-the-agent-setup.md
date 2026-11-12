@@ -4,7 +4,7 @@ status: accepted
 
 # The host kit gives every harness the operator's agent setup; dotfiles only declare it
 
-Formerly the control repo's. That the host kit is a crate of its own, used by Guild's `guild install` too, is ADR-0062 (sunfmin/control#758); this is what it gives.
+Formerly the control repo's. That the host kit is a crate of its own is ADR-0062 (sunfmin/control#758); this is what it gives. It gives it on the fleet's machines only, not to Guild's instances: Guild uses the crate for tmux alone, and its instances start from factory engines and grow their own skills ([decision of 2026-11-12](https://github.com/sunfmin/control/issues/693#issuecomment-6813710721), sunfmin/control#780).
 
 A fleet starts workers on more than one harness — Claude Code and Codex in a host kit today, Kimi, Grok, pi or DSH tomorrow — and the operator's global principles, skills and guards reached Claude Code alone. On 2026-11-03 there was no `~/.codex/AGENTS.md`, so a Codex worker read no principle; all 42 skills `npx skills ls -g` listed were installed for Claude Code alone; and both guard hooks were written only in Claude Code's `settings.json`. A stopgap in sunfmin/dotfiles#27 that day let `codex exec` see the skills and quote the first principle word for word.
 

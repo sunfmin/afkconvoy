@@ -84,7 +84,7 @@ let given = afkconvoy_host_kit::machine(&LoginShell, &home, &declared, now);
 let (differences, no_tmux) = afkconvoy_host_kit::report(&LoginShell, &home, &declared);
 ```
 
-`LoginShell` runs each line in the user's `$SHELL` as a login shell; a program with a shell of its own implements `Shell`. `give` and `differences` take the harnesses themselves, where a program holds its own list.
+`LoginShell` runs each line in the user's `$SHELL` as a login shell; a program with a shell of its own implements `Shell`. `give` and `differences` take the harnesses themselves, where a program holds its own list. Guild's `guild install` calls only `tmux::give` and `tmux::missing`: its instances are given none of the operator's agent setup ([ADR-0066](docs/adr/0066-the-host-kit-gives-every-harness-the-agent-setup.md)).
 
 **Cutting a release** is the fleet's: once it goes idle with landed work past the newest `v*` tag, it cuts the next version itself — commits it on a branch of its own from the base tip, gates that commit, tags it, and publishes and installs it on its host, while turns keep landing on the base branch (`afkconvoy cut --help`). `afkconvoy plan` says when the next cut starts. Its steps are the ```` ```yaml cut ```` block of [`docs/agents/afkconvoy.md`](docs/agents/afkconvoy.md), the one place they are written: steps of [`packaging/release.sh`](packaging/release.sh), then Homebrew's. They run on a Mac, and on nothing of GitHub Actions: this repository is private and its Actions has no budget. The archives and the formula go to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap), which Homebrew downloads from because this repository is private.
 
