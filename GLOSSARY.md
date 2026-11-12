@@ -284,8 +284,8 @@ One span of an account's use of its engine — Claude Code's `five_hour` or `sev
 _Avoid_: quota (the screen words of `account_quota`), capacity stop (a model at capacity)
 
 **Step**:
-One tool call a session made, with what came back of it, whether the harness marked that an error, and when it came back, as the harness's session file records it (`Harness::steps`): Claude Code's `tool_use` and its `tool_result`, Codex's `function_call` and its output, and each other harness's own. A call with no result yet is no step, and a child session's are not the session's. The harness crate reads them and judges none: whether a session repeats itself is for the program that reads its steps.
-_Avoid_: event, action (a step's call alone), turn (a session's span of work)
+One tool call a session made, with what came back of it, whether the harness marked that an error, and when it came back, as the harness's session file records it (`Harness::steps`): Claude Code's `tool_use` and its `tool_result`, Codex's `function_call` and its output, and each other harness's own. A call nothing has come back of yet is no step, and a child session's are not the session's. The harness crate reads them and judges none: whether a session repeats itself is for the program that reads its steps.
+_Avoid_: event (a line of a log, or what a harness records a session's state changed by), action (a step's call alone), turn (a session's span of work)
 
 **Verdict**:
 What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing. A `blocked` verdict names the issues it waits on, or the next cut of its own repo (`blocked_by=cut`, `--blocked-by cut`), when the stage can go on only once a version not installed yet is: the claim is parked under the label `convoy-waits-on-cut` instead of polling for the version, and the issue returns at the stage it left once a cut has installed one (ADR-0056).
