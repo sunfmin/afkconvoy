@@ -221,8 +221,11 @@ fn a_green_run_on_a_committed_tree_is_put_on_record() {
     assert_eq!(world.remote(&["rev-parse", &format!("{}^{{tree}}", refs[0])]), tree);
     let subject = world.remote(&["log", "-1", "--format=%s", &refs[0]]);
     assert!(subject.starts_with("convoy:gate tree="), "{subject}");
-    // …and says when the run finished, how long it took and on which host
-    assert!(subject.ends_with(&format!(" at=5000 seconds={seconds} host=mini")), "{subject}");
+    // …and says when the run finished, how long it took, on which host and
+    // on which kind of machine
+    let machine = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let said = format!(" at=5000 seconds={seconds} host=mini machine={machine}");
+    assert!(subject.ends_with(&said), "{subject}");
 }
 
 #[test]
@@ -273,8 +276,8 @@ fn a_run_is_timed_from_the_start_of_the_gate_command_to_its_end() {
     assert!((2..30).contains(&answer["seconds"].as_u64().unwrap()), "{answer}");
     let subject = world.remote(&["log", "-1", "--format=%s", &records(&world)[0]]);
     let host = world.checkout_list()["settings"]["host_name"].as_str().unwrap().to_string();
-    let said = format!(" seconds={} host={host}", answer["seconds"]);
-    assert!(subject.ends_with(&said), "the host is what the fleet calls this one: {subject}");
+    let said = format!(" seconds={} host={host} machine=", answer["seconds"]);
+    assert!(subject.contains(&said), "the host is what the fleet calls this one: {subject}");
 }
 
 #[test]

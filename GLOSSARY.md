@@ -439,7 +439,7 @@ _Avoid_: gate cache, CI status
 
 **Kind of machine**:
 A host's operating system and processor architecture, `macos-aarch64`. A recorded gate run says the kind it ran on, and answers for a run on that kind alone: some tests depend on the machine.
-_Avoid_: host (one machine by its name), platform, target
+_Avoid_: host (one machine by its name), platform
 
 **Reused run**:
 A recorded gate run that answers when the same gate is asked of the same committed tree on the same kind of machine: nothing runs again, and the answer says so. The gate is the command the tree's own commit declares, so another declaration runs again; a red run is never on record, so never reused. It is always on: a candidate whose tree is green on record, and a round whose tip is, are not gated again, and the candidate's gate evidence names the reused run it stands on.
