@@ -1,8 +1,7 @@
 //! The tmux of a Guild machine (sunfmin/control#753): Guild runs each of its
 //! instances in a tmux server of its own, and `guildd install` records where
 //! tmux is, so every Guild machine needs one. Guild keeps no second copy of
-//! what a machine needs: the host kit installs it (control ADR 0009, ADR
-//! 0010).
+//! what a machine needs: the host kit installs it (ADR-0066).
 //!
 //! A Guild machine is a host whose user has Guild's home, `~/.guild`. On one
 //! with no tmux, writing the host kit installs it where a standard account

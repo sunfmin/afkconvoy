@@ -1,4 +1,4 @@
-//! The watch's weekly **distillation** of the daybook (control ADR 0008): a
+//! The watch's weekly **distillation** of the daybook (ADR-0065): a
 //! look reads, when one is due (`afkconvoy_core::distill`), what each
 //! tracker's daybook holds of its span, and a span that holds something is a
 //! watch item. The watch keeps only when it last distilled and the last day

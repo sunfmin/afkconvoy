@@ -4,8 +4,8 @@
 # docs/adr/0059, docs/adr/0060).
 # Needs Homebrew's `sunfmin/tap/flux-toolchain`, the newest the tap has: its
 # `cargo-flux` brings the `fixpoint`, `z3` and Flux sysroot it was built with,
-# and nothing here pins or builds any of them (sunfmin/control#735, the
-# control repo's ADR 0011).
+# and nothing here pins or builds any of them (sunfmin/control#735,
+# docs/adr/0067).
 #
 #   ./verify.sh                 check the whole core, harness, gate and landing crates
 #   ./verify.sh free_slots      check the functions whose path contains a name

@@ -8,6 +8,10 @@ Every term afkconvoy's help uses, each with its one definition and the words to 
 One user account on one machine, and what the fleet keeps for it there: its host runner, its checkout list and host settings, its host kit, its exclusive lanes and its panel. A machine shared by several accounts holds a host of each, each working its own checkouts and seeing nothing of the others' but their processes: `doctor` names the host runners of the other accounts on its machine, read from the process table alone.
 _Avoid_: machine (the hardware every host on it shares)
 
+**Fleet**:
+What afkconvoy runs for one repo: the workers its fleet instances start on that repo's checkouts, working the issues of its tracker that carry the repo's label (`repo:<owner>/<repo>`). A repo whose truth is GitHub is the fleet's; one whose truth is Guild's Forgejo is Guild's, and a repo belongs to one of them alone (sunfmin/guild's ADR, sunfmin/control#764).
+_Avoid_: Guild (the other agent system of this host's user), convoy
+
 **Fleet instance**:
 One repo's fleet in its host's host runner, and everything it owns: the workers it started and the claims it holds, under an id minted when it starts. One host runs at most one per repo.
 _Avoid_: launcher, coordinator, node (the Node executable), process (the host runner is the process)
@@ -237,7 +241,7 @@ Research states: `research pending` is a newly listed model awaiting dated resea
 _Avoid_: roster (the team's), host config, inventory
 
 **Guild machine**:
-A host whose user has Guild's home, `~/.guild`: a machine of Guild, the other agent system of this host's user (sunfmin/control#693), which runs no fleet of its own there but takes what every Guild machine needs from the host kit (control ADR 0009, ADR 0010). Guild runs each instance in a tmux server of its own, so writing the host kit on a Guild machine with no tmux installs one where a standard account can — `pixi global install tmux`, or Homebrew where it has bottles — and leaves an existing tmux alone; `doctor` names a Guild machine with no tmux, with the line that fixes it.
+A host whose user has Guild's home, `~/.guild`: a machine of Guild, the other agent system of this host's user (sunfmin/control#693), which runs no fleet of its own there but takes what every Guild machine needs from the host kit (ADR-0066, ADR-0010). Guild runs each instance in a tmux server of its own, so writing the host kit on a Guild machine with no tmux installs one where a standard account can — `pixi global install tmux`, or Homebrew where it has bottles — and leaves an existing tmux alone; `doctor` names a Guild machine with no tmux, with the line that fixes it.
 _Avoid_: Guild host (a host is one account's, as under Host), node
 
 **Default model**:
@@ -404,7 +408,7 @@ The operator's one place to read, after the fact, what agents did and decided ou
 _Avoid_: journal, diary, changelog, activity log
 
 **Distillation**:
-The host's watch's weekly reading of the **daybook** that carries each lesson to its lasting home (control ADR 0008). At most once a week — sooner where the operator asks, `afkconvoy daybook --distill` — and only when the span since the last one holds a lesson, or two entries without one, enough for a fault to recur, a look makes it a watch item; the round decides each lesson's home and proposes it through that home's normal path: a repeated mistake first as a mechanism, a ticket to the repo that owns it; one project's decision or term, a ticket for its ADR or GLOSSARY; a cross-project one, the control repo's own ADR or GLOSSARY, changed directly; how to use a tool, a ticket for its skill; the operator's global principles, a draft PR they read and no fleet merges. A lesson its home already holds is `covered`. It keeps nothing of its own — no memory, precedent or proposal list: the proposal is the record. `afkconvoy daybook --distilled <file>` checks that the run carried every lesson of its span exactly once, then writes its one daybook entry mapping each lesson to where it went; the entries are left to age out. The watch keeps only when it last distilled and the last day it covered.
+The host's watch's weekly reading of the **daybook** that carries each lesson to its lasting home (ADR-0065). At most once a week — sooner where the operator asks, `afkconvoy daybook --distill` — and only when the span since the last one holds a lesson, or two entries without one, enough for a fault to recur, a look makes it a watch item; the round decides each lesson's home and proposes it through that home's normal path: a repeated mistake first as a mechanism, a ticket to the repo that owns it; one project's decision or term, a ticket for its ADR or GLOSSARY; a cross-project one, the control repo's own ADR or GLOSSARY, changed directly; how to use a tool, a ticket for its skill; the operator's global principles, a draft PR they read and no fleet merges. A lesson its home already holds is `covered`. It keeps nothing of its own — no memory, precedent or proposal list: the proposal is the record. `afkconvoy daybook --distilled <file>` checks that the run carried every lesson of its span exactly once, then writes its one daybook entry mapping each lesson to where it went; the entries are left to age out. The watch keeps only when it last distilled and the last day it covered.
 _Avoid_: digest, retrospective, memory (the host's, as memory pressure says it)
 
 **Finding**:
