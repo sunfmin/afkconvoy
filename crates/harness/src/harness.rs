@@ -1733,6 +1733,39 @@ impl Harness {
             Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => false,
         }
     }
+
+    /// The hook events whose payloads say a session's status
+    /// (`hook_status`): one command is registered at every one
+    /// (`status_hooks`). `None` of a harness whose hooks do not say it, or
+    /// cannot be relied on to: a caller reads its session file instead.
+    pub fn status_events(self) -> Option<&'static [&'static str]> {
+        match self {
+            Harness::ClaudeCode => Some(&claude_code::STATUS_EVENTS),
+            Harness::Codex => Some(&codex::STATUS_EVENTS),
+            Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => None,
+        }
+    }
+
+    /// The hooks that run `command` at each of `status_events`, as this
+    /// harness's hook settings hold them: for Claude Code, settings it is
+    /// given (`--settings`) or loads; for Codex, its `hooks.json`. Each
+    /// event's payload is on the command's standard input. `None` where
+    /// `status_events` is.
+    pub fn status_hooks(self, command: &str) -> Option<String> {
+        self.status_events().map(|events| crate::status::hooks_json(events, command))
+    }
+
+    /// What one hook event's `payload` says of its session's status, in the
+    /// words of OSC 7501, with the line, the tool and the end of the tool's
+    /// call it is of; `Said::Unchanged` of an event that changes nothing.
+    /// `None` where `status_events` is.
+    pub fn hook_status(self, payload: &serde_json::Value) -> Option<crate::status::Said> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::hook_status(payload)),
+            Harness::Codex => Some(codex::hook_status(payload)),
+            Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => None,
+        }
+    }
 }
 
 /// What a hook prints on its standard output, and the code it exits with.

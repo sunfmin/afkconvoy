@@ -33,6 +33,7 @@ use crate::harness::Call;
 use crate::line::Line;
 use crate::start::RULES;
 use crate::start::{Rules, Start, Told};
+use crate::status::{self, Blocked, Report, Said, Status, Step};
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 use crate::window::{self, Limit, Limited, Window};
@@ -1190,6 +1191,54 @@ fn rate_limits(value: &serde_json::Value) -> Option<&serde_json::Value> {
     }
     let limits = &value["payload"]["rate_limits"];
     limits.is_object().then_some(limits)
+}
+
+/// The events of Codex that say its session's status
+/// (`Harness::status_events`): one command is registered at every one of
+/// them (`status_hooks`). Codex has no notification: a turn that ends in an
+/// error fires no `Stop` and says so only in `PostModelRequest`, and an
+/// interrupted one in `Interrupt` (codex-rs/hooks, `schema.rs`).
+pub(super) const STATUS_EVENTS: [&str; 9] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "Stop",
+    "PostModelRequest",
+    "Interrupt",
+    "SessionEnd",
+];
+
+/// What of a tool's input names its call: the shell line, or the patch.
+const CALL_KEYS: [&str; 2] = ["command", "description"];
+/// The status `PostModelRequest` gives a request that failed.
+const FAILED: &str = "failed";
+
+/// What Codex's hook event `payload` says of its session's status. Codex's
+/// `PostToolUse` hands a shell call's output alone, as text, with no exit
+/// code: a call is said ended with no error, however it went, and one whose
+/// tool failed fires none.
+pub(super) fn hook_status(payload: &serde_json::Value) -> Said {
+    let text = |key: &str| payload[key].as_str().and_then(status::one_line);
+    let tool = payload["tool_name"].as_str().map(str::to_string);
+    let call = |status: Status, step: Option<Step>| {
+        let message =
+            tool.as_deref().map(|name| status::call_line(name, &payload["tool_input"], &CALL_KEYS));
+        Said::Is(Report { status, message, tool: tool.clone(), step })
+    };
+    match payload["hook_event_name"].as_str().unwrap_or_default() {
+        "SessionStart" | "SessionEnd" | "Interrupt" => Said::status(Status::Idle),
+        "UserPromptSubmit" => Said::told(Status::Working, text("prompt")),
+        "PreToolUse" => call(Status::Working, Some(Step::Started)),
+        "PermissionRequest" => call(Status::Blocked(Blocked::Permission), None),
+        "PostToolUse" => call(Status::Working, Some(Step::Ended { error: None })),
+        "Stop" => Said::told(Status::Done, text("last_assistant_message")),
+        "PostModelRequest" if payload["status"].as_str() == Some(FAILED) => {
+            Said::told(Status::Error, text("error"))
+        }
+        _ => Said::Unchanged,
+    }
 }
 
 #[cfg(test)]
