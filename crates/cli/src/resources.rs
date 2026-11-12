@@ -186,11 +186,8 @@ pub fn json(
         let workers: usize =
             state.samples.iter().filter(|(repo, _)| on_list(repo)).map(|(_, w)| w.len()).sum();
         let left = state.left.as_ref().map(|left| left.uid);
-        let unwatched = afkconvoy_core::resources::unwatched(
-            elsewhere.map(|held| held.uid),
-            workers,
-            left,
-        );
+        let unwatched =
+            afkconvoy_core::resources::unwatched(elsewhere.map(|held| held.uid), workers, left);
         conditions.push(json!({"id": format!("resource:pressure:{episode}"), "kind": "pressure",
             "episode": episode, "active": due.is_some(), "since": due.map(|due| due.since),
             "reason": "memory", "level": pressure, "elsewhere": elsewhere, "workers": workers,

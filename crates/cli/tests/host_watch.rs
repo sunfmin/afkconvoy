@@ -1942,9 +1942,9 @@ fn pressed_with_workers(world: &World, since: u64, workers: &[&Path]) {
 
 fn pressure_finding(doctor: &Value) -> Value {
     let findings = doctor["findings"].as_array().unwrap();
-    let pressure = findings.iter().filter(|f| {
-        f["kind"] == "memory_pressure" || f["kind"] == "pressure_elsewhere"
-    });
+    let pressure = findings
+        .iter()
+        .filter(|f| f["kind"] == "memory_pressure" || f["kind"] == "pressure_elsewhere");
     let pressure: Vec<_> = pressure.collect();
     assert_eq!(pressure.len(), 1, "{doctor}");
     pressure[0].clone()
