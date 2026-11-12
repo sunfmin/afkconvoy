@@ -68,22 +68,21 @@ does (`docs/adr/0025`).
 This repo names no `team`, so it is unbound. A bound repo's three keys more —
 `team`, `patrols`, `intake_limit` — are in `afkconvoy config --help`.
 
-The gate checks the core crate with Flux, and `./verify.sh` refuses to
-check it with any `cargo-flux` or `z3` but the ones `Cargo.toml` and
-`crates/core/Cargo.toml` pin, or with no `fixpoint`, which is pinned to
-nothing and follows liquid-fixpoint's nightly release (sunfmin/control#732).
-So a host without them is refused at the startup probe, and its work goes to
-a host that has them (ADR-0053). The
-check is `verify.sh`'s own, run without checking anything: the pins stay in
-`crates/core/Cargo.toml`, and how to install each is what the check says
-when it fails: `./verify.sh install`, which installs under the home
-directory each of the three that is not the one needed, reading the pins
-from the same place, and leaves alone the ones that are: fixpoint is that
-night's binary of the nightly release, built from no source. It is the
+The gate checks the core crate with Flux, and `./verify.sh` checks it with
+Homebrew's `sunfmin/tap/flux-toolchain`, and refuses to while it is not
+installed or is older than the newest the tap has, the tap read fresh for
+the check (sunfmin/control#735, the control repo's ADR 0011). The tap builds
+it every day, with the `cargo-flux`, `fixpoint` and `z3` it runs, so nothing
+here pins or builds any of them. So a host without it is refused at the
+startup probe, and its work goes to a host that has it (ADR-0053). The check
+is `verify.sh`'s own, run without checking anything, and how to install it
+is what the check says when it fails: `./verify.sh install`, which is `brew
+install sunfmin/tap/flux-toolchain`, or `brew upgrade` of it where it is
+installed and older, and does nothing where it is the newest. It is the
 need's `install`, so the host runs it where the check fails, then probes
-again. Its limit covers a cold build: 922 seconds measured on a loaded
-12-core host when fixpoint was still built with its GHC, most of it that
-(sunfmin/control#509); Flux's own build is the long part now.
+again. Its limit covers a bottle's download, with room for a slow network:
+nothing is built. The Rust nightly the tap's Flux runs on is added by its
+first run, the gate's.
 
 The gate's tests run `node` too: the dsh harness's scripts are JavaScript,
 and its tests run them with the `node` on the PATH, as a worker's dsh does.
@@ -100,7 +99,7 @@ checks:
     command: ./verify.sh --toolchain
     seconds: 60
     install: ./verify.sh install
-    install_seconds: 5400           # 922s cold on a loaded 12-core host
+    install_seconds: 1800           # a download: nothing is built
   - name: node
     command: |
       node --version >/dev/null 2>&1 || {

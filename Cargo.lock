@@ -32,8 +32,8 @@ dependencies = [
  "afkconvoy-gate",
  "afkconvoy-harness",
  "afkconvoy-landing",
- "flux-alloc",
- "flux-core",
+ "flux-alloc 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
+ "flux-core 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
  "flux-rs",
  "proptest",
  "serde",
@@ -46,8 +46,8 @@ dependencies = [
 name = "afkconvoy-gate"
 version = "0.5.64"
 dependencies = [
- "flux-alloc",
- "flux-core",
+ "flux-alloc 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
+ "flux-core 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
  "flux-rs",
  "proptest",
  "serde",
@@ -60,8 +60,8 @@ dependencies = [
 name = "afkconvoy-harness"
 version = "0.5.64"
 dependencies = [
- "flux-alloc",
- "flux-core",
+ "flux-alloc 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
+ "flux-core 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
  "flux-rs",
  "proptest",
  "serde",
@@ -75,8 +75,8 @@ name = "afkconvoy-landing"
 version = "0.5.64"
 dependencies = [
  "afkconvoy-gate",
- "flux-alloc",
- "flux-core",
+ "flux-alloc 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
+ "flux-core 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
  "flux-rs",
  "serde",
  "serde_json",
@@ -90,8 +90,8 @@ source = "git+https://github.com/sunfmin/agent-cli#0cb4270c4ab74ce650572ff22afbd
 dependencies = [
  "agent-help-derive",
  "clap",
- "flux-alloc",
- "flux-core",
+ "flux-alloc 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9)",
+ "flux-core 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9)",
 ]
 
 [[package]]
@@ -302,8 +302,17 @@ name = "flux-alloc"
 version = "0.1.0"
 source = "git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9"
 dependencies = [
- "flux-attrs",
- "flux-core",
+ "flux-attrs 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9)",
+ "flux-core 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9)",
+]
+
+[[package]]
+name = "flux-alloc"
+version = "0.1.0"
+source = "git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff#ef6af17f647cf98c860e18e90c36d1f1b69849ff"
+dependencies = [
+ "flux-attrs 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
+ "flux-core 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
 ]
 
 [[package]]
@@ -311,7 +320,15 @@ name = "flux-attrs"
 version = "0.1.0"
 source = "git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9"
 dependencies = [
- "flux-attrs-impl",
+ "flux-attrs-impl 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9)",
+]
+
+[[package]]
+name = "flux-attrs"
+version = "0.1.0"
+source = "git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff#ef6af17f647cf98c860e18e90c36d1f1b69849ff"
+dependencies = [
+ "flux-attrs-impl 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
 ]
 
 [[package]]
@@ -325,19 +342,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "flux-attrs-impl"
+version = "0.1.0"
+source = "git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff#ef6af17f647cf98c860e18e90c36d1f1b69849ff"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "flux-core"
 version = "0.1.0"
 source = "git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9"
 dependencies = [
- "flux-attrs",
+ "flux-attrs 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9)",
+]
+
+[[package]]
+name = "flux-core"
+version = "0.1.0"
+source = "git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff#ef6af17f647cf98c860e18e90c36d1f1b69849ff"
+dependencies = [
+ "flux-attrs 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
 ]
 
 [[package]]
 name = "flux-rs"
 version = "0.1.0"
-source = "git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9"
+source = "git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff#ef6af17f647cf98c860e18e90c36d1f1b69849ff"
 dependencies = [
- "flux-attrs",
+ "flux-attrs 0.1.0 (git+https://github.com/flux-rs/flux.git?rev=ef6af17f647cf98c860e18e90c36d1f1b69849ff)",
 ]
 
 [[package]]

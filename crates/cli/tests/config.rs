@@ -78,7 +78,7 @@ fn this_repos_own_config_names_the_gate() {
     let flux = &config["gate_needs"][0];
     assert_eq!(flux["name"], "flux-toolchain");
     assert_eq!(flux["install"], "./verify.sh install");
-    assert_eq!(flux["install_seconds"], 5400);
+    assert_eq!(flux["install_seconds"], 1800);
 }
 
 #[test]
