@@ -20,6 +20,7 @@ use crate::line::Line;
 use crate::start::Start;
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
+use crate::window::{self, Limit, Limited, StatusLine, Window};
 
 pub(super) const NAME: &str = "Claude Code";
 pub(super) const KEY: &str = "claude-code";
@@ -764,6 +765,90 @@ pub(super) fn usage(value: &serde_json::Value, line: usize) -> Option<Usage> {
         counts,
     })
 }
+
+/// Where Claude Code reads the command its status line runs: the user's
+/// settings, under `statusLine`. It hands that command a JSON object on
+/// stdin, whose `rate_limits` [`windows`] reads.
+pub(super) const STATUS_LINE: StatusLine =
+    StatusLine { settings: USER_HOOKS.settings, key: "statusLine" };
+
+/// The windows one record of Claude Code's says: the `rate_limits` of the
+/// input it hands its status line (`used_percentage`, `resets_at`), or the
+/// `rate_limit_info` of a `rate_limit_event` in its stream, whose
+/// `unifiedWindows` each give a `utilization` from 0 to 1 and a `resetsAt`.
+pub(super) fn windows(record: &serde_json::Value) -> Vec<Window> {
+    if let Some(limits) = record["rate_limits"].as_object() {
+        return limits
+            .iter()
+            .filter_map(|(name, window)| {
+                Some(Window {
+                    name: name.clone(),
+                    used_percent: window::number(&window["used_percentage"])?,
+                    minutes: None,
+                    resets_at: window::seconds(&window["resets_at"]),
+                })
+            })
+            .collect();
+    }
+    if record["type"] != "rate_limit_event" {
+        return Vec::new();
+    }
+    let info = &record["rate_limit_info"];
+    let unified = |name: &str, window: &serde_json::Value| {
+        Some(Window {
+            name: name.to_string(),
+            used_percent: window::number(&window["utilization"])? * 100.0,
+            minutes: None,
+            resets_at: window::seconds(&window["resetsAt"]),
+        })
+    };
+    if let Some(windows) = info["unifiedWindows"].as_object() {
+        return windows.iter().filter_map(|(name, window)| unified(name, window)).collect();
+    }
+    info["rateLimitType"].as_str().and_then(|name| unified(name, info)).into_iter().collect()
+}
+
+/// The limit one record of Claude Code's says it met. Its stream says a
+/// rejected request with a `rate_limit_event` whose status is `rejected`, and
+/// its session and stream with the synthetic assistant message whose
+/// `error` is `rate_limit`. That message is a usage limit when it says
+/// `usage_limit_reached` or carries the rejected limit's info, and otherwise
+/// the service's own throttle ("not your usage limit"). The stream's
+/// `result` of a usage limit says it too, without its reset.
+pub(super) fn limit_event(record: &serde_json::Value) -> Option<Limit> {
+    let usage = |info: &serde_json::Value| Limit {
+        kind: Limited::Usage,
+        window: info["rateLimitType"].as_str().map(str::to_string),
+        resets_at: window::seconds(&info["resetsAt"]),
+    };
+    let api_error = record["apiError"].as_str().or_else(|| record["api_error"].as_str());
+    match record["type"].as_str()? {
+        "rate_limit_event" => {
+            let info = &record["rate_limit_info"];
+            (info["status"] == "rejected").then(|| usage(info))
+        }
+        "assistant" if record["error"] == "rate_limit" => {
+            let params = if record["apiErrorParams"].is_object() {
+                &record["apiErrorParams"]
+            } else {
+                &record["api_error_params"]
+            };
+            let rejected = [&params["rate_limit_info"], &record["quotaLimits"]]
+                .into_iter()
+                .find(|info| info["status"] == "rejected");
+            match rejected {
+                Some(info) => Some(usage(info)),
+                None if api_error == Some(USAGE_LIMIT) => Some(usage(&serde_json::Value::Null)),
+                None => Some(Limit { kind: Limited::Throttle, window: None, resets_at: None }),
+            }
+        }
+        "result" if api_error == Some(USAGE_LIMIT) => Some(usage(&serde_json::Value::Null)),
+        _ => None,
+    }
+}
+
+/// What Claude Code calls the API error of an account's usage limit.
+const USAGE_LIMIT: &str = "usage_limit_reached";
 
 /// The message's id, else the line's, else its line number.
 pub(super) fn message_key(value: &serde_json::Value, line: usize) -> String {

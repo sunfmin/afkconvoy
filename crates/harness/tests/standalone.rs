@@ -1,10 +1,13 @@
 //! The harness crate as another program uses it (docs/adr/0058): from
 //! outside, through its public API alone, with no fleet beside it. A start
 //! line is built and a recorded session's turn and usage are read for Claude
-//! Code and Codex, from nothing but what a caller says.
+//! Code and Codex, from nothing but what a caller says; each engine's usage
+//! windows and structured limits are read from its recorded samples
+//! (`recorded/`, whose README says where each came from).
 
 use afkconvoy_harness::tokens::Counts;
 use afkconvoy_harness::turn::Turn;
+use afkconvoy_harness::window::{Limit, Limited, Window};
 use afkconvoy_harness::{Answer, DshProfile, Harness, Start, Told};
 
 fn start(model: Option<&str>) -> Start<'_> {
@@ -65,6 +68,135 @@ fn a_recorded_codex_session_says_its_usage() {
         tokens["codex-x"],
         Counts { input: 70, cache_read: 30, cache_write: 0, output: 10, reasoning: Some(4) }
     );
+}
+
+fn records(text: &str) -> Vec<serde_json::Value> {
+    text.lines().map(|line| serde_json::from_str(line).expect("a recorded line is JSON")).collect()
+}
+
+/// `windows` as `(name, used percent, minutes, resets at)`, the percent
+/// rounded to a hundredth: an engine that says a ratio is read times 100.
+fn said(windows: &[Window]) -> Vec<(&str, f64, Option<u64>, Option<u64>)> {
+    windows
+        .iter()
+        .map(|w| {
+            (w.name.as_str(), (w.used_percent * 100.0).round() / 100.0, w.minutes, w.resets_at)
+        })
+        .collect()
+}
+
+#[test]
+fn claude_code_s_status_line_input_says_its_windows() {
+    let input: serde_json::Value =
+        serde_json::from_str(include_str!("recorded/claude-code-status-line.json")).unwrap();
+    assert_eq!(
+        said(&Harness::ClaudeCode.windows(&input)),
+        [("five_hour", 6.0, None, Some(1794450000)), ("seven_day", 19.0, None, Some(1794740400))]
+    );
+    assert_eq!(Harness::ClaudeCode.limit_event(&input), None);
+    // A host installs the command that is handed that input where Claude
+    // Code reads its user's settings.
+    let line = Harness::ClaudeCode.status_line().unwrap();
+    assert_eq!((line.settings, line.key), (".claude/settings.json", "statusLine"));
+    assert_eq!(line.entry("guild read")["command"], "guild read");
+    for harness in Harness::ALL {
+        if harness != Harness::ClaudeCode {
+            assert_eq!(harness.status_line(), None, "{}", harness.key());
+        }
+    }
+}
+
+#[test]
+fn claude_code_s_stream_says_its_windows_and_a_rejected_request() {
+    let lines = records(include_str!("recorded/claude-code-stream.jsonl"));
+    let harness = Harness::ClaudeCode;
+    assert_eq!(
+        said(&harness.windows(&lines[0])),
+        [("five_hour", 6.0, None, Some(1794450000)), ("seven_day", 19.0, None, Some(1794740400))]
+    );
+    assert_eq!(harness.limit_event(&lines[0]), None, "an allowed request met no limit");
+    let weekly = Limit {
+        kind: Limited::Usage,
+        window: Some("seven_day".into()),
+        resets_at: Some(1792494000),
+    };
+    assert_eq!(harness.limit_event(&lines[1]), Some(weekly));
+    assert!(harness.windows(&lines[1]).is_empty(), "a rejection that says no use says no window");
+    let unstated = Limit { kind: Limited::Usage, window: None, resets_at: None };
+    assert_eq!(harness.limit_event(&lines[2]), Some(unstated.clone()));
+    assert_eq!(harness.limit_event(&lines[3]), Some(unstated));
+}
+
+#[test]
+fn a_claude_code_session_says_a_usage_limit_apart_from_a_throttle() {
+    let lines = records(include_str!("recorded/claude-code-session-rate-limit.jsonl"));
+    let harness = Harness::ClaudeCode;
+    assert_eq!(
+        harness.limit_event(&lines[0]),
+        Some(Limit {
+            kind: Limited::Usage,
+            window: Some("seven_day".into()),
+            resets_at: Some(1792494000)
+        })
+    );
+    assert_eq!(
+        harness.limit_event(&lines[1]),
+        Some(Limit { kind: Limited::Throttle, window: None, resets_at: None })
+    );
+    // Its usage is read as it always was: a synthetic message counts nothing.
+    let text = include_str!("recorded/claude-code-session-rate-limit.jsonl");
+    assert_eq!(harness.tokens(text, None).unwrap()["<synthetic>"], Counts::default());
+}
+
+#[test]
+fn a_codex_session_s_token_count_says_its_windows_and_the_limit_reached() {
+    let text = include_str!("recorded/codex-session.jsonl");
+    let lines = records(text);
+    let harness = Harness::Codex;
+    assert!(harness.windows(&lines[0]).is_empty());
+    assert_eq!(
+        said(&harness.windows(&lines[1])),
+        [
+            ("primary", 81.0, Some(300), Some(1793390439)),
+            ("secondary", 53.0, Some(10080), Some(1793800000))
+        ]
+    );
+    assert_eq!(harness.limit_event(&lines[1]), None, "no limit is reached at 81%");
+    // An older Codex counted the reset from the line's time.
+    let written = 1792483708; // 2026-10-20T08:08:28Z
+    assert_eq!(
+        said(&harness.windows(&lines[2])),
+        [
+            ("primary", 100.0, Some(300), Some(written + 4454)),
+            ("secondary", 62.0, Some(10080), Some(written + 60713))
+        ]
+    );
+    assert_eq!(
+        harness.limit_event(&lines[3]),
+        Some(Limit {
+            kind: Limited::Usage,
+            window: Some("primary".into()),
+            resets_at: Some(1793390439)
+        })
+    );
+    // The same lines' usage is read as it always was.
+    let tokens = harness.tokens(text, None).unwrap();
+    assert_eq!(tokens["gpt-5.5"].input, 25301 - 11008);
+}
+
+#[test]
+fn kimi_code_s_usage_answer_says_its_windows_and_its_session_none() {
+    let answer: serde_json::Value =
+        serde_json::from_str(include_str!("recorded/kimi-usages.json")).unwrap();
+    assert_eq!(
+        said(&Harness::Kimi.windows(&answer)),
+        [("limit_5h", 25.0, None, Some(1794495600)), ("limit_7d", 50.0, None, Some(1794787200))]
+    );
+    assert_eq!(Harness::Kimi.limit_event(&answer), None);
+    // A harness whose engine reports no window gives none: its caller predicts.
+    for harness in [Harness::Pi, Harness::Dsh, Harness::Grok] {
+        assert!(harness.windows(&answer).is_empty(), "{}", harness.key());
+    }
 }
 
 const OTHERS: [Harness; 4] = [Harness::Pi, Harness::Dsh, Harness::Kimi, Harness::Grok];

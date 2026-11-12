@@ -371,6 +371,44 @@ impl Harness {
         }
     }
 
+    /// The usage windows of its account that one record of this harness
+    /// says, as the engine reports them: each window's own name, how much of
+    /// it is used and when it resets. Which records say them is the
+    /// harness's: Claude Code's status line input and its stream's
+    /// `rate_limit_event`, a Codex session's `token_count` line, Kimi Code's
+    /// answer to its `/usage`. A record that says none, and a harness whose
+    /// engine reports none, give none: the caller predicts them itself.
+    pub fn windows(self, record: &serde_json::Value) -> Vec<crate::window::Window> {
+        match self {
+            Harness::ClaudeCode => claude_code::windows(record),
+            Harness::Codex => codex::windows(record),
+            Harness::Kimi => kimi::windows(record),
+            Harness::Pi | Harness::Dsh | Harness::Grok => Vec::new(),
+        }
+    }
+
+    /// The limit one record of this harness says it met, read from the
+    /// record's structured fields, with when it lifts where the record says:
+    /// beside the screen words [`Harness::account_quota`] reads. A harness
+    /// whose records hold no structured limit gives none.
+    pub fn limit_event(self, record: &serde_json::Value) -> Option<crate::window::Limit> {
+        match self {
+            Harness::ClaudeCode => claude_code::limit_event(record),
+            Harness::Codex => codex::limit_event(record),
+            Harness::Kimi | Harness::Pi | Harness::Dsh | Harness::Grok => None,
+        }
+    }
+
+    /// Where a host installs a status line command, which this harness hands
+    /// what [`Harness::windows`] reads; `None` for a harness with no status
+    /// line command.
+    pub const fn status_line(self) -> Option<crate::window::StatusLine> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::STATUS_LINE),
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi | Harness::Grok => None,
+        }
+    }
+
     /// The harness of a worker nothing names one for.
     pub const DEFAULT: Harness = Harness::ClaudeCode;
 
