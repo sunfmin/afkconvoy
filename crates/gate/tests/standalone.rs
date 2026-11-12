@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use afkconvoy_gate::declared;
 use afkconvoy_gate::exclusive::{Gate, Lanes, Plain, Ticket};
-use afkconvoy_gate::gate::{GateCommand, Judged};
+use afkconvoy_gate::gate::{GateCommand, Judged, TestTime};
 use afkconvoy_gate::holder::{Holder, Host, Turn};
 use afkconvoy_gate::layout::Layout;
 use afkconvoy_gate::run::{self, Git, Settled};
@@ -61,6 +61,10 @@ fn git(dir: &Path, args: &[&str]) -> String {
 /// pushed to a bare remote beside it.
 const DECLARED: &str = "# The repo's gate\n\n```yaml gates\nfast:\n  command: ./gate.sh fast\n  seconds: 60\n  budget_seconds: 30\nslow:\n  command: ./gate.sh slow\n  seconds: 120\n  budget_seconds: 60\n```\n";
 
+/// A gate whose fast part times one test as nextest does, and says its CPU
+/// time as its runner measured it; whose slow part times none.
+const GATE_SH: &str = "#!/bin/sh\necho \"checking $1\"\nif [ \"$1\" = fast ]; then\n  echo '        PASS [   0.012s] (1/1) nx tests::quick'\n  echo 'gate: cpu [   0.010s] nx tests::quick'\nfi\n";
+
 fn scratch(root: &Path) -> Git {
     let remote = root.join("remote.git");
     let work = root.join("work");
@@ -71,7 +75,7 @@ fn scratch(root: &Path) -> Git {
         git(&work, &["config", key, value]);
     }
     std::fs::write(work.join("gate.md"), DECLARED).unwrap();
-    std::fs::write(work.join("gate.sh"), "#!/bin/sh\necho \"checking $1\"\n").unwrap();
+    std::fs::write(work.join("gate.sh"), GATE_SH).unwrap();
     let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
     std::fs::set_permissions(work.join("gate.sh"), executable).unwrap();
     git(&work, &["add", "gate.md", "gate.sh"]);
@@ -117,9 +121,29 @@ fn a_repos_fast_gate_runs_in_the_fast_lane_and_its_run_reads_back_from_the_recor
     assert_eq!(took.host(), "scratch-host");
     assert_eq!(took.seconds(), ran.ran.seconds, "the run's own duration");
     assert_eq!(read.at(), now);
+    // Read from its record's whole message, it times each test its output timed.
+    let timed = run::recorded_with_tests(&reader, &tree, &fast, now).unwrap().expect("on record");
+    let quick = TestTime { name: "nx tests::quick".into(), wall_ms: Some(12), cpu_ms: Some(10) };
+    assert_eq!(timed.tests(), [quick]);
+    assert_eq!((timed.at(), timed.took()), (read.at(), read.took()));
+    assert!(read.tests().is_empty(), "a subject alone times no test");
     // The slow gate never ran on it: nothing of it is on record.
     let slow = GateCommand::new(&gates.slow.command);
     assert_eq!(run::recorded(&reader, &tree, &slow, now).unwrap(), None);
+    assert_eq!(run::recorded_with_tests(&reader, &tree, &slow, now).unwrap(), None);
+}
+
+#[test]
+fn a_run_whose_output_times_no_test_reads_back_as_the_same_run_with_none() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = scratch(root.path());
+    let slow = GateCommand::new("./gate.sh slow");
+    let now = OneEach.now();
+    let ran = run::gate(&repo, &slow, "scratch-host", now, Duration::from_secs(60), &[]).unwrap();
+    assert_eq!(ran.judged, Judged::Green, "{:?}", ran.output);
+    let read = run::recorded_with_tests(&repo, &ran.tree, &slow, now).unwrap().expect("on record");
+    assert!(read.tests().is_empty());
+    assert_eq!(Some(read), run::recorded(&repo, &ran.tree, &slow, now).unwrap());
 }
 
 #[test]
