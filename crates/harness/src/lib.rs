@@ -17,6 +17,7 @@ pub mod brief;
 mod harness;
 pub mod line;
 pub mod start;
+pub mod steps;
 pub mod tokens;
 pub mod turn;
 pub mod window;

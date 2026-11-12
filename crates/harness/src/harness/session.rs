@@ -229,6 +229,19 @@ pub(super) fn holds_note(text: &str, mark: &str) -> bool {
         && json_lines(text).any(|line| user_texts(&line).iter().any(|said| said.contains(mark)))
 }
 
+/// When the first line of `text` that holds `mark` as the user's (as
+/// `holds_note`) was recorded, by its `timestamp`: epoch seconds or
+/// milliseconds, or an ISO stamp. A line with no readable stamp is passed.
+pub(super) fn noted_at(text: &str, mark: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        if !holds_note(line, mark) {
+            return None;
+        }
+        let value = serde_json::from_str::<Value>(line).ok()?;
+        number_at(value["timestamp"].as_u64(), value["timestamp"].as_str())
+    })
+}
+
 /// The first brief pointer in a user message: whether it names exactly
 /// `brief`. `None` means this message has no pointer. Harnesses choose which
 /// messages may associate their primary session with a worker; this match

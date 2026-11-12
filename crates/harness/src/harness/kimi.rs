@@ -15,6 +15,7 @@ use crate::harness::Call;
 use crate::line::Line;
 use crate::start::RULES;
 use crate::start::{Rules, Start, Told};
+use crate::steps::{self, Said};
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 use crate::window::{self, Window};
@@ -675,6 +676,39 @@ pub(super) fn windows(answer: &Json) -> Vec<Window> {
             })
         })
         .collect()
+}
+
+/// What one Kimi wire line says of a tool call: a loop event appended to the
+/// context, a `tool.call` by its `toolCallId` or the `tool.result` of one,
+/// `isError` where Kimi marks it an error (a command that exited other than
+/// 0 is one). A sub-agent writes a wire of its own; a line of another agent
+/// than `main` is not the session's own.
+pub(super) fn said(value: &Json) -> Vec<Said> {
+    if value["type"] != "context.append_loop_event" {
+        return Vec::new();
+    }
+    if value["agentId"].as_str().is_some_and(|agent| agent != "main") {
+        return Vec::new();
+    }
+    let event = &value["event"];
+    let Some(id) = event["toolCallId"].as_str().filter(|id| !id.is_empty()) else {
+        return Vec::new();
+    };
+    let id = id.to_string();
+    let said = match event["type"].as_str() {
+        Some("tool.call") => Said::Call {
+            id,
+            action: steps::action(event["name"].as_str().unwrap_or(""), &event["args"]),
+        },
+        Some("tool.result") => Said::Result {
+            id,
+            result: steps::content(&event["result"]["output"]),
+            error: event["result"]["isError"] == true,
+            at: value["time"].as_u64().map(session::epoch_number),
+        },
+        _ => return Vec::new(),
+    };
+    vec![said]
 }
 
 #[cfg(test)]

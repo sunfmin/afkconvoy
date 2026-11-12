@@ -19,6 +19,7 @@ use crate::harness::Call;
 use crate::line::Line;
 use crate::start::RULES;
 use crate::start::{Rules, Start, Told};
+use crate::steps::{self, Said};
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 
@@ -759,6 +760,52 @@ pub(super) fn usage(value: &serde_json::Value, _line: usize) -> Option<Usage> {
             })
             .collect(),
     ))
+}
+
+/// What one line of Grok's session updates (`updates.jsonl`, beside its
+/// events) says of a tool call: a `tool_call` update is a call, and a
+/// `tool_call_update` that is `completed` or `failed` what came back of the
+/// one its `toolCallId` names. One that failed, or whose command exited
+/// other than 0 (`rawOutput.exit_code`), is an error. A sub-agent is a
+/// session directory of its own.
+pub(super) fn said(value: &serde_json::Value) -> Vec<Said> {
+    let update = &value["params"]["update"];
+    let Some(id) = update["toolCallId"].as_str().filter(|id| !id.is_empty()) else {
+        return Vec::new();
+    };
+    let id = id.to_string();
+    let said = match update["sessionUpdate"].as_str() {
+        Some("tool_call") => {
+            let name = update["_meta"]["x.ai/tool"]["name"]
+                .as_str()
+                .or(update["title"].as_str())
+                .unwrap_or("");
+            Said::Call { id, action: steps::action(name, &update["rawInput"]) }
+        }
+        Some("tool_call_update")
+            if update["status"] == "completed" || update["status"] == "failed" =>
+        {
+            let parts: Vec<serde_json::Value> = update["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|part| part["content"].clone())
+                .collect();
+            let code = update["rawOutput"]["exit_code"].as_i64();
+            let at = session::number_at(
+                value["ts"].as_u64().or(value["params"]["_meta"]["agentTimestampMs"].as_u64()),
+                value["ts"].as_str(),
+            );
+            Said::Result {
+                id,
+                result: steps::content(&serde_json::Value::Array(parts)),
+                error: update["status"] == "failed" || code.is_some_and(|code| code != 0),
+                at,
+            }
+        }
+        _ => return Vec::new(),
+    };
+    vec![said]
 }
 
 #[cfg(test)]
