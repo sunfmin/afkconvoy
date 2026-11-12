@@ -56,6 +56,11 @@ pub struct Start<'a> {
     /// the directory `kept` is then the one kept with them
     /// (`Kept::host_user`).
     pub host_user: bool,
+    /// Whether `kept` is the user configuration of a harness the start would
+    /// otherwise leave on the host user's own (Claude Code): it is then
+    /// pointed there by its variable (`Harness::config_dir`). Every other
+    /// harness is pointed at `kept` whatever this says.
+    pub kept_config: bool,
     /// Native rule paths of the host user's which this harness must exclude
     /// when `host_user` is false, including ones found as project ancestors
     /// (`Harness::host_rule_excludes`).

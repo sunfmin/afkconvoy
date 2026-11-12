@@ -36,6 +36,19 @@ pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
     line: "claude auth login",
 });
 
+/// The variable that points Claude Code at a user configuration directory
+/// other than `~/.claude`: its login, settings, skills and rules, and the
+/// `.claude.json` it keeps in the home itself while the variable is unset.
+pub(super) const CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
+/// What a fresh user configuration directory of Claude Code is given so that
+/// it asks no first-run question: without it, it opens with its theme
+/// onboarding, which nobody at its terminal answers. Merged into the file,
+/// whose login and every other member are kept.
+pub(super) const FRESH: [super::Fresh; 1] = [super::Fresh {
+    file: ".claude.json",
+    given: super::Given::Members("{\"hasCompletedOnboarding\":true}"),
+}];
+
 /// Whether the answer to its login question says it is logged in: by the
 /// `loggedIn` field of the JSON it prints — whatever else the shell printed
 /// around it — not by the exit status.
@@ -115,9 +128,16 @@ pub(super) fn in_worktree(command: &str) -> String {
 
 /// The environment a worker in its role sets for Claude Code beyond the
 /// switches `ENVIRONMENT` names: its prompt suggestions off.
+/// And, where the start says the directory kept for it is its user
+/// configuration (`Start::kept_config`), its variable pointed there.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
-pub(super) fn environment(line: Line, _start: &Start) -> Line {
-    line.fixed(" ").fixed(NO_SUGGESTIONS)
+pub(super) fn environment(line: Line, start: &Start) -> Line {
+    let line = line.fixed(" ").fixed(NO_SUGGESTIONS);
+    if start.kept_config {
+        line.fixed(" ").fixed(CONFIG_DIR).fixed("=").word(start.kept)
+    } else {
+        line
+    }
 }
 
 /// Starts one watch interactively, with the same unattended trust setup.
@@ -1132,6 +1152,7 @@ mod tests {
             hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/claude-code",
             host_user: false,
+            kept_config: false,
             dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],

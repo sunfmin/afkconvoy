@@ -65,7 +65,7 @@ const MODELS: &str = " models";
 const PROMPT: &str = " -p";
 const AS_JSON: &str = " --output-format json";
 
-const USER_DIR: &str = "GROK_HOME";
+pub(super) const USER_DIR: &str = "GROK_HOME";
 /// Nothing here is set to `=1`. The disables are `=0`, written in `environment`.
 pub(super) const ENVIRONMENT: [&str; 0] = [];
 
@@ -822,6 +822,7 @@ mod tests {
             hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/grok-role",
             host_user,
+            kept_config: false,
             dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],

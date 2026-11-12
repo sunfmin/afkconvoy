@@ -314,6 +314,81 @@ pub struct Login {
     pub line: &'static str,
 }
 
+/// The directory a harness reads its user configuration from — its login,
+/// settings, skills and rules — and the variable that points it at another
+/// (`Harness::config_dir`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigDir {
+    /// The variable whose value is the directory, where it is set.
+    pub variable: &'static str,
+    /// Where the directory is under the user's home while it is unset.
+    pub home: &'static str,
+}
+
+/// How a harness pointed at one user configuration directory is asked
+/// whether it is logged in, and logged in (`Harness::login_in`): each line
+/// points it there first, so neither asks of the account's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginIn {
+    /// The shell line whose answer says whether it is logged in there
+    /// (`Harness::logged_in` reads it, as it reads `Login::question`'s).
+    pub question: String,
+    /// What it is said to be when it is not.
+    pub logged_out: &'static str,
+    /// The line that logs it in there.
+    pub line: String,
+}
+
+/// What a fresh user configuration directory of a harness is given so that
+/// the harness asks no first-run question with nobody at its terminal
+/// (`Harness::fresh`): one file under that directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fresh {
+    /// Where the file is, under the directory.
+    pub file: &'static str,
+    /// What it is given there.
+    pub given: Given,
+}
+
+/// What one file of a fresh user configuration is given (`Fresh`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Given {
+    /// Members merged into the JSON object the file holds, each written over
+    /// one of the same key, every other member — a login among them — kept.
+    /// The text is a JSON object.
+    Members(&'static str),
+    /// The whole file, written where there is none; one there is left as it
+    /// is.
+    Whole(&'static str),
+}
+
+impl Fresh {
+    /// What the file is to hold, given what it `held`: `None` where there
+    /// is no such file. An error is a file there that holds no JSON object,
+    /// where members are merged into one.
+    pub fn written(self, held: Option<&str>) -> Result<String, String> {
+        match self.given {
+            Given::Whole(text) => Ok(held.unwrap_or(text).to_string()),
+            Given::Members(members) => {
+                let members: serde_json::Map<String, serde_json::Value> =
+                    serde_json::from_str(members).map_err(|e| e.to_string())?;
+                let mut object = match held.map(str::trim) {
+                    None | Some("") => serde_json::Map::new(),
+                    Some(text) => match serde_json::from_str(text) {
+                        Ok(serde_json::Value::Object(object)) => object,
+                        Ok(_) => return Err(format!("{} holds no JSON object", self.file)),
+                        Err(e) => return Err(format!("{} holds no JSON object: {e}", self.file)),
+                    },
+                };
+                object.extend(members);
+                serde_json::to_string_pretty(&serde_json::Value::Object(object))
+                    .map(|text| text + "\n")
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+}
+
 /// A harness the fleet can start a worker of a bound repo on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Harness {
@@ -515,6 +590,66 @@ impl Harness {
             Harness::Dsh => dsh::LOGIN,
             Harness::Kimi => kimi::LOGIN,
             Harness::Grok => grok::LOGIN,
+        }
+    }
+
+    /// The directory it reads its user configuration from, and the variable
+    /// that points it at another. A start in a role points each harness at
+    /// the directory kept for it (`Start::kept`) by this variable: Claude
+    /// Code where `Start::kept_config` says so, DSH on the fleet's profile.
+    pub const fn config_dir(self) -> ConfigDir {
+        let variable = match self {
+            Harness::ClaudeCode => claude_code::CONFIG_DIR,
+            Harness::Pi => pi::USER_DIR,
+            Harness::Codex => codex::USER_DIR,
+            Harness::Dsh => dsh::USER_DIR,
+            Harness::Kimi => kimi::USER_DIR,
+            Harness::Grok => grok::USER_DIR,
+        };
+        let home = match self {
+            Harness::ClaudeCode => claude_code::HOME,
+            Harness::Pi => pi::HOME,
+            Harness::Codex => codex::HOME,
+            Harness::Dsh => dsh::HOME,
+            Harness::Kimi => kimi::HOME,
+            Harness::Grok => grok::HOME,
+        };
+        ConfigDir { variable, home }
+    }
+
+    /// How it is asked whether it is logged in, and logged in, of the user
+    /// configuration in the directory `dir` rather than the account's own:
+    /// each line exports its variable (`config_dir`) as `dir` first. `None`:
+    /// it logs in to nothing a start asks about.
+    pub fn login_in(self, dir: &str) -> Option<LoginIn> {
+        let login = self.login()?;
+        let (question, logged_out) = match self {
+            Harness::Codex => (codex::LOGIN_IN_CONFIG, codex::LOGGED_OUT_IN_CONFIG),
+            _ => (login.question, login.logged_out),
+        };
+        let variable = self.config_dir().variable;
+        let pointed = |line: &str| {
+            Line::new()
+                .fixed("export ")
+                .fixed(variable)
+                .fixed("=")
+                .word(dir)
+                .fixed(" && ")
+                .launch(line)
+                .done()
+        };
+        Some(LoginIn { question: pointed(question), logged_out, line: pointed(login.line) })
+    }
+
+    /// What a fresh user configuration directory of it is given so that it
+    /// asks no first-run question with nobody at its terminal: Claude Code's
+    /// onboarding answered, Kimi Code's offer to migrate kimi-cli's
+    /// configuration declined. Empty: it asks none known.
+    pub const fn fresh(self) -> &'static [Fresh] {
+        match self {
+            Harness::ClaudeCode => &claude_code::FRESH,
+            Harness::Kimi => &kimi::FRESH,
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Grok => &[],
         }
     }
 

@@ -140,7 +140,7 @@ pub(super) const BEFORE_THE_RULES: [&str; 3] = ["AGENTS.override.md", "AGENTS.md
 
 /// The variable that names pi's user directory: the fleet's own, in place of
 /// the host user's.
-const USER_DIR: &str = "PI_CODING_AGENT_DIR";
+pub(super) const USER_DIR: &str = "PI_CODING_AGENT_DIR";
 /// The variables the fleet's extension reads the line that runs the guard,
 /// the issue's worktree, and the fleet's copy of the team's directory, from.
 const GUARD_ENV: &str = "AFKCONVOY_GUARD";
@@ -664,6 +664,7 @@ mod tests {
             hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/pi",
             host_user: false,
+            kept_config: false,
             dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],

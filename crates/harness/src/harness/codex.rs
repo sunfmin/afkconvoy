@@ -89,6 +89,14 @@ pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
     line: "codex login",
 });
 
+/// The login question asked of the user directory its variable names
+/// (`Harness::login_in`): the same file, there.
+pub(super) const LOGIN_IN_CONFIG: &str = "test -f \"$CODEX_HOME/auth.json\" && codex login status";
+/// What it is said to be when that question finds it logged out.
+pub(super) const LOGGED_OUT_IN_CONFIG: &str = "is not logged in where its user directory keeps its \
+                                               login, `auth.json` (a login kept in a keyring is \
+                                               in no file)";
+
 /// Whether the answer to its login question says it is logged in: by its
 /// exit status.
 pub(super) fn logged_in(succeeded: bool, _printed: &str) -> bool {
@@ -150,7 +158,7 @@ const NAMED: &str = "\"slug\":\"";
 
 /// The variable that names Codex's user directory: the fleet's own, in place
 /// of the host user's.
-const USER_DIR: &str = "CODEX_HOME";
+pub(super) const USER_DIR: &str = "CODEX_HOME";
 
 /// What a host keeps for Codex: its user directory, of the fleet's own. Of
 /// the host user's it holds the login, and nothing else but, in the directory
@@ -1360,6 +1368,7 @@ mod tests {
             hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/codex",
             host_user: false,
+            kept_config: false,
             dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],

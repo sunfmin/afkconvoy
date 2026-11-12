@@ -56,7 +56,7 @@ const LIST_MODELS: &str = " provider list --json";
 const PROMPT: &str = " --prompt";
 const AS_JSON: &str = " --output-format stream-json";
 
-const USER_DIR: &str = "KIMI_CODE_HOME";
+pub(super) const USER_DIR: &str = "KIMI_CODE_HOME";
 pub(super) const TRUST: &str = "KIMI_CODE_TRUST_WORKSPACE=1";
 /// Its worktree trust is a variable, not flags: outside a role a launch
 /// adds no flag the command must take.
@@ -109,8 +109,17 @@ pub(super) const KEPT: Kept = Kept {
     ],
     // Each generated home is intentional: never offer to migrate the host's
     // kimi-cli configuration into a worker's isolated role home.
-    files: &[(".skip-migration-from-kimi-cli", "")],
+    files: &[(SKIP_MIGRATION, "")],
 };
+
+/// The file whose presence in its user directory answers the question Kimi
+/// Code opens a fresh one with: whether to migrate kimi-cli's configuration.
+const SKIP_MIGRATION: &str = ".skip-migration-from-kimi-cli";
+
+/// What a fresh user directory of Kimi Code is given so that it asks no
+/// first-run question: the migration declined.
+pub(super) const FRESH: [super::Fresh; 1] =
+    [super::Fresh { file: SKIP_MIGRATION, given: super::Given::Whole("") }];
 
 pub(super) const LIMITS: &str = ".kimi-code/limits.toml";
 /// The host user's Kimi config, of which a worker keeps only model routing.
@@ -744,6 +753,7 @@ mod tests {
             hook: "/bin/afkconvoy guard",
             kept: "/cache/harness/kimi-role",
             host_user: false,
+            kept_config: false,
             dsh_profile: crate::start::DshProfile::Fleet,
             host_rules: &[],
             shadowed: &[],
