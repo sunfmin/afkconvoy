@@ -59,7 +59,32 @@ The gate ends with the functions of the core crate that Flux took longest to che
 
 Flux on the core, harness, gate and landing crates is Homebrew's [`sunfmin/tap/flux-toolchain`](https://github.com/sunfmin/flux-toolchain), the newest the tap has: `brew install sunfmin/tap/flux-toolchain`, or `./verify.sh install`, which installs it or upgrades it. It is built every day, and brings the `cargo-flux`, `fixpoint`, `z3` and Flux sysroot it was built with; its first run adds, through [rustup](https://rustup.rs), the Rust nightly its Flux names. `./verify.sh` refuses to run with it missing or older than the tap's newest, and pins and builds none of them. The `flux-rs` dependency in [`Cargo.toml`](Cargo.toml) is at the Flux revision the tap's was built from while that one checks this tree: `brew info sunfmin/tap/flux-toolchain` names it.
 
-The decisions live in `crates/core` as pure functions checked by [Flux](https://github.com/flux-rs/flux) (`./verify.sh`); `crates/cli` carries them out through `git`, `gh` and `orca` ([ADR-0007](docs/adr/0007-refinement-types-on-a-pure-core.md)). What afkconvoy knows of each harness — how one starts, where it reads rules and skills, how a hook reaches it, where it keeps its session and what its usage lines count — is `crates/harness`, which the core depends on and another program may too, by a git dependency pinned to a revision; its API names nothing of the fleet ([ADR-0058](docs/adr/0058-the-harness-crate-may-be-depended-on-by-another-program.md)). The gate and the exclusive queue — the fast and slow gate a repo declares, recorded gate runs, heavy commands and the host's lanes, and the holder of the queue a host process embeds — are `crates/gate`, on the same terms ([ADR-0059](docs/adr/0059-the-gate-crate-may-be-depended-on-by-another-program.md)). Candidates, candidate chains, rounds and landing, with the forge a program's changes are asked on behind an interface that afkconvoy implements for GitHub, are `crates/landing`, on the same terms again ([ADR-0060](docs/adr/0060-candidates-rounds-and-landing-may-be-depended-on-by-another-program.md)).
+The decisions live in `crates/core` as pure functions checked by [Flux](https://github.com/flux-rs/flux) (`./verify.sh`); `crates/cli` carries them out through `git`, `gh` and `orca` ([ADR-0007](docs/adr/0007-refinement-types-on-a-pure-core.md)). What afkconvoy knows of each harness — how one starts, where it reads rules and skills, how a hook reaches it, where it keeps its session and what its usage lines count — is `crates/harness`, which the core depends on and another program may too, by a git dependency pinned to a revision; its API names nothing of the fleet ([ADR-0058](docs/adr/0058-the-harness-crate-may-be-depended-on-by-another-program.md)). The gate and the exclusive queue — the fast and slow gate a repo declares, recorded gate runs, heavy commands and the host's lanes, and the holder of the queue a host process embeds — are `crates/gate`, on the same terms ([ADR-0059](docs/adr/0059-the-gate-crate-may-be-depended-on-by-another-program.md)). Candidates, candidate chains, rounds and landing, with the forge a program's changes are asked on behind an interface that afkconvoy implements for GitHub, are `crates/landing`, on the same terms again ([ADR-0060](docs/adr/0060-candidates-rounds-and-landing-may-be-depended-on-by-another-program.md)). What the host kit does to a machine — finding its harnesses, giving each the operator's instructions, skills and guards, installing tmux on a Guild machine, and saying where the machine differs from the declaration — is `crates/host-kit`, on the same terms, which `afkconvoy kit` and `doctor` go through ([ADR-0062](docs/adr/0062-the-host-kit-s-agent-setup-may-be-used-by-another-program.md)).
+
+Another program uses the host kit with no afkconvoy installed by depending on it at a revision of this repo, and giving it the declaration:
+
+```toml
+[dependencies]
+afkconvoy-host-kit = { git = "https://github.com/sunfmin/afkconvoy", rev = "<revision>" }
+```
+
+```rust
+use afkconvoy_host_kit::{Declared, LoginShell};
+
+let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+let declared = Declared {
+    instructions: Some(home.join("dotfiles/claude/CLAUDE.md")),
+    skills: Some(home.join("dotfiles/skills.txt")),
+    guards: Some(home.join("dotfiles/guards.txt")),
+};
+let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+// Finds the harnesses, gives each the setup, installs tmux on a Guild machine.
+let given = afkconvoy_host_kit::machine(&LoginShell, &home, &declared, now);
+// Each harness that still differs from the declaration, and why tmux is missing.
+let (differences, no_tmux) = afkconvoy_host_kit::report(&LoginShell, &home, &declared);
+```
+
+`LoginShell` runs each line in the user's `$SHELL` as a login shell; a program with a shell of its own implements `Shell`. `give` and `differences` take the harnesses themselves, where a program holds its own list.
 
 **Cutting a release** is the fleet's: once it goes idle with landed work past the newest `v*` tag, it cuts the next version itself — commits it on a branch of its own from the base tip, gates that commit, tags it, and publishes and installs it on its host, while turns keep landing on the base branch (`afkconvoy cut --help`). `afkconvoy plan` says when the next cut starts. Its steps are the ```` ```yaml cut ```` block of [`docs/agents/afkconvoy.md`](docs/agents/afkconvoy.md), the one place they are written: steps of [`packaging/release.sh`](packaging/release.sh), then Homebrew's. They run on a Mac, and on nothing of GitHub Actions: this repository is private and its Actions has no budget. The archives and the formula go to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap), which Homebrew downloads from because this repository is private.
 
