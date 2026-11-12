@@ -2,17 +2,17 @@
 # Checks the refinement types of the core crate, and of the harness, gate and
 # landing crates it depends on, with Flux (docs/adr/0007, docs/adr/0058,
 # docs/adr/0059, docs/adr/0060).
-# Needs `cargo-flux`, `fixpoint` and `z3` installed, each the one
-# Cargo.toml (the Flux revision) and crates/core/Cargo.toml (the checker)
-# pin: it refuses to check with any other.
+# Needs `cargo-flux` and `z3` installed, each the one Cargo.toml (the Flux
+# revision) and crates/core/Cargo.toml (the checker) pin, which it refuses to
+# check with any other, and a `fixpoint` that reports its version, of no pin.
 #
 #   ./verify.sh                 check the whole core, harness, gate and landing crates
 #   ./verify.sh free_slots      check the functions whose path contains a name
-#   ./verify.sh --toolchain     check only that the three tools are the pinned
-#                               ones, and exit: the gate need that
+#   ./verify.sh --toolchain     check only that the three tools are the ones
+#                               needed, and exit: the gate need that
 #                               docs/agents/afkconvoy.md declares
 #   ./verify.sh install         install, under the home directory, each of the
-#                               three that is not the pinned one, then check
+#                               three that is not the one needed, then check
 #                               as --toolchain does: that gate need's install
 set -e
 cd "$(dirname "$0")/crates/core"
@@ -23,22 +23,25 @@ cd "$(dirname "$0")/crates/core"
 PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 : "${RUSTUP_TOOLCHAIN:=$(rustup toolchain list | head -1 | cut -d' ' -f1)}"
 export PATH RUSTUP_TOOLCHAIN
-# The checker is the pinned one, or nothing is checked: another build of it
-# can pass or fail the same tree differently. Each tool is asked what it is,
-# which is as far as this goes:
+# cargo-flux and z3 are the pinned ones, or nothing is checked: another build
+# of either can pass or fail the same tree differently. fixpoint follows
+# liquid-fixpoint's nightly release and is pinned to nothing: the day a change
+# of fixpoint turns a gate result wrong, it is pinned again
+# (sunfmin/control#732). Each tool is asked what it is, which is as far as
+# this goes:
 #   cargo-flux  reports the first seven digits of the Flux revision it was
 #               built from, and they are compared to the pinned revision's.
 #               Not checked: the rest of the revision, a change made to that
 #               source before the build, and the driver and libraries in
 #               ~/.flux, which report no revision and are installed with it.
-#   fixpoint    reports its version and its whole commit: both are compared.
+#   fixpoint    reports its version and commit: that it reports them is all
+#               that is checked.
 #   z3          reports its version, which is compared, and nothing of its
 #               build.
 flux_rev=$(sed -n 's/^flux-rs = .*rev = "\([0-9a-f]*\)".*/\1/p' ../../Cargo.toml)
-fixpoint_pin=$(sed -n 's/^fixpoint = "\(.*\)"$/\1/p' Cargo.toml)
 z3_pin=$(sed -n 's/^z3 = "\(.*\)"$/\1/p' Cargo.toml)
-if [ -z "$flux_rev" ] || [ -z "$fixpoint_pin" ] || [ -z "$z3_pin" ]; then
-    echo "verify: Cargo.toml must pin the Flux revision, and crates/core/Cargo.toml fixpoint and z3, and one of them is not read from it" >&2
+if [ -z "$flux_rev" ] || [ -z "$z3_pin" ]; then
+    echo "verify: Cargo.toml must pin the Flux revision, and crates/core/Cargo.toml z3, and one of them is not read from it" >&2
     exit 1
 fi
 flux_is() { cargo flux --version 2>/dev/null | cut -d' ' -f2; }
@@ -51,34 +54,43 @@ flux_pinned() {
     *) case "$flux_rev" in "$flux_is"*) ;; *) return 1 ;; esac ;;
     esac
 }
-fixpoint_pinned() {
+fixpoint_installed() {
     fixpoint_is=$(fixpoint_is) || true
-    [ "$fixpoint_is" = "$fixpoint_pin" ]
+    [ -n "$fixpoint_is" ]
 }
 z3_pinned() {
     z3_is=$(z3_is) || true
     [ "$z3_is" = "$z3_pin" ]
 }
-# `install` installs what is not pinned, reading the pins above, and writes
-# only under the home directory, with no sudo (docs/adr/0053): z3 from its
-# release, cargo-flux and fixpoint built from their sources at the pinned
-# commits, in clones kept in the user's cache. A tool already at its pin is
-# left alone, so a run that finds all three pinned does nothing.
+# `install` installs what is not the one needed, reading the pins above, and
+# writes only under the home directory, with no sudo (docs/adr/0053): z3 from
+# its release, cargo-flux built from its source at the pinned commit, in a
+# clone kept in the user's cache, and fixpoint from liquid-fixpoint's nightly
+# release, the binary its tag names that night, as Flux's own install.sh does.
+# A tool already the one needed is left alone, so a run that finds all three
+# does nothing.
 if [ "${1:-}" = install ]; then
     src="${XDG_CACHE_HOME:-$HOME/.cache}/src"
     mkdir -p "$src" "$HOME/.local/bin"
     work=$(mktemp -d "${TMPDIR:-/tmp}/verify-install.XXXXXX")
     trap 'rm -rf "$work"' EXIT
+    # liquid-fixpoint's nightly release builds fixpoint for two of these.
+    fixpoint_platform=
     case "$(uname -s)-$(uname -m)" in
-    Darwin-arm64) z3_platform=arm64-osx stack_platform=osx-aarch64 ;;
-    Darwin-x86_64) z3_platform=x64-osx stack_platform=osx-x86_64 ;;
-    Linux-aarch64) z3_platform=arm64-glibc stack_platform=linux-aarch64 ;;
-    Linux-x86_64) z3_platform=x64-glibc stack_platform=linux-x86_64 ;;
+    Darwin-arm64) z3_platform=arm64-osx fixpoint_platform=aarch64-apple-darwin ;;
+    Darwin-x86_64) z3_platform=x64-osx ;;
+    Linux-aarch64) z3_platform=arm64-glibc ;;
+    Linux-x86_64) z3_platform=x64-glibc fixpoint_platform=x86_64-linux-gnu ;;
     *)
-        echo "verify: install knows no release of z3 or stack for $(uname -s) $(uname -m)" >&2
+        echo "verify: install knows no release of z3 or fixpoint for $(uname -s) $(uname -m)" >&2
         exit 1
         ;;
     esac
+    # Said before anything is installed: install builds no fixpoint from source.
+    if ! fixpoint_installed && [ -z "$fixpoint_platform" ]; then
+        echo "verify: liquid-fixpoint's nightly release has no fixpoint for $(uname -s) $(uname -m), and install builds none from source. Install one by hand: https://github.com/ucsd-progsys/liquid-fixpoint#how-to-build-and-install" >&2
+        exit 1
+    fi
     # Clones $1 into $2, once, and checks out the commit $3, fetching it only
     # when the clone has not got it.
     checkout() {
@@ -114,29 +126,17 @@ if [ "${1:-}" = install ]; then
         (cd "$src/flux" && env -u RUSTUP_TOOLCHAIN cargo xtask install)
         took "cargo-flux $flux_rev"
     fi
-    if ! fixpoint_pinned; then
+    if ! fixpoint_installed; then
         began=$(date +%s)
-        # No release is built at the pinned commit: stack builds it, with the
-        # GHC liquid-fixpoint's stack.yaml names, which stack fetches into
-        # ~/.stack. The stack used is the one pinned beside fixpoint's, kept
-        # apart from any other stack on the PATH.
-        stack_pin=$(sed -n 's/^stack = "\(.*\)"$/\1/p' Cargo.toml)
-        [ -n "$stack_pin" ] || {
-            echo "verify: crates/core/Cargo.toml must pin the stack that builds fixpoint, and it is not read from it" >&2
-            exit 1
-        }
-        stack="$HOME/.local/stack-$stack_pin/stack"
-        if [ ! -x "$stack" ]; then
-            curl -fsSL -o "$work/stack.tar.gz" \
-                "https://github.com/commercialhaskell/stack/releases/download/v$stack_pin/stack-$stack_pin-$stack_platform.tar.gz"
-            mkdir -p "$work/stack" "$HOME/.local/stack-$stack_pin"
-            tar -xzf "$work/stack.tar.gz" -C "$work/stack"
-            mv "$work/stack/stack-$stack_pin-$stack_platform/stack" "$stack"
-        fi
-        fixpoint_commit=$(echo "$fixpoint_pin" | sed -n 's/.*(\([0-9a-f]*\))$/\1/p')
-        checkout https://github.com/ucsd-progsys/liquid-fixpoint "$src/liquid-fixpoint" "$fixpoint_commit"
-        (cd "$src/liquid-fixpoint" && "$stack" install --local-bin-path "$HOME/.local/bin")
-        took "fixpoint $fixpoint_pin"
+        # The nightly tag moves every night: the binary is that night's, and
+        # its tarball holds it alone.
+        curl -fsSL -o "$work/fixpoint.tar.gz" \
+            "https://github.com/ucsd-progsys/liquid-fixpoint/releases/download/nightly/fixpoint-$fixpoint_platform.tar.gz"
+        mkdir -p "$work/fixpoint"
+        tar -xzf "$work/fixpoint.tar.gz" -C "$work/fixpoint"
+        mv "$work/fixpoint/fixpoint" "$HOME/.local/bin/fixpoint"
+        chmod +x "$HOME/.local/bin/fixpoint"
+        took "fixpoint $(fixpoint_is)"
     fi
     set -- --toolchain
 fi
@@ -148,11 +148,11 @@ verify: cargo-flux is built from Flux ${flux_is:-(nothing reported)}, and Cargo.
     git clone https://github.com/flux-rs/flux && cd flux && git checkout $flux_rev && cargo xtask install
 EOF
 fi
-if ! fixpoint_pinned; then
+if ! fixpoint_installed; then
     pinned=
     cat >&2 <<EOF
-verify: fixpoint is ${fixpoint_is:-(nothing reported)}, and crates/core/Cargo.toml pins $fixpoint_pin. Install the pinned one, built at the commit in the brackets, with ./verify.sh install, or:
-    https://github.com/ucsd-progsys/liquid-fixpoint#how-to-build-and-install
+verify: fixpoint reports no version: none is installed. Install liquid-fixpoint's nightly, with ./verify.sh install, or:
+    https://github.com/ucsd-progsys/liquid-fixpoint/releases/tag/nightly
 EOF
 fi
 if ! z3_pinned; then
