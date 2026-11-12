@@ -267,6 +267,49 @@ const SHELL_TOOL: &str = "Bash";
 /// The exit code that tells Codex a hook refuses the call.
 pub(super) const REFUSED: u8 = 2;
 
+/// What a hook answers to stop the session before the call it is asked of,
+/// keeping the session: the common fields of Codex's hook output,
+/// `continue: false` and the `stopReason` shown, read from a hook that exits
+/// 0. A hook given as `Start::hook` is run inside `GUARD_ASKED`, which
+/// drops what it prints: through `in_role` this answer does not reach Codex.
+pub(super) fn stop_answer(reason: &str) -> super::Answer {
+    super::Answer { printed: session::stopped(reason), code: 0 }
+}
+/// Codex is not known to honour it: a version lets a hook's answer it does
+/// not understand pass and makes the call, and Codex does not call its hooks
+/// a full enforcement boundary.
+pub(super) const STOP_RELIABLE: bool = false;
+
+/// The subcommand that continues a session: by its id, or `LAST`, the
+/// latest.
+const RESUME: &str = " resume";
+const LAST: &str = "--last";
+
+/// `line`, which starts a worker in its role, continuing the session
+/// `session` — the latest where it names none — with `instruction` as the
+/// prompt. Codex takes the options before the subcommand as the resumed
+/// session's.
+#[spec(fn(Line[@l], Option<&str>, &str) -> Line[l])]
+pub(super) fn resumed(line: Line, session: Option<&str>, instruction: &str) -> Line {
+    let line = line.fixed(RESUME).fixed(" ");
+    let line = match session {
+        Some(session) => line.word(session),
+        None => line.fixed(LAST),
+    };
+    line.fixed(" ").word(instruction)
+}
+
+/// The session id the session file `text` is of: the id its `session_meta`
+/// gives, its thread's, which ends the file's name.
+pub(super) fn session_id(text: &str) -> Option<String> {
+    json_lines(text).find_map(|value| {
+        (value["type"] == "session_meta")
+            .then(|| value["payload"]["id"].as_str().filter(|id| !id.is_empty()))
+            .flatten()
+            .map(str::to_string)
+    })
+}
+
 /// Where a role's limits for Codex are written, in its directory: the hooks
 /// Codex loads from the directory it starts in, once it is told to
 /// (`DIRECTORIES`).
