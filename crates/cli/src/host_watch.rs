@@ -38,6 +38,7 @@ const LOOK_SECONDS: u64 = 300;
 const HISTORY: usize = 20;
 /// What a distillation's item identity begins with, as its brief names it.
 const DISTILL: &str = afkconvoy_core::distill::ITEM;
+const FAILED_CUT: &str = afkconvoy_core::cut::FAILED_LABEL;
 /// The linked checkout a watch makes for a change of a listed repo.
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
@@ -1557,9 +1558,20 @@ fn brief(watch: &Watch) -> String {
          change lands, then have that repo's fleet cut a version through its declared cut \
          steps (`afkconvoy cut --help`). Wake its checkout and read `afkconvoy plan`'s `cut`: \
          the next idle tick starts a due cut. Fix what holds that work back; do not bypass \
-         the landing turn, tag by hand, or manufacture a cut record. If a cut failed for a \
-         mechanical cause, fix it and continue with the `cut --from <step>` line its report \
-         gives. If cutting is off or one of the four human kinds holds it back, say so.\n\n\
+         the landing turn, tag by hand, or manufacture a cut record. If cutting is off or one \
+         of the four human kinds holds it back, say so.\n\n\
+         ## Answer a failed cut\n\n\
+         A failed cut holds every later version of its repo back, while turns keep landing. \
+         Its issue, under the label `{FAILED_CUT}`, is yours to answer, not a human's. The \
+         look's `cut_failed` finding names its issue, version, step and why, and its `fix` \
+         says how the cut starts again from this host: the `cut --from <step>` line where \
+         its checkout is kept, or closing its issue where that checkout is gone or a fix had \
+         to land first, so the next cut starts from the start on the base tip; and the fate \
+         of the branch it pushed, with the line that deletes one nothing takes up. Read the \
+         issue, fix the cause — landing a fix as above where it is code — then do what `fix` \
+         says, wake its checkout and check that the next cut starts. Only where the cause is \
+         one of the four human kinds, swap that label for the repo's escalate label \
+         (`afkconvoy config`) and list it in your report: then it is a human's.\n\n\
          Check that the cut published and installed the version containing your change. \
          For afkconvoy, let the host runner move onto it by itself; read `doctor --all`'s \
          `host.installed` for what holds the move back and `checkouts` for its version. Never \

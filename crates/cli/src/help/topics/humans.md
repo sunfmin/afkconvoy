@@ -66,7 +66,9 @@ A run of a patrol that failed opens an issue of its own, under the escalate labe
 
 ## A cut that failed
 
-A cut that failed at a step, ran out of time or was ended from outside opens an issue of its own, under the escalate label, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there. Its checkout is kept on the host that cut. No cut starts while that issue is open.
+A cut that failed at a step, ran out of time or was ended from outside opens an issue of its own, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there. Its checkout is kept on the host that cut. No cut starts while that issue is open.
+
+It is opened under the label `convoy-cut-failed`, not the escalate label: the host's watch answers it, as it answers whatever holds a fleet back, and `doctor` says how the cut starts again (`cuts no version: its last cut failed`, `afkconvoy help troubleshooting`). Only where what failed it is one of the four kinds every watch leaves with a human does the watch swap that label for the escalate label; then it waits for you, and these are its answers. An issue a release before this label opened carries the escalate label, and waits for you too.
 
 - `cd <its checkout> && afkconvoy cut --from <step>`: Once what failed it is fixed — the line the issue gives. It takes that step and the ones after it, and closes the issue once it took the last. `afkconvoy cut --help`.
 - `gh issue close <n>`: Once you have looked and want the fleet to cut again from the start: the next tick that ends idle does, its kept checkout removed first. A PR of the failed cut still open is yours to close. A cut that failed at `publish` has pushed its tag: closed with no line run, that version stays unpublished, and the next cut is of the version after it, once more lands.
