@@ -471,7 +471,11 @@ _Avoid_: landing train, speculative queue
 
 **Round**:
 One run of the slow gate on a candidate chain's tip, once every PR that asked to land is a fast-green candidate, that lands every candidate up to the tip together. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.
-_Avoid_: batch (a tick's), bisection, merge train, rollup
+_Avoid_: batch round (no candidate gated alone), bisection, merge train, rollup
+
+**Batch round**:
+A landing mode in which no candidate is gated alone (ADR-0068): the candidate chain is built as for a round, and its tip runs the fast gate and then the slow gate. Green, every candidate up to it lands as one fast-forward. Red, the chain is bisected — the middle candidate is gated, then the half holding the first red, until the first red candidate is found; it is dropped and its change sent back with the red run, the candidates before it land, and those behind it are rebuilt without it, for the round to go on. A repo is in it where its config says `landing: batch`, or where a round's caller asks for it; otherwise it lands per candidate. afkconvoy's own turns land per candidate; the landing crate's plain runner lands either.
+_Avoid_: batch (a tick's), merge train, rollup
 
 **Land**:
 Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker and watches all land in a turn; watches retain the configured base branch. A cut lands nothing.
