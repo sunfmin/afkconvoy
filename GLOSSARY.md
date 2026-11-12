@@ -279,6 +279,10 @@ _Avoid_: account fault, model fault, failed task
 A worker stopped by its harness's fixed message that its selected model is at capacity. It is transient and belongs to that worker: the harness remains available to other workers.
 _Avoid_: quota fault (an account's usage limit), task refusal (a harness refusing this issue)
 
+**Usage window**:
+One span of an account's use of its engine — Claude Code's `five_hour` or `seven_day`, Codex's `primary` or `secondary`, Kimi Code's `limit_5h` — named as its engine names it, with how much of it is used and when it resets, as the engine reports them (`Harness::windows`). A **limit event** is the engine's structured record that a request met a limit (`Harness::limit_event`): a usage limit, which holds until its window resets, or the service's throttle, which is not the account's use. The harness crate reads both and predicts neither.
+_Avoid_: quota (the screen words of `account_quota`), capacity stop (a model at capacity)
+
 **Verdict**:
 What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing. A `blocked` verdict names the issues it waits on, or the next cut of its own repo (`blocked_by=cut`, `--blocked-by cut`), when the stage can go on only once a version not installed yet is: the claim is parked under the label `convoy-waits-on-cut` instead of polling for the version, and the issue returns at the stage it left once a cut has installed one (ADR-0056).
 _Avoid_: outcome (what a worker leaves on GitHub: its landed PR, or its verdict), result, needs-human

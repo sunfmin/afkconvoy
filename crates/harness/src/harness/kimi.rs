@@ -17,6 +17,7 @@ use crate::start::RULES;
 use crate::start::{Rules, Start, Told};
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
+use crate::window::{self, Window};
 
 pub(super) const NAME: &str = "Kimi Code";
 pub(super) const KEY: &str = "kimi";
@@ -654,6 +655,26 @@ pub(super) fn usage(value: &Json, _line: usize) -> Option<Usage> {
         model: value["model"].as_str().unwrap_or("").to_string(),
         counts,
     })
+}
+
+/// The windows Kimi Code's answer to its `/usage` says. Its session keeps
+/// none: `/usage` asks `<base url>/usages` with the account's token, and the
+/// answer's `usages` hold each window under Kimi's own name (`limit_5h`,
+/// `limit_7d`, `limit_month_total`, `limit_month_code`), each with a
+/// `used_ratio` from 0 to 1 and an ISO `reset_time`.
+pub(super) fn windows(answer: &Json) -> Vec<Window> {
+    let Some(usages) = answer["usages"].as_object() else { return Vec::new() };
+    usages
+        .iter()
+        .filter_map(|(name, window)| {
+            Some(Window {
+                name: name.clone(),
+                used_percent: window::number(&window["used_ratio"])? * 100.0,
+                minutes: None,
+                resets_at: window::seconds(&window["reset_time"]),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
