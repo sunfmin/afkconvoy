@@ -35,7 +35,7 @@ spells it.
 The steps samples (sunfmin/control#747), read by `Harness::steps`:
 
 - `claude-code-session-steps.jsonl`: eight lines of a real Claude Code
-  2.1.x session file recorded on this host, of an afkconvoy worker on this
+  2.1.322 session file recorded on this host, of an afkconvoy worker on this
   repo: three answered `Bash` calls, the third of which Claude Code marked
   `is_error` (exit code 1), the `api-request-blob` that repeats a call beside
   them, and a last call with no result yet. Paths and the session id are

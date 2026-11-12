@@ -1216,8 +1216,12 @@ pub(super) fn said(value: &serde_json::Value) -> Vec<Said> {
     let id = id.to_string();
     let name = payload["name"].as_str().unwrap_or("");
     let said = match payload["type"].as_str() {
-        Some("function_call") => Said::Call { id, action: steps::action(name, &payload["arguments"]) },
-        Some("custom_tool_call") => Said::Call { id, action: steps::action(name, &payload["input"]) },
+        Some("function_call") => {
+            Said::Call { id, action: steps::action(name, &payload["arguments"]) }
+        }
+        Some("custom_tool_call") => {
+            Said::Call { id, action: steps::action(name, &payload["input"]) }
+        }
         Some("local_shell_call") => {
             Said::Call { id, action: steps::action("local_shell", &payload["action"]["command"]) }
         }
@@ -1246,8 +1250,9 @@ fn call_output(output: &serde_json::Value) -> (String, bool) {
         serde_json::Value::String(text) => text.clone(),
         other => steps::content(other),
     };
-    let code = steps::exit_code(&text, "Process exited with code ")
-        .or_else(|| text.starts_with("Exit code: ").then(|| steps::exit_code(&text, "Exit code: "))?);
+    let code = steps::exit_code(&text, "Process exited with code ").or_else(|| {
+        text.starts_with("Exit code: ").then(|| steps::exit_code(&text, "Exit code: "))?
+    });
     (result, code.is_some_and(|code| code != 0))
 }
 

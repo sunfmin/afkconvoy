@@ -330,7 +330,11 @@ fn a_recorded_claude_code_session_says_its_steps_and_the_one_that_failed() {
     let said: Vec<(bool, Option<u64>)> = steps.iter().map(|step| (step.error, step.at)).collect();
     assert_eq!(
         said,
-        vec![(false, Some(1_794_444_749)), (false, Some(1_794_444_755)), (true, Some(1_794_444_787))]
+        vec![
+            (false, Some(1_794_444_749)),
+            (false, Some(1_794_444_755)),
+            (true, Some(1_794_444_787))
+        ]
     );
     for (step, called) in steps.iter().zip([
         r#"Bash {"command":"cat /src/project/.git/convoy-worker-prompt.md"#,
@@ -378,7 +382,11 @@ fn a_codex_rollout_says_its_steps_and_a_command_that_exited_other_than_0() {
     let steps = Harness::Codex.steps(text);
     assert!(steps[0].result.ends_with("Output: cli core harness"), "{}", steps[0].result);
     // A sub-agent's rollout is a child session's.
-    let child = text.replacen(r#""source":"cli""#, r#""source":{"subagent":{"thread_spawn":{"parent_thread_id":"p","depth":1}}}"#, 1);
+    let child = text.replacen(
+        r#""source":"cli""#,
+        r#""source":{"subagent":{"thread_spawn":{"parent_thread_id":"p","depth":1}}}"#,
+        1,
+    );
     assert_ne!(child, text);
     assert_eq!(Harness::Codex.steps(&child), Vec::new());
 }
@@ -446,7 +454,8 @@ fn a_dsh_session_says_its_steps_and_a_command_that_exited_other_than_0() {
         ]
     );
     // A session a sub-agent started is a child's.
-    let child = text.replacen(r#""delegationDepth":0"#, r#""delegationDepth":1,"origin":"subagent""#, 1);
+    let child =
+        text.replacen(r#""delegationDepth":0"#, r#""delegationDepth":1,"origin":"subagent""#, 1);
     assert_ne!(child, text);
     assert_eq!(Harness::Dsh.steps(&child), Vec::new());
 }
