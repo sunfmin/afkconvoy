@@ -184,6 +184,13 @@ pub(super) fn wrapped_dir(cwd: &str) -> String {
 
 /// Each JSON object `text` holds, one a line. A blank line and a line that
 /// is not JSON are not events.
+/// The hook output Claude Code and Codex both read as ending the session's
+/// turn: `continue: false`, with `reason` the `stopReason` shown.
+pub(super) fn stopped(reason: &str) -> String {
+    let reason = serde_json::Value::String(reason.to_string());
+    format!("{{\"continue\":false,\"stopReason\":{reason}}}")
+}
+
 pub(super) fn json_lines(text: &str) -> impl Iterator<Item = Value> + '_ {
     text.lines().filter_map(|line| {
         let line = line.trim();
