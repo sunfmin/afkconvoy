@@ -104,13 +104,14 @@ fn named_by(var: &str) -> PathBuf {
 
 /// The names in this call's environment that a session sets for itself —
 /// Claude Code's and orca's — and the one a world's login profile alone sets
-/// (`AFKCONVOY_TEST_LOGIN`), sorted: whose environment the call ran in. Kept
-/// in `envs`, one a call, beside `calls`.
+/// (`AFKCONVOY_TEST_LOGIN`), and XDG_CONFIG_HOME, which a world's login
+/// profile never sets, sorted: whose environment the call ran in. Kept in
+/// `envs`, one a call, beside `calls`.
 fn session_names() -> Vec<String> {
     let names = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok());
     let session = |name: &String| {
         ["CLAUDE_CODE_", "CLAUDECODE", "ORCA_"].iter().any(|set| name.starts_with(set))
-            || name == "AFKCONVOY_TEST_LOGIN"
+            || ["AFKCONVOY_TEST_LOGIN", "XDG_CONFIG_HOME"].contains(&name.as_str())
     };
     let mut names: Vec<String> = names.filter(session).collect();
     names.sort();
