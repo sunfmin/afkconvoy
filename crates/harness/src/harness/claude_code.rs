@@ -518,6 +518,13 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
     }
 }
 
+/// The start `line` with the brief pointer to `brief` as the session's first
+/// prompt. `--` ends its flags first: `--add-dir` takes every word after it,
+/// so a prompt after it alone would be read as a directory.
+pub(super) fn brief_at_start(line: &str, brief: &str) -> String {
+    Line::new().launch(line).fixed(" -- ").word(&crate::brief::brief_pointer(brief)).done()
+}
+
 /// `line`, which starts the worker launch command, asking it which flags it
 /// takes instead of starting a session.
 #[spec(fn(Line[@l]) -> Line[l])]

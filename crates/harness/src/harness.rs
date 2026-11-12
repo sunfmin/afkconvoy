@@ -221,6 +221,19 @@ pub struct Keystroke {
     pub enter: bool,
 }
 
+/// How a session nobody types at is handed its brief
+/// (`Harness::brief_at_start`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BriefAtStart {
+    /// The start line that hands the session its brief as its first prompt:
+    /// run, the session works on the brief with nobody typing at it.
+    Started(String),
+    /// This harness is handed its brief only by being typed at: the start
+    /// line is run as it is, and this line, [`Harness::brief_line`], is typed
+    /// once the session is idle.
+    Typed(String),
+}
+
 /// Where a harness that keeps a goal for its session keeps it: a SQLite
 /// file under the directory kept for the session, and the query whose one
 /// answer is the goal's status (`Harness::goal`).
@@ -1473,6 +1486,23 @@ impl Harness {
             Harness::Codex => codex::brief_line(brief),
             Harness::ClaudeCode | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
                 crate::brief::brief_pointer(brief)
+            }
+        }
+    }
+
+    /// How a session of this harness that nobody types at is handed the
+    /// brief at `brief`, given the start `line` (`Harness::in_role`'s). Claude
+    /// Code takes a prompt after its flags as its first, so it is started
+    /// with the brief pointer as that prompt. Codex is handed its brief as
+    /// its goal, which only the `/goal` command typed at its prompt sets; a
+    /// prompt it starts with is a user message, not that command. No other
+    /// harness has been seen to take its first prompt on its start line in
+    /// the interactive session the fleet works in: each takes its brief typed.
+    pub fn brief_at_start(self, line: &str, brief: &str) -> BriefAtStart {
+        match self {
+            Harness::ClaudeCode => BriefAtStart::Started(claude_code::brief_at_start(line, brief)),
+            Harness::Codex | Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => {
+                BriefAtStart::Typed(self.brief_line(brief))
             }
         }
     }
