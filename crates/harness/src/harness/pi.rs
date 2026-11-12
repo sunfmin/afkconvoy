@@ -17,6 +17,7 @@ use crate::harness::Call;
 use crate::line::Line;
 use crate::start::SKILLS;
 use crate::start::Start;
+use crate::steps::{self, Said};
 use crate::tokens::{Counts, Keys, Usage};
 use crate::turn::{Marker, Note, Turn};
 
@@ -576,6 +577,47 @@ pub(super) fn usage(value: &Value, line: usize) -> Option<Usage> {
         model: message["model"].as_str().unwrap_or("").to_string(),
         counts,
     })
+}
+
+/// What one pi session line says of a tool call: an assistant message's
+/// `toolCall` parts are calls, and a `toolResult` message what came back of
+/// the one its `toolCallId` names, `isError` where pi marks it an error (a
+/// command that exited other than 0 is one). pi starts no child session in
+/// its own file: a fork is a file of its own.
+pub(super) fn said(value: &Value) -> Vec<Said> {
+    let message = &value["message"];
+    if value["type"] != "message" {
+        return Vec::new();
+    }
+    match message["role"].as_str() {
+        Some("assistant") => {
+            let mut calls = Vec::new();
+            let Some(parts) = message["content"].as_array() else { return calls };
+            for part in parts {
+                if part["type"] != "toolCall" {
+                    continue;
+                }
+                let Some(id) = part["id"].as_str() else { continue };
+                let name = part["name"].as_str().unwrap_or("");
+                calls.push(Said::Call {
+                    id: id.to_string(),
+                    action: steps::action(name, &part["arguments"]),
+                });
+            }
+            calls
+        }
+        Some("toolResult") => {
+            let Some(id) = message["toolCallId"].as_str() else { return Vec::new() };
+            let at = session::number_at(message["timestamp"].as_u64(), value["timestamp"].as_str());
+            vec![Said::Result {
+                id: id.to_string(),
+                result: steps::content(&message["content"]),
+                error: message["isError"] == true,
+                at,
+            }]
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
