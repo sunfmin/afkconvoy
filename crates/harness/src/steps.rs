@@ -27,6 +27,9 @@ pub(crate) enum Said {
     Call { id: String, action: String },
     /// What came back of the call `id`.
     Result { id: String, result: String, error: bool, at: Option<u64> },
+    /// The whole file is a child session's: none of its steps are the
+    /// session's own.
+    Child,
 }
 
 /// The steps `text` records, in the order their calls were made. `said` is
@@ -59,6 +62,7 @@ pub(crate) fn fold(text: &str, said: impl Fn(&Value) -> Vec<Said>) -> Vec<Step> 
                         results.push((id, step));
                     }
                 }
+                Said::Child => return Vec::new(),
             }
         }
     }
@@ -112,6 +116,19 @@ pub(crate) fn content(value: &Value) -> String {
     }
 }
 
+/// The exit code `text` says right after the first `before`, when that is a
+/// number: `Some(1)` for `"Exit code: 1"` read after `"Exit code: "`.
+pub(crate) fn exit_code(text: &str, before: &str) -> Option<i64> {
+    let (_, rest) = text.split_once(before)?;
+    let digits: String = rest
+        .chars()
+        .enumerate()
+        .take_while(|(n, ch)| ch.is_ascii_digit() || (*n == 0 && *ch == '-'))
+        .map(|(_, ch)| ch)
+        .collect();
+    digits.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +146,29 @@ mod tests {
             }],
             _ => Vec::new(),
         }
+    }
+
+    #[test]
+    fn an_exit_code_is_the_number_after_its_words() {
+        assert_eq!(exit_code("Exit code: 1\nWall time", "Exit code: "), Some(1));
+        assert_eq!(exit_code("x\nProcess exited with code -9\n", "exited with code "), Some(-9));
+        assert_eq!(exit_code("Exit code: none", "Exit code: "), None);
+        assert_eq!(exit_code("nothing", "Exit code: "), None);
+    }
+
+    #[test]
+    fn a_child_sessions_file_has_no_steps() {
+        let text = format!(
+            "{}\n{}\n{}",
+            json!({"kind": "call", "id": "a", "input": {}}),
+            json!({"kind": "result", "id": "a", "output": "ok"}),
+            json!({"kind": "child"})
+        );
+        let read = |value: &Value| match value["kind"].as_str() {
+            Some("child") => vec![Said::Child],
+            _ => read(value),
+        };
+        assert_eq!(fold(&text, read), Vec::new());
     }
 
     #[test]

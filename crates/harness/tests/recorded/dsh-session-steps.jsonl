@@ -1,0 +1,9 @@
+{"type":"session","version":4,"id":"00000000-0000-4000-8000-000000000005","createdAt":1794448800000,"cwd":"/src/project","isSeeded":false,"delegationDepth":0}
+{"type":"turn/start","seq":1,"time":1794448801000,"data":{"turn":1}}
+{"type":"tool/call","seq":2,"time":1794448802000,"data":{"turn":1,"step":1,"callId":"call_ls","name":"bash","arguments":"{\"command\":\"ls\"}"}}
+{"type":"tool/result","seq":3,"time":1794448803000,"data":{"turn":1,"step":1,"message":{"id":"m3","role":"tool","source":{"kind":"tool","callId":"call_ls"},"toolCallId":"call_ls","content":[{"type":"text","text":"README.md\nsrc\n[Command finished with exit code 0]"}],"isError":false}},"surfaceOp":"append"}
+{"type":"tool/call","seq":4,"time":1794448804000,"data":{"turn":1,"step":2,"callId":"call_make","name":"bash","arguments":"{\"command\":\"make\"}"}}
+{"type":"tool/result","seq":5,"time":1794448806000,"data":{"turn":1,"step":2,"message":{"id":"m5","role":"tool","source":{"kind":"tool","callId":"call_make"},"toolCallId":"call_make","content":[{"type":"text","text":"make: *** No targets specified and no makefile found.  Stop.\n[Command finished with exit code 2]"}],"isError":false}},"surfaceOp":"append"}
+{"type":"tool/call","seq":6,"time":1794448807000,"data":{"turn":1,"step":3,"callId":"call_read","name":"read_file","arguments":"{\"path\":\"missing.txt\"}"}}
+{"type":"tool/result","seq":7,"time":1794448808000,"data":{"turn":1,"step":3,"message":{"id":"m7","role":"tool","source":{"kind":"tool","callId":"call_read"},"toolCallId":"call_read","content":[{"type":"text","text":"Error: ENOENT: no such file or directory, open 'missing.txt'"}],"isError":true},"error":{"name":"ToolError","code":"ENOENT"}},"surfaceOp":"append"}
+{"type":"tool/call","seq":8,"time":1794448809000,"data":{"turn":1,"step":4,"callId":"call_open","name":"bash","arguments":"{\"command\":\"sleep 60\"}"}}

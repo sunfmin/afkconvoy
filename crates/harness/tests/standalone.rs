@@ -345,3 +345,108 @@ fn a_recorded_claude_code_session_says_its_steps_and_the_one_that_failed() {
     let child = text.replace("\"isSidechain\":false", "\"isSidechain\":true");
     assert_eq!(Harness::ClaudeCode.steps(&child), Vec::new());
 }
+
+/// Each step's action, whether it was an error, and when it came back.
+fn steps_of(harness: Harness, text: &str) -> Vec<(String, bool, Option<u64>)> {
+    harness.steps(text).into_iter().map(|step| (step.action, step.error, step.at)).collect()
+}
+
+/// 2026-11-12T02:00:00Z, when each recorded sample other than Claude Code's starts.
+const STEPS_AT: u64 = 1_794_448_800;
+
+#[test]
+fn a_codex_rollout_says_its_steps_and_a_command_that_exited_other_than_0() {
+    let text = include_str!("recorded/codex-session-steps.jsonl");
+    let at = |s: u64| Some(STEPS_AT + s);
+    assert_eq!(
+        steps_of(Harness::Codex, text),
+        vec![
+            (r#"exec_command {"cmd":"ls crates","workdir":"/src/project"}"#.into(), false, at(3)),
+            (
+                r#"exec_command {"cmd":"cargo test -p missing","workdir":"/src/project"}"#.into(),
+                true,
+                at(9)
+            ),
+            (
+                "apply_patch *** Begin Patch *** Add File: notes.txt +done *** End Patch".into(),
+                false,
+                at(11)
+            ),
+            (r#"shell {"command":["bash","-lc","false"]}"#.into(), true, at(13)),
+        ]
+    );
+    let steps = Harness::Codex.steps(text);
+    assert!(steps[0].result.ends_with("Output: cli core harness"), "{}", steps[0].result);
+    // A sub-agent's rollout is a child session's.
+    let child = text.replacen(r#""source":"cli""#, r#""source":{"subagent":{"thread_spawn":{"parent_thread_id":"p","depth":1}}}"#, 1);
+    assert_ne!(child, text);
+    assert_eq!(Harness::Codex.steps(&child), Vec::new());
+}
+
+#[test]
+fn a_kimi_wire_says_its_steps_and_not_its_sub_agents() {
+    let text = include_str!("recorded/kimi-wire-steps.jsonl");
+    let steps = Harness::Kimi.steps(text);
+    assert_eq!(
+        steps_of(Harness::Kimi, text),
+        vec![
+            (r#"Bash {"command":"git status --short"}"#.into(), false, Some(STEPS_AT + 2)),
+            (r#"Bash {"command":"cargo build -p missing"}"#.into(), true, Some(STEPS_AT + 5)),
+        ]
+    );
+    assert_eq!(steps[0].result, "M README.md");
+}
+
+#[test]
+fn a_pi_session_says_its_steps_and_the_one_that_failed() {
+    let text = include_str!("recorded/pi-session-steps.jsonl");
+    assert_eq!(
+        steps_of(Harness::Pi, text),
+        vec![
+            (r#"bash {"command":"ls"}"#.into(), false, Some(STEPS_AT + 3)),
+            (r#"bash {"command":"npm test"}"#.into(), true, Some(STEPS_AT + 6)),
+        ]
+    );
+    assert_eq!(
+        Harness::Pi.steps(text)[1].result,
+        r#"npm error Missing script: "test" Command exited with code 1"#
+    );
+}
+
+#[test]
+fn grok_s_updates_say_its_steps_a_refused_one_and_a_command_that_exited_other_than_0() {
+    let text = include_str!("recorded/grok-updates-steps.jsonl");
+    let at = |s: u64| Some(STEPS_AT + s);
+    assert_eq!(
+        steps_of(Harness::Grok, text),
+        vec![
+            (
+                r#"run_terminal_command {"command":"wc -l notes.txt","description":"Count the lines"}"#
+                    .into(),
+                false,
+                at(3)
+            ),
+            (r#"write {"content":"x","path":"notes.txt"}"#.into(), true, at(5)),
+            (r#"run_terminal_command {"command":"false"}"#.into(), true, at(7)),
+        ]
+    );
+    assert_eq!(Harness::Grok.steps(text)[0].result, "3 notes.txt");
+}
+
+#[test]
+fn a_dsh_session_says_its_steps_and_a_command_that_exited_other_than_0() {
+    let text = include_str!("recorded/dsh-session-steps.jsonl");
+    let at = |s: u64| Some(STEPS_AT + s);
+    assert_eq!(
+        steps_of(Harness::Dsh, text),
+        vec![
+            (r#"bash {"command":"ls"}"#.into(), false, at(3)),
+            (r#"bash {"command":"make"}"#.into(), true, at(6)),
+            (r#"read_file {"path":"missing.txt"}"#.into(), true, at(8)),
+        ]
+    );
+    // A session a sub-agent started is a child's.
+    let child = text.replacen(r#""delegationDepth":0"#, r#""delegationDepth":1,"origin":"subagent""#, 1);
+    assert_ne!(child, text);
+    assert_eq!(Harness::Dsh.steps(&child), Vec::new());
+}

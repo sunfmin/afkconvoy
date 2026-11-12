@@ -1450,7 +1450,10 @@ impl Harness {
     /// The steps one session file's `text` records, oldest first: each tool
     /// call with what came back of it and whether the harness marked that an
     /// error. A call with no result yet is no step, and a child session's
-    /// lines are not the session's own.
+    /// lines are not the session's own. The text is the session file the
+    /// layout names, decompressed where it is stored compressed; Grok's
+    /// calls are in the updates its layout names beside its events
+    /// (`SessionLayout::Named::usage`).
     pub fn steps(self, text: &str) -> Vec<crate::steps::Step> {
         crate::steps::fold(text, |line| self.said(line))
     }
@@ -1459,9 +1462,11 @@ impl Harness {
     fn said(self, line: &serde_json::Value) -> Vec<crate::steps::Said> {
         match self {
             Harness::ClaudeCode => claude_code::said(line),
-            Harness::Pi | Harness::Codex | Harness::Kimi | Harness::Grok | Harness::Dsh => {
-                Vec::new()
-            }
+            Harness::Pi => pi::said(line),
+            Harness::Codex => codex::said(line),
+            Harness::Kimi => kimi::said(line),
+            Harness::Grok => grok::said(line),
+            Harness::Dsh => dsh::said(line),
         }
     }
 
