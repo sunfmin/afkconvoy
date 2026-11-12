@@ -590,18 +590,22 @@ pub(super) fn said(value: &Value) -> Vec<Said> {
         return Vec::new();
     }
     match message["role"].as_str() {
-        Some("assistant") => message["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|part| part["type"] == "toolCall")
-            .filter_map(|part| {
-                Some(Said::Call {
-                    id: part["id"].as_str()?.to_string(),
-                    action: steps::action(part["name"].as_str().unwrap_or(""), &part["arguments"]),
-                })
-            })
-            .collect(),
+        Some("assistant") => {
+            let mut calls = Vec::new();
+            let Some(parts) = message["content"].as_array() else { return calls };
+            for part in parts {
+                if part["type"] != "toolCall" {
+                    continue;
+                }
+                let Some(id) = part["id"].as_str() else { continue };
+                let name = part["name"].as_str().unwrap_or("");
+                calls.push(Said::Call {
+                    id: id.to_string(),
+                    action: steps::action(name, &part["arguments"]),
+                });
+            }
+            calls
+        }
         Some("toolResult") => {
             let Some(id) = message["toolCallId"].as_str() else { return Vec::new() };
             let at = session::number_at(message["timestamp"].as_u64(), value["timestamp"].as_str());

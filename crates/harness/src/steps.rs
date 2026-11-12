@@ -120,13 +120,13 @@ pub(crate) fn content(value: &Value) -> String {
 /// number: `Some(1)` for `"Exit code: 1"` read after `"Exit code: "`.
 pub(crate) fn exit_code(text: &str, before: &str) -> Option<i64> {
     let (_, rest) = text.split_once(before)?;
-    let digits: String = rest
-        .chars()
-        .enumerate()
-        .take_while(|(n, ch)| ch.is_ascii_digit() || (*n == 0 && *ch == '-'))
-        .map(|(_, ch)| ch)
-        .collect();
-    digits.parse().ok()
+    let (sign, rest) = match rest.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", rest),
+    };
+    let end = rest.find(|ch: char| !ch.is_ascii_digit()).unwrap_or(rest.len());
+    let digits = rest.get(..end)?;
+    format!("{sign}{digits}").parse().ok()
 }
 
 #[cfg(test)]
