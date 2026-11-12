@@ -3,7 +3,9 @@
 //! beside it. Two changes land on a local bare repo in one round — both
 //! fast-green, one slow gate at the round's tip, the target fast-forwarded
 //! through both candidates in order, and the forge told each landed. A red
-//! round lands nothing and cancels the chain.
+//! round lands nothing and cancels the chain. In a batch round only the
+//! chain's tip is gated, and a red one is bisected to its first red change,
+//! which is sent back while the rest lands (docs/adr/0068).
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -12,15 +14,16 @@ use std::process::Command;
 use afkconvoy_gate::declared;
 use afkconvoy_gate::layout::Layout;
 use afkconvoy_gate::run::Git;
-use afkconvoy_landing::chain::{Chain, Decision, Phase, Plain, Process};
+use afkconvoy_landing::chain::{Chain, Decision, Evidence, Phase, Plain, Process};
 use afkconvoy_landing::forge::{Change, Forge};
 use afkconvoy_landing::land::{Lander, Outcome};
-use afkconvoy_landing::turn::{self, Declared};
+use afkconvoy_landing::turn::{self, Declared, Landing};
 
 /// A forge that lets every change land and remembers what it was told.
 #[derive(Default)]
 struct Fake {
     landed: RefCell<Vec<(u64, String)>>,
+    sent_back: RefCell<Vec<(u64, Option<Evidence>)>>,
 }
 
 impl Forge for Fake {
@@ -48,6 +51,11 @@ impl Forge for Fake {
         self.landed.borrow_mut().push((change.number, commit.to_string()));
         Ok(())
     }
+
+    fn sent_back(&self, change: &Change, run: Option<&Evidence>) -> Result<(), String> {
+        self.sent_back.borrow_mut().push((change.number, run.cloned()));
+        Ok(())
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -61,7 +69,8 @@ const DECLARED: &str = "# The repo's gate\n\n```yaml gates\nfast:\n  command: ./
 
 /// A scratch repo whose gate notes each run in `ran` — which gate, on which
 /// commit — and whose slow gate is red on a tree that holds `breaks`;
-/// committed and pushed to a bare remote beside it.
+/// — or any file named `breaks…` — committed and pushed to a bare remote
+/// beside it.
 fn scratch(root: &Path) -> (PathBuf, PathBuf) {
     let remote = root.join("remote.git");
     let work = root.join("work");
@@ -74,7 +83,7 @@ fn scratch(root: &Path) -> (PathBuf, PathBuf) {
     }
     std::fs::write(work.join("gate.md"), DECLARED).unwrap();
     let script = format!(
-        "#!/bin/sh\necho \"$1 $(git rev-parse HEAD)\" >> {}\nif [ \"$1\" = slow ] && [ -e breaks ]; then echo FAIL; exit 1; fi\necho ok\n",
+        "#!/bin/sh\necho \"$1 $(git rev-parse HEAD)\" >> {}\nif [ \"$1\" = slow ] && ls | grep -q '^breaks'; then echo FAIL; exit 1; fi\necho ok\n",
         ran.display()
     );
     std::fs::write(work.join("gate.sh"), script).unwrap();
@@ -103,7 +112,13 @@ fn change(work: &Path, number: u64, source: &str, file: &str) -> Change {
 fn declared(work: &Path, commit: &str) -> Result<Declared, String> {
     let text = git(work, &["show", &format!("{commit}:gate.md")]);
     let gates = declared::gates(&text, 180, None).map_err(|fault| fault.to_string())?;
-    Ok(Declared { whole: "./gate.sh".into(), seconds: 180, gates })
+    // This program's config: a line of its own says how its rounds land.
+    let landing = if text.lines().any(|line| line == "landing: batch") {
+        Landing::Batch
+    } else {
+        Landing::PerCandidate
+    };
+    Ok(Declared { whole: "./gate.sh".into(), seconds: 180, gates, landing })
 }
 
 fn now() -> u64 {
@@ -217,6 +232,166 @@ fn a_red_round_lands_nothing_and_cancels_the_chain() {
     git(&work, &["fetch", "--quiet", "origin"]);
     assert_eq!(git(&work, &["rev-parse", "origin/main"]), base, "nothing landed");
     assert!(forge.landed.borrow().is_empty());
+}
+
+/// The changes numbered 1 to `n`, each on a branch of its own adding a file
+/// of its own; the ones in `reds` break the slow gate.
+fn changes(work: &Path, n: u64, reds: &[u64]) -> Vec<Change> {
+    (1..=n)
+        .map(|number| {
+            let file = if reds.contains(&number) {
+                format!("breaks-{number}")
+            } else {
+                format!("file-{number}.txt")
+            };
+            change(work, number, &format!("change-{number}"), &file)
+        })
+        .collect()
+}
+
+/// The files on the remote's `main`.
+fn landed_files(work: &Path) -> Vec<String> {
+    git(work, &["fetch", "--quiet", "origin"]);
+    let listed = git(work, &["ls-tree", "--name-only", "origin/main"]);
+    listed
+        .lines()
+        .filter(|f| f.starts_with("file-") || f.starts_with("breaks"))
+        .map(String::from)
+        .collect()
+}
+
+/// What became of each change, with what landed told by its number alone.
+fn ended(outcomes: Vec<(u64, Outcome<String>)>) -> Vec<(u64, Option<Decision>)> {
+    outcomes
+        .into_iter()
+        .map(|(number, outcome)| match outcome {
+            Outcome::Landed(_) => (number, Some(Decision::Landed)),
+            Outcome::Decided(decision) => (number, Some(decision)),
+            other => panic!("change {number}: {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_green_batch_round_lands_on_one_fast_gate_and_one_slow_gate_at_its_tip() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    let asked = changes(&work, 4, &[]);
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    let lander = lander(&work, &worktrees, &forge);
+
+    // The repo declares no batch landing: its caller asks for one, for this
+    // round, with no commit to the repo.
+    let outcomes = lander.land_with(&asked, Some(Landing::Batch)).unwrap();
+
+    let chain = recorded(&work);
+    let tip = chain.candidates.last().unwrap();
+    assert_eq!(chain.candidates.len(), 4);
+    assert!(chain.candidates.iter().all(|c| c.phase == Phase::Landed && c.batch));
+    assert_eq!(
+        runs(&ran),
+        [("fast".to_string(), tip.commit.clone()), ("slow".to_string(), tip.commit.clone())]
+    );
+    assert_eq!(ended(outcomes), (1..=4).map(|n| (n, Some(Decision::Landed))).collect::<Vec<_>>());
+    git(&work, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(&work, &["rev-parse", "origin/main"]), tip.commit, "one fast-forward");
+    let told: Vec<u64> = forge.landed.borrow().iter().map(|(n, _)| *n).collect();
+    assert_eq!(told, [1, 2, 3, 4]);
+    assert!(forge.sent_back.borrow().is_empty());
+}
+
+#[test]
+fn a_red_batch_round_is_bisected_to_its_red_change_which_is_sent_back_while_the_rest_lands() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    let base = git(&work, &["rev-parse", "main"]);
+    let asked = changes(&work, 4, &[2]);
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    let lander = lander(&work, &worktrees, &forge);
+
+    let outcomes = lander.land_with(&asked, Some(Landing::Batch)).unwrap();
+
+    assert_eq!(
+        ended(outcomes),
+        [
+            (1, Some(Decision::Landed)),
+            (2, Some(Decision::Red)),
+            (3, Some(Decision::Landed)),
+            (4, Some(Decision::Landed)),
+        ]
+    );
+    // The tip red, then the middle candidate red, then the one before it
+    // green: three gates, ceil(log2 4)+1, find the red one; the rebuilt
+    // round's tip is the fourth.
+    let slow: Vec<String> =
+        runs(&ran).into_iter().filter(|(gate, _)| gate == "slow").map(|(_, c)| c).collect();
+    assert_eq!(slow.len(), 4, "{slow:?}");
+    let sent = forge.sent_back.borrow();
+    let [(2, Some(run))] = &sent[..] else { panic!("{sent:?}") };
+    assert!(run.excerpt.iter().any(|line| line == "FAIL"), "sent back with its red run");
+    assert_eq!(landed_files(&work), ["file-1.txt", "file-3.txt", "file-4.txt"]);
+    // What landed is one fast-forward chain from the base, each candidate a
+    // merge onto the one before it, the first green prefix landed first.
+    let history = git(&work, &["rev-list", "--first-parent", &format!("{base}..origin/main")]);
+    assert_eq!(history.lines().count(), 3);
+    assert!(forge.landed.borrow().iter().map(|(n, _)| *n).eq([1, 3, 4]));
+}
+
+#[test]
+fn a_batch_round_with_two_red_changes_sends_both_back_and_lands_the_rest() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, _) = scratch(root.path());
+    let asked = changes(&work, 5, &[2, 4]);
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    let lander = lander(&work, &worktrees, &forge);
+
+    let outcomes = lander.land_with(&asked, Some(Landing::Batch)).unwrap();
+
+    let decided = ended(outcomes);
+    assert_eq!(
+        decided,
+        [
+            (1, Some(Decision::Landed)),
+            (2, Some(Decision::Red)),
+            (3, Some(Decision::Landed)),
+            (4, Some(Decision::Red)),
+            (5, Some(Decision::Landed)),
+        ]
+    );
+    let sent: Vec<u64> = forge.sent_back.borrow().iter().map(|(n, _)| *n).collect();
+    assert_eq!(sent, [2, 4]);
+    assert_eq!(landed_files(&work), ["file-1.txt", "file-3.txt", "file-5.txt"]);
+}
+
+#[test]
+fn a_repo_whose_config_says_batch_lands_its_rounds_as_batch_rounds() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    std::fs::write(work.join("gate.md"), format!("{DECLARED}\nlanding: batch\n")).unwrap();
+    git(&work, &["commit", "--quiet", "-am", "land in batch rounds"]);
+    git(&work, &["push", "--quiet", "origin", "main"]);
+    let asked = changes(&work, 3, &[]);
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    let lander = lander(&work, &worktrees, &forge);
+
+    lander.land(&asked).unwrap();
+
+    let gates: Vec<String> = runs(&ran).into_iter().map(|(gate, _)| gate).collect();
+    assert_eq!(gates, ["fast", "slow"], "the tip alone");
+    assert_eq!(landed_files(&work), ["file-1.txt", "file-2.txt", "file-3.txt"]);
+    // Asked per candidate for a round, the repo's batch landing gives way.
+    let more = vec![
+        change(&work, 4, "change-4", "file-4.txt"),
+        change(&work, 5, "change-5", "file-5.txt"),
+    ];
+    std::fs::remove_file(&ran).unwrap();
+    lander.land_with(&more, Some(Landing::PerCandidate)).unwrap();
+    let gates: Vec<String> = runs(&ran).into_iter().map(|(gate, _)| gate).collect();
+    assert_eq!(gates, ["fast", "fast", "slow"]);
 }
 
 /// What the crate depends on: Flux's attributes, serde and the gate crate —

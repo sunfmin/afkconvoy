@@ -517,7 +517,7 @@ fn candidate_blocks(repo: &Repo, issue: u64) -> Result<Vec<String>> {
             Phase::Cancelled | Phase::Cancelling => {
                 Some(format!("landing {} was cancelled", last.id))
             }
-            Phase::Building | Phase::Validating | Phase::Green | Phase::Slow => {
+            Phase::Building | Phase::Validating | Phase::Green | Phase::Slow | Phase::Batched => {
                 Some(format!("landing {} is still in progress", last.id))
             }
             Phase::Landed => None,

@@ -2,7 +2,9 @@
 //! the forge behind an interface and no fleet concept in their API: a
 //! change's immutable merge onto its predecessor, the chain that orders the
 //! candidates and cancels a failed or invalid suffix, the round that
-//! slow-gates once at its tip, and the ordered fast-forward that lands it,
+//! slow-gates once at its tip — or, as a batch round, gates its tip alone and
+//! bisects it on red (docs/adr/0068) — and the ordered fast-forward that
+//! lands it,
 //! all on one record the remote holds. afkconvoy depends on it, and so may
 //! another program, by a git dependency pinned to a revision of this repo.
 
