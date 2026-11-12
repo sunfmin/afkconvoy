@@ -823,7 +823,12 @@ impl Watcher {
                         }
                         state.unavailable = None;
                     }
-                    Ok(None) => stop_session(&resident)?,
+                    Ok(None) => {
+                        // Its terminal is gone or was re-incarnated and
+                        // retired: the next look may start a fresh watch.
+                        stop_session(&resident)?;
+                        state.unavailable = None;
+                    }
                     Err(error) => {
                         let why = watch_terminal::recovery(&format!("{error:#}"));
                         watch_terminal::problem(&why)?;
