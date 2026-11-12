@@ -272,8 +272,7 @@ pub(super) const REFUSED: u8 = 2;
 /// 0. A hook given as `Start::hook` is run inside `GUARD_ASKED`, which
 /// drops what it prints: through `in_role` this answer does not reach Codex.
 pub(super) fn stop_answer(reason: &str) -> super::Answer {
-    let printed = serde_json::json!({"continue": false, "stopReason": reason}).to_string();
-    super::Answer { printed, code: 0 }
+    super::Answer { printed: session::stopped(reason), code: 0 }
 }
 /// Codex is not known to honour it: a version lets a hook's answer it does
 /// not understand pass and makes the call, and Codex does not call its hooks

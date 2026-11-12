@@ -368,8 +368,7 @@ pub(super) const REFUSED: u8 = 2;
 /// its user, not to the model. Claude Code reads them only from a hook that
 /// exits 0.
 pub(super) fn stop_answer(reason: &str) -> super::Answer {
-    let printed = serde_json::json!({"continue": false, "stopReason": reason}).to_string();
-    super::Answer { printed, code: 0 }
+    super::Answer { printed: session::stopped(reason), code: 0 }
 }
 /// Claude Code honours `continue: false` from any hook, a call's included.
 pub(super) const STOP_RELIABLE: bool = true;
