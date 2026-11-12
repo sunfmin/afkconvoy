@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "afkconvoy"
-version = "0.5.64"
+version = "0.5.74"
 dependencies = [
  "afkconvoy-core",
  "afkconvoy-gate",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-core"
-version = "0.5.64"
+version = "0.5.74"
 dependencies = [
  "afkconvoy-gate",
  "afkconvoy-harness",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-gate"
-version = "0.5.64"
+version = "0.5.74"
 dependencies = [
  "flux-alloc",
  "flux-core",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-harness"
-version = "0.5.64"
+version = "0.5.74"
 dependencies = [
  "flux-alloc",
  "flux-core",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-host-kit"
-version = "0.5.64"
+version = "0.5.74"
 dependencies = [
  "afkconvoy-harness",
  "anyhow",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-landing"
-version = "0.5.64"
+version = "0.5.74"
 dependencies = [
  "afkconvoy-gate",
  "flux-alloc",
