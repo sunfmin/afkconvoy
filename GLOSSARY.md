@@ -434,8 +434,16 @@ The fixed duration a repo expects its gate to stay within. Recent recorded landi
 _Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
-The evidence that the gate passed on one committed tree, with how long the run took and on which host, and each test's wall time and CPU time where the run's output said them, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
+The evidence that the gate passed on one committed tree, with how long the run took, on which host and on which kind of machine, and each test's wall time and CPU time where the run's output said them, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
 _Avoid_: gate cache, CI status
+
+**Kind of machine**:
+A host's operating system and processor architecture, `macos-aarch64`. A recorded gate run says the kind it ran on, and answers for a run on that kind alone: some tests depend on the machine.
+_Avoid_: host (one machine by its name), platform, target
+
+**Reused run**:
+A recorded gate run that answers when the same gate is asked of the same committed tree on the same kind of machine: nothing runs again, and the answer says so. The gate is the command the tree's own commit declares, so another declaration runs again; a red run is never on record, so never reused. It is always on: a candidate whose tree is green on record, and a round whose tip is, are not gated again, and the candidate's gate evidence names the reused run it stands on.
+_Avoid_: cache hit, skipped gate, cached result
 
 **Fast gate**:
 The part of the gate a worker passes before it opens or updates its PR: the checks that are quick, and every test not marked slow. A repo declares it beside the slow gate, each with its own command, limit and budget; together they are the gate. A new test is in it until it is marked slow.
@@ -462,7 +470,7 @@ One command's construction, validation and ordered landing of an open PR's candi
 _Avoid_: landing slot, merge queue
 
 **Candidate**:
-An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree. Once the candidate has stopped, that worktree is removed and the candidate chain keeps the gate evidence. Its predecessor is the certified target tip or the preceding candidate.
+An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree, or by a reused run where its tree is green on record. Once the candidate has stopped, that worktree is removed and the candidate chain keeps the gate evidence. Its predecessor is the certified target tip or the preceding candidate.
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:
