@@ -1,5 +1,5 @@
-//! The host kit's agent setup (sunfmin/control#528, #529, #753, #758; control
-//! ADR 0009, ADR 0012; docs/adr/0062), kept apart so that another program can
+//! The host kit's agent setup (sunfmin/control#528, #529, #753, #758;
+//! docs/adr/0062), kept apart so that another program can
 //! give a machine the operator's agent setup with no afkconvoy installed
 //! there: Guild's `guild install` calls it.
 //!
