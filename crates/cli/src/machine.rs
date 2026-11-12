@@ -143,8 +143,9 @@ fn elsewhere(table: &str, me: u32) -> Option<Elsewhere> {
         }
     }
     let held: Vec<(u32, u64)> = accounts.iter().map(|(uid, _, bytes, _)| (*uid, *bytes)).collect();
-    let at = afkconvoy_core::resources::elsewhere(&held, me)?;
-    let (uid, account, memory_bytes, processes) = accounts[at];
+    let most = afkconvoy_core::resources::elsewhere(&held, me)?;
+    let (uid, account, memory_bytes, processes) =
+        accounts.into_iter().find(|(uid, ..)| *uid == most)?;
     Some(Elsewhere { account: account.to_string(), uid, memory_bytes, processes })
 }
 

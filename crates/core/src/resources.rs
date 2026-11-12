@@ -137,34 +137,27 @@ pub const FIRST_USER_UID: u32 = 500;
 pub const LAST_USER_UID: u32 = 60_000;
 
 /// Of `accounts` — each account's uid and the resident bytes its processes
-/// hold — the user account other than `me` that holds the most, where it
-/// holds more than `me` does: memory pressure then is that account's.
-/// Accounts below `FIRST_USER_UID` or past `LAST_USER_UID` are the machine's
-/// own and are never it.
-pub fn elsewhere(accounts: &[(u32, u64)], me: u32) -> Option<usize> {
-    let mut mine: u64 = 0;
+/// hold, an account once — the uid of the user account other than `me` that
+/// holds the most, where it holds more than `me` does: memory pressure then
+/// is that account's. Accounts below `FIRST_USER_UID` or past
+/// `LAST_USER_UID` are the machine's own and are never it.
+pub fn elsewhere(accounts: &[(u32, u64)], me: u32) -> Option<u32> {
+    let mut most: (Option<u32>, u64) = (None, 0);
     for (uid, bytes) in accounts {
-        if *uid == me {
-            mine = mine.saturating_add(*bytes);
+        if *uid == me && *bytes > most.1 {
+            most = (None, *bytes);
         }
     }
-    let mut most: Option<(usize, u64)> = None;
-    let mut at = 0;
     for (uid, bytes) in accounts {
-        let user = *uid >= FIRST_USER_UID && *uid <= LAST_USER_UID && *uid != me;
-        let larger = match most {
-            Some((_, held)) => *bytes > held,
-            None => true,
-        };
-        if user && *bytes > mine && larger {
-            most = Some((at, *bytes));
+        if *uid != me && is_user(*uid) && *bytes > most.1 {
+            most = (Some(*uid), *bytes);
         }
-        at += 1;
     }
-    match most {
-        Some((at, _)) => Some(at),
-        None => None,
-    }
+    most.0
+}
+
+fn is_user(uid: u32) -> bool {
+    (FIRST_USER_UID..=LAST_USER_UID).contains(&uid)
 }
 
 /// Why a memory-pressure episode starts no watch.
@@ -258,7 +251,7 @@ mod tests {
         // 20 GiB of another account's VM and simulator against this one's 2.
         let gib = 1u64 << 30;
         let table = [(0, 30 * gib), (88, 3 * gib), (501, 2 * gib), (502, 20 * gib), (503, gib)];
-        assert_eq!(elsewhere(&table, 501), Some(3));
+        assert_eq!(elsewhere(&table, 501), Some(502));
         assert_eq!(elsewhere(&table, 502), None, "this account holds the most");
         let fleet_largest = [(501, 9 * gib), (502, 8 * gib)];
         assert_eq!(elsewhere(&fleet_largest, 501), None);
