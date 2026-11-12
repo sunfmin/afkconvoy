@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use afkconvoy_landing::forge::{Change, Forge};
-use afkconvoy_landing::turn::{Declared, Next};
+use afkconvoy_landing::turn::{Declared, Landing, Next};
 
 use crate::exclusive::Permit;
 use crate::forge::{Pulls, Refusal};
@@ -1255,6 +1255,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 whole: declared.gate_command.clone(),
                 seconds: declared.gate_seconds(),
                 gates: declared.gates.clone(),
+                landing: Landing::PerCandidate,
             }
             .own();
             let c = Candidate {
@@ -1281,6 +1282,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 result: None,
                 slow: own.slow,
                 slowed: false,
+                batch: false,
+                holds_red: false,
             };
             snapshot.chain.assign(c.clone());
             if write(repo, config, &snapshot)? {
