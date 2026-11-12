@@ -543,8 +543,9 @@ fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)], handoffs: &[u64]) -> Call<
 }
 
 /// The open issues that wait for a human, lowest number first: those `seen`
-/// names and the report of each failed patrol among `patrols`. An issue a
-/// fleet instance holds waits for nobody yet: its escalation is under way.
+/// names, the report of each failed patrol among `patrols`, and that of a
+/// failed cut handed to a human. An issue a fleet instance holds waits for
+/// nobody yet: its escalation is under way.
 fn waiting(
     seen: &Observed,
     issues: &[&Issue],
@@ -556,7 +557,16 @@ fn waiting(
     let failed = patrols.iter().filter_map(|patrol| {
         Some((patrol.failure?, Waits::PatrolFailed { patrol: patrol.name.clone() }, None))
     });
-    let cut_failed = cut.and_then(|cut| cut.failure).map(|issue| (issue, Waits::CutFailed, None));
+    // A failed cut's issue under the watch's label is the watch's, not a
+    // human's: only one handed to a human, under the escalate label, waits.
+    let watched = |number: u64| {
+        let issue = issues.iter().find(|issue| issue.number == number);
+        issue.is_some_and(|issue| cut::watched(&issue.labels))
+    };
+    let cut_failed = cut
+        .and_then(|cut| cut.failure)
+        .filter(|issue| !watched(*issue))
+        .map(|issue| (issue, Waits::CutFailed, None));
     for (number, waits, since) in seen.waiting.iter().cloned().chain(failed).chain(cut_failed) {
         let open = issues.iter().find(|issue| issue.number == number);
         let held = claims.iter().any(|claim| claim.number == number);
@@ -627,7 +637,11 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         }
         let claimed = claims.iter().any(|claim| claim.number == issue.number);
         let (number, title) = (issue.number, issue.title.clone());
-        let reason = if let Some(bar) = label_bar(&issue.labels, config, seen.flows) {
+        let failed_cut = set.cut.as_ref().is_some_and(|cut| cut.failure == Some(number));
+        let reason = if failed_cut && cut::watched(&issue.labels) {
+            // The watch answers it; nothing of the fleet's works it.
+            "says a cut failed: the host's watch answers it".to_string()
+        } else if let Some(bar) = label_bar(&issue.labels, config, seen.flows) {
             // An escalated issue lost the label that bars it to the escalation.
             let waits = set.waiting_on_human.iter().find(|waiting| waiting.issue == number);
             let said = waits.and_then(|waiting| waiting.waits.excluded());

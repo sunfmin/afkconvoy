@@ -1488,6 +1488,7 @@ mod tests {
             busy_in_seconds: None,
             failure: None,
             waiting: vec![],
+            failed: None,
             claim: None,
         })
     }

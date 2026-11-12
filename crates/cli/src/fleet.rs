@@ -703,6 +703,12 @@ impl Fleet {
             row.not_cutting_here =
                 crate::probe::check_cut_needs(&self.repo, &self.config, self.now, false)?;
         }
+        if let Some(row) =
+            set.cut.as_mut().filter(|row| row.standing == afkconvoy_core::cut::Standing::Failed)
+            && let Some(issue) = row.failure
+        {
+            row.failed = crate::cut::failed(self, &open.issues, issue, &base)?;
+        }
         open.issues.explain(&mut set.waiting_on_human);
 
         for waiting in &mut set.waiting_on_human {

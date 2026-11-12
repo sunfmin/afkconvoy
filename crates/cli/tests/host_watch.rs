@@ -995,6 +995,64 @@ fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
     assert!(last["did"][1].as_str().unwrap().contains("left #8 with the human"));
 }
 
+/// sunfmin/control#801: a failed cut holds every later version back while
+/// turns keep landing, so the fleet never stops for it. With the fleet
+/// otherwise moving — an issue taken by its worker — the failure's issue,
+/// the watch's to answer and no human's, starts a watch whose brief names
+/// it: its issue, its step, why, and how the cut goes on.
+#[test]
+fn a_failed_cut_starts_a_watch_while_the_fleet_moves_and_its_brief_names_the_failure() {
+    use afkconvoy_core::cut::{self, FAILED_LABEL, Failure, Record, Step};
+    let world = World::new();
+    let dir = operator(&world);
+    let cuts = "```yaml cut\nset: |\n  true\npublish: |\n  true\n```\n";
+    std::fs::write(
+        world.clone.join("docs/agents/afkconvoy.md"),
+        format!("{}\n{cuts}", crate::common::CONFIG),
+    )
+    .unwrap();
+    crate::common::git(&world.clone, &["commit", "-q", "-am", "Turn cutting on (#3)"]);
+    crate::common::git(&world.clone, &["push", "-q", "origin", crate::common::BASE]);
+    let record: Record = serde_json::from_value(json!({"version": "0.1.1", "started": 1000}))
+        .expect("a cut's record");
+    let why = "the gate ran red: `steer::a` timed out";
+    let line = "cd '/w/afkconvoy-cut' && afkconvoy cut --from gate";
+    let body = cut::failure_report(
+        &record,
+        &Failure::at(Step::Gate, why),
+        "h1",
+        Some("/w/afkconvoy-cut"),
+        line,
+    );
+    world.with_gh(|gh| {
+        gh["issues"].as_array_mut().unwrap().push(json!({"number": 9,
+            "title": cut::failure_title("0.1.1"), "labels": [FAILED_LABEL], "state": "open",
+            "body": body}));
+    });
+    world.issue(7, &["ready-for-agent"]);
+
+    run(&world, &dir);
+    let watch = until(&world, "the watch of the failed cut", || running(&world));
+    let items: Vec<&str> =
+        watch["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+    assert!(items.iter().any(|id| id.contains(r#"["cut-failed",9]"#)), "{items:?}");
+    assert!(!items.iter().any(|id| id.contains(r#""human""#)), "no human waits: {items:?}");
+    let told = brief(&world, &starts(&world)[0]);
+    for required in [
+        "the fleet cuts no version: its last cut failed, of v0.1.1 at its step `gate`",
+        &format!("#9: the step `gate` failed: {why}"),
+        "gh issue close 9",
+        "## Answer a failed cut",
+        &format!("Its issue, under the label `{FAILED_LABEL}`, is yours to answer"),
+    ] {
+        assert!(told.contains(required), "brief lacks {required}: {told}");
+    }
+    // The fleet moves all the while: it claimed #7 and started its worker.
+    until(&world, "#7 claimed", || world.claims().into_iter().find(|(issue, _)| *issue == 7));
+    let doctor = world.afk(&["doctor"]).json;
+    assert_eq!(doctor["waiting_on_human"], json!([]), "{doctor}");
+}
+
 #[test]
 fn a_reported_human_wait_sends_no_more_prompts_across_looks_and_runner_restart() {
     let world = World::new();

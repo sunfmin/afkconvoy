@@ -146,7 +146,7 @@ macro_rules! kinds {
             /// has a row for each.
             fn see(self) -> See {
                 match self {
-                    Kind::LockUnworked | Kind::PatrolFailed | Kind::CutFailed | Kind::WaitedLong => {
+                    Kind::LockUnworked | Kind::PatrolFailed | Kind::WaitedLong => {
                         See::Humans
                     }
                     _ => See::Troubleshooting,
@@ -1285,16 +1285,27 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
     if let Some(cut) = set.cut.as_ref().filter(|cut| cut.standing == cut::Standing::Failed)
         && let Some(failure) = cut.failure
     {
-        found.push(finding(
-            Kind::CutFailed,
-            json!(["cut-failed", failure]),
-            "the fleet cuts no version: its last cut failed".to_string(),
-            format!(
-                "#{failure} says which step failed, why, and the line that goes on from there, \
-                 and is still open"
+        // What its issue says, and how the cut starts again from here: the
+        // watch's to answer (sunfmin/control#801).
+        let (what, evidence, fix) = match &cut.failed {
+            Some(failed) => (
+                format!(
+                    "the fleet cuts no version: its last cut failed, of v{} at its step `{}`",
+                    failed.version, failed.step
+                ),
+                format!("#{failure}: the step `{}` failed: {}", failed.step, failed.why),
+                failed.restart.clone(),
             ),
-            format!("gh issue view {failure}"),
-        ));
+            None => (
+                "the fleet cuts no version: its last cut failed".to_string(),
+                format!(
+                    "#{failure} says which step failed, why, and the line that goes on from \
+                     there, and is still open"
+                ),
+                state.tracker.gh_issue("view", failure).own(),
+            ),
+        };
+        found.push(finding(Kind::CutFailed, json!(["cut-failed", failure]), what, evidence, fix));
     }
     found
 }

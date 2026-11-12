@@ -1,7 +1,10 @@
 use crate::common;
 
 use afkconvoy::log::Entry;
-use afkconvoy_core::{cut::CHECKOUT, worker::is_worktree_named};
+use afkconvoy_core::{
+    cut::{CHECKOUT, FAILED_LABEL},
+    worker::is_worktree_named,
+};
 use common::{BASE, CONFIG, World, git};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -178,6 +181,27 @@ fn failures(world: &World) -> Vec<(u64, Vec<String>)> {
     });
     let labels = |issue: &Value| serde_json::from_value(issue["labels"].clone()).unwrap();
     failed.map(|issue| (issue["number"].as_u64().unwrap(), labels(issue))).collect()
+}
+
+/// Doctor's finding of the failed cut, as this host looks at `now`.
+fn cut_failed(world: &World, now: u64) -> Value {
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", &now.to_string()]).json;
+    let findings = doctor["findings"].as_array().unwrap().iter();
+    let mut found = findings.filter(|found| found["kind"] == "cut_failed");
+    found.next().cloned().unwrap_or_else(|| panic!("no cut_failed finding: {doctor}"))
+}
+
+/// Swaps the watch's label on `issue` for the escalate label, as a watch
+/// that finds the failure one of the four human kinds does.
+fn hand_to_human(world: &World, issue: u64) {
+    let escalate = world.afk(&["config"]).ok()["escalate_label"].as_str().unwrap().to_string();
+    world.with_gh(|gh| {
+        for row in gh["issues"].as_array_mut().unwrap() {
+            if row["number"] == issue {
+                row["labels"] = json!([escalate]);
+            }
+        }
+    });
 }
 
 fn workers_leave(world: &World) {
@@ -475,8 +499,23 @@ fn a_cut_whose_checkout_is_gone_opens_its_issue_and_the_next_takes_up_its_branch
     let issues = world.gh()["issues"].as_array().unwrap().clone();
     let opened = issues.iter().find(|issue| issue["number"] == failed[0].0).unwrap();
     assert_eq!(opened["title"], "afkconvoy: the cut of v1.2.3 failed", "{opened}");
-    assert!(opened["body"].as_str().unwrap().contains("its checkout is gone"), "{opened}");
+    let body = opened["body"].as_str().unwrap();
+    assert!(body.contains("its checkout is gone"), "{opened}");
+    assert!(body.contains("Its checkout is gone from the host `h1`"), "{body}");
+    assert!(body.contains("the next cut starts from the start, on the base tip"), "{body}");
+    assert!(body.contains(&format!("takes up the commit of its branch `{}`", pushed[0])), "{body}");
     assert!(!claimed(&world));
+    // With its checkout gone, doctor says how to start the cut again, and
+    // that its branch, on the base tip still, is taken up and stays.
+    let found = cut_failed(&world, 10_200);
+    let fix = found["fix"].as_str().unwrap();
+    assert!(fix.contains("its kept checkout is gone"), "{fix}");
+    assert!(fix.contains(&format!("gh issue close {}", failed[0].0)), "{fix}");
+    assert!(fix.contains(&format!("Its branch `{}`", pushed[0])), "{fix}");
+    assert!(fix.contains("takes up that commit"), "{fix}");
+    let plan = planned(&world, "alpha", 10_200);
+    assert_eq!(plan["cut"]["failed"]["kept"], "gone", "{plan}");
+    assert_eq!(plan["cut"]["failed"]["branch"]["taken_up"], true, "{plan}");
     for now in [10_200, 10_300 + 1800 + 60] {
         assert_eq!(standing(&world, "alpha", now), "failed");
         assert_eq!(cut(&tick_as(&world, "alpha", now)), Vec::<String>::new(), "no restart");
@@ -513,6 +552,20 @@ fn a_cut_started_again_after_the_base_moved_makes_a_new_commit_on_the_new_base()
 
     land(&world, "Fix the gate (#9)");
     let tip = world.remote(&["rev-parse", BASE]);
+    // Its checkout gone, the stale branch stands on an older base: doctor
+    // says the next cut takes up nothing of it, and the line that deletes it.
+    std::fs::remove_dir_all(&first).unwrap();
+    git(&world.clone, &["worktree", "prune"]);
+    let plan = planned(&world, "alpha", 10_200);
+    let branch = &plan["cut"]["failed"]["branch"];
+    assert_eq!((&branch["name"], &branch["taken_up"]), (&json!(pushed[0]), &json!(false)));
+    let fix = cut_failed(&world, 10_200)["fix"].as_str().unwrap().to_string();
+    assert!(fix.contains("stands on an older base"), "{fix}");
+    let delete = fix.rsplit_once("so it may go: `").unwrap().1.trim_end_matches("`.");
+    assert!(delete.ends_with(&format!("push origin --delete '{}'", pushed[0])), "{delete}");
+    let deleted = world.command("sh", &world.root).args(["-c", delete]).output().unwrap();
+    assert!(deleted.status.success(), "{}", String::from_utf8_lossy(&deleted.stderr));
+    assert_eq!(cut_branches(&world), Vec::<String>::new());
     world.close_issue(failed[0].0);
     assert_eq!(cut(&tick_as(&world, "alpha", 20_000)), ["cut done"]);
     let again = self::checkout(&world);
@@ -527,7 +580,7 @@ fn a_cut_started_again_after_the_base_moved_makes_a_new_commit_on_the_new_base()
     assert!(ancestor(&world, &tip, made), "the commit it gated holds #9");
     assert_eq!(world.remote(&["show", &format!("{made}:VERSION")]), "1.2.3");
     let branches = cut_branches(&world);
-    assert_eq!(branches.len(), 2, "a branch of its own: {branches:?}");
+    assert_eq!(branches.len(), 1, "a branch of its own: {branches:?}");
     assert_ne!(answer["branch"], json!(pushed[0]), "{answer}");
 }
 
@@ -931,14 +984,37 @@ fn a_cut_whose_terminal_is_gone_opens_one_issue_and_no_cut_starts_while_it_is_op
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     workers_leave(&world);
     assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
-    let escalate = world.afk(&["config"]).ok()["escalate_label"].as_str().unwrap().to_string();
     let failed = failures(&world);
     assert_eq!(failed.len(), 1, "{failed:?}");
-    assert!(failed[0].1.contains(&escalate), "{failed:?}");
+    assert_eq!(failed[0].1, [FAILED_LABEL], "the watch's to answer, not a human's");
     assert!(!claimed(&world));
 
     assert_eq!(standing(&world, "alpha", 10_200), "failed");
     let issue = failed[0].0;
+    // Nothing waits for a human: doctor's finding, which starts a watch,
+    // names the failure and the line that goes on with it here.
+    for command in ["plan", "doctor"] {
+        let view = world.afk(&[command, "--now", "10200"]).json;
+        assert_eq!(view["waiting_on_human"], json!([]), "{view}");
+    }
+    let found = cut_failed(&world, 10_200);
+    assert_eq!(found["severity"], "warning", "{found}");
+    assert!(found["what"].as_str().unwrap().contains("of v0.1.1 at its step `set`"), "{found}");
+    let evidence = found["evidence"].as_str().unwrap();
+    assert!(evidence.starts_with(&format!("#{issue}: the step `set` failed: it was ended")));
+    let fix = found["fix"].as_str().unwrap();
+    assert!(fix.contains("its checkout is kept here"), "{fix}");
+    assert!(fix.contains("afkconvoy cut --from 'set'"), "{fix}");
+    let plan = planned(&world, "alpha", 10_200);
+    assert_eq!(plan["cut"]["failed"]["kept"], "here", "{plan}");
+    assert_eq!(plan["cut"]["failed"]["issue"], issue, "{plan}");
+    let excluded = plan["excluded"].as_array().unwrap().iter();
+    let reason = excluded.filter(|row| row["number"] == issue).map(|row| &row["reason"]);
+    assert_eq!(reason.collect::<Vec<_>>(), ["says a cut failed: the host's watch answers it"]);
+
+    // Handed to a human, under the escalate label, it waits for one.
+    hand_to_human(&world, issue);
+    assert_eq!(standing(&world, "alpha", 10_200), "failed");
     let comment = world.comments(issue).pop().unwrap();
     let url = world.comment_url(issue, &comment);
     world.comment(issue, "A later investigation update.");

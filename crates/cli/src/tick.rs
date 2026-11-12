@@ -486,7 +486,7 @@ fn carry_out(
             })
         }
         TickStep::EndCut => match &read.set.cut {
-            Some(row) => crate::cut::end(fleet, found, me, read.flows, row),
+            Some(row) => crate::cut::end(fleet, found, me, row),
             None => Ok(Outcome::Nothing),
         },
         TickStep::Cut { busy } => crate::cut::start(fleet, found, me, agent, busy),
