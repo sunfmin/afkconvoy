@@ -2499,21 +2499,38 @@ pub(crate) fn host_environment() -> Result<Vec<(OsString, OsString)>> {
     Ok(pinned(env, &cache()?, config))
 }
 
-/// `env` with XDG_CACHE_HOME and XDG_CONFIG_HOME set to those of this
-/// `run` — the cache directory `cache` and the config directory `config` —
-/// whatever it says: the host runner reads the list, binds the socket and
-/// reads the host kit exactly where the `run` that started it does.
+/// `env` where it gives the cache directory `cache` and the config
+/// directory `config` of this `run`, and otherwise with XDG_CACHE_HOME and
+/// XDG_CONFIG_HOME set to them: the host runner reads the list, binds the
+/// socket and reads the host kit exactly where the `run` that started it
+/// does. A login shell that sets neither, under the HOME whose `.cache` and
+/// `.config` they are, is given neither: every gate the host runner runs,
+/// and every tool a gate calls, reads its config where the host user's own
+/// shell does (sunfmin/control#765) — Homebrew reads `trust.json` from
+/// `$XDG_CONFIG_HOME/homebrew` once the variable is set, and from
+/// `~/.homebrew` while it is not.
 fn pinned(
     env: Vec<(OsString, OsString)>,
     cache: &Path,
     config: &Path,
 ) -> Vec<(OsString, OsString)> {
-    let pins = [
-        ("XDG_CACHE_HOME", cache.parent().unwrap_or(cache).as_os_str()),
-        ("XDG_CONFIG_HOME", config.as_os_str()),
-    ];
+    let cache = cache.parent().unwrap_or(cache);
+    let given = |name: &str, under: &str| {
+        let set = env.iter().find(|(set, _)| set == name).map(|(_, value)| PathBuf::from(value));
+        set.or_else(|| {
+            let home = env.iter().find(|(set, _)| set == "HOME");
+            home.map(|(_, home)| Path::new(home).join(under))
+        })
+    };
+    let pins: Vec<(&str, &Path)> =
+        [("XDG_CACHE_HOME", cache, ".cache"), ("XDG_CONFIG_HOME", config, ".config")]
+            .into_iter()
+            .filter(|(name, wanted, under)| given(name, under).as_deref() != Some(*wanted))
+            .map(|(name, wanted, _)| (name, wanted))
+            .collect();
     let unpinned = env.into_iter().filter(|(name, _)| !pins.iter().any(|(pin, _)| name == pin));
-    unpinned.chain(pins.map(|(name, value)| (name.into(), value.to_os_string()))).collect()
+    let pinned = pins.iter().map(|(name, value)| ((*name).into(), value.as_os_str().into()));
+    unpinned.chain(pinned).collect()
 }
 
 /// Points this host runner's stdout and stderr, which are its log, at the
@@ -2929,6 +2946,40 @@ mod tests {
                 ("HOME", "/Users/me"),
                 ("XDG_CACHE_HOME", "/c"),
                 ("XDG_CONFIG_HOME", "/conf")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_login_shell_that_gives_the_same_directories_is_given_no_xdg_variable() {
+        let named = |env: Vec<(OsString, OsString)>| -> Vec<(String, String)> {
+            env.into_iter()
+                .map(|(name, value)| (name.into_string().unwrap(), value.into_string().unwrap()))
+                .collect()
+        };
+        let cache = Path::new("/Users/me/.cache/afkconvoy");
+        let config = Path::new("/Users/me/.config");
+        // no XDG_CONFIG_HOME in the login shell: none in the host runner,
+        // so none in a gate it runs (sunfmin/control#765)
+        let login = vec![("PATH".into(), "/usr/bin".into()), ("HOME".into(), "/Users/me".into())];
+        assert_eq!(named(pinned(login.clone(), cache, config)), named(login));
+        // the login shell's own, where they are this run's, stay as it says them
+        let login = vec![
+            ("XDG_CONFIG_HOME".into(), "/conf".into()),
+            ("HOME".into(), "/Users/me".into()),
+            ("XDG_CACHE_HOME".into(), "/c".into()),
+        ];
+        assert_eq!(
+            named(pinned(login.clone(), Path::new("/c/afkconvoy"), Path::new("/conf"))),
+            named(login)
+        );
+        // a run whose config is elsewhere than the login shell's still pins it
+        let login = vec![("HOME".into(), "/Users/me".into())];
+        assert_eq!(
+            named(pinned(login, cache, Path::new("/conf"))),
+            [
+                ("HOME".to_string(), "/Users/me".to_string()),
+                ("XDG_CONFIG_HOME".to_string(), "/conf".to_string())
             ]
         );
     }

@@ -448,13 +448,7 @@ pub fn on_path(program: &str) -> bool {
 /// error says why it is taken as not installed: it was not found, the shell
 /// did not answer in time, or the shell could not be started.
 pub fn found(harness: Harness) -> Result<(), String> {
-    let question = format!("type -- '{}'", harness.program());
-    match ask_host(&question, SHELL_TIMEOUT) {
-        Ok(Some((true, _))) => Ok(()),
-        Ok(Some((false, _))) => Err(format!("`{question}` found nothing")),
-        Ok(None) => Err(format!("`{question}` did not answer in time")),
-        Err(error) => Err(format!("{error:#}: {question}")),
-    }
+    afkconvoy_host_kit::found::found(&crate::agent_setup::WorkerShell, harness)
 }
 
 /// The models `harness` knows on this host, as it says them in the login

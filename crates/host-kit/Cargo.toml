@@ -1,0 +1,15 @@
+[package]
+name = "afkconvoy-host-kit"
+description = "The host kit's agent setup, with no fleet concept in its API: finding the harnesses on a machine, giving each the operator's instructions, skills and guards, installing what workers need, and saying where the machine differs from the declaration (docs/adr/0062)"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+afkconvoy-harness = { path = "../harness" }
+anyhow = "1"
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

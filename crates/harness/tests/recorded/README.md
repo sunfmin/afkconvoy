@@ -31,6 +31,19 @@ spells it.
   asks `<base url>/usages` (`https://api.kimi.com/coding/v1/usages`) with the
   account's token. The sample takes the fields Kimi Code 2.5.3 parses
   (`parseQuotaUsages`): no Kimi account is on this host to record one.
+- `claude-code-hooks.jsonl`: the hook payloads Claude Code 2.1.322 handed one
+  command registered at every event of `Harness::status_events`, recorded on
+  this host on 2026-11-12 from four sessions: an interactive one in tmux (a
+  Bash call it asked permission for, an `AskUserQuestion`, the idle prompt and
+  `/exit`), a `claude -p` with a call that succeeds and one that fails, one
+  started on a model that does not exist, and one given an API key that is
+  refused. Session ids, paths and the scratchpad directory are neutral ones.
+- `codex-hooks.jsonl`: Codex's hook payloads. No Codex runs on this host: the
+  lines take only the fields of codex-rs/hooks's generated input schemas and
+  `schema.rs` (openai/codex at `0702ebed`) — no `Notification`, a
+  `PostToolUse` whose `tool_response` is the shell's output as text, a failed
+  turn's `PostModelRequest` and no `Stop` after it. Its values are neutral.
+  Replace it with a recorded session once a Codex runs here.
 
 The steps samples (sunfmin/control#747), read by `Harness::steps`:
 
