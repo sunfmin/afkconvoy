@@ -1245,7 +1245,7 @@ impl Harness {
             line = line.fixed(" ").fixed(variable).fixed("=1");
         }
         let mut line = match self {
-            Harness::ClaudeCode => line,
+            Harness::ClaudeCode => claude_code::environment(line, start),
             Harness::Pi => pi::environment(line, start),
             Harness::Codex => codex::environment(line, start),
             Harness::Dsh => dsh::environment(line, start),

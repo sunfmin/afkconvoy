@@ -76,13 +76,21 @@ pub(super) const PROVIDER: &str = "ANTHROPIC_BASE_URL";
 /// setting do not accept workspace trust, even when both settings are given.
 /// This does not write a trust entry in the host user's config.
 pub(super) const TRUST: &str = "CLAUDE_CODE_SANDBOXED=1";
+/// Turns off Claude Code's prompt suggestions: the grey ghost text it puts in
+/// the prompt box once a turn ends. A worker, a watch and the asking session
+/// have nobody at that prompt, and whoever reads their screen could take the
+/// suggestion for a person's word (sunfmin/control#739). The variable wins
+/// over every settings file, and is set in the launch, so the host user's own
+/// settings are left as they are.
+pub(super) const NO_SUGGESTIONS: &str = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false";
 /// Its worktree trust outside a role is the permission-bypass and settings
 /// flags `in_worktree` adds: a launch checks the command takes `FLAGS`.
 pub(super) const TRUST_IS_FLAGS: bool = true;
 const BYPASS: &str = "--dangerously-skip-permissions";
 
-/// Starts Claude Code with its worktree trusted and its unattended warning
-/// answered, without replacing a setting the stock command already carries.
+/// Starts Claude Code with its worktree trusted, its unattended warning
+/// answered and its prompt suggestions off, without replacing a setting the
+/// stock command already carries.
 pub(super) fn in_worktree(command: &str) -> String {
     let mut command = command.to_string();
     if !command.contains(BYPASS) {
@@ -91,11 +99,23 @@ pub(super) fn in_worktree(command: &str) -> String {
     if !command.contains("skipDangerousModePermissionPrompt") {
         command.push_str(&format!(" --settings '{{{}}}'", warning_accepted!()));
     }
-    if command.contains(TRUST) {
-        command
-    } else {
-        Line::new().fixed("export ").fixed(TRUST).fixed(" && ").launch(&command).done()
+    let missing: Vec<&str> =
+        [TRUST, NO_SUGGESTIONS].into_iter().filter(|set| !command.contains(set)).collect();
+    if missing.is_empty() {
+        return command;
     }
+    let mut line = Line::new().fixed("export");
+    for set in missing {
+        line = line.fixed(" ").fixed(set);
+    }
+    line.fixed(" && ").launch(&command).done()
+}
+
+/// The environment a worker in its role sets for Claude Code beyond the
+/// switches `ENVIRONMENT` names: its prompt suggestions off.
+#[spec(fn(Line[@l], &Start) -> Line[l])]
+pub(super) fn environment(line: Line, _start: &Start) -> Line {
+    line.fixed(" ").fixed(NO_SUGGESTIONS)
 }
 
 /// Starts one watch interactively, with the same unattended trust setup.
@@ -911,7 +931,12 @@ mod tests {
     #[test]
     fn folder_trust_is_session_configuration_beside_permission_bypass_and_both_settings() {
         let outside = Harness::ClaudeCode.in_worktree(STOCK, "/new/worktree", "");
-        assert!(outside.starts_with("export CLAUDE_CODE_SANDBOXED=1 && "), "{outside}");
+        assert!(
+            outside.starts_with(
+                "export CLAUDE_CODE_SANDBOXED=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && "
+            ),
+            "{outside}"
+        );
         assert_eq!(in_worktree(&outside), outside, "trust setup is idempotent");
         for host_user in [false, true] {
             let start = Start { host_user, ..start(None) };
@@ -921,6 +946,30 @@ mod tests {
             assert!(role.contains("--setting-sources project"), "{role}");
             assert!(role.contains("/bin/afkconvoy guard"), "{role}");
         }
+    }
+
+    #[test]
+    fn workers_watches_and_the_asking_session_start_with_prompt_suggestions_off() {
+        let off = " CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false ";
+        let outside = Harness::ClaudeCode.in_worktree(STOCK, "/wt", "");
+        let watch = Harness::ClaudeCode.watch(STOCK, "/operator dir", "/kept", Some("opus"));
+        let role = in_role(STOCK, &start(None));
+        let resumed = Harness::ClaudeCode.resumed(STOCK, &start(None), None, "go on").unwrap();
+        for line in [&outside, &watch, &role, &resumed] {
+            assert_eq!(line.matches(off).count(), 1, "{line}");
+            assert!(line.find(off) < line.find("claude "), "set before it starts: {line}");
+            assert!(!line.contains("promptSuggestionEnabled"), "{line}");
+            assert!(!line.contains("~/.claude/settings.json"), "{line}");
+        }
+        let trusted = "export CLAUDE_CODE_SANDBOXED=1 && claude --dangerously-skip-permissions \
+                       --settings '{\"skipDangerousModePermissionPrompt\":true}'";
+        let added = in_worktree(trusted);
+        assert_eq!(
+            added,
+            format!("export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && {trusted}"),
+            "a command already trusted gets only what it lacks"
+        );
+        assert_eq!(in_worktree(&added), added);
     }
 
     fn in_role(command: &str, start: &Start) -> String {
@@ -972,6 +1021,7 @@ mod tests {
             line,
             "cd '/copies/acme/dev/abc' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
              CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 CLAUDE_CODE_SANDBOXED=1 \
+             CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false \
              AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
              AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
              AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
