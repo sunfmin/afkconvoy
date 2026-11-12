@@ -6,6 +6,7 @@
 //! (`recorded/`, whose README says where each came from).
 
 use afkconvoy_harness::brief::brief_pointer;
+use afkconvoy_harness::status::{CallEnd, Reading, Report};
 use afkconvoy_harness::tokens::Counts;
 use afkconvoy_harness::turn::Turn;
 use afkconvoy_harness::window::{Limit, Limited, Window};
@@ -319,6 +320,221 @@ fn the_crate_depends_on_nothing_of_the_fleet() {
         manifest["dependencies"].as_table().unwrap().keys().map(String::as_str).collect();
     names.sort_unstable();
     assert_eq!(names, ["flux-alloc", "flux-core", "flux-rs", "serde", "serde_json", "toml"]);
+}
+
+/// Each line of a recorded file of hook payloads, as `harness` says its
+/// status: its word, its kind, its message, its tool and the end of the
+/// call — `None` for an event that changes nothing.
+type Read =
+    Option<(&'static str, Option<&'static str>, Option<String>, Option<String>, Option<CallEnd>)>;
+
+fn statuses(harness: Harness, recorded: &str) -> Vec<Read> {
+    recorded
+        .lines()
+        .map(|line| {
+            let payload: serde_json::Value = serde_json::from_str(line).unwrap();
+            match harness.hook_status(&payload).unwrap() {
+                Reading::Unchanged => None,
+                Reading::Is(Report { status, message, tool, end }) => {
+                    Some((status.word(), status.kind(), message, tool, end))
+                }
+            }
+        })
+        .collect()
+}
+
+fn is(
+    word: &'static str,
+    kind: Option<&'static str>,
+    message: Option<&str>,
+    tool: Option<&str>,
+    step: Option<CallEnd>,
+) -> Read {
+    Some((word, kind, message.map(str::to_string), tool.map(str::to_string), step))
+}
+
+#[test]
+fn recorded_claude_code_hook_events_say_its_session_s_status() {
+    let recorded = include_str!("recorded/claude-code-hooks.jsonl");
+    let ended = || Some(CallEnd::Result { error: None });
+    let bash = Some("Bash");
+    let ask = Some("AskUserQuestion");
+    let touch = Some("Bash: touch made-by-hook-test");
+    let question = Some("Do you prefer tea or coffee?");
+    let failed = "Exit code 1\nls: /no/such/dir: No such file or directory";
+    let expected: Vec<Read> = vec![
+        // An interactive session: a call it asks permission for, then a question.
+        is("idle", None, None, None, None),
+        is(
+            "working",
+            None,
+            Some("Run the shell command 'touch made-by-hook-test' with the Bash tool."),
+            None,
+            None,
+        ),
+        is("working", None, touch, bash, Some(CallEnd::Start)),
+        is("blocked", Some("permission"), touch, bash, None),
+        None,
+        is("working", None, touch, bash, ended()),
+        is(
+            "done",
+            None,
+            Some(
+                "I ran `touch made-by-hook-test` in the working directory. It completed with no output, so the file should now exist there.",
+            ),
+            None,
+            None,
+        ),
+        is(
+            "working",
+            None,
+            Some(
+                "Use the AskUserQuestion tool to ask me whether I prefer tea or coffee, with those two options.",
+            ),
+            None,
+            None,
+        ),
+        is("blocked", Some("question"), question, ask, Some(CallEnd::Start)),
+        is("blocked", Some("question"), question, ask, None),
+        None,
+        is("working", None, question, ask, ended()),
+        is("done", None, Some("You prefer tea."), None, None),
+        is("idle", None, Some("Claude is waiting for your input"), None, None),
+        is("idle", None, None, None, None),
+        // `claude -p`: a call that succeeds and one that fails.
+        is("idle", None, None, None, None),
+        is(
+            "working",
+            None,
+            Some(
+                "Run the shell command 'echo hello' with the Bash tool, then run the shell command 'ls /no/such/dir' with the Bash tool. Then say done.",
+            ),
+            None,
+            None,
+        ),
+        is("working", None, Some("Bash: echo hello"), bash, Some(CallEnd::Start)),
+        is("working", None, Some("Bash: echo hello"), bash, ended()),
+        is("working", None, Some("Bash: ls /no/such/dir"), bash, Some(CallEnd::Start)),
+        is(
+            "working",
+            None,
+            Some("Exit code 1"),
+            bash,
+            Some(CallEnd::Result { error: Some(failed.to_string()) }),
+        ),
+        is(
+            "done",
+            None,
+            Some(
+                "Both commands ran. `echo hello` printed `hello`. `ls /no/such/dir` exited with code 1 and reported `No such file or directory`, as expected for a missing path.",
+            ),
+            None,
+            None,
+        ),
+        is("idle", None, None, None, None),
+        // A model it has no access to, then a key it is refused with.
+        is("idle", None, None, None, None),
+        is("working", None, Some("say hi"), None, None),
+        is(
+            "error",
+            None,
+            Some(
+                "There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it. Run --model to pick a different model.",
+            ),
+            None,
+            None,
+        ),
+        is("idle", None, None, None, None),
+        is("idle", None, None, None, None),
+        is("working", None, Some("say hi"), None, None),
+        is("blocked", Some("auth"), Some("Invalid API key · Fix external API key"), None, None),
+        is("idle", None, None, None, None),
+    ];
+    let read = statuses(Harness::ClaudeCode, recorded);
+    assert_eq!(read.len(), expected.len());
+    for (at, (read, expected)) in read.iter().zip(&expected).enumerate() {
+        assert_eq!(read, expected, "line {}", at + 1);
+    }
+}
+
+#[test]
+fn claude_code_and_codex_register_one_command_at_every_status_event() {
+    for harness in [Harness::ClaudeCode, Harness::Codex] {
+        let events = harness.status_events().unwrap();
+        let hooks: serde_json::Value =
+            serde_json::from_str(&harness.status_hooks("/bin/tell-status").unwrap()).unwrap();
+        let registered = hooks["hooks"].as_object().unwrap();
+        assert_eq!(registered.len(), events.len(), "{}", harness.key());
+        for event in events {
+            assert_eq!(
+                registered[*event][0]["hooks"][0]["command"],
+                "/bin/tell-status",
+                "{}: {event}",
+                harness.key()
+            );
+        }
+    }
+    let claude = Harness::ClaudeCode.status_events().unwrap();
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "Notification",
+        "Stop",
+        "SessionEnd",
+    ] {
+        assert!(claude.contains(&event), "{event}");
+    }
+}
+
+#[test]
+fn every_other_harness_says_no_status_from_its_hooks() {
+    let payload = serde_json::json!({"hook_event_name": "Stop"});
+    for harness in Harness::ALL {
+        if matches!(harness, Harness::ClaudeCode | Harness::Codex) {
+            continue;
+        }
+        assert_eq!(harness.status_events(), None, "{}", harness.key());
+        assert_eq!(harness.status_hooks("/bin/tell-status"), None, "{}", harness.key());
+        assert_eq!(harness.hook_status(&payload), None, "{}", harness.key());
+    }
+}
+
+#[test]
+fn codex_hook_events_say_its_session_s_status() {
+    let recorded = include_str!("recorded/codex-hooks.jsonl");
+    let bash = Some("Bash");
+    let expected: Vec<Read> = vec![
+        is("idle", None, None, None, None),
+        is("working", None, Some("Run cargo test, then remove the build directory."), None, None),
+        is("working", None, Some("Bash: cargo test"), bash, Some(CallEnd::Start)),
+        // Codex hands a shell call's output alone: no error is said of it.
+        is("working", None, Some("Bash: cargo test"), bash, Some(CallEnd::Result { error: None })),
+        is("blocked", Some("permission"), Some("Bash: rm -rf build"), bash, None),
+        None,
+        is("done", None, Some("The tests fail to compile: `x` is not defined."), None, None),
+        is("working", None, Some("Try again."), None, None),
+        // A turn that ends in an error fires no `Stop`.
+        is(
+            "error",
+            None,
+            Some(
+                "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+            ),
+            None,
+            None,
+        ),
+        is("working", None, Some("Never mind."), None, None),
+        is("idle", None, None, None, None),
+        is("idle", None, None, None, None),
+    ];
+    let read = statuses(Harness::Codex, recorded);
+    assert_eq!(read.len(), expected.len());
+    for (at, (read, expected)) in read.iter().zip(&expected).enumerate() {
+        assert_eq!(read, expected, "line {}", at + 1);
+    }
 }
 
 #[test]
