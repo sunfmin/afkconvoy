@@ -7,6 +7,7 @@
 //! variable, a hook event or a path of it, nor where it keeps its session,
 //! nor which of its lines start or end a turn (docs/adr/0044).
 
+use flux_rs::attrs::*;
 use serde::{Deserialize, Deserializer};
 
 use crate::line::Line;
@@ -1190,6 +1191,13 @@ impl Harness {
     /// Grok starts in `start.dir`. Grok's session works only in its cwd, so it
     /// starts in the worktree (ADR-0043).
     pub fn in_role(self, command: &str, start: &Start) -> String {
+        self.role_line(command, start).done()
+    }
+
+    /// The line `in_role` gives, before it is done: what a resumed session
+    /// is started with as well.
+    #[spec(fn(Harness, &str, &Start) -> Line[true])]
+    fn role_line(self, command: &str, start: &Start) -> Line {
         let directory = match self {
             Harness::Grok => start.worktree,
             _ => start.dir,
@@ -1218,7 +1226,40 @@ impl Harness {
             Harness::Kimi => kimi::added(line, start),
             Harness::Grok => grok::added(line, start),
         }
-        .done()
+    }
+
+    /// The line that continues a session a soft stop kept (`stop_answer`),
+    /// in its role as `in_role` starts one — the same directory, settings,
+    /// hook and model — with `instruction` as its next user message.
+    /// `session` is the session's id, which `session_id` reads off its file
+    /// (`session_place` says where those are); `None` continues the latest
+    /// session of the directory the line changes to. `None` of a harness
+    /// that cannot continue a session.
+    pub fn resumed(
+        self,
+        command: &str,
+        start: &Start,
+        session: Option<&str>,
+        instruction: &str,
+    ) -> Option<String> {
+        let line = self.role_line(command, start);
+        let line = match self {
+            Harness::ClaudeCode => claude_code::resumed(line, session, instruction),
+            Harness::Codex => codex::resumed(line, session, instruction),
+            Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => return None,
+        };
+        Some(line.done())
+    }
+
+    /// The id of the session whose file holds `text`: what `resumed`
+    /// continues it by. `None` when the text names none, or of a harness
+    /// that cannot continue a session.
+    pub fn session_id(self, text: &str) -> Option<String> {
+        match self {
+            Harness::ClaudeCode => claude_code::session_id(text),
+            Harness::Codex => codex::session_id(text),
+            Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => None,
+        }
     }
 
     /// The variables this harness is switched by, each set in the
@@ -1600,6 +1641,37 @@ impl Harness {
             Harness::Grok => grok::REFUSED,
         }
     }
+
+    /// What a hook run before a tool call answers so that the session stops
+    /// before that call, cleanly, its session kept to be continued
+    /// (`resumed`): rather than refusing the one call (`refused`), it ends
+    /// the session's turn. `reason` is what the session's user is shown.
+    /// `None` of a harness with no such answer. Whether the harness honours
+    /// it is `stop_reliable`.
+    pub fn stop_answer(self, reason: &str) -> Option<Answer> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::stop_answer(reason)),
+            Harness::Codex => Some(codex::stop_answer(reason)),
+            Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => None,
+        }
+    }
+
+    /// Whether this harness is known to honour its `stop_answer`. A caller
+    /// stops a session whose harness does not some other way.
+    pub const fn stop_reliable(self) -> bool {
+        match self {
+            Harness::ClaudeCode => claude_code::STOP_RELIABLE,
+            Harness::Codex => codex::STOP_RELIABLE,
+            Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => false,
+        }
+    }
+}
+
+/// What a hook prints on its standard output, and the code it exits with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    pub printed: String,
+    pub code: u8,
 }
 
 /// Whether `model`, as a stage writes it, is one of `listed`, the models a

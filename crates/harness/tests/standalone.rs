@@ -5,7 +5,7 @@
 
 use afkconvoy_harness::tokens::Counts;
 use afkconvoy_harness::turn::Turn;
-use afkconvoy_harness::{DshProfile, Harness, Start, Told};
+use afkconvoy_harness::{Answer, DshProfile, Harness, Start, Told};
 
 fn start(model: Option<&str>) -> Start<'_> {
     Start {
@@ -65,6 +65,78 @@ fn a_recorded_codex_session_says_its_usage() {
         tokens["codex-x"],
         Counts { input: 70, cache_read: 30, cache_write: 0, output: 10, reasoning: Some(4) }
     );
+}
+
+const OTHERS: [Harness; 4] = [Harness::Pi, Harness::Dsh, Harness::Kimi, Harness::Grok];
+
+#[test]
+fn a_claude_code_hook_stops_its_session_with_the_answer_its_hooks_documentation_gives() {
+    let Answer { printed, code } = Harness::ClaudeCode.stop_answer("Stopped: \"paused\"").unwrap();
+    // https://code.claude.com/docs/en/hooks, "Common JSON fields", read from
+    // a hook that exits 0.
+    assert_eq!(code, 0);
+    assert_eq!(printed, r#"{"continue":false,"stopReason":"Stopped: \"paused\""}"#);
+    let parsed: serde_json::Value = serde_json::from_str(&printed).unwrap();
+    assert_eq!(parsed, serde_json::json!({"continue": false, "stopReason": "Stopped: \"paused\""}));
+    assert_ne!(code, Harness::ClaudeCode.refused(), "a stop is no refusal of the one call");
+    assert!(Harness::ClaudeCode.stop_reliable());
+}
+
+#[test]
+fn a_codex_hook_says_the_same_and_is_not_relied_on() {
+    let Answer { printed, code } = Harness::Codex.stop_answer("paused").unwrap();
+    assert_eq!((printed.as_str(), code), (r#"{"continue":false,"stopReason":"paused"}"#, 0));
+    assert!(!Harness::Codex.stop_reliable());
+}
+
+#[test]
+fn a_harness_with_no_known_stop_answer_has_none_and_is_not_relied_on() {
+    for harness in OTHERS {
+        assert_eq!(harness.stop_answer("paused"), None, "{}", harness.key());
+        assert!(!harness.stop_reliable(), "{}", harness.key());
+    }
+}
+
+#[test]
+fn a_kept_claude_code_session_is_resumed_in_its_role_with_a_new_instruction() {
+    let start = start(Some("a-model"));
+    let started = Harness::ClaudeCode.in_role("claude", &start);
+    let resumed = Harness::ClaudeCode.resumed("claude", &start, Some("5e1d-ab"), "go on").unwrap();
+    assert_eq!(resumed, format!("{started} --resume '5e1d-ab' 'go on'"));
+    let latest = Harness::ClaudeCode.resumed("claude", &start, None, "it's next").unwrap();
+    assert_eq!(latest, format!("{started} --continue 'it'\\''s next'"));
+    // Its id is what each entry of its session file carries.
+    let text = r#"{"type":"user","sessionId":"5e1d-ab","cwd":"/agents/reviewer"}"#;
+    assert_eq!(Harness::ClaudeCode.session_id(text).as_deref(), Some("5e1d-ab"));
+    assert_eq!(Harness::ClaudeCode.session_id("{}"), None);
+}
+
+#[test]
+fn a_kept_codex_session_is_resumed_in_its_role_with_a_new_instruction() {
+    let start = start(Some("a-model"));
+    let started = Harness::Codex.in_role("codex", &start);
+    let resumed = Harness::Codex.resumed("codex", &start, Some("0199-c0"), "go on").unwrap();
+    assert_eq!(resumed, format!("{started} resume '0199-c0' 'go on'"));
+    let latest = Harness::Codex.resumed("codex", &start, None, "go on").unwrap();
+    assert_eq!(latest, format!("{started} resume --last 'go on'"));
+    // Its id is its thread's, which its session_meta gives.
+    let text = r#"{"timestamp":"t","type":"session_meta","payload":{"id":"0199-c0","cwd":"/src/project"}}
+{"timestamp":"t","type":"turn_context","payload":{"model":"codex-x"}}"#;
+    assert_eq!(Harness::Codex.session_id(text).as_deref(), Some("0199-c0"));
+    assert_eq!(Harness::Codex.session_id(r#"{"type":"turn_context","payload":{"id":"x"}}"#), None);
+}
+
+#[test]
+fn a_harness_that_cannot_continue_a_session_has_no_resume_line() {
+    for harness in OTHERS {
+        assert_eq!(
+            harness.resumed("x", &start(None), Some("s"), "go on"),
+            None,
+            "{}",
+            harness.key()
+        );
+        assert_eq!(harness.session_id(r#"{"sessionId":"s"}"#), None, "{}", harness.key());
+    }
 }
 
 /// What the crate depends on: Flux's attributes, serde and TOML — never

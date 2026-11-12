@@ -361,6 +361,44 @@ const SHELL_TOOL: &str = "Bash";
 /// The exit code that tells Claude Code a hook refuses the call.
 pub(super) const REFUSED: u8 = 2;
 
+/// What a hook answers to stop the session before the call it is asked of,
+/// keeping the session: the common fields of Claude Code's hook output
+/// (https://code.claude.com/docs/en/hooks, "Common JSON fields") —
+/// `continue: false` ends the session's turn, and `stopReason` is shown to
+/// its user, not to the model. Claude Code reads them only from a hook that
+/// exits 0.
+pub(super) fn stop_answer(reason: &str) -> super::Answer {
+    let printed = serde_json::json!({"continue": false, "stopReason": reason}).to_string();
+    super::Answer { printed, code: 0 }
+}
+/// Claude Code honours `continue: false` from any hook, a call's included.
+pub(super) const STOP_RELIABLE: bool = true;
+
+/// The flag that continues the session it names, and the one that continues
+/// the latest session of the directory Claude Code starts in.
+const RESUME: &str = "--resume";
+const CONTINUE: &str = "--continue";
+
+/// `line`, which starts a worker in its role, continuing the session
+/// `session` — the latest of its directory where it names none — with
+/// `instruction` as the prompt.
+#[spec(fn(Line[@l], Option<&str>, &str) -> Line[l])]
+pub(super) fn resumed(line: Line, session: Option<&str>, instruction: &str) -> Line {
+    let line = match session {
+        Some(session) => line.fixed(" ").fixed(RESUME).fixed(" ").word(session),
+        None => line.fixed(" ").fixed(CONTINUE),
+    };
+    line.fixed(" ").word(instruction)
+}
+
+/// The session id the session file `text` is of: the `sessionId` each of
+/// its entries carries, the file's name before `.jsonl`.
+pub(super) fn session_id(text: &str) -> Option<String> {
+    json_lines(text).find_map(|value| {
+        value["sessionId"].as_str().filter(|id| !id.is_empty()).map(str::to_string)
+    })
+}
+
 /// Where a role's limits for Claude Code are written, in its directory: the
 /// settings Claude Code loads from the directory it starts in.
 pub(super) const LIMITS: &str = ".claude/settings.json";
