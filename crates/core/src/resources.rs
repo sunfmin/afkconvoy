@@ -157,7 +157,7 @@ pub fn elsewhere(accounts: &[(u32, u64)], me: u32) -> Option<u32> {
 }
 
 fn is_user(uid: u32) -> bool {
-    (FIRST_USER_UID..=LAST_USER_UID).contains(&uid)
+    FIRST_USER_UID <= uid && uid <= LAST_USER_UID
 }
 
 /// Why a memory-pressure episode starts no watch.
