@@ -142,15 +142,29 @@ pub const LAST_USER_UID: u32 = 60_000;
 /// Accounts below `FIRST_USER_UID` or past `LAST_USER_UID` are the machine's
 /// own and are never it.
 pub fn elsewhere(accounts: &[(u32, u64)], me: u32) -> Option<usize> {
-    let mine = accounts.iter().filter(|(uid, _)| *uid == me).map(|(_, bytes)| *bytes).sum::<u64>();
-    let mut most: Option<usize> = None;
-    for (at, (uid, bytes)) in accounts.iter().enumerate() {
-        let user = *uid >= FIRST_USER_UID && *uid <= LAST_USER_UID && *uid != me;
-        if user && *bytes > mine && most.is_none_or(|most| *bytes > accounts[most].1) {
-            most = Some(at);
+    let mut mine: u64 = 0;
+    for (uid, bytes) in accounts {
+        if *uid == me {
+            mine = mine.saturating_add(*bytes);
         }
     }
-    most
+    let mut most: Option<(usize, u64)> = None;
+    let mut at = 0;
+    for (uid, bytes) in accounts {
+        let user = *uid >= FIRST_USER_UID && *uid <= LAST_USER_UID && *uid != me;
+        let larger = match most {
+            Some((_, held)) => *bytes > held,
+            None => true,
+        };
+        if user && *bytes > mine && larger {
+            most = Some((at, *bytes));
+        }
+        at += 1;
+    }
+    match most {
+        Some((at, _)) => Some(at),
+        None => None,
+    }
 }
 
 /// Why a memory-pressure episode starts no watch.
