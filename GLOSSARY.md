@@ -9,7 +9,7 @@ One user account on one machine, and what the fleet keeps for it there: its host
 _Avoid_: machine (the hardware every host on it shares)
 
 **Fleet**:
-What afkconvoy runs for one repo: the workers its fleet instances start on that repo's checkouts, working the issues of its tracker that carry the repo's label (`repo:<owner>/<repo>`). A repo whose truth is GitHub is the fleet's; one whose truth is Guild's Forgejo is Guild's, and a repo belongs to one of them alone (sunfmin/guild's ADR, sunfmin/control#764).
+One repo's workers under afkconvoy: those its fleet instances start on that repo's checkouts, working the issues of its tracker that carry the repo's label (`repo:<owner>/<repo>`). A repo whose truth is GitHub is the fleet's; one whose truth is Guild's Forgejo is Guild's, and a repo belongs to one of them alone (sunfmin/guild's ADR, sunfmin/control#764).
 _Avoid_: Guild (the other agent system of this host's user), convoy
 
 **Fleet instance**:
