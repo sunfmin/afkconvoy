@@ -156,6 +156,8 @@ pub fn elsewhere(accounts: &[(u32, u64)], me: u32) -> Option<u32> {
     most.0
 }
 
+// Flux cannot check a range's `contains`.
+#[allow(clippy::manual_range_contains)]
 fn is_user(uid: u32) -> bool {
     FIRST_USER_UID <= uid && uid <= LAST_USER_UID
 }
