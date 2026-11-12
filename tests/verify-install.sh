@@ -1,8 +1,9 @@
 #!/bin/sh
 # Exercise `verify.sh install` with stand-ins for every download and build:
 # it installs what the pins in Cargo.toml and crates/core/Cargo.toml name,
-# asks for a pin's new version once it changes, and leaves alone a tool at
-# its pin. Nothing is fetched.
+# and fixpoint from liquid-fixpoint's nightly release, asks for a pin's new
+# version once it changes, leaves alone a tool already the one needed, and
+# refuses a platform the nightly has no fixpoint for. Nothing is fetched.
 set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 mkdir -p "$root/.afkconvoy-tmp"
@@ -50,18 +51,13 @@ chmod +x "$4/$name/bin/z3"
 MOCK
 cat >"$tmp/bin/tar" <<'MOCK'
 #!/bin/sh
-# tar -xzf <tarball> -C <dir>: the release holds stack-<version>-<platform>/stack.
-name=$(basename "$(cat "$2")" .tar.gz)
-mkdir -p "$4/$name"
-cat >"$4/$name/stack" <<'STACK'
+# tar -xzf <tarball> -C <dir>: liquid-fixpoint's nightly holds fixpoint alone.
+echo "tar $*" >>"$LOG"
+printf '#!/bin/sh\necho "fixpoint 0.9.6.3.8 (69e585b4c0ffee)"\n' >"$4/fixpoint"
+MOCK
+cat >"$tmp/bin/uname" <<'MOCK'
 #!/bin/sh
-echo "stack $*" >>"$LOG"
-# stack install --local-bin-path <dir>, in the clone: builds the fixpoint of
-# the commit checked out, at the version liquid-fixpoint's source says.
-printf '#!/bin/sh\necho "fixpoint %s (%s)"\n' "$FIXPOINT_VERSION" "$(cat .git/checked-out)" >"$3/fixpoint"
-chmod +x "$3/fixpoint"
-STACK
-chmod +x "$4/$name/stack"
+case "$1" in -s) echo "${UNAME_S:-Darwin}" ;; -m) echo "${UNAME_M:-arm64}" ;; esac
 MOCK
 cat >"$tmp/bin/git" <<'MOCK'
 #!/bin/sh
@@ -85,10 +81,9 @@ case "$*" in
 esac
 MOCK
 chmod +x "$tmp/bin/"* "$tmp/home/.cargo/bin/cargo"
-fixpoint_version=$(sed -n 's/^fixpoint = "\([^ ]*\) .*/\1/p' "$root/crates/core/Cargo.toml")
 verify() {
     HOME="$tmp/home" XDG_CACHE_HOME= TMPDIR="$tmp" PATH="$tmp/bin:/usr/bin:/bin" LOG="$log" \
-        FIXPOINT_VERSION="$fixpoint_version" sh "$tmp/repo/verify.sh" "$@" 2>"$tmp/err"
+        sh "$tmp/repo/verify.sh" "$@" 2>"$tmp/err"
 }
 fail() {
     echo "verify-install: $1" >&2
@@ -102,11 +97,23 @@ asked() { grep -qF -- "$1" "$log" || fail "never asked: $1"; }
 # Sets a pin in the copy's Cargo.toml: `key = "value"` on its line.
 pin() { sed -i.bak "s|^$1 = .*|$1 = \"$2\"|" "$tmp/repo/crates/core/Cargo.toml"; }
 pin z3 7.7.7
-pin fixpoint "$fixpoint_version (1111111111111111111111111111111111111111)"
 sed -i.bak 's|^\(flux-rs = .*rev = "\)[0-9a-f]*"|\1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"|' "$tmp/repo/Cargo.toml"
-pin stack 9.9.1
+grep -qE '^(fixpoint|stack) = ' "$tmp/repo/crates/core/Cargo.toml" &&
+    fail "crates/core/Cargo.toml still pins fixpoint or stack"
 
 verify --toolchain && fail "a host with none of the three passed the check"
+grep -q "fixpoint reports no version" "$tmp/err" || fail "the check did not say fixpoint is missing"
+
+# A platform the nightly builds no fixpoint for is refused, before anything
+# is installed, and nothing is built from source.
+for platform in Darwin-x86_64 Linux-aarch64; do
+    : >"$log"
+    (UNAME_S=${platform%-*} UNAME_M=${platform#*-} && export UNAME_S UNAME_M && verify install) &&
+        fail "install on $platform, which the nightly has no fixpoint for, passed"
+    grep -q "nightly release has no fixpoint for ${platform%-*} ${platform#*-}" "$tmp/err" ||
+        fail "install on $platform did not say the nightly has no fixpoint for it"
+    [ ! -s "$log" ] || fail "install on $platform fetched or built something"
+done
 
 verify install || fail "install on a host with none of the three failed"
 asked "curl -fsSL https://api.github.com/repos/Z3Prover/z3/releases/tags/z3-7.7.7"
@@ -115,9 +122,12 @@ asked "git clone --quiet https://github.com/flux-rs/flux $tmp/home/.cache/src/fl
 asked "git -C $tmp/home/.cache/src/flux checkout --quiet --force aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 grep -qx "cargo xtask install RUSTUP_TOOLCHAIN=" "$log" ||
     fail "Flux was not built under the toolchain its own source names"
-asked "/releases/download/v9.9.1/stack-9.9.1-"
-asked "git -C $tmp/home/.cache/src/liquid-fixpoint checkout --quiet --force 1111111111111111111111111111111111111111"
-asked "stack install --local-bin-path $tmp/home/.local/bin"
+asked "https://github.com/ucsd-progsys/liquid-fixpoint/releases/download/nightly/fixpoint-aarch64-apple-darwin.tar.gz"
+grep -qE '^stack |/src/liquid-fixpoint|clone .*ucsd-progsys/liquid-fixpoint' "$log" &&
+    fail "install built fixpoint from source"
+[ -x "$tmp/home/.local/bin/fixpoint" ] || fail "install put no fixpoint in ~/.local/bin"
+grep -q "verify: installed fixpoint 0.9.6.3.8 (69e585b4c0ffee)" "$tmp/err" ||
+    fail "install did not say which fixpoint the nightly gave"
 for tool in z3 cargo-flux fixpoint; do
     grep -q "verify: installed $tool " "$tmp/err" || fail "install did not say how long $tool took"
 done
@@ -140,5 +150,9 @@ sed -i.bak 's|^\(flux-rs = .*rev = "\)[0-9a-f]*"|\1bbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 verify install || fail "install of a changed Flux revision failed"
 asked "checkout --quiet --force bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 grep -q 'clone' "$log" && fail "install cloned Flux again instead of reusing its clone"
-grep -qE 'curl|stack' "$log" && fail "install of a changed Flux revision fetched z3 or built fixpoint"
+grep -qE '^(curl|tar) ' "$log" && fail "install of a changed Flux revision fetched z3 or fixpoint"
 verify --toolchain || fail "the check failed after installing the changed pins"
+
+# Any fixpoint that reports a version passes the check: it has no pin.
+printf '#!/bin/sh\necho "fixpoint 9.9.9 (0000000)"\n' >"$tmp/home/.local/bin/fixpoint"
+verify --toolchain || fail "the check refused a fixpoint of another version"
