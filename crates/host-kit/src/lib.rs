@@ -1,7 +1,8 @@
 //! The host kit's agent setup (sunfmin/control#528, #529, #753, #758;
 //! docs/adr/0062), kept apart so that another program can
 //! give a machine the operator's agent setup with no afkconvoy installed
-//! there: Guild's `guild install` calls it.
+//! there. Guild's `guild install` calls only its `tmux`: Guild's instances
+//! are not given the agent setup (docs/adr/0066, sunfmin/control#780).
 //!
 //! What it does is what afkconvoy's host kit does, and nothing else:
 //!
@@ -256,7 +257,8 @@ pub struct Machine {
 /// Gives the machine whose user's home is `home` the declared setup, in one
 /// call: finds its harnesses, gives each of them `declared`, and installs
 /// tmux where it is a Guild machine with none. What a program with no host
-/// kit of its own calls, as `guild install` does.
+/// kit of its own calls to give a machine the agent setup; `guild install`
+/// calls `tmux::give` alone.
 pub fn machine<S: Shell + Sync>(shell: &S, home: &Path, declared: &Declared, now: u64) -> Machine {
     let harnesses = found::harnesses(shell);
     let done = declared.any().then(|| give(shell, home, declared, &harnesses, now));
