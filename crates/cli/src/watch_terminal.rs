@@ -196,6 +196,11 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
     if !exact.is_empty()
         && let Some(row) = rows.iter().find(|row| row["handle"] == exact)
     {
+        if let Some(saved) = metadata
+            && reincarnated(saved, row)
+        {
+            return retire(&worktree, record.expect("metadata is the record's"), row);
+        }
         if let Some(saved) = metadata {
             for key in ["ptyId", "incarnationId"] {
                 ensure!(
@@ -251,11 +256,19 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
             .join(", ")
     );
     let row = candidates[0];
+    let acknowledged_here =
+        acknowledged.as_ref().is_some_and(|handle| row["handle"] == handle.trim());
+    if !acknowledged_here
+        && let Some(saved) = metadata
+        && reincarnated(saved, row)
+    {
+        return retire(&worktree, record.expect("metadata is the record's"), row);
+    }
     let owned = metadata.is_some_and(|saved| {
         !saved["ptyId"].is_null()
             && saved["ptyId"] == row["ptyId"]
             && saved["incarnationId"] == row["incarnationId"]
-    }) || acknowledged.as_ref().is_some_and(|handle| row["handle"] == handle.trim());
+    }) || acknowledged_here;
     ensure!(owned, "terminal {} is named {TITLE} but its ownership is unverified", row["handle"]);
     let handle = row["handle"].as_str().context("watch terminal has no handle")?.to_string();
     if let Some(mut record) = record {
@@ -267,6 +280,35 @@ pub(crate) fn locate(watch: &Watch) -> Result<Option<String>> {
         save(&record)?;
     }
     Ok(Some(handle))
+}
+
+/// Our confirmed pane, by its saved ptyId, under a new Orca incarnation:
+/// Orca restarted or restored it. Its resident harness, screen and input
+/// are not that incarnation's, and a saved request key binds the old one.
+fn reincarnated(saved: &Value, row: &Value) -> bool {
+    !saved["ptyId"].is_null()
+        && saved["ptyId"] == row["ptyId"]
+        && !saved["incarnationId"].is_null()
+        && saved["incarnationId"] != row["incarnationId"]
+}
+
+/// Ends a re-incarnated resident: its marked executor first, wherever it
+/// survived, then its pane, which is ours by ptyId and would otherwise
+/// block the next creation by its title. The journal records the session
+/// ended, so its confirmed terminal is absent (None) and a fresh watch
+/// may start (ADR-0070). Nothing is adopted and nothing is resent.
+fn retire(worktree: &Worktree, mut record: Record, row: &Value) -> Result<Option<String>> {
+    crate::host_watch::stop_marked(&crate::host_watch::session_identity(&record.watch))?;
+    let handle = row["handle"].as_str().context("watch terminal has no handle")?;
+    worktree.close_terminal(handle)?;
+    ensure!(
+        !worktree.live(handle)?,
+        "the re-incarnated watch terminal {handle} is still live after it was closed"
+    );
+    record.status = LaunchState::Ended;
+    record.problem = None;
+    save(&record)?;
+    Ok(None)
 }
 
 pub(crate) fn set_status(watch: &Watch, status: LaunchState) -> Result<()> {

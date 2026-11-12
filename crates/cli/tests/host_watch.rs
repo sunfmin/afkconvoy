@@ -2297,6 +2297,53 @@ fn stale_runtime_handles_reassociate_by_confirmed_pane_identity_and_keep_interac
     assert_eq!(terminal["sent"].as_array().unwrap().len(), 1);
 }
 
+/// Orca restored the resident's pane after a restart: same ptyId, a new
+/// handle and a new incarnation, still titled `afkconvoy watch`
+/// (sunfmin/control#807). The resident is ended and its pane closed, and
+/// the next look starts a fresh watch instead of staying unavailable.
+#[test]
+fn a_resident_pane_orca_restores_under_a_new_incarnation_is_replaced_by_a_fresh_watch() {
+    let world = World::new();
+    let dir = operator(&world);
+    paused(&world, "pi", "first round");
+    run(&world, &dir);
+    let first = until(&world, "first round", || running(&world));
+    printed(&world, &first, &["reported before the restart"], Some(0));
+    until(&world, "first report", || ended(&world, "ended"));
+    world.kill_host_runner("KILL");
+    let old = first["terminal"].as_str().unwrap().to_string();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["handle"] == old {
+                terminal["ptyId"] = json!(old);
+                terminal["handle"] = json!("restored-handle");
+                terminal["incarnationId"] = json!("restored-incarnation");
+            }
+        }
+    });
+    paused(&world, "dsh", "a finding after the restart");
+    run(&world, &dir);
+    let next = until(&world, "a fresh watch", || {
+        running(&world).filter(|w| w["terminal"] != old && w["terminal"] != "restored-handle")
+    });
+    assert_ne!(next["session"], first["session"]);
+    assert_eq!(starts(&world).len(), 2, "one fresh agent, after the old one ended");
+    assert!(!open(&world, &dir).contains(&"restored-handle".into()), "the restored pane closed");
+    assert!(open(&world, &dir).contains(&OPERATORS.into()));
+    let restored = world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["handle"] == "restored-handle")
+        .unwrap()
+        .clone();
+    assert_eq!(restored["sent"].as_array().unwrap().len(), 1, "only the first brief, nothing more");
+    assert!(state(&world)["unavailable"].is_null());
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert!(!doctor.to_string().contains("watch-unavailable"), "{doctor}");
+    assert_eq!(doctor["host"]["watch"]["association"]["terminal"], next["terminal"]);
+}
+
 #[test]
 fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_explicit_report() {
     for status in ["creating", "sending"] {
