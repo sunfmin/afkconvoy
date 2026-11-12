@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
-use afkconvoy_gate::gate::{Judged, Ran, Termination};
+use afkconvoy_gate::gate::{GreenRun, Judged, Ran, Termination};
 
 use crate::lease::{stamp_due, stamp_stale};
 
@@ -132,6 +132,11 @@ pub struct Evidence {
     pub not_recorded: Option<String>,
     /// A green run of the committed tree is on record on the remote.
     pub recorded: bool,
+    /// The candidate's gate did not run: the green run on record of its
+    /// tree, of the same command and kind of machine, answered (a reused
+    /// run), and this names it. `None` where the gate ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reused: Option<Reused>,
     pub seconds: u64,
     pub status: Status,
     pub termination: Option<Termination>,
@@ -161,6 +166,31 @@ impl Evidence {
     }
 }
 
+/// The green run on record a reused run stands on: when it finished, and,
+/// where its record says, how long it took on which host and the kind of
+/// machine it ran on. With the evidence's command and its commit's tree, it
+/// names the record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reused {
+    pub at: u64,
+    pub host: Option<String>,
+    pub machine: Option<String>,
+    pub seconds: Option<u64>,
+}
+
+impl Reused {
+    /// The run on record `run` names.
+    pub fn of(run: &GreenRun) -> Reused {
+        Reused {
+            at: run.at(),
+            host: run.took().map(|took| took.host().to_string()),
+            machine: run.machine().map(str::to_string),
+            seconds: run.took().map(|took| took.seconds()),
+        }
+    }
+}
+
 /// One gate run of a candidate, as its runner saw it end: what its
 /// evidence is made of (`Evidence::of`).
 #[derive(Debug)]
@@ -183,12 +213,15 @@ pub struct Observed<'a> {
     pub termination: Option<Termination>,
     /// The candidate was cancelled while its gate ran.
     pub cancelled: bool,
+    /// The green run on record that answered instead, where nothing ran.
+    pub reused: Option<Reused>,
 }
 
 impl Evidence {
     /// The evidence of a candidate's run `run`: green where it ran green
     /// and was not cancelled, on record where its record was written and
-    /// reached the remote; unsettled where it says nothing of its tree.
+    /// reached the remote, or a run on record answered for it (`reused`);
+    /// unsettled where it says nothing of its tree.
     pub fn of(run: Observed<'_>) -> Evidence {
         let unsettled = match run.judged {
             Judged::Unsettled(unsettled) => {
@@ -206,8 +239,9 @@ impl Evidence {
             exit_code: run.ran.exit_code,
             excerpt: run.excerpt,
             head: Some(run.head),
-            recorded: run.written && run.not_recorded.is_none(),
+            recorded: (run.written || run.reused.is_some()) && run.not_recorded.is_none(),
             not_recorded: run.not_recorded,
+            reused: run.reused,
             seconds: run.ran.seconds,
             status,
             termination: run.termination,

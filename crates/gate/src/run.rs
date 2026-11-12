@@ -59,6 +59,10 @@ pub enum Settled {
     Dropped,
     /// The run says nothing of a committed tree: nothing changed.
     Left,
+    /// A reused run: the green run on record of the same command on the
+    /// same committed tree, on the same kind of machine, answered for the
+    /// run asked, and nothing ran (`reusable`). Its record is left as it is.
+    Reused(GreenRun),
 }
 
 /// Settles the record of `command` on `tree`, at the commit `head`, as
@@ -105,6 +109,24 @@ pub fn recorded<R: Records>(
     let pairs: Vec<(&str, &str)> =
         found.iter().map(|(name, subject)| (name.as_str(), subject.as_str())).collect();
     Ok(believed_among(&pairs, records.layout(), tree, command, now))
+}
+
+/// The green run on record that answers for a run of `command` on `tree` on
+/// a machine of kind `machine` (`gate::machine`) at `now`, instead of a run
+/// made again: one `recorded` believes, which ran on that kind of machine.
+/// A red run is never on record; a run on another kind of machine, or whose
+/// record names none, answers for none — some tests depend on the machine.
+/// The command is the gate the tree's own commit declares, so a different
+/// declaration is another record.
+pub fn reusable<R: Records>(
+    records: &R,
+    tree: &Tree,
+    command: &GateCommand,
+    machine: &str,
+    now: u64,
+) -> Result<Option<GreenRun>, R::Error> {
+    let run = recorded(records, tree, command, now)?;
+    Ok(run.filter(|run| !machine.is_empty() && run.machine() == Some(machine)))
 }
 
 /// The green run `recorded` answers, read from its record's whole message:
@@ -300,6 +322,22 @@ impl Records for Git {
     }
 }
 
+/// What a reused run's output says, its one line: the run on record that
+/// answered, and that nothing ran.
+pub fn reused_line(green: &GreenRun, tree: &Tree, command: &GateCommand) -> String {
+    let on = match green.took() {
+        Some(took) => format!(" on {} in {}s", took.host(), took.seconds()),
+        None => String::new(),
+    };
+    format!(
+        "gate: reused the green run of `{}` on tree {} at {}{on}, on {}: nothing ran",
+        command.text(),
+        tree.name(),
+        green.at(),
+        green.machine().unwrap_or_default()
+    )
+}
+
 /// One run of a gate command in a worktree, and what became of its record.
 #[derive(Debug)]
 pub struct Run {
@@ -339,20 +377,40 @@ const LOOKS_EVERY: Duration = Duration::from_millis(20);
 /// Runs `command` with `sh -c` in `git`'s worktree under the gate limit of
 /// `limit`, in a process group of its own, which is ended at the limit, and
 /// settles its tree's record: a run judged green on a committed tree is put
-/// on record as having taken its seconds on `host`, finished at `now`, with
-/// `more` fields and each test its output timed (`test_times`); one judged red takes the record away; one that says nothing
-/// of its tree, or ran on no committed tree, changes nothing. Errors: git
-/// failed, or the command could not be started.
+/// on record as having taken its seconds on `host`, a machine of kind
+/// `machine`, finished at `now`, with `more` fields and each test its output
+/// timed (`test_times`); one judged red takes the record away; one that says
+/// nothing of its tree, or ran on no committed tree, changes nothing.
+///
+/// A green run of a tree is not run again: where the worktree is exactly
+/// its commit and the remote holds a green run of `command` on its tree,
+/// on the same kind of machine, still believed at `now` (`reusable`), that
+/// run answers, `Settled::Reused`, and nothing runs. Errors: git failed, or
+/// the command could not be started.
 pub fn gate(
     git: &Git,
     command: &GateCommand,
-    host: &str,
+    (host, machine): (&str, &str),
     now: u64,
     limit: Duration,
     more: &[(&str, &str)],
 ) -> Result<Run, String> {
     let (head, tree) = head(&git.worktree)?;
     let before = off_commit(&git.worktree, None)?;
+    if before.is_empty()
+        && let Some(green) = reusable(git, &tree, command, machine, now)?
+    {
+        let ran = Ran {
+            exit_code: 0,
+            timed_out: false,
+            clean_before: true,
+            clean_after: true,
+            seconds: 0,
+        };
+        let output = vec![reused_line(&green, &tree, command)];
+        let settled = Settled::Reused(green);
+        return Ok(Run { ran, head, tree, strays: vec![], judged: Judged::Green, settled, output });
+    }
     let began = Instant::now();
     let mut child = Command::new("sh")
         .args(["-c", command.text()])
@@ -412,7 +470,9 @@ pub fn gate(
     let judged = judge(exit_code, timed_out, limit.as_secs(), termination, &output);
     let recording = match judged {
         Judged::Unsettled(_) => Recording::Leave,
-        _ => after_run(&tree, command, ran, host, now).with_tests(test_times(&output)),
+        _ => after_run(&tree, command, ran, host, now)
+            .with_tests(test_times(&output))
+            .on_machine(machine),
     };
     let settled = settle(git, &tree, &head, command, recording, more)?;
     let strays = if before.is_empty() { after } else { before };

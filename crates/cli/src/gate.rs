@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use afkconvoy_core::candidate::{Evidence, Observed};
+use afkconvoy_core::candidate::{Evidence, Observed, Reused};
 use afkconvoy_core::config::{Config, Which};
 pub use afkconvoy_core::gate::Termination;
 use afkconvoy_core::gate::{
@@ -376,7 +376,9 @@ fn controlled_run(
     }
     let recording = match run.judged {
         Judged::Unsettled(_) => Recording::Leave,
-        _ => after_run(&tree, command, ran, host, now).with_tests(tests),
+        _ => after_run(&tree, command, ran, host, now)
+            .with_tests(tests)
+            .on_machine(&afkconvoy_gate::gate::machine()),
     };
     let issued = issue.map(|issue| issue.to_string());
     let more = afkconvoy_core::gate::noted(issued.as_deref());
@@ -403,15 +405,18 @@ fn controlled_run(
                 }
             }
         }
-        Settled::Left => {}
+        Settled::Left | Settled::Reused(_) => {}
     }
     Ok(run)
 }
 
-/// Every newly assigned candidate runs its gate, including a cut whose tree
-/// matches the certified base. Its own green result survives predecessor
-/// landing; another candidate's record does not replace this run. → the
-/// run's evidence, as the chain keeps it, and what the run says of its tree.
+/// Every newly assigned candidate gates its commit, fast or a round's slow
+/// gate, unless its tree is green on record: a green run of `command` on
+/// that tree, on this kind of machine (`afkconvoy_gate::gate::machine`),
+/// still believed at `now`, answers instead and nothing runs — a reused
+/// run, which its evidence names (`Evidence::reused`). Its own green result
+/// survives predecessor landing. → the run's evidence, as the chain keeps
+/// it, and what the run says of its tree.
 pub(crate) fn candidate_gate(
     repo: &Repo,
     command: &GateCommand,
@@ -421,6 +426,32 @@ pub(crate) fn candidate_gate(
     issue: Option<u64>,
     candidate: &crate::candidates::Gate<'_>,
 ) -> Result<(Evidence, Judged)> {
+    let tree = head_tree(repo)?;
+    let machine = afkconvoy_gate::gate::machine();
+    if off_commit(repo, None)?.is_empty()
+        && let Some(green) = run::reusable(&OnRemote(repo), &tree, command, &machine, now)?
+    {
+        let evidence = Evidence::of(Observed {
+            command: command.text(),
+            ran: Ran {
+                exit_code: 0,
+                timed_out: false,
+                clean_before: true,
+                clean_after: true,
+                seconds: 0,
+            },
+            judged: &Judged::Green,
+            head: repo.git(&["rev-parse", "HEAD"])?,
+            excerpt: vec![run::reused_line(&green, &tree, command)],
+            strays: vec![],
+            written: false,
+            not_recorded: None,
+            termination: None,
+            cancelled: false,
+            reused: Some(Reused::of(&green)),
+        });
+        return Ok((evidence, Judged::Green));
+    }
     let run = controlled_run(repo, command, host, now, limit, issue, Some(candidate), None)?;
     let evidence = Evidence::of(Observed {
         command: command.text(),
@@ -433,6 +464,7 @@ pub(crate) fn candidate_gate(
         not_recorded: run.not_recorded,
         termination: run.termination,
         cancelled: run.cancelled,
+        reused: None,
     });
     Ok((evidence, run.judged))
 }

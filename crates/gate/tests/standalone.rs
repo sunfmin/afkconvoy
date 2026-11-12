@@ -98,7 +98,7 @@ fn a_repos_fast_gate_runs_in_the_fast_lane_and_its_run_reads_back_from_the_recor
     let limit = Duration::from_secs(gates.fast.seconds);
     let ran = holder
         .alone(ticket(fast.text(), &dir, now, Some(Gate::Fast)), |_| {
-            run::gate(&repo, &fast, "scratch-host", now, limit, &[("by", "a-daemon")])
+            run::gate(&repo, &fast, ("scratch-host", "a-kind"), now, limit, &[("by", "a-daemon")])
         })
         .expect("its turn came")
         .expect("the gate ran");
@@ -139,11 +139,86 @@ fn a_run_whose_output_times_no_test_reads_back_as_the_same_run_with_none() {
     let repo = scratch(root.path());
     let slow = GateCommand::new("./gate.sh slow");
     let now = OneEach.now();
-    let ran = run::gate(&repo, &slow, "scratch-host", now, Duration::from_secs(60), &[]).unwrap();
+    let on = ("scratch-host", "a-kind");
+    let ran = run::gate(&repo, &slow, on, now, Duration::from_secs(60), &[]).unwrap();
     assert_eq!(ran.judged, Judged::Green, "{:?}", ran.output);
     let read = run::recorded_with_tests(&repo, &ran.tree, &slow, now).unwrap().expect("on record");
     assert!(read.tests().is_empty());
     assert_eq!(Some(read), run::recorded(&repo, &ran.tree, &slow, now).unwrap());
+}
+
+/// A gate that counts its runs in `counted`, outside the worktree, and is
+/// green unless a tree holds `breaks`.
+fn counting(repo: &Git, counted: &Path) {
+    let script = format!(
+        "#!/bin/sh\necho run >> {}\nif [ -e breaks ]; then echo FAIL; exit 1; fi\necho ok\n",
+        counted.display()
+    );
+    std::fs::write(repo.worktree.join("gate.sh"), script).unwrap();
+    git(&repo.worktree, &["commit", "--quiet", "-am", "a gate that counts its runs"]);
+}
+
+fn runs(counted: &Path) -> usize {
+    std::fs::read_to_string(counted).unwrap_or_default().lines().count()
+}
+
+#[test]
+fn a_green_run_on_record_answers_for_the_same_tree_declaration_and_kind_of_machine() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = scratch(root.path());
+    let counted = root.path().join("counted");
+    counting(&repo, &counted);
+    let fast = GateCommand::new("./gate.sh fast");
+    let now = OneEach.now();
+    let limit = Duration::from_secs(60);
+    let gate = |command: &GateCommand, machine: &str| {
+        run::gate(&repo, command, ("scratch-host", machine), now, limit, &[]).unwrap()
+    };
+
+    let first = gate(&fast, "macos-aarch64");
+    assert!(matches!(first.settled, Settled::Written { not_recorded: None, .. }), "{first:?}");
+    let on_record = run::recorded(&repo, &first.tree, &fast, now).unwrap().expect("on record");
+    assert_eq!(on_record.machine(), Some("macos-aarch64"), "its record names its kind of machine");
+    assert_eq!(runs(&counted), 1);
+
+    // The same tree, declaration and kind of machine: the run on record answers.
+    let again = gate(&fast, "macos-aarch64");
+    assert_eq!(again.settled, Settled::Reused(on_record), "{again:?}");
+    assert_eq!(again.judged, Judged::Green);
+    assert!(again.output[0].contains("reused the green run"), "{:?}", again.output);
+    assert_eq!(runs(&counted), 1, "nothing ran");
+
+    // Another kind of machine runs it again: some tests depend on the machine.
+    let elsewhere = gate(&fast, "linux-x86_64");
+    assert!(matches!(elsewhere.settled, Settled::Written { .. }), "{elsewhere:?}");
+    assert_eq!(runs(&counted), 2);
+
+    // A different declaration of the gate is another record: it runs.
+    let declared_otherwise = gate(&GateCommand::new("./gate.sh quick"), "linux-x86_64");
+    assert!(matches!(declared_otherwise.settled, Settled::Written { .. }));
+    assert_eq!(runs(&counted), 3);
+
+    // A red run is never reused: run again, it runs again.
+    std::fs::write(repo.worktree.join("breaks"), "").unwrap();
+    git(&repo.worktree, &["add", "breaks"]);
+    git(&repo.worktree, &["commit", "--quiet", "-m", "break it"]);
+    assert_eq!(gate(&fast, "linux-x86_64").settled, Settled::Dropped);
+    assert_eq!(gate(&fast, "linux-x86_64").settled, Settled::Dropped);
+    assert_eq!(runs(&counted), 5);
+
+    // Mended, its commit holds the tree green on record: whatever commit
+    // holds it, the run on record answers.
+    git(&repo.worktree, &["rm", "--quiet", "breaks"]);
+    git(&repo.worktree, &["commit", "--quiet", "-m", "mend it"]);
+    let mended = gate(&fast, "linux-x86_64");
+    assert_eq!(mended.tree, first.tree);
+    assert!(matches!(mended.settled, Settled::Reused(_)), "{mended:?}");
+    assert_eq!(runs(&counted), 5);
+
+    // A worktree that is not exactly its commit is not answered from a record.
+    std::fs::write(repo.worktree.join("stray"), "").unwrap();
+    assert_eq!(gate(&fast, "linux-x86_64").settled, Settled::Left);
+    assert_eq!(runs(&counted), 6);
 }
 
 #[test]

@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 pub use afkconvoy_landing::chain::{
-    Barrier, Decision, Evidence, Observed, Overloaded, Phase, Process, Publication, Slow, Status,
-    Validation,
+    Barrier, Decision, Evidence, Observed, Overloaded, Phase, Process, Publication, Reused, Slow,
+    Status, Validation,
 };
 
 use crate::ending::Ending;
