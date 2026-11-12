@@ -60,7 +60,11 @@ impl StatusLine {
     /// line. What `command` prints is shown; what it is handed on stdin is
     /// what `Harness::windows` reads.
     pub fn entry(&self, command: &str) -> Value {
-        serde_json::json!({ "type": "command", "command": command })
+        // Built key by key: `json!` unwraps a result Flux cannot see is `Ok`.
+        let mut entry = serde_json::Map::new();
+        entry.insert("type".to_string(), Value::from("command"));
+        entry.insert("command".to_string(), Value::from(command));
+        Value::Object(entry)
     }
 }
 
