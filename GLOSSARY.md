@@ -236,6 +236,10 @@ The harnesses this host can start and their models, each in order of preference,
 Research states: `research pending` is a newly listed model awaiting dated research; `not researched` is an older release's model with no dated answer, also awaiting research. Neither is started on. A settled model has a dated source and a reason research found it unsuited to workers: it is not placed, is named by no unplaced-model finding and starts no watch. The finding names exactly the models awaiting research, including models held with no dated answer; every one can be placed or settled through `afkconvoy kit --research <file>`. Placements and settlements survive routine relisting; an identity dropped from the kit and later listed anew awaits research again.
 _Avoid_: roster (the team's), host config, inventory
 
+**Guild machine**:
+A host whose user has Guild's home, `~/.guild`: a machine of Guild, the other agent system of this host's user (sunfmin/control#693), which runs no fleet of its own there but takes what every Guild machine needs from the host kit (control ADR 0009, ADR 0010). Guild runs each instance in a tmux server of its own, so writing the host kit on a Guild machine with no tmux installs one where a standard account can — `pixi global install tmux`, or Homebrew where it has bottles — and leaves an existing tmux alone; `doctor` names a Guild machine with no tmux, with the line that fixes it.
+_Avoid_: Guild host (a host is one account's, as under Host), node
+
 **Default model**:
 What a harness runs when a worker is started with no model named: its own login's model. Every worker whose model label is not followed starts on it, including one whose range holds a single model. Codex uses the model in the user's Codex config when the host kit lists that model; with none, Codex's own. A named Codex model the kit does not list, or that the role's range does not hold, refuses the start.
 _Avoid_: fallback model, the host kit's first (a model's place in the kit; the first harness keeps the phrase), `default` alone (a model id Claude Code lists)

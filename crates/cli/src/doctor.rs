@@ -180,6 +180,7 @@ kinds! {
     PressureElsewhere: Info, "under memory pressure from another account";
     KitUnplaced: Warning, "has unplaced models in the host kit";
     AgentSetupDrifted: Warning, "differs from the agent setup";
+    TmuxMissing: Warning, "Guild machine has no tmux";
     WatchUnavailable: Critical, "no harness can start this host's watch";
     WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotifyFailed: Warning, "human decision sending has failed repeatedly";
@@ -249,6 +250,7 @@ impl Kind {
                 | Kind::PressureElsewhere
                 | Kind::KitUnplaced
                 | Kind::AgentSetupDrifted
+                | Kind::TmuxMissing
                 | Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotifyFailed
@@ -2526,6 +2528,7 @@ impl Look {
         findings.extend(crate::machine::path_findings());
         findings.extend(crate::kit_research::findings());
         findings.extend(crate::agent_setup::findings());
+        findings.extend(crate::tmux::findings());
         findings.extend(crate::watch_notify::findings());
         findings.extend(crate::watch_daybook::findings());
         Look { readings, host, findings, trackers: crate::tracker::Public::default() }

@@ -83,6 +83,7 @@ mod takeover;
 mod target;
 mod tick;
 mod tmpdir;
+mod tmux;
 mod tools;
 mod tracker;
 mod turns;

@@ -1808,6 +1808,27 @@ case "$2" in
     echo "Usage: claude [options]"; echo "  --add-dir <directories...>"
     echo "  --model <model>"; echo "  --setting-sources <sources>"
     echo "  --settings <file-or-json>"; exit 0 ;;
+  "command -v tmux"|"command -v pixi"|"command -v brew")
+    # Where the login shell finds tmux, pixi or brew: what `shell-<name>`
+    # holds, or nowhere.
+    name=${2#command -v }
+    if [ -f "$root/shell-$name" ]; then cat "$root/shell-$name"; exit 0; fi
+    exit 1 ;;
+  *"' --prefix")
+    # Homebrew's prefix: what `brew-prefix` holds, or ~/homebrew.
+    if [ -f "$root/brew-prefix" ]; then cat "$root/brew-prefix"; else echo "$HOME/homebrew"; fi
+    exit 0 ;;
+  *"' global install tmux"|*"' install tmux")
+    # pixi's or Homebrew's install of tmux, failing where `tmux-install-fails`
+    # is there: pixi's puts it in ~/.pixi/bin, Homebrew's where `shell-tmux`
+    # then finds it.
+    if [ -e "$root/tmux-install-fails" ]; then echo "could not solve tmux" >&2; exit 1; fi
+    case "$2" in
+      *" global install tmux")
+        mkdir -p "$HOME/.pixi/bin" && printf '#!/bin/sh\n' > "$HOME/.pixi/bin/tmux" && chmod +x "$HOME/.pixi/bin/tmux" ;;
+      *) echo /opt/homebrew/bin/tmux > "$root/shell-tmux" ;;
+    esac
+    exit 0 ;;
   "npx -y skills "*)
     # The agent setup's `npx skills`: each line is kept in `npx-asked`. `ls`
     # answers `npx-ls-<agent>.json`, or nothing installed. `add` writes its
