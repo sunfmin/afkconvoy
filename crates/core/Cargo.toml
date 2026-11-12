@@ -24,16 +24,7 @@ serde_yaml = "0.9"
 # `cargo flux` (through ../../verify.sh) checks every refinement in this crate.
 [package.metadata.flux]
 enabled = true
-check_overflow = "strict"
-
-# The checker ../../verify.sh runs, beside the Flux revision above that
-# `cargo-flux` is built from. It refuses any other: the value is what the tool
-# reports about itself, to `z3 --version`. `./verify.sh install` installs it.
-# fixpoint is pinned to nothing: it follows liquid-fixpoint's nightly release,
-# and is pinned here again the day a change of it turns a gate result wrong
-# (sunfmin/control#732).
-[package.metadata.checker]
-z3 = "5.1.0"
+check-overflow = "strict"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }

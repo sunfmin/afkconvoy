@@ -27,7 +27,7 @@ fn fast_gate_checks_timeouts_before_calling_tests_slow() {
 }
 
 #[test]
-fn verify_installs_the_pinned_checker_it_reads_and_leaves_a_pinned_one_alone() {
+fn verify_installs_the_newest_toolchain_of_the_tap_and_leaves_the_newest_alone() {
     let script =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/verify-install.sh");
     let output = std::process::Command::new("sh").arg(script).output().unwrap();

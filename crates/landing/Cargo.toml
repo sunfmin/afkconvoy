@@ -20,7 +20,7 @@ tempfile = "3"
 # `cargo flux` (through ../../verify.sh) checks every refinement in this crate.
 [package.metadata.flux]
 enabled = true
-check_overflow = "strict"
+check-overflow = "strict"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }
