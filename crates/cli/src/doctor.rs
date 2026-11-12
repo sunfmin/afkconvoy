@@ -177,6 +177,7 @@ kinds! {
     HotWorker: Warning, "hot worker is past its limits";
     AdmissionHeld: Warning, "admission has held back new workers";
     MemoryPressure: Warning, "the host has been under memory pressure";
+    PressureElsewhere: Info, "under memory pressure from another account";
     KitUnplaced: Warning, "has unplaced models in the host kit";
     AgentSetupDrifted: Warning, "differs from the agent setup";
     WatchUnavailable: Critical, "no harness can start this host's watch";
@@ -245,6 +246,7 @@ impl Kind {
                 | Kind::HotWorker
                 | Kind::AdmissionHeld
                 | Kind::MemoryPressure
+                | Kind::PressureElsewhere
                 | Kind::KitUnplaced
                 | Kind::AgentSetupDrifted
                 | Kind::WatchUnavailable
@@ -2486,6 +2488,7 @@ fn host_once(
     readings: &Readings,
     rounds: bool,
     others: &Result<Vec<crate::machine::Runner>>,
+    elsewhere: Option<&afkconvoy_core::resources::Elsewhere>,
 ) -> Map<String, Value> {
     let (exclusive, installed, watch) = match host_runner::shared() {
         Ok(Some(said)) => {
@@ -2498,7 +2501,7 @@ fn host_once(
         ("host_kit".to_string(), crate::kit::show_for_look(now)),
         (
             "resources".to_string(),
-            crate::resources::json(now, readings)
+            crate::resources::json(now, readings, elsewhere)
                 .unwrap_or_else(|e| json!({"error": format!("{e:#}")})),
         ),
         ("exclusive".to_string(), exclusive_json(exclusive, now)),
@@ -2514,8 +2517,10 @@ fn host_once(
 impl Look {
     fn new(now: u64, rounds: bool) -> Look {
         let readings = Readings::new();
-        let others = crate::machine::other_runners();
-        let host = host_once(now, &readings, rounds, &others);
+        let table = crate::machine::Table::read();
+        let others = crate::machine::other_runners(&table);
+        let elsewhere = table.as_ref().ok().and_then(crate::machine::Table::elsewhere);
+        let host = host_once(now, &readings, rounds, &others, elsewhere.as_ref());
         let mut findings = crate::resources::findings(&host["resources"], now);
         findings.extend(crate::machine::findings(&others, host_runner::runs()));
         findings.extend(crate::machine::path_findings());
@@ -2733,7 +2738,7 @@ It also reads every tracker that list names once for repo-labelled work, includi
   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port {const:PANEL_PORT} where the host says none. {file, error} where the file cannot be read
   - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding.
   - `exclusive`: the host's exclusive queue as the one observation `afkconvoy queue` answers — {observed_at, status, paused, worker, repos, running, waiting} — at doctor's observation time, from the host runner this look asked once: worker capacity, each repo lane, and every request with its `lane`, durations and scheduling exactly as `afkconvoy queue --help` documents. A request not yet started is in `waiting`, with its scheduling state; it is not marked `waiting_for_capacity`, as a landing turn's answer is. Each `command` is the one line `afkconvoy queue --help` describes: the program and the arguments that say what is running. A script is not shown as the script: a `sh -c` test script is named by its `cargo nextest` line, or by its `afkconvoy exclusive` invocation. The line carries no `NAME=value`. `status` is `no_runner`, with empty arrays, where no host runner listens; `paused` is null where an older host runner does not say it. {error} when the host runner cannot say it, never an empty queue. `afkconvoy queue` reads just the local queue, without this full diagnosis
-  - `resources`: resource episodes observed by the host runner, with stable ids, active conditions, since, episode, worker or host readings and evidence. Admission and pressure retain their identities during five minutes of recovery. A resource finding's watch_id is that episode identity, covered by a running or reported watch.
+  - `resources`: resource episodes observed by the host runner, with stable ids, active conditions, since, episode, worker or host readings and evidence. Admission and pressure retain their identities during five minutes of recovery. A resource finding's watch_id is that episode identity, covered by a running or reported watch. Pressure also says `elsewhere`, the other user account holding the most resident memory, more than this one, from the process table — {account, uid, memory_bytes, processes}, null where this account holds the most; `workers`, how many workers this host's fleets' samplers watch; `left`, the other account a reported watch left pressure with the operator for — {account, uid, episode, watch} — until they settle its question or the largest holder changes; and `unwatched`: why it starts no watch — `no_worker` while another account holds the most and no worker runs, `left_with_operator` while it is that same left account's — or null. Pressure that starts no watch is an `info` finding naming the account and its memory.
   - `watch`: this host's watch (`afkconvoy run --help`, WATCH): {directory, stock, running, last, unavailable, association}. directory is where the next watch runs and stock whether it uses afkconvoy's instruction. running and last are each {id, directory, stock, items, started, harness, model, terminal, transcript, did, reported, report, attempts, ended, outcome}. items says why it started; transcript holds the session's exit status, not its printed output. reported is whether it called `watched`; report is its complete {held_back, did, verified, human, pending} record, null if it did not report; did is that report's actions. attempts holds each session whose harness gave out: {harness, model, terminal, why, did, screen}; screen is terminal evidence for continuation, never a report. outcome is ended (reported), not_reported (exited without reporting), closed, time_limit or no_harness. running and last are null with none. unavailable says why no harness could start or continue the last requested watch, null where one could. Earlier rounds are left out; `--rounds` adds `rounds`, each the same shape as `last`. `last` keeps the last round's report. `doctor --all` says each watch log line once, as `events` on this object — {at, event, cause, instance}, newest first — and leaves those lines out of every checkout's `fleet.events`.
   - `asking`: this host's resident asking session (`afkconvoy run --help`, ASKING SESSION): {session, status, current, pending, unavailable, association}. session is {id, directory, harness, terminal, status}, null when no question has started one; status is absent, standby, asking, unavailable or uncertain. current is the question being delivered or discussed, with its condition episode, watch, human question and answer, and its delivered, withdrawn and put-aside flags; pending holds those waiting, including questions put aside. association shows the titled Terminal's launch and delivery proof. The session is durable across host runner restarts and upgrades.
   - `installed`: the release installed where the host runner was started from, where the host runner moves onto it or did not: {path, version, from, since, wait_expired, held_back, failed} — the file; the release it says, null where it says none; the host runner's own release; when that file answered, in epoch seconds; whether the {const:MOVE_WAIT_SECONDS}s wait expired; what holds the move back, each in words ("/Users/me/Developments/hkj is in a tick", "1 exclusive command(s) running"), [] once nothing does, or the last blockers when the wait expired; and why the move failed — it did not start, or does not say its version — null until one did. null with none: nothing newer is installed there, or no host runner runs (`afkconvoy run --help`)

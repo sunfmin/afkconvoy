@@ -552,6 +552,7 @@ impl Watcher {
         }
         state.retry_unreported();
         let mut look = doctor_look(state.until, &self.ended)?;
+        crate::resources::looked(&look)?;
         crate::unworked::reconcile(&mut look, &crate::this_host(), crate::clock())?;
         crate::human_wait::take_look(&mut look)?;
         crate::distill::look(&mut look, &mut state.distilling, crate::clock());
@@ -566,8 +567,9 @@ impl Watcher {
             crate::resources::evidence(&mut state.look, &pending)?;
             // Disk evidence can take minutes. A condition that recovered
             // while it was taken must not start a watch from an old look.
+            // Only whether each is active counts here, which no holder changes.
             let resources =
-                crate::resources::json(crate::clock(), &crate::admission::Readings::new())?;
+                crate::resources::json(crate::clock(), &crate::admission::Readings::new(), None)?;
             state.pending.retain(|q| {
                 !q.item.id.starts_with("resource:")
                     || resources
@@ -859,6 +861,12 @@ impl Watcher {
             if let Err(error) = crate::watch_daybook::reported(&watch, &report) {
                 (self.say)(What::WatchFailed {
                     said: format!("daybook entry not queued: {error:#}"),
+                });
+            }
+            // Pressure from another account is left with the operator now.
+            if let Err(error) = crate::resources::reported(&watch) {
+                (self.say)(What::WatchFailed {
+                    said: format!("pressure left with the operator not kept: {error:#}"),
                 });
             }
             // A fast or explicitly recovered report can precede Orca's

@@ -61,6 +61,9 @@ pub(crate) fn plan(
             json!(team.roles.iter().map(|role| fleet.role_selection(role)).collect::<Vec<_>>());
     }
     plan["worker_no_proxy"] = launches.proxy_json();
+    if let Some(pressure) = crate::resources::from_elsewhere(now, &readings) {
+        plan["memory_pressure"] = pressure;
+    }
     Ok(plan)
 }
 
@@ -86,7 +89,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 
 ## What it answers
 
-{"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "harness", "tracker", "admission", "host_kit", "worker_no_proxy", "need_installs"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch
+{"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "harness", "tracker", "admission", "host_kit", "worker_no_proxy", "need_installs"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch; and "memory_pressure" while the host's memory pressure stands and another account holds the most memory
 
 `targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned. Invalid destinations report error per task without falling back to the configured base.
 
@@ -117,6 +120,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 - `admission`: whether a tick would start a new worker on this host now (`afkconvoy run --help`, ADMISSION): {admits, held_back_by, shares, thresholds, reading}. held_back_by is each threshold the host is past, as a tick's line says it: none, and it admits. shares are the percentages in force — load_percent_of_cores, memory_free_percent, disk_free_percent — and said_by_host the host settings that said one, by key (admit_load, admit_memory, admit_disk, admit_inspect_after); thresholds what they come to on this host — load, memory_free_percent, disk_free_bytes; reading what the host reads now — cores, load, memory_free_percent, disk_free_bytes, disk_size_bytes, each null where it could not be read
 - `worker_no_proxy`: every harness, with {harness, addition, no_proxy, NO_PROXY}: the host list added and the resulting login shell values, with this command's --worker-no-proxy flags. A null addition leaves the inherited spellings alone
 - `held_back`: while admission holds: each threshold the host is past, as data: {by: "load", load, limit} in hundredths, {by: "memory", free, floor} in percent, {by: "disk", free, floor} in bytes. The frontier is still what a tick would dispatch once it admits
+- `memory_pressure`: while a memory-pressure episode stands and another user account on the machine holds the most resident memory, more than this one, as the process table says it: {episode, active, since, level, account, uid, memory_bytes, processes, workers, unwatched} — the episode as `doctor`'s `host.resources` says it, that account and what its processes hold, the workers this host's fleets run, and why it starts no watch (`no_worker`, `left_with_operator`), null where one starts. Admission still holds new workers back under it
 - `intake`: in a bound repo: {"open", "limit"} — the open issues taken in by workers, counted from their intake records, against the repo's `intake_limit`. With `open` at `limit`, `afkconvoy intake` refuses. An issue a human labelled is not among them
 - `findings`: open blockers no fleet works, each {severity, what, evidence, fix, see}: the waiting issue, the blocker's repo and number, why no checkout serving the tracker works it, and the transfer and label lines. A consult or declared hand-off proceeds if these are its only blockers; build work waits
 - `patrols`: in a bound repo that names patrols: each, in the order the config names them: {name, standing, every, last_run, open, max_open} — `every` in seconds, `last_run` when its last recorded run started (null: it never ran), `open` the open issues it opened. A patrol whose file says `max_runs_a_day` has it too, and `runs_in_day`: how many of its runs started in the last 24 hours. A patrol with `max_landed_a_day` reports it and `landed_in_day`: the issues it opened that closed as completed in the last rolling 24 hours. One a human asked to run now (`afkconvoy patrol-now --help`) has `asked`: when the ask was made, until a tick starts the run. standing says what a tick does about it:

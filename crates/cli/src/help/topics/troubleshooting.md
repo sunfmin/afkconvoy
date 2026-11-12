@@ -33,6 +33,7 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 - `hot worker is past its limits`: A worker crossed a host resource limit. The watch receives its condition, duration, worktree, terminal and evidence and checks that work goes on.
 - `admission has held back new workers`: One reason held admission for the host's span. The watch receives the host reading and evidence, once per episode.
 - `the host has been under memory pressure`: Pressure lasted for the host's span independently of admission. The watch checks pressure itself, once per episode; it makes no worker hot.
+- `under memory pressure from another account`: Pressure lasted for the host's span while another user account on the machine held the most resident memory, more than this account's processes, as the process table says it: that account and what it holds are named. A watch keeps away from another account's programs, so it starts none while this host's fleets hold no worker, nor once a watch has left pressure from that same account with the operator, until they answer its question or the largest holder changes — another account, or this one. Admission still holds new workers back under it. `fix` is nothing here: the other account's owner frees its memory.
 
 A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
 
