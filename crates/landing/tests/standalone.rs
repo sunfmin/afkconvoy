@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use afkconvoy_gate::declared;
+use afkconvoy_gate::gate::GateCommand;
 use afkconvoy_gate::layout::Layout;
-use afkconvoy_gate::run::Git;
+use afkconvoy_gate::run::{self, Git, Settled};
 use afkconvoy_landing::chain::{Chain, Decision, Evidence, Phase, Plain, Process};
 use afkconvoy_landing::forge::{Change, Forge};
 use afkconvoy_landing::land::{Lander, Outcome};
@@ -121,6 +122,9 @@ fn declared(work: &Path, commit: &str) -> Result<Declared, String> {
     Ok(Declared { whole: "./gate.sh".into(), seconds: 180, gates, landing })
 }
 
+/// The kind of machine every gate here runs on.
+const MACHINE: &str = "scratch-kind";
+
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
 }
@@ -130,6 +134,7 @@ fn lander<'a>(work: &Path, worktrees: &Path, forge: &'a Fake) -> Lander<'a, Fake
         git: Git { worktree: work.into(), remote: "origin".into(), layout: Layout::Hidden },
         forge,
         host: "scratch-host".into(),
+        machine: MACHINE.into(),
         owner: Process {
             host: "scratch-host".into(),
             pid: std::process::id(),
@@ -204,6 +209,53 @@ fn two_changes_land_in_one_round_with_one_slow_gate_at_its_tip() {
         heads
     );
     assert!(!worktrees.join(&first.id).exists() && !worktrees.join(&second.id).exists());
+}
+
+#[test]
+fn a_candidate_whose_tree_is_green_on_record_lands_without_a_second_fast_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    // The change's head already holds the target's tip, and its fast gate
+    // ran green on it: its candidate's tree is that head's.
+    let a = change(&work, 1, "a", "a.txt");
+    let head = git(&work, &["rev-parse", "a"]);
+    git(&work, &["checkout", "--quiet", "a"]);
+    let checkout = Git { worktree: work.clone(), remote: "origin".into(), layout: Layout::Hidden };
+    let fast = GateCommand::new("./gate.sh fast");
+    let limit = std::time::Duration::from_secs(60);
+    let worker = run::gate(&checkout, &fast, ("worker-host", MACHINE), now(), limit, &[]).unwrap();
+    assert!(matches!(worker.settled, Settled::Written { not_recorded: None, .. }), "{worker:?}");
+    git(&work, &["checkout", "--quiet", "main"]);
+    let b = change(&work, 2, "b", "b.txt");
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+
+    let outcomes = lander(&work, &worktrees, &forge).land(&[a, b]).unwrap();
+
+    let chain = recorded(&work);
+    let [first, second] = &chain.candidates[..] else { panic!("{chain:?}") };
+    assert_eq!(
+        outcomes,
+        [(1, Outcome::Landed(first.commit.clone())), (2, Outcome::Landed(second.commit.clone()))]
+    );
+    assert_eq!(first.tree, git(&work, &["rev-parse", &format!("{head}^{{tree}}")]));
+    // The first candidate's fast gate is the worker's run, reused: it did not run again.
+    assert_eq!(
+        runs(&ran),
+        [
+            ("fast".to_string(), head),
+            ("fast".to_string(), second.commit.clone()),
+            ("slow".to_string(), second.commit.clone()),
+        ]
+    );
+    let evidence = first.result.as_ref().expect("its evidence");
+    assert!(evidence.green(), "{evidence:?}");
+    let reused = evidence.reused.as_ref().expect("its record says it reused the run");
+    assert_eq!(reused.host.as_deref(), Some("worker-host"), "it names the run it stands on");
+    assert_eq!(reused.machine.as_deref(), Some(MACHINE));
+    assert_eq!(evidence.command.as_deref(), Some("./gate.sh fast"));
+    assert_eq!(evidence.head.as_deref(), Some(first.commit.as_str()));
+    assert!(second.result.as_ref().unwrap().reused.is_none(), "the slow gate ran");
 }
 
 #[test]

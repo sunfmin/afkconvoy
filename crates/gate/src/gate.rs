@@ -170,7 +170,16 @@ pub struct GreenRun {
     #[field(u64[at])]
     at: u64,
     took: Option<Took>,
+    machine: Option<String>,
     tests: Vec<TestTime>,
+}
+
+/// The kind of machine this program runs on: its operating system and its
+/// processor's architecture, `macos-aarch64`. A green run on record answers
+/// for another run on the same kind of machine alone (`run::reusable`):
+/// some tests depend on the machine.
+pub fn machine() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 impl GreenRun {
@@ -198,6 +207,21 @@ impl GreenRun {
         GreenRun { tests, ..self }
     }
 
+    /// The kind of machine the run ran on (`machine`); `None` for a run
+    /// whose record says none, as every record did once. It is the green
+    /// run it was, and answers for no run asked of a kind of machine.
+    pub fn machine(&self) -> Option<&str> {
+        self.machine.as_deref()
+    }
+
+    /// This run, as having run on a machine of kind `machine`; an empty
+    /// kind says none.
+    #[spec(fn(GreenRun[@g], &str) -> GreenRun[g])]
+    pub fn on_machine(self, machine: &str) -> GreenRun {
+        let machine = if machine.is_empty() { None } else { Some(machine.to_string()) };
+        GreenRun { machine, ..self }
+    }
+
     /// Whether the run is still believed at `now`: no older than a day, and
     /// not stamped from the future — whose day would never run out.
     #[spec(fn(&GreenRun[@g], now: u64) -> bool[fresh(g.at, now)])]
@@ -218,6 +242,7 @@ impl GreenRun {
                 ("at", &at),
                 ("seconds", &seconds),
                 ("host", host),
+                ("machine", self.machine.as_deref().unwrap_or_default()),
             ],
         )
     }
@@ -261,15 +286,17 @@ impl GreenRun {
             (Some(seconds), Some(host)) => Took::on(host, seconds),
             _ => None,
         };
+        let machine = fields.get("machine").filter(|kind| !kind.is_empty()).map(str::to_string);
         let tests = subject.lines().skip(1).filter_map(TestTime::read).collect();
-        Some(GreenRun { tree: tree.key, command: command.key, at, took, tests })
+        Some(GreenRun { tree: tree.key, command: command.key, at, took, machine, tests })
     }
 
     /// The whole gate's run on `tree`, from the runs of its two parts there:
     /// `fast` of `fast_command` and `slow` of `slow_command`, two commands
     /// that together check what `whole` does (docs/adr/0047). It finished
     /// when the older part did, and took both parts' seconds on the slow
-    /// part's host, timing the fast part's tests, then the slow part's.
+    /// part's host, timing the fast part's tests, then the slow part's; on
+    /// the kind of machine both ran on, where they ran on one.
     /// `None` when either run is of another tree or command.
     #[spec(fn(tree: &Tree[@t], whole: &GateCommand[@w], fast_command: &GateCommand,
         fast: &GreenRun, slow_command: &GateCommand, slow: &GreenRun)
@@ -295,8 +322,9 @@ impl GreenRun {
             (Some(f), Some(s)) => Took::on(&s.host, f.seconds.saturating_add(s.seconds)),
             _ => None,
         };
+        let machine = if fast.machine == slow.machine { slow.machine.clone() } else { None };
         let tests = fast.tests.iter().chain(&slow.tests).cloned().collect();
-        Some(GreenRun { tree: tree.key, command: whole.key, at, took, tests })
+        Some(GreenRun { tree: tree.key, command: whole.key, at, took, machine, tests })
     }
 }
 
@@ -422,6 +450,7 @@ pub fn after_run(tree: &Tree, command: &GateCommand, ran: Ran, host: &str, now: 
             command: command.key,
             at: now,
             took,
+            machine: None,
             tests: vec![],
         })
     }
@@ -434,6 +463,16 @@ impl Recording {
     pub fn with_tests(self, tests: Vec<TestTime>) -> Recording {
         match self {
             Recording::Write(green) => Recording::Write(green.with_tests(tests)),
+            other => other,
+        }
+    }
+
+    /// The same recording, its run (where it writes one) as having run on a
+    /// machine of kind `machine` (`machine`).
+    #[spec(fn(Recording[@r], &str) -> Recording[r])]
+    pub fn on_machine(self, machine: &str) -> Recording {
+        match self {
+            Recording::Write(green) => Recording::Write(green.on_machine(machine)),
             other => other,
         }
     }

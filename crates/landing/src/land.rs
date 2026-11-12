@@ -22,7 +22,9 @@ use afkconvoy_gate::run::{self, Git};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::chain::{BatchStep, Candidate, Chain, Decision, Evidence, Observed, Phase, Process};
+use crate::chain::{
+    BatchStep, Candidate, Chain, Decision, Evidence, Observed, Phase, Process, Reused,
+};
 use crate::forge::{Change, Forge};
 use crate::turn::{self, Declared, Landing, Next};
 
@@ -75,6 +77,10 @@ pub struct Lander<'a, F: Forge> {
     pub forge: &'a F,
     /// The host name a gate run is recorded as having run on.
     pub host: String,
+    /// The kind of machine it is (`afkconvoy_gate::gate::machine`): a green
+    /// run on record of a candidate's tree on this kind answers for its
+    /// gate, which does not run again.
+    pub machine: String,
     /// This process, which owns every candidate it assigns.
     pub owner: Process,
     /// Where each candidate's worktree is made, one directory each.
@@ -314,15 +320,19 @@ where
     }
 
     /// Runs `command` in the worktree of `c` under its limit of `seconds`,
-    /// recording its run → its evidence.
+    /// recording its run → its evidence. Where the remote holds a green run
+    /// of it on the candidate's tree on this kind of machine, that run
+    /// answers and nothing runs: the evidence names it (`Evidence::reused`).
     fn run(&self, c: &Candidate<F::Note>, command: &str, seconds: u64) -> Result<Evidence, String> {
         let checkout = Git { worktree: PathBuf::from(&c.worktree), ..self.git.clone() };
         let command = GateCommand::new(command);
         let limit = std::time::Duration::from_secs(seconds);
-        let ran = run::gate(&checkout, &command, &self.host, (self.now)(), limit, &[])?;
-        let (written, not_recorded) = match ran.settled {
-            run::Settled::Written { not_recorded, .. } => (true, not_recorded),
-            run::Settled::Dropped | run::Settled::Left => (false, None),
+        let on = (self.host.as_str(), self.machine.as_str());
+        let ran = run::gate(&checkout, &command, on, (self.now)(), limit, &[])?;
+        let (written, not_recorded, reused) = match &ran.settled {
+            run::Settled::Written { not_recorded, .. } => (true, not_recorded.clone(), None),
+            run::Settled::Reused(green) => (false, None, Some(Reused::of(green))),
+            run::Settled::Dropped | run::Settled::Left => (false, None, None),
         };
         let skip = ran.output.len().saturating_sub(EXCERPT_LINES);
         let termination = match &ran.judged {
@@ -340,6 +350,7 @@ where
             not_recorded,
             termination,
             cancelled: false,
+            reused,
         }))
     }
 
