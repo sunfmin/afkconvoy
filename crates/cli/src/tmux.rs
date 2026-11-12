@@ -1,6 +1,6 @@
 //! The tmux of a Guild machine (sunfmin/control#753): Guild runs each of its
 //! instances in a tmux server of its own, so every Guild machine needs one,
-//! and the host kit installs it (docs/adr/0062). What is a Guild
+//! and the host kit installs it (docs/adr/0066, docs/adr/0062). What is a Guild
 //! machine, where its tmux is and how one is installed is the host kit
 //! crate's (`afkconvoy_host_kit::tmux`, docs/adr/0062): writing the host kit
 //! installs it, and `doctor` names a Guild machine that has none, with the

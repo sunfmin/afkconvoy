@@ -71,7 +71,7 @@ This repo names no `team`, so it is unbound. A bound repo's three keys more —
 The gate checks the core crate with Flux, and `./verify.sh` checks it with
 Homebrew's `sunfmin/tap/flux-toolchain`, and refuses to while it is not
 installed or is older than the newest the tap has, the tap read fresh for
-the check (sunfmin/control#735, the control repo's ADR 0011). The tap builds
+the check (sunfmin/control#735, ADR-0067). The tap builds
 it every day, with the `cargo-flux`, `fixpoint` and `z3` it runs, so nothing
 here pins or builds any of them. So a host without it is refused at the
 startup probe, and its work goes to a host that has it (ADR-0053). The check

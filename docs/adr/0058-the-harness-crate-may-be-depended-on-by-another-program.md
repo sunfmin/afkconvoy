@@ -6,7 +6,7 @@ status: accepted
 
 Amends ADR-0013 and ADR-0044 (sunfmin/control#694).
 
-What afkconvoy knows of each harness — how one starts, where it reads its rules and skills, how a hook reaches it and is answered, where it keeps its session and which of its lines start or end a turn, what its usage lines count, which screen words mean a quota, a capacity limit or a refusal — is wanted by another program of this host's user (Guild, sunfmin/control#693), which uses none of afkconvoy's team, role or workflow. The host kit is the one place that knows the harnesses (control ADR 0009): a second copy of that knowledge would drift from the first.
+What afkconvoy knows of each harness — how one starts, where it reads its rules and skills, how a hook reaches it and is answered, where it keeps its session and which of its lines start or end a turn, what its usage lines count, which screen words mean a quota, a capacity limit or a refusal — is wanted by another program of this host's user (Guild, sunfmin/control#693), which uses none of afkconvoy's team, role or workflow. The host kit is the one place that knows the harnesses (ADR-0066): a second copy of that knowledge would drift from the first.
 
 That knowledge is its own crate, `crates/harness` (`afkconvoy-harness`), which `afkconvoy-core` depends on and re-exports as `harness`, `turn`, the token usage of `account`, the shell `Line`, the guard's `Call` and the team's `RULES`, `SKILLS` and `SKILL_FILE`. Another program depends on it as a git dependency pinned to a revision of this repo; it is not published.
 
