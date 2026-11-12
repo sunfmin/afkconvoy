@@ -185,6 +185,7 @@ fn settle_reported(state: &mut State) -> Result<bool> {
     keep_usage(&current, session, crate::clock())?;
     match report.outcome {
         crate::asking_report::Outcome::Settled => {
+            crate::resources::answered(&current.question.condition)?;
             state.finished.insert(current.question.id.clone());
         }
         crate::asking_report::Outcome::Aside => {

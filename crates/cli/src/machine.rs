@@ -12,6 +12,8 @@ use anyhow::{Result, ensure};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use afkconvoy_core::resources::Elsewhere;
+
 use crate::doctor::{Finding, Kind, finding};
 use crate::host_runner;
 
@@ -31,18 +33,45 @@ pub struct Runner {
     pub processes: usize,
 }
 
+/// The process table as `ps` says it to this account, read once a look:
+/// what any account may read.
+pub struct Table {
+    text: String,
+    me: u32,
+}
+
+impl Table {
+    pub fn read() -> Result<Table> {
+        let out = crate::process::output(Command::new("ps").args([
+            "-axww",
+            "-o",
+            "uid=,user=,pid=,%cpu=,rss=,command=",
+        ]))?;
+        ensure!(out.status.success(), "`ps` ended {}", out.status);
+        // SAFETY: getuid takes nothing, cannot fail and changes nothing.
+        let me = unsafe { libc::getuid() };
+        Ok(Table { text: String::from_utf8_lossy(&out.stdout).into_owned(), me })
+    }
+
+    /// The host runners of every account but this one on this machine.
+    pub fn runners(&self) -> Vec<Runner> {
+        runners(&self.text, self.me)
+    }
+
+    /// The other user account that holds the most resident memory, where it
+    /// holds more than this one: memory pressure then is that account's.
+    pub fn elsewhere(&self) -> Option<Elsewhere> {
+        elsewhere(&self.text, self.me)
+    }
+}
+
 /// The host runners of every account but this one on this machine, as `ps`
-/// says them: what any account may read.
-pub fn other_runners() -> Result<Vec<Runner>> {
-    let out = crate::process::output(Command::new("ps").args([
-        "-axww",
-        "-o",
-        "uid=,user=,pid=,%cpu=,rss=,command=",
-    ]))?;
-    ensure!(out.status.success(), "`ps` ended {}", out.status);
-    // SAFETY: getuid takes nothing, cannot fail and changes nothing.
-    let me = unsafe { libc::getuid() };
-    Ok(runners(&String::from_utf8_lossy(&out.stdout), me))
+/// says them, or why it could not say.
+pub fn other_runners(table: &Result<Table>) -> Result<Vec<Runner>> {
+    match table {
+        Ok(table) => Ok(table.runners()),
+        Err(error) => Err(anyhow::anyhow!("{error:#}")),
+    }
 }
 
 /// One row of the process table: uid, user, pid, %CPU, resident KiB, then
@@ -98,6 +127,26 @@ fn runners(table: &str, me: u32) -> Vec<Runner> {
         .collect();
     found.sort_by_key(|runner| runner.pid);
     found
+}
+
+/// In the process table `table`, the user account but `me`'s holding the
+/// most resident memory, where it holds more than `me`'s.
+fn elsewhere(table: &str, me: u32) -> Option<Elsewhere> {
+    let mut accounts: Vec<(u32, &str, u64, usize)> = vec![];
+    for row in table.lines().filter_map(row) {
+        match accounts.iter_mut().find(|(uid, ..)| *uid == row.uid) {
+            Some((_, _, resident, processes)) => {
+                *resident += row.resident * 1024;
+                *processes += 1;
+            }
+            None => accounts.push((row.uid, row.user, row.resident * 1024, 1)),
+        }
+    }
+    let held: Vec<(u32, u64)> = accounts.iter().map(|(uid, _, bytes, _)| (*uid, *bytes)).collect();
+    let most = afkconvoy_core::resources::elsewhere(&held, me)?;
+    let (uid, account, memory_bytes, processes) =
+        accounts.into_iter().find(|(uid, ..)| *uid == most)?;
+    Some(Elsewhere { account: account.to_string(), uid, memory_bytes, processes })
 }
 
 /// `doctor`'s `host.other_accounts`: each of `read`, or {error}.
@@ -215,6 +264,28 @@ mod tests {
                 processes: 3,
             }]
         );
+    }
+
+    #[test]
+    fn the_account_holding_the_most_memory_is_named_where_it_is_not_this_one() {
+        let table = "\
+  501 sunfmin     100   0.0 2097152 /Users/sunfmin/homebrew/bin/afkconvoy host-runner
+  502 felix       200  80.0 16777216 /opt/homebrew/bin/limactl hostagent colima
+  502 felix       300  20.0 4194304 launchd_sim
+    0 root          1   0.1 41943040 /sbin/launchd
+";
+        assert_eq!(
+            elsewhere(table, 501),
+            Some(Elsewhere {
+                account: "felix".into(),
+                uid: 502,
+                memory_bytes: 20 << 30,
+                processes: 2,
+            })
+        );
+        assert_eq!(elsewhere(table, 502), None);
+        assert_eq!(elsewhere(TABLE, 501).map(|held| held.processes), Some(3));
+        assert_eq!(elsewhere(TABLE, 502), None, "this account holds more than 501, root is none");
     }
 
     #[test]

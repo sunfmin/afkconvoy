@@ -1882,6 +1882,193 @@ fn pressure_starts_one_watch_across_fleets_and_no_worker_turns_hot() {
     }
 }
 
+/// The stand-in process table as `ps` says it with uids: this account's
+/// processes holding `mine` GiB, and the other account `other` — uid, user,
+/// GiB — its own. Every other `ps` is the host's stand-in table.
+fn account_table(world: &World, mine: u64, other: (u32, &str, u64)) {
+    use std::os::unix::fs::PermissionsExt;
+    let ps = world.root.join("bin/ps");
+    std::fs::write(
+        &ps,
+        "#!/bin/sh\ncase \"$*\" in\n*uid=*) cat \"${0%/*}/../account-processes\" ;;\n\
+         *) cat \"${0%/*}/../host-processes\" ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let me = std::process::Command::new("id").arg("-u").output().unwrap();
+    let me = String::from_utf8(me.stdout).unwrap();
+    let (uid, user, gib) = other;
+    let kib = |gib: u64| gib << 20;
+    std::fs::write(
+        world.root.join("account-processes"),
+        format!(
+            "{} me 100 1.0 {} /bin/zsh\n{uid} {user} 200 80.0 {} /opt/colima/limactl hostagent\n\
+             {uid} {user} 300 20.0 {} launchd_sim\n0 root 1 0.1 {} /sbin/launchd\n",
+            me.trim(),
+            kib(mine),
+            kib(gib) - kib(1),
+            kib(1),
+            kib(40),
+        ),
+    )
+    .unwrap();
+}
+
+/// Pressure held for the span, and this host's fleets' samplers watching
+/// `workers` of its checkout's worktrees, as the runner's record says them.
+/// What a watch left with the operator, already recorded, is kept.
+fn pressed_with_workers(world: &World, since: u64, workers: &[&Path]) {
+    let file = world.cache().join("afkconvoy/watch/resources.json");
+    let left = std::fs::read(&file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .map_or(Value::Null, |saved| saved["left"].clone());
+    held_since(world, true);
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    saved["left"] = left;
+    let mut holding = afkconvoy_core::resources::Holding::default();
+    holding.ticked(since, &[afkconvoy_core::resources::Reason::Memory]);
+    saved["pressure"] = json!(holding);
+    let watched: serde_json::Map<String, Value> = workers
+        .iter()
+        .map(|path| {
+            let watch = afkconvoy_core::hot::Watch::default();
+            (path.to_str().unwrap().to_string(), serde_json::to_value(watch).unwrap())
+        })
+        .collect();
+    saved["samples"] = json!({world.clone.to_str().unwrap(): watched});
+    std::fs::write(file, saved.to_string()).unwrap();
+}
+
+fn pressure_finding(doctor: &Value) -> Value {
+    let findings = doctor["findings"].as_array().unwrap();
+    let pressure = findings
+        .iter()
+        .filter(|f| f["kind"] == "memory_pressure" || f["kind"] == "pressure_elsewhere");
+    let pressure: Vec<_> = pressure.collect();
+    assert_eq!(pressure.len(), 1, "{doctor}");
+    pressure[0].clone()
+}
+
+/// Every watch round of this host so far, by id, oldest first: a resident
+/// watch takes a later round in the same session, with no new terminal.
+fn rounds(world: &World) -> Vec<String> {
+    let state = state(world);
+    let mut ids: Vec<String> = vec![];
+    let history = state["history"].as_array().cloned().unwrap_or_default();
+    for round in history.iter().chain([&state["last"], &state["running"]]) {
+        if let Some(id) = round["id"].as_str()
+            && !ids.iter().any(|seen| seen == id)
+        {
+            ids.push(id.to_string());
+        }
+    }
+    ids
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pressure_another_account_holds_with_no_fleet_worker_starts_no_watch_and_doctor_names_it() {
+    let world = World::new();
+    resource_host(&world);
+    account_table(&world, 1, (777, "simulators", 20));
+    std::fs::write(world.root.join("host-pressure"), "2").unwrap();
+    held_since(&world, true);
+    let dir = operator(&world);
+    run(&world, &dir);
+    let first = until(&world, "a look", || state(&world)["looked"].as_u64());
+    until(&world, "a later look", || state(&world)["looked"].as_u64().filter(|at| *at > first));
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(starts(&world).is_empty(), "no watch: {}", state(&world));
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    let found = pressure_finding(&doctor);
+    assert_eq!(found["kind"], "pressure_elsewhere", "{found}");
+    assert_eq!(found["severity"], "info", "{found}");
+    let what = found["what"].as_str().unwrap();
+    for text in ["from another account", "simulators (uid 777)", "20.0 GiB", "no worker"] {
+        assert!(what.contains(text), "missing {text}: {what}");
+    }
+    let resources = doctor["host"]["resources"].as_array().unwrap();
+    let pressure = resources.iter().find(|r| r["kind"] == "pressure").unwrap();
+    assert_eq!(pressure["elsewhere"]["account"], "simulators", "{pressure}");
+    assert_eq!(pressure["unwatched"], "no_worker", "{pressure}");
+    let plan = world.afk(&["plan"]).json;
+    assert_eq!(plan["memory_pressure"]["account"], "simulators", "{plan}");
+    assert_eq!(plan["memory_pressure"]["unwatched"], "no_worker", "{plan}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_same_pressure_while_this_accounts_fleet_holds_the_most_starts_a_watch() {
+    let world = World::new();
+    resource_host(&world);
+    let path = resource_worker(&world, 7, 620);
+    account_table(&world, 20, (777, "simulators", 2));
+    std::fs::write(world.root.join("host-pressure"), "2").unwrap();
+    pressed_with_workers(&world, now() - 600, &[&path]);
+    let dir = operator(&world);
+    run(&world, &dir);
+    let watch = until(&world, "pressure's watch", || running(&world));
+    assert!(watch["items"].to_string().contains("resource:pressure:"), "{watch}");
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(pressure_finding(&doctor)["kind"], "memory_pressure", "{doctor}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn two_pressure_episodes_from_the_same_other_account_start_one_watch_until_the_cause_changes() {
+    let world = World::new();
+    resource_host(&world);
+    let path = resource_worker(&world, 7, 620);
+    account_table(&world, 1, (777, "simulators", 20));
+    std::fs::write(world.root.join("host-pressure"), "2").unwrap();
+    pressed_with_workers(&world, now() - 600, &[&path]);
+    let dir = operator(&world);
+    run(&world, &dir);
+    let watch = until(&world, "the first episode's watch", || running(&world));
+    assert!(watch["items"].to_string().contains("resource:pressure:"), "{watch}");
+    let first = watch["id"].as_str().unwrap().to_string();
+    printed(&world, &watch, &["left the other account's memory with the operator"], Some(0));
+    until(&world, "watch end", || ended(&world, "ended"));
+    let file = world.cache().join("afkconvoy/watch/resources.json");
+    let saved = until(&world, "pressure left with the operator", || {
+        let saved: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+        (saved["left"]["account"] == "simulators").then_some(saved)
+    });
+    assert_eq!(saved["left"]["uid"], 777, "{saved}");
+
+    // Pressure dips for five minutes and rises again: a new episode, with
+    // the same account holding the most.
+    world.kill_host_runner("KILL");
+    pressed_with_workers(&world, now() - 700, &[&path]);
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(saved["left"]["account"], "simulators", "{saved}");
+    run(&world, &dir);
+    let looked = now();
+    until(&world, "a look of the new episode", || {
+        state(&world)["looked"].as_u64().filter(|at| *at > looked)
+    });
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(rounds(&world), vec![first.clone()], "the same cause starts no second watch");
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    let found = pressure_finding(&doctor);
+    assert_eq!(found["kind"], "pressure_elsewhere", "{found}");
+    assert!(found["what"].as_str().unwrap().contains("left it with the operator"), "{found}");
+
+    // Another account holds the most now: the cause changed.
+    account_table(&world, 1, (778, "builder", 20));
+    let watch = until(&world, "a watch round on the changed cause", || {
+        running(&world).filter(|round| round["id"] != first.as_str())
+    });
+    assert!(watch["items"].to_string().contains("builder"), "{watch}");
+    saved = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert!(saved["left"].is_null(), "{saved}");
+}
+
 #[test]
 fn a_resource_trigger_while_a_watch_runs_waits_for_its_next_look() {
     let world = World::new();

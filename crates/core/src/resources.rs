@@ -120,6 +120,83 @@ impl Holding {
     }
 }
 
+/// The user account holding the most resident memory on the machine, where
+/// it is not this one: memory pressure it causes is beyond every watch's
+/// bounds, which keep it to this account's fleet-owned processes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Elsewhere {
+    pub account: String,
+    pub uid: u32,
+    pub memory_bytes: u64,
+    pub processes: usize,
+}
+
+/// The lowest uid of a user account, where the machine's own accounts end.
+pub const FIRST_USER_UID: u32 = 500;
+/// Past this, the uids of the machine's nobody accounts.
+pub const LAST_USER_UID: u32 = 60_000;
+
+/// Of `accounts` — each account's uid and the resident bytes its processes
+/// hold, an account once — the uid of the user account other than `me` that
+/// holds the most, where it holds more than `me` does: memory pressure then
+/// is that account's. Accounts below `FIRST_USER_UID` or past
+/// `LAST_USER_UID` are the machine's own and are never it.
+pub fn elsewhere(accounts: &[(u32, u64)], me: u32) -> Option<u32> {
+    let mut most: (Option<u32>, u64) = (None, 0);
+    for (uid, bytes) in accounts {
+        if *uid == me && *bytes > most.1 {
+            most = (None, *bytes);
+        }
+    }
+    for (uid, bytes) in accounts {
+        if *uid != me && is_user(*uid) && *bytes > most.1 {
+            most = (Some(*uid), *bytes);
+        }
+    }
+    most.0
+}
+
+// Flux cannot check a range's `contains`.
+#[allow(clippy::manual_range_contains)]
+fn is_user(uid: u32) -> bool {
+    FIRST_USER_UID <= uid && uid <= LAST_USER_UID
+}
+
+/// Why a memory-pressure episode starts no watch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unwatched {
+    /// Another account holds the most memory, and this host's fleets hold no
+    /// worker: nothing a watch may touch holds any.
+    NoWorker,
+    /// A watch already reported pressure from that same account and left it
+    /// with the operator, who has not answered it since.
+    LeftWithOperator,
+}
+
+/// Whether memory pressure whose largest holder is the account `elsewhere`
+/// (by uid; `None` where it is this account's, or unknown), while this
+/// host's fleets hold `workers` workers, starts no watch — and why: once
+/// `left`, the account a reported watch left such pressure with the operator
+/// for, it is that account's again.
+pub fn unwatched(elsewhere: Option<u32>, workers: usize, left: Option<u32>) -> Option<Unwatched> {
+    let uid = elsewhere?;
+    if workers == 0 {
+        Some(Unwatched::NoWorker)
+    } else if left == Some(uid) {
+        Some(Unwatched::LeftWithOperator)
+    } else {
+        None
+    }
+}
+
+/// Whether what a watch left with the operator for `left` still stands once
+/// a look finds the pressure's largest holder `elsewhere`: not once it is
+/// another account, or this account's fleet again.
+pub fn still_left(left: u32, elsewhere: Option<u32>) -> bool {
+    elsewhere == Some(left)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +246,30 @@ mod tests {
         let saved = serde_json::to_string(&admission).unwrap();
         let restored: Holding = serde_json::from_str(&saved).unwrap();
         assert_eq!(restored, admission);
+    }
+
+    #[test]
+    fn another_user_account_holding_more_than_this_one_is_where_pressure_comes_from() {
+        // 20 GiB of another account's VM and simulator against this one's 2.
+        let gib = 1u64 << 30;
+        let table = [(0, 30 * gib), (88, 3 * gib), (501, 2 * gib), (502, 20 * gib), (503, gib)];
+        assert_eq!(elsewhere(&table, 501), Some(502));
+        assert_eq!(elsewhere(&table, 502), None, "this account holds the most");
+        let fleet_largest = [(501, 9 * gib), (502, 8 * gib)];
+        assert_eq!(elsewhere(&fleet_largest, 501), None);
+        assert_eq!(elsewhere(&[(0, gib), (4_294_967_294, gib)], 501), None, "machine accounts");
+        assert_eq!(elsewhere(&[], 501), None);
+    }
+
+    #[test]
+    fn pressure_from_another_account_starts_no_watch_with_no_worker_or_once_left() {
+        assert_eq!(unwatched(Some(502), 0, None), Some(Unwatched::NoWorker));
+        assert_eq!(unwatched(Some(502), 2, None), None, "a worker may be acted on");
+        assert_eq!(unwatched(None, 0, None), None, "this account's pressure");
+        assert_eq!(unwatched(Some(502), 2, Some(502)), Some(Unwatched::LeftWithOperator));
+        assert_eq!(unwatched(Some(503), 2, Some(502)), None, "a different account");
+        assert!(still_left(502, Some(502)));
+        assert!(!still_left(502, Some(503)));
+        assert!(!still_left(502, None), "the fleet holds the most again");
     }
 }
