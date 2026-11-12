@@ -31,3 +31,36 @@ spells it.
   asks `<base url>/usages` (`https://api.kimi.com/coding/v1/usages`) with the
   account's token. The sample takes the fields Kimi Code 2.5.3 parses
   (`parseQuotaUsages`): no Kimi account is on this host to record one.
+
+The steps samples (sunfmin/control#747), read by `Harness::steps`:
+
+- `claude-code-session-steps.jsonl`: eight lines of a real Claude Code
+  2.1.322 session file recorded on this host, of an afkconvoy worker on this
+  repo: three answered `Bash` calls, the third of which Claude Code marked
+  `is_error` (exit code 1), the `api-request-blob` that repeats a call beside
+  them, and a last call with no result yet. Paths and the session id are
+  replaced.
+- `codex-session-steps.jsonl`: no Codex runs on this host. The lines take the
+  `ResponseItem` fields codex-rs writes (openai/codex `64acaba9`,
+  `protocol/src/models.rs`): `function_call` with its arguments as a string
+  of JSON, `custom_tool_call`, and their outputs as plain strings, whose
+  `success` codex-rs never writes. The output texts are `exec_command`'s
+  ("Process exited with code") and the older shell's ("Exit code:").
+- `kimi-wire-steps.jsonl`: no Kimi account is on this host. The
+  `context.append_loop_event` lines take the `tool.call` / `tool.result`
+  fields of `@moonshot-ai/kimi-code` 2.5.3 (`wire-manifest.d.ts`,
+  `contextEvents.ts`), and its shell's failure text; a sub-agent's lines
+  carry its own `agentId`.
+- `pi-session-steps.jsonl`: the entries of `@mariozechner/pi-coding-agent`
+  0.73.1's `docs/session-format.md`: `toolCall` parts of an assistant
+  message and `toolResult` messages, with the failure text its bash tool
+  writes.
+- `grok-updates-steps.jsonl`: Grok's `updates.jsonl` is its ACP session
+  update stream. The lines take the `session/update` envelope and the
+  `tool_call` / `tool_call_update` fields of Orca's recordings of Grok
+  1.0.77's protocol traffic; how Grok wraps a line on disk was read only from
+  its binary's strings and is not confirmed.
+- `dsh-session-steps.jsonl`: the decompressed text of a DeepSeek Harness
+  `session.v4.jsonl.zstd`, with the header, `tool/call` and `tool/result`
+  fields of `@deepseek-ai/dsh-session` 0.2.2-rc.1 and the exit-code line its
+  bash tool ends with (it marks no non-zero exit as an error).

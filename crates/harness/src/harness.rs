@@ -1447,6 +1447,29 @@ impl Harness {
         crate::tokens::fold(text, window, |line, n| self.usage(line, n))
     }
 
+    /// The steps one session file's `text` records, oldest first: each tool
+    /// call with what came back of it and whether the harness marked that an
+    /// error. A call with no result yet is no step, and a child session's
+    /// lines are not the session's own. The text is the session file the
+    /// layout names, decompressed where it is stored compressed; Grok's
+    /// calls are in the updates its layout names beside its events
+    /// (`SessionLayout::Named::usage`).
+    pub fn steps(self, text: &str) -> Vec<crate::steps::Step> {
+        crate::steps::fold(text, |line| self.said(line))
+    }
+
+    /// What one session line says of a tool call or its result.
+    fn said(self, line: &serde_json::Value) -> Vec<crate::steps::Said> {
+        match self {
+            Harness::ClaudeCode => claude_code::said(line),
+            Harness::Pi => pi::said(line),
+            Harness::Codex => codex::said(line),
+            Harness::Kimi => kimi::said(line),
+            Harness::Grok => grok::said(line),
+            Harness::Dsh => dsh::said(line),
+        }
+    }
+
     /// What one session line, the `n`th, says of token use.
     fn usage(self, line: &serde_json::Value, n: usize) -> Option<crate::tokens::Usage> {
         match self {
@@ -1656,6 +1679,13 @@ impl Harness {
     /// nor a tool's output that shows it.
     pub fn holds_note(self, text: &str, mark: &str) -> bool {
         session::holds_note(text, mark)
+    }
+
+    /// When the first message of `text` that holds `mark` as the user's
+    /// (as `holds_note`) was recorded, in epoch seconds. `None` when no such
+    /// message says when.
+    pub fn noted_at(self, text: &str, mark: &str) -> Option<u64> {
+        session::noted_at(text, mark)
     }
 
     /// The files a stand-in writes under the harness directory for `line`,

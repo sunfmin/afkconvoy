@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::gate::{
     GateCommand, GreenRun, Judged, Ran, Recording, Termination, Tree, after_run, believed_among,
-    judge, record_ref,
+    judge, record_ref, test_times,
 };
 use crate::layout::Layout;
 
@@ -32,8 +32,13 @@ pub trait Records {
     /// commit it points at. A name it has not is left out.
     fn read(&self, names: &[&str]) -> Result<Vec<(String, String)>, Self::Error>;
 
-    /// A commit of `tree` on `parent` whose subject is `subject` → its sha.
-    fn commit(&self, tree: &str, parent: &str, subject: &str) -> Result<String, Self::Error>;
+    /// The whole message of the commit the remote's ref `name` points at;
+    /// `None` when it has no such ref. A record's subject is its first line.
+    fn message(&self, name: &str) -> Result<Option<String>, Self::Error>;
+
+    /// A commit of `tree` on `parent` whose message is `message` — a record's
+    /// subject, then the lines that time its tests → its sha.
+    fn commit(&self, tree: &str, parent: &str, message: &str) -> Result<String, Self::Error>;
 
     /// Puts the commit `sha` at `refname`, over whatever is there → why it is
     /// not there, `None` once it is.
@@ -100,6 +105,38 @@ pub fn recorded<R: Records>(
     let pairs: Vec<(&str, &str)> =
         found.iter().map(|(name, subject)| (name.as_str(), subject.as_str())).collect();
     Ok(believed_among(&pairs, records.layout(), tree, command, now))
+}
+
+/// The green run `recorded` answers, read from its record's whole message:
+/// timing each test its run's output timed (`GreenRun::tests`). A record that
+/// times none is the same run, with no tests — every record so far.
+pub fn recorded_with_tests<R: Records>(
+    records: &R,
+    tree: &Tree,
+    command: &GateCommand,
+    now: u64,
+) -> Result<Option<GreenRun>, R::Error> {
+    let noted = records.layout();
+    let names: Vec<String> = [noted, noted.other()]
+        .into_iter()
+        .map(|layout| record_ref(layout, tree, command))
+        .collect();
+    let asked: Vec<&str> = names.iter().map(String::as_str).collect();
+    let found = records.read(&asked)?;
+    for name in &names {
+        let Some((_, subject)) = found.iter().find(|(found, _)| found == name) else { continue };
+        let Some(run) = GreenRun::recorded(subject, tree, command).filter(|run| run.stands(now))
+        else {
+            continue;
+        };
+        // The ref may have moved since it was listed: its run is the one the
+        // listing believed unless the message read now is a run that stands.
+        let whole = records.message(name)?.and_then(|message| {
+            GreenRun::recorded(&message, tree, command).filter(|run| run.stands(now))
+        });
+        return Ok(Some(whole.unwrap_or(run)));
+    }
+    Ok(None)
 }
 
 /// Puts the whole gate, `whole`, on record for `tree` at the commit `head`
@@ -201,6 +238,26 @@ pub fn off_commit(dir: &Path, head: Option<&str>) -> Result<Vec<String>, String>
     Ok(off)
 }
 
+impl Git {
+    /// The commit the remote's ref `name` points at, fetched here when it is
+    /// not yet; `None` when the remote has no such ref.
+    fn fetched(&self, name: &str) -> Result<Option<String>, String> {
+        let listed = git(&self.worktree, &["ls-remote", &self.remote, name], &[])?;
+        let Some(sha) = listed
+            .lines()
+            .find_map(|line| line.split_once('\t').filter(|(_, n)| *n == name))
+            .map(|(sha, _)| sha.to_string())
+        else {
+            return Ok(None);
+        };
+        let have = git(&self.worktree, &["cat-file", "-e", &format!("{sha}^{{commit}}")], &[]);
+        if have.is_err() {
+            git(&self.worktree, &["fetch", "--quiet", "--no-tags", &self.remote, name], &[])?;
+        }
+        Ok(Some(sha))
+    }
+}
+
 impl Records for Git {
     type Error = String;
 
@@ -211,26 +268,21 @@ impl Records for Git {
     fn read(&self, names: &[&str]) -> Result<Vec<(String, String)>, String> {
         let mut found = vec![];
         for name in names {
-            let listed = git(&self.worktree, &["ls-remote", &self.remote, name], &[])?;
-            let Some(sha) = listed
-                .lines()
-                .find_map(|line| line.split_once('\t').filter(|(_, n)| n == name))
-                .map(|(sha, _)| sha.to_string())
-            else {
-                continue;
-            };
-            let have = git(&self.worktree, &["cat-file", "-e", &format!("{sha}^{{commit}}")], &[]);
-            if have.is_err() {
-                git(&self.worktree, &["fetch", "--quiet", "--no-tags", &self.remote, name], &[])?;
+            if let Some(sha) = self.fetched(name)? {
+                let subject = git(&self.worktree, &["show", "-s", "--format=%s", &sha], &[])?;
+                found.push((name.to_string(), subject));
             }
-            let subject = git(&self.worktree, &["show", "-s", "--format=%s", &sha], &[])?;
-            found.push((name.to_string(), subject));
         }
         Ok(found)
     }
 
-    fn commit(&self, tree: &str, parent: &str, subject: &str) -> Result<String, String> {
-        git(&self.worktree, &["commit-tree", tree, "-p", parent, "-m", subject], &RECORD_IDENTITY)
+    fn message(&self, name: &str) -> Result<Option<String>, String> {
+        let Some(sha) = self.fetched(name)? else { return Ok(None) };
+        git(&self.worktree, &["show", "-s", "--format=%B", &sha], &[]).map(Some)
+    }
+
+    fn commit(&self, tree: &str, parent: &str, message: &str) -> Result<String, String> {
+        git(&self.worktree, &["commit-tree", tree, "-p", parent, "-m", message], &RECORD_IDENTITY)
     }
 
     fn put(&self, sha: &str, refname: &str) -> Result<Option<String>, String> {
@@ -288,7 +340,7 @@ const LOOKS_EVERY: Duration = Duration::from_millis(20);
 /// `limit`, in a process group of its own, which is ended at the limit, and
 /// settles its tree's record: a run judged green on a committed tree is put
 /// on record as having taken its seconds on `host`, finished at `now`, with
-/// `more` fields; one judged red takes the record away; one that says nothing
+/// `more` fields and each test its output timed (`test_times`); one judged red takes the record away; one that says nothing
 /// of its tree, or ran on no committed tree, changes nothing. Errors: git
 /// failed, or the command could not be started.
 pub fn gate(
@@ -360,7 +412,7 @@ pub fn gate(
     let judged = judge(exit_code, timed_out, limit.as_secs(), termination, &output);
     let recording = match judged {
         Judged::Unsettled(_) => Recording::Leave,
-        _ => after_run(&tree, command, ran, host, now),
+        _ => after_run(&tree, command, ran, host, now).with_tests(test_times(&output)),
     };
     let settled = settle(git, &tree, &head, command, recording, more)?;
     let strays = if before.is_empty() { after } else { before };

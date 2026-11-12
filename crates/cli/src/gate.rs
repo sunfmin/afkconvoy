@@ -13,8 +13,8 @@ use afkconvoy_core::candidate::{Evidence, Observed};
 use afkconvoy_core::config::{Config, Which};
 pub use afkconvoy_core::gate::Termination;
 use afkconvoy_core::gate::{
-    Ended, GateCommand, GreenRun, Judged, Ran, Recording, Red, Tree, Unsettled, after_run,
-    believed_among, judge, red_ref, red_subject,
+    Ended, GateCommand, GreenRun, Judged, Ran, Recording, Red, TestTime, Tree, Unsettled,
+    after_run, believed_among, judge, red_ref, red_subject, test_times,
 };
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::lock::named;
@@ -54,6 +54,8 @@ struct CommandRun {
     termination: Option<Termination>,
     cancelled: bool,
     judged: Judged,
+    /// Each test its whole output timed (`gate::test_times`).
+    tests: Vec<TestTime>,
 }
 
 /// Keeps `line` at the end of the excerpt `tail`, and in the whole run's
@@ -264,6 +266,7 @@ fn run_command(
         termination,
         cancelled,
         judged,
+        tests: test_times(&all),
     })
 }
 
@@ -351,6 +354,7 @@ fn controlled_run(
         seconds: command_run.seconds,
     };
     let strays = if before.is_empty() { after } else { before };
+    let tests = command_run.tests;
     let mut run = GateRun {
         ran,
         head,
@@ -372,7 +376,7 @@ fn controlled_run(
     }
     let recording = match run.judged {
         Judged::Unsettled(_) => Recording::Leave,
-        _ => after_run(&tree, command, ran, host, now),
+        _ => after_run(&tree, command, ran, host, now).with_tests(tests),
     };
     let issued = issue.map(|issue| issue.to_string());
     let more = afkconvoy_core::gate::noted(issued.as_deref());
@@ -542,8 +546,16 @@ impl Records for OnRemote<'_> {
         Ok(found.into_iter().map(|record| (record.name, record.subject)).collect())
     }
 
-    fn commit(&self, tree: &str, parent: &str, subject: &str) -> Result<String> {
-        self.0.record_commit_on(tree, parent, subject)
+    fn message(&self, name: &str) -> Result<Option<String>> {
+        let found = self.0.remote().records(&[name], Fresh::Process)?;
+        match found.into_iter().find(|record| record.name == name && !record.subject.is_empty()) {
+            Some(record) => self.0.message(&record.sha).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn commit(&self, tree: &str, parent: &str, message: &str) -> Result<String> {
+        self.0.record_commit_on(tree, parent, message)
     }
 
     fn put(&self, sha: &str, refname: &str) -> Result<Option<String>> {
