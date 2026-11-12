@@ -135,6 +135,7 @@ mod target;
 pub mod team;
 pub mod tell;
 pub mod tick;
+pub mod tmux;
 pub mod tools;
 pub mod topic;
 pub mod tracker;
