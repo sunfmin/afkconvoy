@@ -19,6 +19,10 @@ pub enum Reason {
     Load,
     Memory,
     Disk,
+    /// A usage window of the account its workers start on.
+    Window,
+    /// The host's exclusive queue.
+    Queue,
 }
 
 impl Reason {
@@ -28,6 +32,8 @@ impl Reason {
             Hold::Load { .. } => Reason::Load,
             Hold::Memory { .. } => Reason::Memory,
             Hold::Disk { .. } => Reason::Disk,
+            Hold::Window { .. } => Reason::Window,
+            Hold::Queue { .. } => Reason::Queue,
         }
     }
 
@@ -37,11 +43,13 @@ impl Reason {
             Reason::Load => "load",
             Reason::Memory => "memory",
             Reason::Disk => "disk",
+            Reason::Window => "window",
+            Reason::Queue => "queue",
         }
     }
 
     pub fn read(word: &str) -> Option<Reason> {
-        [Reason::Load, Reason::Memory, Reason::Disk]
+        [Reason::Load, Reason::Memory, Reason::Disk, Reason::Window, Reason::Queue]
             .into_iter()
             .find(|reason| reason.word() == word)
     }

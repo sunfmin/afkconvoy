@@ -2,7 +2,6 @@
 //! the remote's refs say now. The same state gives the same working set,
 //! whatever order the reads returned it in.
 
-use flux_rs::attrs::*;
 use serde::Serialize;
 
 use crate::admission::Hold;
@@ -271,8 +270,6 @@ pub struct WorkingSet {
     /// holds the claim, lowest number first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub gone: Vec<u64>,
-    /// How many more claims this fleet may take.
-    pub free_slots: usize,
     pub now: u64,
     /// The fleet locks standing: the open issues carrying the lock label,
     /// lowest number first. While there is one, the frontier holds lock issues
@@ -358,8 +355,7 @@ impl WorkingSet {
         declared
     }
 
-    /// The claims a pass may hold, in a fleet whose config allows
-    /// `concurrency`: one more for each claim of mine whose worker declared a
+    /// The claims a pass may hold under `base`: one more for each claim of mine whose worker declared a
     /// verdict, which is held only until the grace of its worker runs out —
     /// the frontier does not wait that out — one more for each landing claim
     /// of mine whose worker is not changing the tree, which is held until its
@@ -368,8 +364,8 @@ impl WorkingSet {
     /// what their workers declare until the lock ends, so a lock issue that
     /// waited for one of their slots would wait for the lock it is there to
     /// end.
-    pub fn bound(&self, concurrency: usize) -> usize {
-        concurrency.saturating_add(self.left_alone()).saturating_add(self.slotless())
+    pub fn bound(&self, base: usize) -> usize {
+        base.saturating_add(self.left_alone()).saturating_add(self.slotless())
     }
 
     /// Where open issue `number` stands, in a set assembled of nobody — every
@@ -495,16 +491,6 @@ pub struct Observed<'a> {
     pub cut: Option<&'a cut::Seen>,
 }
 
-/// How many more claims a fleet holding `held` may take under `concurrency`:
-/// what is left under the bound, and nothing at or over it.
-#[spec(fn(concurrency: usize, held: usize) -> usize{free:
-    (held >= concurrency => free == 0) && (held < concurrency => held + free == concurrency)})]
-// Spelled out, not `saturating_sub`: Flux proves the spec from the branch.
-#[allow(clippy::implicit_saturating_sub)]
-pub fn free_slots(concurrency: usize, held: usize) -> usize {
-    if held >= concurrency { 0 } else { concurrency - held }
-}
-
 /// What a bound repo's open issue calls for by what is due on it, whoever
 /// holds it. The one home of that rule: the frontier reads it, and so does
 /// what a claim of mine leaves to start once it ends.
@@ -602,7 +588,6 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             .map(|claim| claim.number)
             .filter(|number| seen.gone.contains(number))
             .collect(),
-        free_slots: 0,
         now,
         locks: lock::standing(seen.issues, config),
         flowing: vec![],
@@ -737,30 +722,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         }
     }
     hold_back(&mut set);
-    set.free_slots = free_slots(set.bound(config.concurrency()), set.held());
     set
-}
-
-/// What callers may rely on: each is checked by Flux, and stops passing when
-/// the spec it reads is weakened.
-#[cfg(flux)]
-#[allow(dead_code)]
-mod relied_on {
-    use super::*;
-
-    /// A fleet at its bound has no slot, whatever it would like.
-    #[spec(fn(concurrency: usize, held: usize{held >= concurrency}) -> usize[0])]
-    fn a_fleet_at_its_bound_has_no_slot(concurrency: usize, held: usize) -> usize {
-        free_slots(concurrency, held)
-    }
-
-    /// Slots taken never push the claims held past the bound.
-    #[spec(fn(concurrency: usize, held: usize, taken: usize) -> usize{after:
-        after <= concurrency || after == held})]
-    fn taking_stays_under_the_bound(concurrency: usize, held: usize, taken: usize) -> usize {
-        let free = free_slots(concurrency, held);
-        if taken <= free { held + taken } else { held }
-    }
 }
 
 #[cfg(test)]
@@ -771,14 +733,13 @@ mod tests {
     use crate::harness::Harness;
     use crate::lease::LEASE;
 
-    fn config(concurrency: usize) -> Config {
+    fn config() -> Config {
         Config::new(Settings {
             base_branch: Some("main".into()),
             gate_command: Some("true".into()),
             ..Settings::default()
         })
         .unwrap()
-        .laid(concurrency)
     }
 
     fn issue(number: u64, labels: &[&str]) -> Issue {
@@ -850,7 +811,7 @@ mod tests {
             tracker: &Tracker::Own,
             cut: None,
         };
-        let set = assemble(&seen, Some(&me()), 1000, &config(3));
+        let set = assemble(&seen, Some(&me()), 1000, &config());
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
         assert_eq!(frontier, [1, 9], "in issue-number order");
         let reasons: Vec<(u64, &str)> =
@@ -904,7 +865,7 @@ mod tests {
             tracker: &Tracker::Own,
             cut: Some(&due),
         };
-        let set = assemble(&seen, Some(&me()), 1000, &config(3));
+        let set = assemble(&seen, Some(&me()), 1000, &config());
         assert!(set.frontier.is_empty(), "{:?}", set.frontier);
         let reasons: Vec<(u64, &str)> =
             set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
@@ -921,7 +882,7 @@ mod tests {
             &Observed { issues: &returned, cut: Some(&cut), ..seen },
             Some(&me()),
             1000,
-            &config(3),
+            &config(),
         );
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
         assert_eq!(frontier, [8]);
@@ -956,7 +917,7 @@ mod tests {
             tracker: &Tracker::Own,
             cut: None,
         };
-        let set = assemble(&seen, Some(&me()), 1000, &config(3));
+        let set = assemble(&seen, Some(&me()), 1000, &config());
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
         assert_eq!(frontier, [1, 3], "an escalation or a park kept its PR: it is taken up");
         let reasons: Vec<(u64, &str)> =
@@ -999,7 +960,7 @@ mod tests {
             tracker: &Tracker::Own,
             cut: None,
         };
-        let set = assemble(&seen, Some(&me()), 1000, &config(3));
+        let set = assemble(&seen, Some(&me()), 1000, &config());
         let reasons: Vec<(u64, &str)> =
             set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
         assert_eq!(
@@ -1057,7 +1018,7 @@ mod tests {
             cut: None,
         };
         let claims = [claim(5, "me"), claim(6, "me")];
-        let set = assemble(&seen(&issues, &claims), Some(&me()), 1000, &config(2));
+        let set = assemble(&seen(&issues, &claims), Some(&me()), 1000, &config());
         assert_eq!(set.locks, [2, 4]);
         assert_eq!(set.frontier.iter().map(|d| d.number).collect::<Vec<_>>(), [2]);
         let reasons: Vec<(u64, &str)> =
@@ -1074,14 +1035,14 @@ mod tests {
         );
         // Both slots are held by workers the lock leaves alone: the lock
         // issue does not wait for them.
-        assert_eq!((set.left_alone(), set.bound(2), set.free_slots), (2, 4, 2));
+        assert_eq!((set.left_alone(), set.bound(2)), (2, 4));
         assert!(set.locked_out(5) && !set.locked_out(2));
         // The last lock closed: everything is as it was.
         let open = [issues[0].clone(), issues[2].clone(), issues[4].clone(), issues[5].clone()];
-        let after = assemble(&seen(&open, &claims), Some(&me()), 1000, &config(2));
+        let after = assemble(&seen(&open, &claims), Some(&me()), 1000, &config());
         assert_eq!(after.locks, Vec::<u64>::new());
         assert_eq!(after.frontier.iter().map(|d| d.number).collect::<Vec<_>>(), [1]);
-        assert_eq!((after.bound(2), after.free_slots), (2, 0));
+        assert_eq!(after.bound(2), 2);
     }
 
     #[test]
@@ -1397,7 +1358,7 @@ mod tests {
             tracker: &Tracker::Own,
             cut: None,
         };
-        let set = assemble(&seen, Some(&me()), 10_000, &config(5));
+        let set = assemble(&seen, Some(&me()), 10_000, &config());
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
         assert_eq!(
             mine,
@@ -1418,7 +1379,6 @@ mod tests {
             set.stale_closed.iter().map(|c| (c.number, c.sha.as_str())).collect::<Vec<_>>(),
             [(4, "c4")]
         );
-        assert_eq!(set.free_slots, 0);
     }
 
     #[test]
@@ -1448,7 +1408,7 @@ mod tests {
             tracker: &Tracker::Own,
             cut: None,
         };
-        let set = assemble(&seen, Some(&me()), 10_000, &config(5));
+        let set = assemble(&seen, Some(&me()), 10_000, &config());
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.title.clone())).collect();
         assert_eq!(mine, [(1, Status::Gone, None), (4, Status::Closed, None)]);
         assert_eq!(set.peer_live.iter().map(|c| c.number).collect::<Vec<_>>(), [2]);
@@ -1482,14 +1442,7 @@ mod tests {
             tracker: &Tracker::Own,
             cut: None,
         };
-        assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
-    }
-
-    #[test]
-    fn free_slots_never_go_below_zero() {
-        assert_eq!(free_slots(3, 0), 3);
-        assert_eq!(free_slots(3, 3), 0);
-        assert_eq!(free_slots(3, 7), 0);
+        assert_eq!(assemble(&seen, None, 1000, &config()).stale.len(), 1);
     }
 
     #[test]
@@ -1498,7 +1451,7 @@ mod tests {
         let mut prs = vec![pr(21, 2), pr(20, 2), pr(22, 8)];
         let mut claims = vec![claim(3, "me"), claim(8, "peer"), claim(9, "gone")];
         let mut beats = vec![("peer".to_string(), 990u64), ("me".to_string(), 1000)];
-        let config = config(2);
+        let config = config();
         let build =
             |issues: &[Issue], prs: &[PullRequest], claims: &[Claim], beats: &[(String, u64)]| {
                 let seen = Observed {
