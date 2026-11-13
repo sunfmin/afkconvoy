@@ -689,7 +689,7 @@ fn a_repo_lease_its_ended_owners_own_work_holds_keeps_its_repo_held() {
         &world,
         &cache,
         1,
-        "(sleep 2; echo work-ended >> \"$CACHE/order\") </dev/null >/dev/null 2>&1 & \
+        "(sleep 1; echo work-ended >> \"$CACHE/order\") </dev/null >/dev/null 2>&1 & \
          echo first >> \"$CACHE/order\"",
     );
     let first = first.wait_with_output().unwrap();
