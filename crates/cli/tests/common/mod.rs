@@ -8,10 +8,21 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+use afkconvoy::host_settings::PANEL_PORT;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 pub const BASE: &str = "main";
+
+/// How long a test waits for what a host runner, or a fleet instance it holds,
+/// is to do: a log line, a tick, a socket, a page. It is waited on, never
+/// slept for, and a test is held only as long as it takes; the bound is for
+/// what never comes, and is generous: a cut's gate runs beside other gates on
+/// its host, and a wait of 30 seconds lost to their load
+/// (sunfmin/control#833); at a load of 200 on 14 cores one tick that leaves
+/// three issues took over 90. Within the limit for one test, 240 seconds
+/// (.config/nextest.toml).
+pub const PATIENCE: Duration = Duration::from_secs(180);
 
 /// Opt-in fixture timings, captured by nextest with `--success-output final`.
 /// The environment belongs to the test driver, never to a world's host.
@@ -1393,6 +1404,17 @@ fn copy_repository(from: &Path, to: &Path) {
 /// directory can be removed.
 impl Drop for World {
     fn drop(&mut self) {
+        // No test's host runner serves the panel on the host's own port, nor
+        // tries to: the host's real host runner serves it there
+        // (sunfmin/control#833).
+        let (served, taken) = (format!(":{PANEL_PORT}/"), format!("port {PANEL_PORT} being taken"));
+        let on_own = |line: &String| {
+            line.starts_with("panel: ") && (line.contains(&served) || line.contains(&taken))
+        };
+        let taken = self.runner_log().into_iter().find(on_own);
+        if let Some(line) = taken.filter(|_| !std::thread::panicking()) {
+            panic!("a test's host runner asked for the panel's port {PANEL_PORT}: {line:?}");
+        }
         let until = Instant::now() + Duration::from_secs(5);
         while self.runner_lock_held() && Instant::now() < until {
             // Its keeper first, which would start it again.
@@ -1475,6 +1497,7 @@ impl World {
         if let Some(said) = settings.as_object_mut() {
             said.entry("panel").or_insert(json!(0));
         }
+        assert_ne!(settings["panel"], PANEL_PORT, "no test serves the panel on {PANEL_PORT}");
         list["settings"] = settings;
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, list.to_string()).unwrap();
@@ -1637,7 +1660,7 @@ impl World {
             .spawn()
             .unwrap();
         let socket = self.cache().join("afkconvoy/host-runner.sock");
-        let until = Instant::now() + Duration::from_secs(30);
+        let until = Instant::now() + PATIENCE;
         while self.host_runner() != Some(child.id()) || !socket.exists() {
             assert!(child.try_wait().unwrap().is_none(), "the host runner of {version} ended");
             assert!(Instant::now() < until, "the host runner of {version} did not start");
@@ -1647,7 +1670,7 @@ impl World {
     }
 
     /// Sends this world's host runner `signal` (`TERM`, `KILL`) and waits up
-    /// to 30 seconds for it to let the host go.
+    /// to `PATIENCE` for it to let the host go.
     pub fn kill_host_runner(&self, signal: &str) {
         let pid = self.host_runner().expect("a host runner holds this world's host");
         // A host runner ended by a signal is started again by its keeper: one
@@ -1662,11 +1685,11 @@ impl World {
         }
         let sent = Command::new("kill").arg(format!("-{signal}")).arg(pid.to_string()).status();
         assert!(sent.unwrap().success(), "kill -{signal} {pid}");
-        let until = Instant::now() + Duration::from_secs(30);
+        let until = Instant::now() + PATIENCE;
         while self.runner_lock_held() {
             assert!(
                 Instant::now() < until,
-                "host runner {pid} still holds the host 30s after {signal}"
+                "host runner {pid} still holds the host {PATIENCE:?} after {signal}"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -2060,7 +2083,7 @@ impl World {
         }
         let running = self.running_in(&clone2, &["--instance", "beta", "--host", "h2"]);
         let socket = self.cache().join("afkconvoy/host-runner.sock");
-        let until = Instant::now() + Duration::from_secs(30);
+        let until = Instant::now() + PATIENCE;
         while self.host_runner() != Some(running.child.id()) || !socket.exists() {
             assert!(
                 Instant::now() < until,

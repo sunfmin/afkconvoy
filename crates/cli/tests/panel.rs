@@ -295,7 +295,7 @@ fn a_bound_repo_shows_each_workflow_as_its_stages_with_the_issues_at_each() {
 
 fn get(port: u16, path: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    stream.set_read_timeout(Some(SOON)).unwrap();
     write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
     let mut answer = String::new();
     // An `events` answer never ends: what came before the wait ran out is it.
@@ -308,7 +308,7 @@ fn get(port: u16, path: &str) -> String {
 const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "100"];
 
 /// How long anything the host runner should do is waited for.
-const SOON: Duration = Duration::from_secs(30);
+const SOON: Duration = common::PATIENCE;
 
 /// The port of the panel's address `panel`: `http://127.0.0.1:<port>/`.
 fn port_in(panel: &Value) -> u16 {
