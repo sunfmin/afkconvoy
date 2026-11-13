@@ -31,7 +31,7 @@ The ones its config names, under `patrols` (`afkconvoy config --help`): a team's
 
 ## A run
 
-A run takes one slot of the concurrency until its worker declares it over with `afkconvoy over`, the last line of its brief; a worker that never does is ended once it is gone or has stopped for a grace period. The tick that ends a run closes its terminal and removes its checkout. `afkconvoy plan` says how each patrol stands, and `afkconvoy tick --help` what a tick does about one.
+A run is held at work, as a claim is, until its worker declares it over with `afkconvoy over`, the last line of its brief; a worker that never does is ended once it is gone or has stopped for a grace period. The tick that ends a run closes its terminal and removes its checkout. `afkconvoy plan` says how each patrol stands, and `afkconvoy tick --help` what a tick does about one.
 
 A run that failed keeps its checkout, and the fleet opens an issue with the team's escalate label that says so. The patrol is not run again until a human closes it.
 

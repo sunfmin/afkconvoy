@@ -1146,6 +1146,54 @@ pub(crate) fn tokens(
     })
 }
 
+/// The usage windows of its account that the newest record of the worker in
+/// `cwd` says, on `harness`, with when that record was written: what
+/// admission reads of the account (`Harness::windows`). Files last written
+/// before `since` are not opened. `None`: no record of it says any — its
+/// harness reports none, or has not yet.
+pub(crate) fn windows(
+    cwd: &Path,
+    harness: Harness,
+    since: u64,
+) -> Result<Option<(u64, Vec<afkconvoy_core::harness::window::Window>)>> {
+    let cwd_text = cwd_str(cwd);
+    let brief = brief(cwd);
+    let layout = harness.session_place(&cwd_text).layout;
+    // A tree of sessions holds every worktree's: a session there must record
+    // this worktree's turn.
+    let tree = matches!(layout, SessionLayout::Tree { .. });
+    let mut newest: Option<(u64, Vec<_>)> = None;
+    for home in worker_homes(cwd, harness)? {
+        let found = read_layout(&home, harness, &cwd_text, layout.clone(), Some(since), |text| {
+            if tree && harness.recorded_turn(&cwd_text, text, None, brief.as_deref()).is_none() {
+                return None;
+            }
+            last_windows(harness, text)
+        })?;
+        for (at, windows) in found {
+            if newest.as_ref().is_none_or(|(newer, _)| at > *newer) {
+                newest = Some((at, windows));
+            }
+        }
+    }
+    Ok(newest)
+}
+
+/// The last record of `text` that says windows, with when it was written.
+fn last_windows(
+    harness: Harness,
+    text: &str,
+) -> Option<(u64, Vec<afkconvoy_core::harness::window::Window>)> {
+    text.lines().rev().find_map(|line| {
+        let value: serde_json::Value = serde_json::from_str(line).ok()?;
+        let windows = harness.windows(&value);
+        if windows.is_empty() {
+            return None;
+        }
+        Some((session_first_at(line).unwrap_or(0), windows))
+    })
+}
+
 /// Read one resident session's usage between delivery and report. The brief
 /// root distinguishes the watch from the asking session in their shared
 /// directory; the whole session is read so cumulative counters can establish

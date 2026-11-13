@@ -177,14 +177,7 @@ mod tests {
     /// A tick that ended with nothing to do.
     fn tick(count: u64) -> Tick {
         let answer = json!({"did": [], "errors": [], "held": 2, "frontier_remaining": 0});
-        Tick {
-            count,
-            sleep: 90,
-            line: "nothing to do".into(),
-            bound: Some(2),
-            answer: Some(answer),
-            error: None,
-        }
+        Tick { count, sleep: 90, line: "nothing to do".into(), answer: Some(answer), error: None }
     }
 
     #[test]

@@ -1,27 +1,24 @@
-//! A checkout's concurrency: how many claims its fleet instance holds at
-//! work at once on this host. It is the checkout's, said on its host and
-//! never pushed: kept with its entry on the checkout list, set by a `run`
-//! that names it, and read as each tick opens the fleet — as the host
-//! settings are read as they are used — so a change holds at the next tick
-//! and no fleet instance is started again for it. Until its checkout says
-//! one, the default holds: the repo config's `concurrency` is read no more
-//! (docs/adr/0025).
+//! What is left of a checkout's concurrency: nothing bounds a fleet's workers
+//! any more, and admission alone decides each start (docs/adr/0072). A `run`
+//! still accepts `--concurrency` for one release, and keeps what it says with
+//! the checkout's entry on the checkout list, where it changes nothing:
+//! `doctor` says it is ignored, and `--concurrency default` drops it. After
+//! that release the flag goes.
 //!
 //! A checkout the list holds no entry of yet — its first tick has not ended,
-//! or a `run --foreground` holds it — goes by what its `run` asked, kept in
-//! that process alone until its first tick puts it on the list with it.
+//! or a `run --foreground` holds it — keeps what its `run` asked in that
+//! process alone until its first tick puts it on the list with it.
 
 use std::num::NonZeroUsize;
 use std::path::Path;
 
-use afkconvoy_core::config::Config;
 use anyhow::Result;
-use serde_json::{Value, json};
 
 use crate::checkout_list::{List, asked};
-use crate::config;
-use crate::git::Repo;
 use crate::host_settings::To;
+
+/// Why a concurrency is ignored, as `run` and `doctor` say it.
+pub const IGNORED: &str = "no number bounds a fleet's workers: admission alone decides each start, by the host's load, memory and disk, the usage windows of the accounts its workers start on, and the host's exclusive queue";
 
 /// `--concurrency` as said: a whole number, at least 1, or `default`.
 pub fn claims_or_default(said: &str) -> Result<To<NonZeroUsize>, String> {
@@ -31,20 +28,8 @@ pub fn claims_or_default(said: &str) -> Result<To<NonZeroUsize>, String> {
     })
 }
 
-/// The repo config of the checkout `repo` as its fleet instance goes by it
-/// on this host: with the checkout's own concurrency laid over the default
-/// (`own`). A config or a checkout list that cannot be read is an error
-/// naming it.
-pub fn config_of(repo: &Repo) -> Result<Config> {
-    let config = config::load(&config::file_of(repo))?;
-    Ok(match own(&List::of_host()?, &repo.dir)? {
-        Some(own) => config.laid(own.get()),
-        None => config,
-    })
-}
-
-/// The concurrency the checkout at `root` says on the host of `list`, where
-/// it says one: the one with its entry; where the list holds no entry of it,
+/// The concurrency the checkout at `root` still says on the host of `list`,
+/// which is ignored, where it says one: the one with its entry; where the list holds no entry of it,
 /// what its `run` asked in this process.
 pub fn own(list: &List, root: &Path) -> Result<Option<NonZeroUsize>> {
     let asked = asked();
@@ -77,23 +62,6 @@ pub fn ask(root: &Path, to: To<NonZeroUsize>) {
 /// asked one: what its first tick puts on the list with it.
 pub fn asked_of(root: &Path) -> Option<NonZeroUsize> {
     crate::checkout_list::asked_of(root).concurrency
-}
-
-/// The concurrency `config` goes by, as `plan`, `doctor` and `checkouts` say
-/// it: {in_force, said_by} — said by the checkout, or by nobody, the
-/// `default`.
-pub fn json(config: &Config) -> Value {
-    json!({"in_force": config.concurrency(), "said_by": config.concurrency_said_by()})
-}
-
-/// The concurrency the fleet instance of the checkout `repo` goes by on this
-/// host, as `json` says it; {error} where its config or the checkout list
-/// cannot be read.
-pub fn json_of(repo: &Repo) -> Value {
-    match config_of(repo) {
-        Ok(config) => json(&config),
-        Err(error) => json!({"error": format!("{error:#}")}),
-    }
 }
 
 #[cfg(test)]
@@ -131,7 +99,7 @@ mod tests {
             harness_applied: None,
         };
         list.change(|kept| kept.checkouts.push(entry)).unwrap();
-        assert_eq!(own(&list, &listed).unwrap(), None, "none said: the default holds");
+        assert_eq!(own(&list, &listed).unwrap(), None, "none said");
 
         // the one on the list says it with its entry, which holds over what
         // a `run` asked in this process

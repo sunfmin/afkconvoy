@@ -418,8 +418,6 @@ pub struct Tick {
     pub sleep: u64,
     /// What `run` printed of it.
     pub line: String,
-    /// The claims its pass could hold; `None` of a tick that failed whole.
-    pub bound: Option<usize>,
     /// What `afkconvoy tick` answers for it; `None` of a tick that failed whole.
     pub answer: Option<Value>,
     /// Why it failed whole: it could not even rebuild.
@@ -686,7 +684,6 @@ mod tests {
             count,
             sleep: 90,
             line: "nothing to do".into(),
-            bound: Some(2),
             answer: Some(json!({"did": [], "errors": [], "held": 0, "frontier_remaining": 0})),
             error: None,
         };

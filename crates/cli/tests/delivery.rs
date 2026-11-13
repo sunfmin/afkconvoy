@@ -361,7 +361,7 @@ fn branch_layout_and_separate_tracker_keep_one_authoritative_delivery() {
 #[test]
 fn rest_exhaustion_preserves_final_review_discovery_and_watch_exclusion() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 3);
+    world.list_checkout(&world.clone);
     let delivery = create(&world, None);
     advance(&world, &delivery);
     world.with_gh(|gh| gh["quota_fail"] = json!({"core": "gh: API rate limit already exceeded"}));
