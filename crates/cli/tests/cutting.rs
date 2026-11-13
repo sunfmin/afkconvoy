@@ -192,7 +192,7 @@ fn cut_failed(world: &World, now: u64) -> Value {
 }
 
 /// Swaps the watch's label on `issue` for the escalate label, as a watch
-/// that finds the failure one of the four human kinds does.
+/// that finds the failure needs money spent does.
 fn hand_to_human(world: &World, issue: u64) {
     let escalate = world.afk(&["config"]).ok()["escalate_label"].as_str().unwrap().to_string();
     world.with_gh(|gh| {

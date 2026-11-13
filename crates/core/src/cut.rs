@@ -44,9 +44,9 @@ pub const WAITING_LABEL: &str = "convoy-waits-on-cut";
 /// The label on the issue a failed cut opens. It holds no cut back: the next
 /// due cut cuts again from the start, on the base tip, whether or not the
 /// issue is open, and a cut that publishes closes it (docs/adr/0072). A watch
-/// that finds the failure one of the four kinds left to a human swaps it for
-/// the escalate label, and only then is the issue a human's
-/// (sunfmin/control#801).
+/// that finds the failure needs money spent, the one kind left to a human
+/// (docs/adr/0073), swaps it for the escalate label, and only then is the
+/// issue a human's (sunfmin/control#801).
 pub const FAILED_LABEL: &str = "convoy-cut-failed";
 
 /// How many cuts in a row failing at the same step the same way
@@ -811,8 +811,8 @@ pub fn failure_report(
          the age bound — cuts again from the start, on the base tip as it stands, whether or not \
          it is open. A cut that publishes a version closes it, saying which. Where {REPEATS} \
          cuts in a row fail at the same step the same way, it becomes a ticket of the fleet's, \
-         under the ready label, and the next cut waits for a landing. Where what failed it is \
-         one of the four kinds left to a human, the host's watch swaps the label \
+         under the ready label, and the next cut waits for a landing. Where what failed it \
+         needs money spent, the one kind left to a human, the host's watch swaps the label \
          `{FAILED_LABEL}` for the escalate label.\n"
     ));
     if failure.step == Step::Publish {

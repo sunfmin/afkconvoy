@@ -46,14 +46,28 @@ pub fn issue_url(watch: &crate::host_watch::Watch, condition: &str) -> Option<St
     crate::unworked::issue_url(&watch.look["host"]["unworked_repos"], condition)
 }
 
-/// All five parts are required, including empty lists: absence must never
-/// imply that a watch checked something or left nothing pending.
+/// One decision a watch made by its recommended answer rather than leave
+/// it with a human (docs/adr/0073): what it chose, why, and how to undo it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Decided {
+    pub chose: String,
+    pub why: String,
+    pub undo: String,
+}
+
+/// The five original parts are required, including empty lists: absence
+/// must never imply that a watch checked something or left nothing pending.
+/// `decided` came later: a round briefed before it may leave it out, which
+/// says it decided nothing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Report {
     pub held_back: Vec<String>,
     pub did: Vec<String>,
     pub verified: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decided: Vec<Decided>,
     pub human: Vec<Human>,
     pub pending: Vec<String>,
 }
@@ -91,6 +105,9 @@ pub fn record(id: &str, file: &Path, now: u64) -> Result<Value> {
         .chain(
             report.human.iter().flat_map(|human| [human.question.as_str(), human.answer.as_str()]),
         )
+        .chain(report.decided.iter().flat_map(|decided| {
+            [decided.chose.as_str(), decided.why.as_str(), decided.undo.as_str()]
+        }))
         .any(|text| text.trim().is_empty())
     {
         bail!("report entries must be nonempty; use [] for a part with nothing to report");
@@ -139,7 +156,7 @@ As the watch's last step, using the exact line at the end of its brief:
 afkconvoy watched --watch <id> --text-file <report.json>
 ```
 
-Write a JSON object with all five keys: `held_back`, `did`, `verified` and `pending` are lists of nonempty strings; `human` is a list of {condition, question, answer}, all nonempty strings. `condition` names an exact condition id from the round's look, listed in its brief, and is checked against that look. It may be omitted only for a look with exactly one actionable condition; ambiguous or unknown conditions are refused. Question and answer words never identify a condition. Use [] where nothing belongs. `held_back` says what held work back; `did` each action and its evidence, including repo, PR, cut and version; `verified` what was checked and what it showed; `human` each decision left alone and its exact answer command; `pending` everything unfinished. Printed terminal output is no report.
+Write a JSON object with all six keys: `held_back`, `did`, `verified` and `pending` are lists of nonempty strings; `decided` is a list of {chose, why, undo} and `human` a list of {condition, question, answer}, all nonempty strings. `condition` names an exact condition id from the round's look, listed in its brief, and is checked against that look. It may be omitted only for a look with exactly one actionable condition; ambiguous or unknown conditions are refused. Question and answer words never identify a condition. Use [] where nothing belongs. `held_back` says what held work back; `did` each action and its evidence, including repo, PR, cut and version; `verified` what was checked and what it showed; `decided` each decision the watch made itself by its recommended answer — what cannot be undone, a secret or private data taken off the host, a change of what a product is for, a prohibition loosened that guards no money — with what it chose, why and how to undo it; `human` each decision left alone, spending money or one step that needs a person's hands, and its exact answer command; `pending` everything unfinished. Printed terminal output is no report.
 
 ## Who runs it
 
@@ -147,9 +164,9 @@ The host's watch, in its watch directory, as the last step of each round in its 
 
 ## What it reads and writes
 
-It reads the running watch on this host and the report file, and atomically keeps the report in the host cache. It needs no repo or GitHub login. The same report may be submitted again; a different report cannot replace it. A missing part, unknown key, empty entry, wrong watch or expired hour is refused with {error} and nonzero exit; fix the JSON or use the running watch's brief.
+It reads the running watch on this host and the report file, and atomically keeps the report in the host cache. It needs no repo or GitHub login. The same report may be submitted again; a different report cannot replace it. A missing part (`decided` excepted, which a round briefed before it may leave out), unknown key, empty entry, wrong watch or expired hour is refused with {error} and nonzero exit; fix the JSON or use the running watch's brief.
 
-Once the host runner reads the report, it appends one entry for the round to the daybook (`afkconvoy daybook --help`), of session kind `watch`: what held work back under `Why`; the actions, what was verified and what was left under `Did`; and the issues and PRs the report links under `Links`. Each human question still goes to the asking session; the entry notes only that it was raised, with its link, and asks nothing. The entry is written later and retried until it is: it never holds the round, or the next one, back; one not written is a `doctor` finding.
+Once the host runner reads the report, it appends one entry for the round to the daybook (`afkconvoy daybook --help`), of session kind `watch`: what held work back under `Why`; the actions, each decision, what was verified and what was left under `Did`; how to undo each decision under `Undo`; and the issues and PRs the report links under `Links`. Each human question still goes to the asking session; the entry notes only that it was raised, with its link, and asks nothing. The entry is written later and retried until it is: it never holds the round, or the next one, back; one not written is a `doctor` finding.
 
 Recording completes only the named round and keeps the healthy resident Agent and Terminal available for later rounds. It does not finish queued work or another active round. `doctor.host.watch` and later briefs show the report; an ended watch with no report says `reported: false`.
 
@@ -159,4 +176,4 @@ Recording completes only the named round and keeps the healthy resident Agent an
 
 ## What trips you up
 
-Use the id and report path from this watch's brief. Include all five parts, even those with empty lists. The report cannot be replaced once recorded, and a successful harness exit without this command is shown as not reported."#;
+Use the id and report path from this watch's brief. Include all six parts, even those with empty lists. The report cannot be replaced once recorded, and a successful harness exit without this command is shown as not reported."#;
