@@ -1731,7 +1731,7 @@ Not a JSON object: one HTML document on stdout, complete in itself, with no addr
 - The host, once: admission — whether it holds back new workers, why, and what it read of the host; the workers that are hot, in every repo, with why and what each held at the most; the watch running, and what the last watch did; the commands run alone on the host and those waiting their turn (`exclusive`); the host kit — each harness in order with its models, each one paused, and what the stock consult runs
 - With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with what kind of wait and the first sentence of the reason its comment gives, a Reason link to that comment (the report itself for an older failed patrol or cut), and the line that answers it: what `doctor` answers as `waiting_on_human`.
 - Each repo: a row at the top names every checkout, each with whether its fleet instance is idle, its claims held and its frontier, and links to its part. Each part then shows:
-  - Claims held: the claims of its fleet instance that take a slot, of the concurrency
+  - Claims held: the claims of its fleet instance that take a slot
   - `Taking no slot`: shown while there are any: the claims whose worker declared a verdict not acted on yet, or that are landing with their worker not changing the tree, which take no slot
   - a lane: one per workflow; an unbound repo has one, `backlog`, with the two stages `work` and `land`
   - a stage: the number in its stop is the workers at it; under it the issues at work — each with its worker's state: busy, stopped and for how long, or no worker — then the queued, which are the frontier, and in a bound repo those held back there, with why
@@ -1873,8 +1873,8 @@ mod tests {
         assert!(html.contains("<span class=\"repo\">acme</span> <span class=\"num\">#4</span>"));
         assert!(html.contains("<span class=\"repo\">widgets</span> <span class=\"num\">#9</span>"));
         // the row naming every checkout, each a link to its part
-        assert!(html.contains("<li><a href=\"#checkout-1\">acme</a> <span><b>at work</b> · holding 1/2 · frontier 3</span></li>"), "{html}");
-        assert!(html.contains("<a href=\"#checkout-2\">widgets</a> <span><b>idle</b> · holding 0/2 · frontier 0</span>"), "{html}");
+        assert!(html.contains("<li><a href=\"#checkout-1\">acme</a> <span><b>at work</b> · holding 1 · frontier 3</span></li>"), "{html}");
+        assert!(html.contains("<a href=\"#checkout-2\">widgets</a> <span><b>idle</b> · holding 0 · frontier 0</span>"), "{html}");
         assert!(
             html.contains(
                 "<a href=\"#checkout-3\">gizmo</a> <span><b class=\"broken\">broken</b></span>"

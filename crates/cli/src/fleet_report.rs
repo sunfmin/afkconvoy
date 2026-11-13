@@ -89,7 +89,10 @@ impl FleetReport {
         set: &WorkingSet,
         readings: &Readings,
     ) -> FleetReport {
-        let admission = Admission::read_from(&fleet.repo.dir, readings);
+        // The account its next worker starts on, as its workers at work say it.
+        let usage = crate::tick::usage_of(fleet, set, 0);
+        let admission =
+            Admission::read_from(&fleet.repo.dir, readings).map(|read| read.with_usage(usage));
         FleetReport::admitted(fleet, flows, set, admission.map_err(|e| format!("{e:#}")))
     }
 

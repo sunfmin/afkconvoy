@@ -224,7 +224,7 @@ kinds! {
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
     Moved: Info, "moved since the stage";
-    RetiredConcurrency: Info, "which nothing reads any more";
+    RetiredConcurrency: Info, "which is ignored";
     KeptWorktree: Info, "is kept with no claim";
     TakenWorktree: Info, "is kept after its claim was taken";
     NoGateLimit: Info, "declares no gate limit";
@@ -1565,8 +1565,7 @@ fn retired_concurrency_findings(
             Kind::RetiredConcurrency,
             json!(["retired-concurrency", "config"]),
             format!(
-                "this repo's config names `concurrency: {named}`, which nothing reads any more: \
-                 {}",
+                "this repo's config names `concurrency: {named}`, which is ignored: {}",
                 crate::concurrency::IGNORED
             ),
             format!("{} names `concurrency: {named}`", config::FILE),
@@ -2142,7 +2141,7 @@ fn issues_json(set: &WorkingSet) -> Result<Value> {
     // As `plan` answers them: the same working set, said the same way.
     let plan = serde_json::to_value(set)?;
     let mut issues = json!({});
-    for key in ["frontier", "excluded", "escalating", "locks", "free_slots", "patrols", "casting"] {
+    for key in ["frontier", "excluded", "escalating", "locks", "patrols", "casting"] {
         issues[key] = plan.get(key).cloned().unwrap_or_else(|| json!([]));
     }
     Ok(issues)
@@ -2774,11 +2773,10 @@ It also reads every tracker that list names once for repo-labelled work, includi
   - `failed_steps`: the last {const:DOCTOR_FAILED_SHOWN} failures, newest first: {tick, ended, do, issue, patrol, error, count}. One cause that stopped several steps of a tick is one failure: count is how many, and do, issue and patrol the first's
   - `events`: the last {const:DOCTOR_EVENTS_SHOWN} events that reached a `run` of this host, newest first, whichever instance: {at, event, cause, instance} — event being wake (between ticks, or during one), start, stop (told to, by SIGTERM or SIGINT), broken, back, moved or not_moved (the host runner moved onto a newer afkconvoy, with both releases, or that one did not start: `afkconvoy run --help`), host_wake, watch (a thing a watch did, and how it ended: `afkconvoy run --help`) or cut (a cut started, and how it ended: `afkconvoy cut --help`); cause says what caused it, in words. [] with no log
   - `broken`: {why, since, next, instance}: its fleet instance is broken (`afkconvoy run --help`) — why, as it last broke; since when, and when the host runner starts it again, in epoch seconds, null where no host runner runs on this host; and the fleet instance that broke, "" where none had started. null: it is not broken
-  - `concurrency`: {in_force, said_by}: how many claims its fleet instance holds at work at once on this host, as `plan` says it — said_by `checkout` or `default`. {error} where the config or the checkout list cannot be read
   - `tracker`: the repo its fleet reads and writes its issues in, as `afkconvoy checkouts` says it: null where the checkout says none, and its own repo is its tracker. {error} where the checkout list cannot be read
   - `github_api`: {host, login, core, graphql, secondary, for_rest_reads, for_graphql_reads}. Each quota has {remaining, reset}; null remaining means unknown and reset is Unix seconds. Selection respects primary exhaustion until reset and shared secondary cooldowns; fallback requires equivalent facts. {error} when the observation cannot be read. [`afkconvoy help troubleshooting`](help:troubleshooting) explains capability refusals and write receipts.
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; a session that says busy while orca reports the agent done says disputed instead, with session: "busy", and raises a finding once orca has said so for the grace period. A claim left alone by a fleet lock instead says {state: "waiting_on_lock", locks: [issue numbers]} and raises no stopped or missing worker finding; the lock's own worker keeps its findings. gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
-- `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
+- `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
 - `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round}. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
 - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`) unless a model label is followed (`model_label`; a stored `casting` is read as that), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
@@ -2819,7 +2817,7 @@ With `--all --since <time>`, each checkout's `doctor.watching` adds what happene
 
 It exits non-zero where any finding is critical, the host's or a checkout's, or a checkout could not be asked — printing the same object. Errors: the checkout list cannot be read.
 
-The findings: a command the fleet needs is missing or logged out; orca cannot be asked, or does not know the checkout; the worker launch command of a harness the fleet could be asked for cannot start a worker — said with the harness and what calls for it; no `run` is alive and claims are held; the fleet instance of this checkout is broken — with why, since when and when the host runner starts it again; the same step failed in each of the last three ticks; the team has a fault at its head; a fleet lock stands on an issue that cannot be worked (all critical) — a step failed and has not recovered, including a worker that failed to start, with its error and the line to try again; a claim has no worker; a worker is silent with its claim still at work, as the tick judges it — its `fix` the command the tick runs next for it; the frontier is not empty, slots are free and the last tick started nobody; a flow label names no workflow of the team; an issue has been at a stage longer than the repo's p95 for completed performances of that stage, or, with fewer than 20, longer than its own earlier record gaps of at least a minute; an issue is one rework from a breaker; a patrol is failed or full; an issue has waited for a human for more than an hour, its `fix` being the line that answers it; the gate is slow — with the host, the fixed duration budget when declared, the termination gate limit and the {const:SLOW_GATE_LANDINGS} runs, each a commit and its seconds, as `afkconvoy plan` has them, and the issue open for it when there is one; the host runner did not move onto the newer release installed where it was started from — it did not start, does not say its version, or waited past the release move limit — with the file, both releases and why, its `fix` that file's `--version` (all warning) — the repo's config names `concurrency`, which nothing reads any more — with the value it names and the concurrency in force: nothing is held up, even where the values differ. Its `fix` is deleting the key alone where the checkout says its own or the config names the number already in force; otherwise `afkconvoy run <checkout> --concurrency <value>` keeps the config's number on this host before deleting the key; the role or the team a stage in flight started under has moved since; and the repo's config declares no gate limit, so the gate has the default's {const:GATE_SECONDS} seconds before anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on this host is kept with no claim on its issue — said with what it holds that the remote does not (uncommitted changes, commits only it has, or nothing), its `fix` the line that removes it, pushing first whatever only it holds (all info). A checkout that names a harness no worker of this checkout starts on is said with the checkout, the harness and why — the role holds no limits for that harness, or the harness cannot start — and no other harness is started in its place.
+The findings: a command the fleet needs is missing or logged out; orca cannot be asked, or does not know the checkout; the worker launch command of a harness the fleet could be asked for cannot start a worker — said with the harness and what calls for it; no `run` is alive and claims are held; the fleet instance of this checkout is broken — with why, since when and when the host runner starts it again; the same step failed in each of the last three ticks; the team has a fault at its head; a fleet lock stands on an issue that cannot be worked (all critical) — a step failed and has not recovered, including a worker that failed to start, with its error and the line to try again; a claim has no worker; a worker is silent with its claim still at work, as the tick judges it — its `fix` the command the tick runs next for it; the frontier is not empty, admission held nothing back and the last tick started nobody; a flow label names no workflow of the team; an issue has been at a stage longer than the repo's p95 for completed performances of that stage, or, with fewer than 20, longer than its own earlier record gaps of at least a minute; an issue is one rework from a breaker; a patrol is failed or full; an issue has waited for a human for more than an hour, its `fix` being the line that answers it; the gate is slow — with the host, the fixed duration budget when declared, the termination gate limit and the {const:SLOW_GATE_LANDINGS} runs, each a commit and its seconds, as `afkconvoy plan` has them, and the issue open for it when there is one; the host runner did not move onto the newer release installed where it was started from — it did not start, does not say its version, or waited past the release move limit — with the file, both releases and why, its `fix` that file's `--version` (all warning) — a concurrency is still named, which is ignored, as no number bounds a fleet's workers and admission alone decides each start: one this checkout keeps on the checkout list, as a `run --concurrency` said it, whose `fix` is `afkconvoy run <checkout> --concurrency default`, or one the repo's config names, whose `fix` is deleting the key; nothing is held up; the role or the team a stage in flight started under has moved since; and the repo's config declares no gate limit, so the gate has the default's {const:GATE_SECONDS} seconds before anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on this host is kept with no claim on its issue — said with what it holds that the remote does not (uncommitted changes, commits only it has, or nothing), its `fix` the line that removes it, pushing first whatever only it holds (all info). A checkout that names a harness no worker of this checkout starts on is said with the checkout, the harness and why — the role holds no limits for that harness, or the harness cannot start — and no other harness is started in its place.
 
 Moved: the role's directory holds something else at the head of its repo than at the commit the stage started under — a file added, removed or changed. A new commit is not it: in a repo of several roles a push gives every role a new commit, and moves the ones whose directory it changed. The team has moved when its directory has, without what a worker is not given of it: the directories of its roles, and the .claude/ at its top. So a push that changes only a role moves no team, one that changes only the team's rules — the CLAUDE.md at its top, which every worker is given — moves the team, and one that changes a workflow moves no role. A role in a repo of its own moves with every push that changes a file there. The two are compared in the copies this host keeps (copies/ under the cache directory); where the one the stage started under is no longer there, a different commit is all there is to go by, and it is said to have moved. `evidence` gives both commits.
 
@@ -3278,7 +3276,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_durations_tick_counts_and_free_slots_keep_their_condition_identity() {
+    fn changing_durations_and_tick_counts_keep_their_condition_identity() {
         let same = |before: &Finding, after: &Finding| {
             assert_ne!(before.what, after.what, "doctor keeps its current presentation");
             assert_eq!(before.watch_id, after.watch_id);
@@ -3311,7 +3309,8 @@ mod tests {
         state.set.frontier =
             vec![Dispatchable { number: 3, title: "work".into(), stage: None, cast: None }];
         let before = plan_findings(&run(vec![failed(1)]), &state);
-        same(&before[0], &plan_findings(&run(vec![failed(2)]), &state)[0]);
+        let after = plan_findings(&run(vec![failed(2)]), &state);
+        assert_eq!(before[0].watch_id, after[0].watch_id);
     }
 
     #[test]
@@ -3510,10 +3509,7 @@ mod tests {
         // a tick that failed whole, three times over
         let whole = |count| {
             let (at, tick) = tick(count, json!([]));
-            (
-                at,
-                Tick { answer: None, error: Some("gh pr list failed".into()), ..tick },
-            )
+            (at, Tick { answer: None, error: Some("gh pr list failed".into()), ..tick })
         };
         let found = self::found(&host(), &run(vec![whole(1), whole(2), whole(3)]), &state());
         assert_eq!(fixes(&found, "`tick` failed"), ["afkconvoy plan --instance alpha"]);
@@ -4080,7 +4076,7 @@ mod tests {
         assert!(kept[0].what.contains("admission alone decides each start"), "{kept:?}");
         // the config names one: the key is all there is to delete
         let named = found("concurrency: 5\n", 0);
-        let what = "this repo's config names `concurrency: 5`, which nothing reads any more";
+        let what = "this repo's config names `concurrency: 5`, which is ignored";
         assert_eq!(fixes(&named, what), ["docs/agents/afkconvoy.md: concurrency"]);
         assert_eq!(named[0].severity, Severity::Info);
         assert_eq!(found("concurrency: 5\n", 6).len(), 2);

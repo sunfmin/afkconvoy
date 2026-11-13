@@ -579,7 +579,7 @@ mod tests {
 
     #[test]
     fn a_tick_held_only_by_a_failing_cut_need_is_no_failed_tick() {
-        let need = "not cutting here: asc-api-key failed · holding 0/3 · frontier 0";
+        let need = "not cutting here: asc-api-key failed · holding 0 · frontier 0";
         let held = json!({"did": [], "errors": []});
         let mut errored = tick(12, need, held.clone());
         let What::Tick(t) = &mut errored.what else { unreachable!() };
