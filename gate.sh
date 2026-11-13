@@ -42,6 +42,12 @@ slow_tests=$(awk '
 PATH="$HOME/.cargo/bin:$PATH"
 RUSTUP_TOOLCHAIN=nightly-2026-09-25
 export PATH RUSTUP_TOOLCHAIN
+# Every build names the commit it is of to the build script, which stamps the
+# binary with it: a candidate's gate builds in its worker's target directory,
+# from a worktree whose paths the script did not last watch, and at a merge
+# that may have its branch's tree (sunfmin/control#838).
+AFKCONVOY_BUILD_COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
+export AFKCONVOY_BUILD_COMMIT
 # Each step's seconds, said as the gate ends, green or red: the fleet times
 # only the whole gate (docs/adr/0024), and which step grew is for its log to
 # say. A red gate says the steps it finished.
