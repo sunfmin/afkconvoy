@@ -8,6 +8,7 @@ use crate::common;
 
 use std::collections::BTreeSet;
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -491,6 +492,113 @@ fn a_host_runner_started_again_starts_every_checkout_on_the_list() {
     let starts = tick_log(&second).iter().filter(|line| kind(line) == "start").count();
     assert_eq!(starts, 2, "{:#?}", tick_log(&second));
     assert_eq!(listed(&world), [shown(&world.clone), shown(&clone2)]);
+}
+
+#[test]
+fn a_host_runner_ended_unexpectedly_is_started_again_by_its_keeper_on_the_same_list() {
+    let world = World::new();
+    let first = world.afk(&RUN).ok();
+    let clone2 = world.second_repo();
+    world.afk_in(&clone2, &["run", "--second-ms", "100"]).ok();
+    let (old, keeper) = (world.host_runner().unwrap(), world.keeper().unwrap());
+    assert_ne!(old, keeper, "the keeper holds nothing of the host");
+    // not from `/`, as the host runner works: what ends every process working
+    // in `/` leaves it to start the host runner again (sunfmin/control#831)
+    let cwd = Command::new("/usr/sbin/lsof")
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &keeper.to_string()])
+        .output()
+        .unwrap();
+    let cwd = String::from_utf8_lossy(&cwd.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix('n'))
+        .map(str::to_string);
+    let cache = world.cache().join("afkconvoy").canonicalize().unwrap();
+    assert_eq!(cwd.map(PathBuf::from), Some(cache), "the keeper works in the cache directory");
+    assert_eq!(first["host_runner"]["pid"], old, "{first}");
+
+    // kill -9 of the host runner: nobody runs `afkconvoy run`
+    let killed = Command::new("kill").args(["-KILL", &old.to_string()]).status().unwrap();
+    assert!(killed.success());
+    let began = Instant::now();
+    let again =
+        until("host runner started again", || world.host_runner().filter(|pid| *pid != old));
+    assert!(began.elapsed() < Duration::from_secs(60), "{:?}", began.elapsed());
+    assert_eq!(world.keeper(), Some(keeper), "the same keeper starts it again");
+    let said = logged(&world, "host runner restarted after an unexpected end: ");
+    assert!(said.contains(&format!("pid {old} was ended by signal 9")), "{said}");
+    // on the same list, every checkout on it started again
+    assert_eq!(listed(&world), [shown(&world.clone), shown(&clone2)]);
+    until("every checkout started again", || {
+        let answer = world.afk(&["checkouts"]).ok();
+        let rows = answer["checkouts"].as_array()?.clone();
+        let running =
+            rows.iter().all(|row| row["state"] == "running" && row["instance"].is_string());
+        (answer["host_runner"]["pid"] == again && rows.len() == 2 && running).then_some(())
+    });
+    let log = world.runner_log();
+    let started = format!(
+        "host runner started: afkconvoy {}, pid {again}, 2 checkouts on the list",
+        afkconvoy::VERSION
+    );
+    assert!(log.contains(&started), "{log:#?}");
+
+    // told to stop, it ends, and its keeper with it: nothing starts it again
+    world.afk(&["stop", "--all"]).ok();
+    let keeper = json!(keeper);
+    until("the keeper ended", || (!alive(&keeper)).then_some(()));
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(world.host_runner(), None, "{:#?}", world.runner_log());
+    let restarted =
+        world.runner_log().iter().filter(|line| line.starts_with("host runner restarted")).count();
+    assert_eq!(restarted, 1, "{:#?}", world.runner_log());
+}
+
+/// The tests of this file that start, stop, replace, kill and restart a host
+/// runner, which a cut's gate runs on the host whose own host runner runs
+/// that gate.
+const ON_THE_HOST: [&str; 5] = [
+    "host_runner::stop_all_stops_every_fleet_instance_then_the_host_runner_and_keeps_the_list",
+    "host_runner::sigterm_stops_every_fleet_instance_and_keeps_the_list",
+    "host_runner::a_newer_afkconvoy_moves_the_host_runner_onto_itself_on_the_same_list",
+    "host_runner::a_host_runner_started_again_starts_every_checkout_on_the_list",
+    "host_runner::a_host_runner_ended_unexpectedly_is_started_again_by_its_keeper_on_the_same_list",
+];
+
+#[test]
+fn the_suite_s_host_runner_tests_never_stop_nor_signal_the_host_s_own_host_runner() {
+    // The host's own host runner, of a cache of this test's own: the tests
+    // below are run as a cut's gate runs them — under its HOME and cache
+    // directory, and in its process group, as a gate it ran is
+    // (sunfmin/control#820).
+    let host = World::new();
+    host.afk(&RUN).ok();
+    let (runner, keeper) = (host.host_runner().unwrap(), host.keeper().unwrap());
+    let before = host.runner_log().len();
+    let tests = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "--test-threads", "5"])
+        .args(ON_THE_HOST)
+        .env("HOME", host.home())
+        .env("XDG_CACHE_HOME", host.cache())
+        .process_group(runner as i32)
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&tests.stdout);
+    assert!(tests.status.success(), "{said}{}", String::from_utf8_lossy(&tests.stderr));
+    assert!(said.contains(&format!("{} passed", ON_THE_HOST.len())), "{said}");
+
+    // neither stopped, nor ended, nor started again
+    assert!(alive(&json!(runner)) && alive(&json!(keeper)));
+    assert_eq!((host.host_runner(), host.keeper()), (Some(runner), Some(keeper)));
+    let log = host.runner_log();
+    let after: Vec<_> = log[before..]
+        .iter()
+        .filter(|line| {
+            ["host runner told", "host runner stopp", "host runner restarted", "host runner moved"]
+                .iter()
+                .any(|start| line.starts_with(start))
+        })
+        .collect();
+    assert!(after.is_empty(), "{log:#?}");
 }
 
 #[test]

@@ -36,25 +36,31 @@ impl Drop for Fleet {
         if !std::thread::panicking() {
             return;
         }
-        let ours = Command::new("ps")
-            .args(["-p", &std::process::id().to_string(), "-o", "pgid="])
-            .output()
-            .unwrap();
-        let ours = String::from_utf8_lossy(&ours.stdout).trim().to_string();
+        // A pid kept in a file may since be another process's, under another
+        // group — the host runner's own, whose children are in it, among them
+        // (sunfmin/control#820). So a gate's group is ended only while the
+        // gate is still in it, and a pid only while it is in that group.
+        let group_of = |pid: &str| {
+            let group = Command::new("ps").args(["-p", pid, "-o", "pgid="]).output().unwrap();
+            String::from_utf8_lossy(&group.stdout).trim().to_string()
+        };
+        let read = |kind: &str, name: &str| {
+            let kept = std::fs::read_to_string(self.root.join(format!("{kind}-{name}")));
+            kept.ok().map(|pid| pid.trim().to_string()).filter(|pid| !pid.is_empty())
+        };
         for name in ["a", "b", "c", "d"] {
-            for kind in ["gate", "child"] {
-                let Ok(pid) = std::fs::read_to_string(self.root.join(format!("{kind}-{name}")))
-                else {
-                    continue;
-                };
-                let pid = pid.trim();
-                let group = Command::new("ps").args(["-p", pid, "-o", "pgid="]).output().unwrap();
-                let group = String::from_utf8_lossy(&group.stdout).trim().to_string();
-                if !group.is_empty() && group != ours {
-                    let _ =
-                        Command::new("kill").args(["-KILL", "--", &format!("-{group}")]).status();
+            let (Some(gate), Some(group)) = (read("gate", name), read("group", name)) else {
+                continue;
+            };
+            // SAFETY: getpgrp only reads this process's group.
+            let ours = unsafe { libc::getpgrp() }.to_string();
+            if group != ours && group_of(&gate) == group {
+                let _ = Command::new("kill").args(["-KILL", "--", &format!("-{group}")]).status();
+            }
+            for pid in std::iter::once(gate).chain(read("child", name)) {
+                if group_of(&pid) == group {
+                    let _ = Command::new("kill").args(["-KILL", &pid]).status();
                 }
-                let _ = Command::new("kill").args(["-KILL", pid]).status();
             }
         }
     }
@@ -72,6 +78,7 @@ for n in a b c d; do if test -f "$n.txt"; then name=$n; fi; done
 case "${{AFKCONVOY_ISSUE:-}}" in 1) name=a;; 2) name=b;; 3) name=c;; 4) name=d;; esac
 test -n "$name" || exit 0
 echo $$ > "$root/gate-$name"
+/bin/ps -o pgid= -p $$ | tr -d ' ' > "$root/group-$name"
 sleep 120 &
 echo $! > "$root/child-$name"
 touch "$root/start-$name"

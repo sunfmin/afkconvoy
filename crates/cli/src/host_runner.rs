@@ -42,7 +42,7 @@ use std::io::Write;
 use std::num::NonZeroUsize;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -539,6 +539,15 @@ pub fn pid() -> Option<u32> {
     u32::try_from(pid).ok()
 }
 
+/// The pid of the keeper of this host's runner, as its lock says it; `None`
+/// where it says none: a host runner of an older release, or one held in
+/// the foreground.
+pub fn keeper() -> Option<u32> {
+    let text = std::fs::read_to_string(cache().ok()?.join(LOCK)).ok()?;
+    let keeper = serde_json::from_str::<Value>(&text).ok()?["keeper"].as_u64()?;
+    u32::try_from(keeper).ok()
+}
+
 /// The release of this host's runner, as its lock says the last one to hold
 /// it; `None` where none ever did, or it said none.
 pub fn version() -> Option<String> {
@@ -556,6 +565,165 @@ pub fn log_path() -> Result<PathBuf> {
 pub(crate) fn note(line: &str) -> Result<()> {
     writeln!(opened_log(&log_path()?)?, "{}", stamped(line))?;
     Ok(())
+}
+
+/// Test worlds put their test process in the login environment. A detached
+/// host runner, and its keeper, must not survive a timeout or SIGKILL that
+/// bypasses World::drop. Real login environments do not set this
+/// fixture-only lifeline.
+fn lifeline() {
+    if let Some(owner) = std::env::var("AFKCONVOY_TEST_OWNER")
+        .ok()
+        .and_then(|value| value.parse::<libc::pid_t>().ok())
+        .filter(|pid| *pid > 1)
+    {
+        std::thread::spawn(move || {
+            loop {
+                // SAFETY: signal zero only observes whether the test still exists.
+                if unsafe { libc::kill(owner, 0) } != 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    std::process::exit(0);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+    }
+}
+
+/// The pid of the keeper of this host runner, which it says in its lock.
+static KEEPER: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// How soon the keeper starts the host runner again after its first
+/// unexpected end in a row; twice as long at each more, `KEPT_AT_MOST` at
+/// the most.
+const KEPT_AGAIN_AFTER: Duration = Duration::from_secs(1);
+
+/// The longest the keeper waits to start the host runner again.
+const KEPT_AT_MOST: Duration = Duration::from_secs(32);
+
+/// How long a host runner runs for its next unexpected end to be the first
+/// in a row again.
+const KEPT_STEADY: Duration = Duration::from_secs(10 * 60);
+
+/// How often the keeper looks whether its host runner has ended.
+const KEPT_LOOKED_EVERY: Duration = Duration::from_millis(100);
+
+/// The keeper: the process `run` starts, and the one a host runner moving
+/// onto a newer afkconvoy starts, as `afkconvoy host-runner` alone. It holds
+/// nothing of the host: it starts the host runner proper —
+/// `afkconvoy host-runner --kept-by <its pid>`, from the same file, in a
+/// process group of its own — and waits for it to end. One that ended as
+/// it was told — `stop --all`, SIGTERM, a move onto a newer afkconvoy, or
+/// another holding the host — ends the keeper the same way; and so does one
+/// that ended in an error before it took the host, which is a start that
+/// failed and is `run`'s to say. One that ended otherwise — a signal ended
+/// it, SIGKILL among them, or it ended in an error once it held the host —
+/// ended unexpectedly: the keeper says so in the host runner's log and
+/// starts it again, which starts every checkout on the list, after a
+/// second, twice as long at each unexpected end in a row, half a minute or
+/// so at the most (sunfmin/control#820). SIGTERM or SIGINT to the keeper is
+/// passed on to the host runner, which stops as it would.
+fn keep() -> Result<Value> {
+    let program = std::env::current_exe().context("the keeper cannot find its afkconvoy")?;
+    // Not from `/`, where the host runner works: what ends every process
+    // working in one directory leaves the other to start it again
+    // (sunfmin/control#831). The cache directory outlives every worktree.
+    let dir = cache()?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
+    std::env::set_current_dir(&dir).context("the keeper cannot work from the cache directory")?;
+    let (keeper, stop) = (std::process::id(), Stop::listen());
+    let log = RunnerLog::default();
+    let lock = dir.join(LOCK);
+    let mut again = KEPT_AGAIN_AFTER;
+    loop {
+        followed_log();
+        let mut child = crate::process::spawn(
+            crate::process::inheriting_nothing(&mut Command::new(&program))
+                .args(["host-runner", "--kept-by", &keeper.to_string()])
+                .current_dir("/")
+                .stdin(Stdio::null())
+                .process_group(0),
+        )
+        .context("the keeper could not start the host runner")?;
+        let (pid, began) = (child.id(), Instant::now());
+        let passed_on = AtomicBool::new(false);
+        let reaped = Mutex::new(false);
+        let ended = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                loop {
+                    let reaped = reaped.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if *reaped {
+                        return;
+                    }
+                    if stop.told() && !passed_on.swap(true, Ordering::Relaxed) {
+                        // SAFETY: our own child, not reaped while `reaped` is
+                        // held unset: its pid is still its.
+                        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                    }
+                    drop(reaped);
+                    std::thread::sleep(KEPT_LOOKED_EVERY);
+                }
+            });
+            ended_unreaped(pid);
+            *reaped.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            // At once: one that ended is no process of the host's a moment on.
+            child.wait()
+        })?;
+        let passed_on = passed_on.into_inner();
+        // An error before it held the host for as long as a start takes is
+        // a start that failed, which the `run` waiting for it says.
+        let held_it = holder_of(&lock) == Some(u64::from(pid)) && began.elapsed() >= UP_WITHIN;
+        let expected = ended.success() || passed_on || (ended.signal().is_none() && !held_it);
+        if expected || stop.told() {
+            std::process::exit(ended.code().unwrap_or(1));
+        }
+        if began.elapsed() >= KEPT_STEADY {
+            again = KEPT_AGAIN_AFTER;
+        }
+        followed_log();
+        log.say(&format!(
+            "host runner restarted after an unexpected end: pid {pid} {}, after {}s; the \
+             keeper (pid {keeper}) starts it again in {}s, on the same list",
+            unexpectedly(ended),
+            began.elapsed().as_secs(),
+            again.as_secs()
+        ));
+        let until = Instant::now() + again;
+        while Instant::now() < until {
+            if stop.told() {
+                std::process::exit(0);
+            }
+            std::thread::sleep(KEPT_LOOKED_EVERY);
+        }
+        again = (again * 2).min(KEPT_AT_MOST);
+    }
+}
+
+/// Waits until the child `pid` has ended, leaving it to be reaped: until
+/// then its pid is its own, and a signal to it reaches nobody else.
+fn ended_unreaped(pid: u32) {
+    loop {
+        // SAFETY: a zeroed siginfo_t is a valid place for waitid to write.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waits on our own child, without reaping it (WNOWAIT).
+        let waited = unsafe {
+            libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT)
+        };
+        if waited == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+        {
+            return;
+        }
+    }
+}
+
+/// How a host runner that ended unexpectedly ended, in words.
+fn unexpectedly(ended: std::process::ExitStatus) -> String {
+    match (ended.code(), ended.signal()) {
+        (_, Some(signal)) => format!("was ended by signal {signal}"),
+        (Some(code), _) => format!("ended in an error (exit {code}) once it held the host"),
+        (None, None) => format!("ended ({ended})"),
+    }
 }
 
 /// The hidden `afkconvoy host-runner`, as `run` starts it: takes the host,
@@ -576,27 +744,10 @@ pub(crate) fn note(line: &str) -> Result<()> {
 /// the move and its two releases are a line of each checkout's tick log.
 /// One that does not answer leaves this one holding the host again, as it
 /// held it before, and trying that file no more until it changes.
-pub fn serve() -> Result<Value> {
-    // Test worlds put their test process in the login environment. A detached
-    // runner must not survive a timeout or SIGKILL that bypasses World::drop.
-    // Real login environments do not set this fixture-only lifeline.
-    if let Some(owner) = std::env::var("AFKCONVOY_TEST_OWNER")
-        .ok()
-        .and_then(|value| value.parse::<libc::pid_t>().ok())
-        .filter(|pid| *pid > 1)
-    {
-        std::thread::spawn(move || {
-            loop {
-                // SAFETY: signal zero only observes whether the test still exists.
-                if unsafe { libc::kill(owner, 0) } != 0
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                {
-                    std::process::exit(0);
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        });
-    }
+pub fn serve(kept_by: Option<u32>) -> Result<Value> {
+    lifeline();
+    let Some(keeper) = kept_by else { return keep() };
+    let _ = KEEPER.set(keeper);
     // Before any thread starts: nothing moves it after, and nothing the
     // fleet does leans on it.
     std::env::set_current_dir("/").context("the host runner cannot work from /")?;
@@ -884,7 +1035,11 @@ fn took_host(file: &Path) -> Result<Option<(File, Value)>> {
     let before = std::fs::read_to_string(file).ok();
     let before = before.and_then(|text| serde_json::from_str::<Value>(&text).ok());
     let before = before.unwrap_or_default();
-    let holder = json!({"pid": std::process::id(), "version": VERSION, "started": crate::clock()});
+    let mut holder =
+        json!({"pid": std::process::id(), "version": VERSION, "started": crate::clock()});
+    if let Some(keeper) = KEEPER.get() {
+        holder["keeper"] = json!(keeper);
+    }
     lock.set_len(0)
         .and_then(|()| (&lock).write_all(holder.to_string().as_bytes()))
         .with_context(cannot)?;
@@ -895,6 +1050,14 @@ fn took_host(file: &Path) -> Result<Option<(File, Value)>> {
 fn holder_of(file: &Path) -> Option<u64> {
     let text = std::fs::read_to_string(file).ok()?;
     serde_json::from_str::<Value>(&text).ok()?["pid"].as_u64()
+}
+
+/// The pid the lock in `file` says holds it, where it says the keeper
+/// `keeper` started it.
+fn kept_by(file: &Path, keeper: u32) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let holder = serde_json::from_str::<Value>(&text).ok()?;
+    (holder["keeper"] == keeper).then(|| holder["pid"].as_u64().map(|pid| pid.to_string()))?
 }
 
 /// Which file this is, wherever it is reached from.
@@ -1086,6 +1249,11 @@ fn handed_over(path: &Path, lock: File) -> Result<Value> {
             bail!("it ended as it started ({ended}): {}", last_lines(&log, written, 5));
         }
         if Instant::now() >= until {
+            // Its keeper and the host runner it started, which is in a
+            // process group of its own.
+            if let Some(kept) = kept_by(&lock_file, child.id()) {
+                let _ = crate::process::status(Command::new("kill").args(["-KILL", &kept]));
+            }
             let _ = child.kill();
             let _ = child.wait();
             bail!("it did not answer within {}s, and was ended", MOVED_WITHIN.as_secs());
