@@ -490,7 +490,6 @@ mod tests {
                 count: at,
                 sleep: 90,
                 line: line.into(),
-                bound: Some(3),
                 answer: Some(answer),
                 error: None,
             }),

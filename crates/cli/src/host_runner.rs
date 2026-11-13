@@ -174,6 +174,7 @@ impl Shared {
         Ok(SharedNow {
             exclusive,
             exclusive_paused: Some(exclusive_paused),
+            exclusive_ran: self.queue.ran(),
             installed: self.installed().clone(),
             published: self.published.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             watch: self.watch.running(),
@@ -202,6 +203,10 @@ pub struct SharedNow {
     /// runner did not say, and the observation keeps it unknown.
     #[serde(default)]
     pub exclusive_paused: Option<bool>,
+    /// How long the commands the queue ran took (`exclusive::Ran`): empty
+    /// where an older host runner did not say.
+    #[serde(default)]
+    pub exclusive_ran: crate::exclusive::Ran,
     /// The afkconvoy installed where the host runner was started from, where
     /// it is newer than the host runner's or does not start; `None`: none is,
     /// or the host runner is of an afkconvoy that does not say it.
@@ -1371,17 +1376,19 @@ impl Runner {
         }
     }
 
-    /// Has the checkout `repo` say `to` of its concurrency on this host
-    /// (`concurrency::say`) → what that changed of the concurrency its fleet
-    /// instance goes by, as {from, to}, each as `concurrency::json` says it;
-    /// null where `to` names none, or the one in force. Its config is read
-    /// before anything is said: one that cannot be read refuses it.
+    /// Keeps `to`, the concurrency a `run` of the checkout `repo` named, with
+    /// its entry (`concurrency::say`), where it changes nothing → what the
+    /// answer says of it: that it is ignored, or null where `to` names none.
+    /// No number bounds a fleet's workers: admission alone decides each start
+    /// (docs/adr/0072), and `doctor` says the one kept is ignored.
     fn said(&self, repo: &Repo, to: Option<To<NonZeroUsize>>) -> Result<Value> {
         let Some(to) = to else { return Ok(Value::Null) };
-        let was = concurrency::json(&concurrency::config_of(repo)?);
+        let named = match &to {
+            To::Value(claims) => json!(claims.get()),
+            To::Default => json!("default"),
+        };
         concurrency::say(&self.list, &repo.dir, to)?;
-        let now = concurrency::json(&concurrency::config_of(repo)?);
-        Ok(if was == now { Value::Null } else { json!({"from": was, "to": now}) })
+        Ok(json!({"ignored": named, "why": concurrency::IGNORED}))
     }
 
     /// Starts the fleet instance of the checkout `root`, of the repo `key`,

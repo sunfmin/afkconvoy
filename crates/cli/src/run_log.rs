@@ -181,7 +181,6 @@ mod tests {
             count,
             sleep: 90,
             line: "nothing to do".into(),
-            bound: Some(2),
             answer: Some(answer),
             error: None,
         }

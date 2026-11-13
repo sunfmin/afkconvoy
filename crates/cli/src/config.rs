@@ -33,6 +33,11 @@ pub fn file_of(repo: &Repo) -> PathBuf {
     repo.dir.join(FILE)
 }
 
+/// The config of the checkout `repo`, read anew: an error names the file.
+pub fn of(repo: &Repo) -> Result<Config> {
+    load(&file_of(repo))
+}
+
 pub fn load(file: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read the config file {}", file.display()))?;

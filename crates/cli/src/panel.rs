@@ -133,9 +133,8 @@ pub struct Panel {
     pub who: Option<(String, String)>,
     /// `None` of a part no tick made: it shows a rebuild.
     pub tick: Option<Tick>,
-    /// The claims held that take a slot, of the `bound` the fleet may hold.
+    /// The claims held that take a slot.
     pub held: usize,
-    pub bound: usize,
     /// The claims held whose worker declared a verdict not acted on yet: they
     /// take no slot, and are counted apart.
     pub declared: usize,
@@ -414,7 +413,6 @@ impl Panel {
             who: me.map(|me| (me.instance.as_str().to_string(), me.host.clone())),
             tick: None,
             held: 0,
-            bound: fleet.config.concurrency(),
             declared: 0,
             frontier: 0,
             idle: false,
@@ -646,8 +644,6 @@ pub fn read(
     };
     panel.declared = set.slotless();
     panel.held = set.mine.len() - panel.declared;
-    let concurrency = report.concurrency_in_force().unwrap_or(fleet.config.concurrency());
-    panel.bound = set.bound(concurrency) - panel.declared;
     panel.frontier = set.frontier.len();
     panel.idle = afkconvoy_core::tick::idle(set.held(), panel.frontier) && !set.cut_running();
     panel.cut = set.cut.as_ref().and_then(|row| crate::cut::says(&fleet.repo, row));
@@ -1004,9 +1000,8 @@ fn clock(at: u64) -> String {
     format!("{:02}:{:02}", at % 86_400 / 3600, at % 3600 / 60)
 }
 
-fn gauge(out: &mut String, name: &str, value: usize, of: Option<usize>) {
-    let of = of.map(|of| format!(" <small>of {of}</small>")).unwrap_or_default();
-    let _ = write!(out, "<div class=\"gauge\"><dt>{name}</dt><dd>{value}{of}</dd></div>");
+fn gauge(out: &mut String, name: &str, value: usize) {
+    let _ = write!(out, "<div class=\"gauge\"><dt>{name}</dt><dd>{value}</dd></div>");
 }
 
 /// The page: a whole HTML document, the same text for the same page. It is
@@ -1445,10 +1440,9 @@ fn repos_part(out: &mut String, page: &Page) {
             (Part::Starting, None) => "starting".to_string(),
             (Part::Unread(_), None) => "could not be read".to_string(),
             (Part::Shown(panel), None) => format!(
-                "<b>{}</b> · holding {}/{} · frontier {}",
+                "<b>{}</b> · holding {} · frontier {}",
                 if panel.idle { "idle" } else { "at work" },
                 panel.held,
-                panel.bound,
                 panel.frontier,
             ),
         };
@@ -1518,12 +1512,12 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         esc(&panel.base_branch),
         repo = esc(&panel.repo),
     );
-    gauge(out, "Claims held", panel.held, Some(panel.bound));
+    gauge(out, "Claims held", panel.held);
     if panel.declared > 0 {
-        gauge(out, "Taking no slot", panel.declared, None);
+        gauge(out, "Taking no slot", panel.declared);
     }
-    gauge(out, "Queued", panel.queued(), None);
-    gauge(out, "With a human", panel.with_a_human(), None);
+    gauge(out, "Queued", panel.queued());
+    gauge(out, "With a human", panel.with_a_human());
     out.push_str("</dl></header>\n");
     if !panel.candidates.is_empty() {
         out.push_str("<section class=\"candidates\"><h3>Candidate validation</h3><ul>");
@@ -1736,7 +1730,7 @@ Not a JSON object: one HTML document on stdout, complete in itself, with no addr
 
 - The host, once: admission — whether it holds back new workers, why, and what it read of the host; the workers that are hot, in every repo, with why and what each held at the most; the watch running, and what the last watch did; the commands run alone on the host and those waiting their turn (`exclusive`); the host kit — each harness in order with its models, each one paused, and what the stock consult runs
 - With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with what kind of wait and the first sentence of the reason its comment gives, a Reason link to that comment (the report itself for an older failed patrol or cut), and the line that answers it: what `doctor` answers as `waiting_on_human`.
-- Each repo: a row at the top names every checkout, each with whether its fleet instance is idle, its claims held of its bound and its frontier, and links to its part. Each part then shows:
+- Each repo: a row at the top names every checkout, each with whether its fleet instance is idle, its claims held and its frontier, and links to its part. Each part then shows:
   - Claims held: the claims of its fleet instance that take a slot, of the concurrency
   - `Taking no slot`: shown while there are any: the claims whose worker declared a verdict not acted on yet, or that are landing with their worker not changing the tree, which take no slot
   - a lane: one per workflow; an unbound repo has one, `backlog`, with the two stages `work` and `land`
@@ -1781,7 +1775,6 @@ mod tests {
             who: None,
             tick: None,
             held: 0,
-            bound: 2,
             declared: 0,
             frontier: 0,
             idle: true,
@@ -1818,6 +1811,9 @@ mod tests {
                 total_load: reading.load,
                 queue_load: Some(0),
                 span: 600,
+                queue_drain: None,
+                queue_bound: afkconvoy_core::admission::QUEUE_BOUND,
+                usage: None,
             }),
             exclusive: Ok(Some((vec![], Some(false)))),
             lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },

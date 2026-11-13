@@ -17,7 +17,7 @@ use crate::instance::Start;
 pub fn settings_help() -> String {
     use afkconvoy_core::{admission::SHARES, resources::SPAN};
     format!(
-        "Host settings apply to every fleet; `run` changes those named. Defaults: watch workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above {}% load per core or below {}% memory or {}% disk free, calling for the watch after {} seconds held for one reason or memory pressure; end exclusive commands after {} seconds holding others up; panel port {} (a free port if taken); the host runner looks every {} seconds in the operator's directory, or the stock watch's by default. Concurrency: {} claims at work per checkout. Flags: `afkconvoy run --help`.",
+        "Host settings apply to every fleet; `run` changes those named. Defaults: watch workers above half the cores (at least one) for two minutes, a quarter of memory resident, or a tenth of free disk written in ten minutes (at least one GiB); admission holds starts above {}% load per core or below {}% memory or {}% disk free, calling for the watch after {} seconds held for one reason or memory pressure; end exclusive commands after {} seconds holding others up; panel port {} (a free port if taken); the host runner looks every {} seconds in the operator's directory, or the stock watch's by default. No number bounds a checkout's workers: admission alone decides each start, by these readings, the usage windows of the accounts its workers start on, and the exclusive queue, which holds starts once its commands would take over {} seconds to drain. Flags: `afkconvoy run --help`.",
         SHARES.load,
         SHARES.memory,
         SHARES.disk,
@@ -25,7 +25,7 @@ pub fn settings_help() -> String {
         crate::exclusive::SECONDS,
         host_settings::PANEL_PORT,
         host_settings::WATCH_EVERY,
-        afkconvoy_core::config::CONCURRENCY,
+        afkconvoy_core::admission::QUEUE_BOUND,
     )
 }
 
@@ -55,7 +55,6 @@ pub struct Ask {
 #[serde(rename_all = "kebab-case")]
 enum Setting {
     Tracker,
-    Concurrency,
     WatchDir,
 }
 
@@ -63,14 +62,12 @@ impl std::fmt::Display for Setting {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Setting::Tracker => "tracker",
-            Setting::Concurrency => "concurrency",
             Setting::WatchDir => "watch-dir",
         })
     }
 }
 
-/// Every first-start question, including concurrency, whose default may
-/// stand without an explicit flag. New user decisions belong here.
+/// Every first-start question. New user decisions belong here.
 pub fn questions() -> Vec<Ask> {
     let line = |option, flag: &str| OptionLine {
         option,
@@ -89,16 +86,6 @@ pub fn questions() -> Vec<Ask> {
                     option: "A new private repo, created only on the user's yes to its owner and name",
                     line: "gh repo create <owner>/<name> --private && afkconvoy run <checkout> --tracker <owner>/<name>".into(),
                 },
-            ],
-        },
-        Ask {
-            setting: Setting::Concurrency,
-            question: "How many claims should this checkout's fleet hold at work at once on this host?",
-            default: afkconvoy_core::config::CONCURRENCY.to_string(),
-            recommend: "Start with the default, then change it to what this host can carry.",
-            options: vec![
-                line("The default", "--concurrency default"),
-                line("Another whole number of claims, at least one", "--concurrency <N>"),
             ],
         },
         Ask {
@@ -150,7 +137,6 @@ pub fn settled(
             .into_iter()
             .filter(|ask| match ask.setting {
                 Setting::Tracker => tracker,
-                Setting::Concurrency => new_checkout && start.concurrency.is_none(),
                 Setting::WatchDir => !has_settings && settings.watch_dir.is_none(),
             })
             .collect();

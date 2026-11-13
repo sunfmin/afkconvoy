@@ -1819,7 +1819,6 @@ mod tests {
             stale: vec![],
             stale_closed: vec![],
             gone: vec![],
-            free_slots: 2,
             now: 1000,
             locks: vec![9],
             flowing: vec![],

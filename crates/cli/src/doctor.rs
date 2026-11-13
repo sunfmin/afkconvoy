@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use afkconvoy_core::casting;
 use afkconvoy_core::claims::{InstanceId, Owner, claim_ref};
-use afkconvoy_core::config::{Config, SaidBy};
+use afkconvoy_core::config::Config;
 use afkconvoy_core::cut;
 use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::harness::Harness;
@@ -624,10 +624,11 @@ pub struct Seen<'a> {
     pub host: &'a Host,
     /// The checkout `doctor` is asked in.
     pub checkout: &'a Path,
-    /// The repo's config, with the concurrency the checkout says on this
-    /// host laid over it (`concurrency::config_of`); `None` where it cannot
-    /// be read.
+    /// The repo's config; `None` where it cannot be read.
     pub config: Option<&'a Config>,
+    /// The concurrency the checkout still keeps on this host's checkout
+    /// list, which is ignored (`concurrency::own`).
+    pub kept_concurrency: Option<std::num::NonZeroUsize>,
     pub run: &'a Run,
     /// The fleet's state, or why it could not be read.
     pub state: Result<&'a State, &'a str>,
@@ -1139,26 +1140,22 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
     let instance = run.instance.as_deref().unwrap_or_default();
     if let Some((_, tick)) = run.last_tick().filter(|_| run.alive)
         && let Some(first) = set.frontier.first()
-        && set.free_slots > 0
         && !tick.dispatched()
         // A busy host starting nothing is admission at work: `host` says why.
         && !tick.held_back()
     {
         let failed = tick.failed();
         let start = failed.iter().find(|failed| failed.step == "dispatch" || failed.step == "tick");
-        let left = tick
-            .stood()
-            .zip(tick.bound)
-            .is_some_and(|((held, frontier), bound)| frontier > 0 && held < bound as u64);
+        let left = tick.stood().is_some_and(|(_, frontier)| frontier > 0);
         if start.is_some() || left {
             let frontier: Vec<u64> = set.frontier.iter().map(|issue| issue.number).collect();
             found.push(finding(
                 Kind::NothingStarted,
                 json!(["nothing-started", frontier]),
                 format!(
-                    "the frontier holds {}, {} slot(s) are free, and the last tick started no worker",
+                    "the frontier holds {}, admission held nothing back, and the last tick \
+                     started no worker",
                     numbered(&frontier),
-                    set.free_slots
                 ),
                 format!("tick {}: {}", tick.count, tick.line),
                 match start {
@@ -1539,39 +1536,44 @@ fn install_findings(checkout: &Path, config: &Config) -> Vec<Finding> {
         .collect()
 }
 
-/// A repo config that still names a `concurrency`, which nothing reads any
-/// more (docs/adr/0025): the fleet instance of `checkout` goes by its own on
-/// this host, or the default. Nothing is held up. Where it says none of its
-/// own and the config names a different number, the line that keeps that
-/// number on this host comes before deleting the key.
-fn retired_concurrency_finding(checkout: &Path, config: &Config) -> Option<Finding> {
-    let named = config.retired_concurrency?;
-    let in_force = config.concurrency();
-    let said = match config.concurrency_said_by() {
-        SaidBy::Checkout => format!("this checkout says {in_force} on this host"),
-        SaidBy::Default => {
-            format!("this checkout says none on this host, so the default, {in_force}, holds")
-        }
-    };
-    let fix = if config.concurrency_said_by() == SaidBy::Default && named.get() != in_force {
-        format!(
-            "afkconvoy run {} --concurrency {named}, then delete `concurrency` from {}",
-            checkout.display(),
-            config::FILE
-        )
-    } else {
-        format!("{}: concurrency", config::FILE)
-    };
-    Some(finding(
-        Kind::RetiredConcurrency,
-        json!(["retired-concurrency"]),
-        format!(
-            "this repo's config names `concurrency: {named}`, which nothing reads any more: this \
-             checkout's fleet instance holds up to {in_force} claims at work at once on this host"
-        ),
-        format!("{} names `concurrency: {named}`; {said}", config::FILE),
-        fix,
-    ))
+/// A concurrency still named, which nothing reads any more (docs/adr/0072):
+/// no number bounds a fleet's workers, and admission alone decides each
+/// start. Nothing is held up. One the checkout keeps on this host's
+/// checkout list, as a `run --concurrency` said it, is dropped by
+/// `--concurrency default`; one the repo's config names, by deleting the
+/// key.
+fn retired_concurrency_findings(
+    checkout: &Path,
+    config: Option<&Config>,
+    kept: Option<std::num::NonZeroUsize>,
+) -> Vec<Finding> {
+    let mut found = vec![];
+    if let Some(kept) = kept {
+        found.push(finding(
+            Kind::RetiredConcurrency,
+            json!(["retired-concurrency", "checkout"]),
+            format!(
+                "this checkout keeps `--concurrency {kept}` on this host, which is ignored: {}",
+                crate::concurrency::IGNORED
+            ),
+            format!("the checkout list keeps concurrency {kept} with {}", checkout.display()),
+            format!("afkconvoy run {} --concurrency default", checkout.display()),
+        ));
+    }
+    if let Some(named) = config.and_then(|config| config.retired_concurrency) {
+        found.push(finding(
+            Kind::RetiredConcurrency,
+            json!(["retired-concurrency", "config"]),
+            format!(
+                "this repo's config names `concurrency: {named}`, which nothing reads any more: \
+                 {}",
+                crate::concurrency::IGNORED
+            ),
+            format!("{} names `concurrency: {named}`", config::FILE),
+            format!("{}: concurrency", config::FILE),
+        ));
+    }
+    found
 }
 
 /// Each worker of the host whose worker health waits for the operator: past
@@ -1600,7 +1602,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     let mut found = host_findings(seen.host);
     found.extend(health_findings());
     found.extend(seen.config.and_then(config_finding));
-    found.extend(seen.config.and_then(|config| retired_concurrency_finding(seen.checkout, config)));
+    found.extend(retired_concurrency_findings(seen.checkout, seen.config, seen.kept_concurrency));
     found.extend(
         seen.config.map(|config| install_findings(seen.checkout, config)).unwrap_or_default(),
     );
@@ -2338,7 +2340,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         // A log only commands wrote to is no `run`'s.
         ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
     };
-    let config = crate::concurrency::config_of(repo);
+    let config = crate::config::of(repo);
     // The host check and the fleet's remote read do not depend on each other.
     // Asking them together is what keeps one doctor inside its time.
     let (trust, seen_host, opened) = std::thread::scope(|scope| {
@@ -2362,6 +2364,10 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         host: &seen_host,
         checkout: &repo.dir,
         config: config.as_ref().ok(),
+        kept_concurrency: List::of_host()
+            .and_then(|list| crate::concurrency::own(&list, &repo.dir))
+            .ok()
+            .flatten(),
         run: &run,
         state: state.as_ref().map_err(String::as_str),
     };
@@ -2417,7 +2423,6 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         host.extend(look.host.clone());
     }
     let mut fleet = fleet_json(&run);
-    fleet["concurrency"] = report.concurrency.clone();
     fleet["harness"] = report.harness.clone();
     fleet["github_api"] = match crate::gh::GitHub::of(repo).and_then(|gh| gh.quota_status()) {
         Ok(status) => status,
@@ -2871,7 +2876,6 @@ mod tests {
             count,
             sleep: 90,
             line: "nothing to do".into(),
-            bound: Some(2),
             answer: Some(answer),
             error: None,
         };
@@ -2907,7 +2911,6 @@ mod tests {
             stale: vec![],
             stale_closed: vec![],
             gone: vec![],
-            free_slots: 2,
             now: NOW,
             locks: vec![],
             flowing: vec![],
@@ -3024,8 +3027,15 @@ mod tests {
 
     fn found(host: &Host, run: &Run, state: &State) -> Vec<Finding> {
         let checkout = Path::new("/repos/widgets");
-        let found =
-            findings(&Seen { now: NOW, host, checkout, config: None, run, state: Ok(state) });
+        let found = findings(&Seen {
+            now: NOW,
+            host,
+            checkout,
+            config: None,
+            kept_concurrency: None,
+            run,
+            state: Ok(state),
+        });
         for finding in &found {
             // Never prose alone: one line to run, or a file and the key in it.
             let fix = &finding.fix;
@@ -3301,7 +3311,6 @@ mod tests {
         state.set.frontier =
             vec![Dispatchable { number: 3, title: "work".into(), stage: None, cast: None }];
         let before = plan_findings(&run(vec![failed(1)]), &state);
-        state.set.free_slots += 1;
         same(&before[0], &plan_findings(&run(vec![failed(2)]), &state)[0]);
     }
 
@@ -3503,7 +3512,7 @@ mod tests {
             let (at, tick) = tick(count, json!([]));
             (
                 at,
-                Tick { answer: None, bound: None, error: Some("gh pr list failed".into()), ..tick },
+                Tick { answer: None, error: Some("gh pr list failed".into()), ..tick },
             )
         };
         let found = self::found(&host(), &run(vec![whole(1), whole(2), whole(3)]), &state());
@@ -3797,7 +3806,8 @@ mod tests {
             cast: None,
         };
         state.set.frontier = vec![waiting(3), waiting(5)];
-        // the last tick left the frontier with a slot free, and nothing failed in it
+        // the last tick left the frontier, admission held nothing back, and
+        // nothing failed in it
         let left = |held: u64| {
             let (at, mut tick) = tick(9, json!([]));
             tick.answer =
@@ -3817,16 +3827,12 @@ mod tests {
         let found = self::found(&host(), &run(vec![failed]), &state);
         assert_eq!(fixes(&found, "the frontier holds"), ["orca repo add --path /r"]);
 
-        // the last tick was at its bound, or dispatched: the frontier only waits for the next
-        assert_eq!(self::found(&host(), &run(vec![left(2)]), &state), []);
+        // the last tick dispatched: the frontier only waits for the next
         let (at, mut started) = left(1);
         started.answer.as_mut().unwrap()["did"] =
             json!([{"do": "dispatch", "issue": 1, "outcome": "done"}]);
         assert_eq!(self::found(&host(), &run(vec![(at, started)]), &state), []);
-        // no slot is free now, or the frontier is empty: none either
-        state.set.free_slots = 0;
-        assert_eq!(self::found(&host(), &run(vec![left(1)]), &state), []);
-        state.set.free_slots = 2;
+        // the frontier is empty: none either
         state.set.frontier = vec![];
         assert_eq!(self::found(&host(), &run(vec![left(1)]), &state), []);
     }
@@ -4031,6 +4037,7 @@ mod tests {
                 host: &host,
                 checkout: Path::new("/repos/widgets"),
                 config: config.as_ref().ok(),
+                kept_concurrency: None,
                 run: &run,
                 state: Ok(&state),
             };
@@ -4048,57 +4055,36 @@ mod tests {
     }
 
     #[test]
-    fn a_config_that_names_a_concurrency_is_said_with_the_line_that_keeps_it_on_the_host() {
-        // the config as `yaml` has it, with the concurrency its checkout
-        // says on this host laid over it: none at 0
-        let found = |yaml: &str, own: usize| {
+    fn a_concurrency_named_anywhere_is_said_to_be_ignored() {
+        let found = |yaml: &str, kept: usize| {
             let config = config::parse(&format!(
                 "```yaml\nbase_branch: main\ngate_command: make\ngate_seconds: 600\n{yaml}```\n"
             ));
-            let config = config.unwrap().laid(own);
+            let config = config.unwrap();
             let (host, run, state) = (host(), run(vec![]), state());
-            let checkout = Path::new("/repos/widgets");
-            let config = Some(&config);
             findings(&Seen {
                 now: NOW,
                 host: &host,
-                checkout,
-                config,
+                checkout: Path::new("/repos/widgets"),
+                config: Some(&config),
+                kept_concurrency: std::num::NonZeroUsize::new(kept),
                 run: &run,
                 state: Ok(&state),
             })
         };
-        // the checkout says none: the default holds, and the line that keeps
-        // the config's on this host comes before deleting the key
+        // `run --concurrency 5` kept it: it is ignored, and `default` drops it
+        let kept = found("", 5);
+        let what = "this checkout keeps `--concurrency 5` on this host, which is ignored";
+        assert_eq!(fixes(&kept, what), ["afkconvoy run /repos/widgets --concurrency default"]);
+        assert_eq!((kept.len(), kept[0].severity), (1, Severity::Info));
+        assert!(kept[0].what.contains("admission alone decides each start"), "{kept:?}");
+        // the config names one: the key is all there is to delete
         let named = found("concurrency: 5\n", 0);
-        let what = "this repo's config names `concurrency: 5`, which nothing reads any more: this \
-                    checkout's fleet instance holds up to 3 claims";
-        assert_eq!(
-            fixes(&named, what),
-            ["afkconvoy run /repos/widgets --concurrency 5, then delete `concurrency` from \
-                 docs/agents/afkconvoy.md"]
-        );
-        assert_eq!((named.len(), named[0].severity), (1, Severity::Info));
-        assert!(
-            named[0].evidence.contains("says none on this host, so the default, 3"),
-            "{named:?}"
-        );
-        // the checkout says its own: the key is all there is left to delete
-        let own = found("concurrency: 5\n", 6);
-        assert_eq!(fixes(&own, "holds up to 6 claims"), ["docs/agents/afkconvoy.md: concurrency"]);
-        assert!(own[0].evidence.contains("this checkout says 6 on this host"), "{own:?}");
-        // the config names the number already in force: no run is needed,
-        // whether the checkout says its own or holds the default
-        for (named, own) in [(3, 0), (6, 6)] {
-            let same = found(&format!("concurrency: {named}\n"), own);
-            assert_eq!(
-                fixes(&same, "which nothing reads any more"),
-                ["docs/agents/afkconvoy.md: concurrency"]
-            );
-            assert_eq!(same[0].severity, Severity::Info);
-        }
-        // the key deleted: nothing, whatever the checkout says
-        assert_eq!(found("", 6), []);
+        let what = "this repo's config names `concurrency: 5`, which nothing reads any more";
+        assert_eq!(fixes(&named, what), ["docs/agents/afkconvoy.md: concurrency"]);
+        assert_eq!(named[0].severity, Severity::Info);
+        assert_eq!(found("concurrency: 5\n", 6).len(), 2);
+        // named nowhere: nothing
         assert_eq!(found("", 0), []);
     }
 
@@ -4110,6 +4096,7 @@ mod tests {
             host: &host(),
             checkout: Path::new("/repos/widgets"),
             config: None,
+            kept_concurrency: None,
             run: &run(vec![]),
             state: Err(why),
         });

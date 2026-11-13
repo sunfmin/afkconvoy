@@ -60,8 +60,7 @@ pub struct Fleet {
     /// One view of the issue's refusal comments, seeded by the paged rebuild.
     refusals:
         std::cell::RefCell<std::collections::BTreeMap<u64, Vec<afkconvoy_core::worker::Refusal>>>,
-    /// The repo's config, with the concurrency its checkout says on this
-    /// host laid over it (`concurrency::config_of`).
+    /// The repo's config, read anew at each view.
     pub config: Config,
     pub gh: GitHub,
     pub scan: Scan,
@@ -102,9 +101,7 @@ impl Fleet {
     /// The fleet's view from the checkout `repo`, reading GitHub through `gh`.
     fn open_on(repo: &Repo, gh: GitHub, now: u64) -> Result<Fleet> {
         let repo = repo.clone();
-        // As this checkout's fleet instance goes by it on this host: read
-        // anew at each view, so a concurrency said since holds now.
-        let config = crate::concurrency::config_of(&repo)?;
+        let config = crate::config::of(&repo)?;
         let pinned = crate::named_harness::named(&repo)?;
 
         let remote = Remote::open(&repo, &config.base_branch)?;
