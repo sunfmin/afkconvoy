@@ -641,7 +641,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         // Made a ticket of the fleet's after `cut::REPEATS` failures of the
         // same way, it carries the ready label and is worked as any other
         // (docs/adr/0072).
-        let ticket = issue.labels.iter().any(|label| *label == config.ready_label);
+        let ticket = issue.labels.contains(&config.ready_label);
         let reason = if failed_cut && cut::watched(&issue.labels) && !ticket {
             // The watch looks into it; nothing of the fleet's works it.
             "says a cut failed: the host's watch answers it".to_string()
