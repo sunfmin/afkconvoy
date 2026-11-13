@@ -28,6 +28,6 @@ A test, build or gate shell left behind by a killed owner works in its worktree,
 
 - A gate that started a shared server frees its lane as it ends, and a host runner restarted finds no holder in it.
 - Looking at a dead owner's lease reads the process table and lists what holds the file; a look stands two seconds, as a waiting turn reads the leases every 100 ms.
-- A repo's lease, the lock that keeps an ordinary command of a repo from another of it, is not a lane's place and has no owner written in it: a shared server holding one is not freed by this.
+- A repo's lease, the lock that keeps an ordinary command of a repo from another of it, is not a lane's place and had no owner written in it: ADR-0074 writes its owners in it and frees it the same way.
 
 The same issue settles a second thing ADR-0049 left open: `gate --fast` and `gate --slow` take their lane before their command starts, as `gate` takes its turn, so the wait for a place uses none of the gate's limit, which times the command alone.
