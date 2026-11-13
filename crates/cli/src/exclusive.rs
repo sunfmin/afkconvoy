@@ -106,6 +106,27 @@ pub(crate) fn share(command: &mut Command, own: u32) {
     }
 }
 
+/// The variables that keep a command's build and tests to the cores
+/// afkconvoy may use, where the host caps its share (sunfmin/control#896).
+const CAPPED: [&str; 2] = ["CARGO_BUILD_JOBS", "NEXTEST_TEST_THREADS"];
+
+/// Keeps `command`, a command of the exclusive queue — a gate, a cut's
+/// build — to the cores afkconvoy may use on this host, where its host
+/// settings cap its share (`--max-share-of-cores`): its build's jobs and
+/// its tests' threads, unless the environment already says them. A host that
+/// caps none leaves them as they are: a build held to fewer cores than the
+/// host has would only be slower (ADR-0019), but a host that caps the share
+/// keeps the rest for a co-resident system.
+pub(crate) fn keep_within(command: &mut Command) {
+    let Ok(settings) = crate::host_settings::of_host() else { return };
+    let Some(cores) = settings.capped_cores(crate::host_settings::host_cores()) else { return };
+    for name in CAPPED {
+        if std::env::var_os(name).is_none() {
+            command.env(name, cores.to_string());
+        }
+    }
+}
+
 /// Whether a command other than the one of the process `own` runs in this
 /// host's worker, fast or slow lanes; a light gate's repo lane is none of
 /// them. A queue that cannot be read is taken as one beside it.
@@ -673,6 +694,7 @@ pub fn exclusive(
 ) -> ExitCode {
     if let Some(owner) = inherited(checkout.as_ref()) {
         let mut nested = Command::new(&command[0]);
+        keep_within(&mut nested);
         if std::env::var_os(SHARE_ENV).is_some() {
             share(&mut nested, owner);
         }
@@ -754,6 +776,7 @@ fn run_command(
 ) -> std::io::Result<Option<ExitStatus>> {
     let mut cmd = Command::new(&command[0]);
     cmd.args(&command[1..]).current_dir(dir).env_remove(GATE_ENV);
+    keep_within(&mut cmd);
     if std::env::var_os(SHARE_ENV).is_some() {
         share(&mut cmd, ticket.pid);
     }

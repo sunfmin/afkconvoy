@@ -81,7 +81,7 @@ pub fn take(admission: &Admission, reason: Reason, reading: &str, own: &Own) -> 
     out.push_str("\n```\n");
     match reason {
         Reason::Disk => disk(&mut out, on_host, own),
-        Reason::Load | Reason::Memory => processes_of(&mut out, &on_host),
+        Reason::Load | Reason::Memory | Reason::Share => processes_of(&mut out, &on_host),
         // The reading above is the whole of it: the account's window, or
         // the queue's commands and their recent run times.
         Reason::Window | Reason::Queue => {}

@@ -299,6 +299,9 @@ mod tests {
             queue_drain: None,
             queue_bound: afkconvoy_core::admission::QUEUE_BOUND,
             usage: None,
+            cap: Default::default(),
+            own: None,
+            memory: None,
         }
     }
 

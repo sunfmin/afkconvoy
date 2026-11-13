@@ -48,6 +48,13 @@ pub struct Settings {
     /// `--admit-inspect-after`: the seconds admission holds back for one
     /// reason before the host calls for a watch.
     pub admit_inspect_after: Option<u64>,
+    /// `--max-share-of-cores`: the share of the host's cores afkconvoy may
+    /// use itself, a whole percent, so that a co-resident system keeps the
+    /// rest (sunfmin/control#896).
+    pub max_share_of_cores: Option<u64>,
+    /// `--max-share-of-memory`: the share of the host's memory afkconvoy may
+    /// hold resident itself, a whole percent.
+    pub max_share_of_memory: Option<u64>,
     /// `--exclusive-seconds`: seconds a running command may hold others up.
     pub exclusive_seconds: Option<u64>,
     /// `--gate-lanes`: worker commands that may run across different repos.
@@ -113,6 +120,8 @@ pub struct Named {
     pub admit_memory: Option<To<u64>>,
     pub admit_disk: Option<To<u64>>,
     pub admit_inspect_after: Option<To<u64>>,
+    pub max_share_of_cores: Option<To<u64>>,
+    pub max_share_of_memory: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
     pub gate_lanes: Option<To<u64>>,
     pub slow_gate_lanes: Option<To<u64>>,
@@ -169,6 +178,19 @@ pub fn thousandths_or_default(said: &str) -> Result<To<u64>, String> {
 pub fn whole_or_default(said: &str) -> Result<To<u64>, String> {
     To::parse(said, |said| {
         said.parse().map_err(|_| format!("`{said}` is not a whole number, nor `default`"))
+    })
+}
+
+/// `--max-share-of-cores` and `--max-share-of-memory` as said: a whole
+/// percent from 1 to 100, its `%` sign or none, or `default` for no cap.
+pub fn percent_or_default(said: &str) -> Result<To<u64>, String> {
+    To::parse(said, |said| {
+        said.strip_suffix('%')
+            .unwrap_or(said)
+            .parse::<u64>()
+            .ok()
+            .filter(|percent| (1..=100).contains(percent))
+            .ok_or_else(|| format!("`{said}` is not a whole percent from 1 to 100, nor `default`"))
     })
 }
 
@@ -253,6 +275,8 @@ impl Settings {
         lay(&mut self.admit_memory, named.admit_memory.as_ref());
         lay(&mut self.admit_disk, named.admit_disk.as_ref());
         lay(&mut self.admit_inspect_after, named.admit_inspect_after.as_ref());
+        lay(&mut self.max_share_of_cores, named.max_share_of_cores.as_ref());
+        lay(&mut self.max_share_of_memory, named.max_share_of_memory.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.gate_lanes, named.gate_lanes.as_ref());
         lay(&mut self.slow_gate_lanes, named.slow_gate_lanes.as_ref());
@@ -324,11 +348,29 @@ impl Settings {
 
     /// The share of this host's cores one gate's tests are given: its cores
     /// divided by every lane a gate may run in at once, at least one
-    /// (sunfmin/control#245).
+    /// (sunfmin/control#245), and no more than afkconvoy may use
+    /// (`capped_cores`).
     pub fn gate_share(&self) -> u64 {
-        let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
+        let cores = host_cores();
         let lanes = self.gate_lanes() + self.fast_lanes() + self.slow_gate_lanes();
-        (cores / lanes).max(1)
+        let share = (cores / lanes).max(1);
+        self.capped_cores(cores).map_or(share, |capped| share.min(capped))
+    }
+
+    /// The share of the host afkconvoy may use itself, as admission holds
+    /// to it.
+    pub fn cap(&self) -> afkconvoy_core::admission::Cap {
+        afkconvoy_core::admission::Cap {
+            cores: self.max_share_of_cores,
+            memory: self.max_share_of_memory,
+        }
+    }
+
+    /// The cores of a host of `cores` that afkconvoy may use, at least one:
+    /// what a command of its exclusive queue builds and tests with; `None`
+    /// where the host caps none.
+    pub fn capped_cores(&self, cores: u64) -> Option<u64> {
+        self.max_share_of_cores.map(|share| (cores.saturating_mul(share) / 100).max(1))
     }
 
     /// The seconds between looks at the host.
@@ -364,6 +406,8 @@ impl Settings {
             "admit_memory": self.admit_memory.unwrap_or(SHARES.memory),
             "admit_disk": self.admit_disk.unwrap_or(SHARES.disk),
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
+            "max_share_of_cores": self.max_share_of_cores,
+            "max_share_of_memory": self.max_share_of_memory,
             "exclusive_seconds": self.exclusive_seconds(),
             "gate_lanes": self.gate_lanes(),
             "slow_gate_lanes": self.slow_gate_lanes(),
@@ -383,6 +427,11 @@ impl Settings {
             _ => unreachable!("built as an object"),
         }
     }
+}
+
+/// This host's logical cores.
+pub fn host_cores() -> u64 {
+    std::thread::available_parallelism().map_or(1, |n| n.get() as u64)
 }
 
 /// `--host-name` as said: a nonempty name, or `default`.
@@ -478,6 +527,8 @@ pub const ADMIT_LOAD_ENV: &str = "AFKCONVOY_ADMIT_LOAD";
 pub const ADMIT_MEMORY_ENV: &str = "AFKCONVOY_ADMIT_MEMORY";
 pub const ADMIT_DISK_ENV: &str = "AFKCONVOY_ADMIT_DISK";
 pub const ADMIT_INSPECT_AFTER_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
+pub const MAX_SHARE_OF_CORES_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_CORES";
+pub const MAX_SHARE_OF_MEMORY_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_MEMORY";
 pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
 pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";
@@ -528,6 +579,12 @@ mod tests {
         assert_eq!(whole_or_default("0"), Ok(To::Value(0)), "0 is a share: never hold for disk");
         assert_eq!(whole_or_default("default"), Ok(To::Default));
         assert!(whole_or_default("5%").is_err() && whole_or_default("1.5").is_err());
+        assert_eq!(percent_or_default("50%"), Ok(To::Value(50)));
+        assert_eq!(percent_or_default("100"), Ok(To::Value(100)));
+        assert_eq!(percent_or_default("default"), Ok(To::Default));
+        for wrong in ["0", "101", "1.5", "half", ""] {
+            assert!(percent_or_default(wrong).is_err(), "{wrong:?}");
+        }
         assert_eq!(port_or_default("7070"), Ok(To::Value(7070)));
         assert_eq!(port_or_default("default"), Ok(To::Default));
         assert!(port_or_default("70000").is_err());
@@ -647,6 +704,17 @@ mod tests {
         assert_eq!(answered["in_force"]["admit_inspect_after"], SPAN);
         assert!(answered["in_force"].get("no_host_sleep").is_none(), "{answered}");
         assert!(answered["in_force"]["hot_cores"].as_f64().unwrap() >= 1.0);
+    }
+
+    #[test]
+    fn a_cap_keeps_the_exclusive_queue_to_afkconvoy_s_share_of_the_cores() {
+        let capped = Settings { max_share_of_cores: Some(50), ..Settings::default() };
+        assert_eq!(capped.capped_cores(14), Some(7));
+        assert_eq!(capped.capped_cores(1), Some(1), "one core at the least");
+        assert_eq!(Settings::default().capped_cores(14), None);
+        assert!(capped.gate_share() <= capped.capped_cores(host_cores()).unwrap());
+        let cap = Settings { max_share_of_memory: Some(40), ..capped }.cap();
+        assert_eq!((cap.cores, cap.memory), (Some(50), Some(40)));
     }
 
     #[test]
