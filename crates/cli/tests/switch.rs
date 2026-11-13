@@ -594,8 +594,8 @@ fn account_faults_continue_stalled_workers_across_checkouts_and_switch_all_is_ho
     tick(&world, 700);
     world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "700"]).ok();
     hold_every_harness(&world);
-    world.say_concurrency(&world.clone, 3);
-    world.say_concurrency(&other, 3);
+    world.list_checkout(&world.clone);
+    world.list_checkout(&other);
     let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
     for dir in [&seven, &eight] {
         std::fs::write(dir.join("unfinished.txt"), "preserve").unwrap();
@@ -1337,7 +1337,7 @@ fn pi_zai_usage_limit_is_an_account_quota_by_rule_from_either_source() {
         let why = skipped["switched"][0]["skipped"][0]["why"].as_str().unwrap();
         assert!(why.contains("pi has an account fault") && why.contains(evidence), "{why}");
 
-        world.say_concurrency(&world.clone, 2);
+        world.list_checkout(&world.clone);
         tick(&world, 802);
         assert_eq!(open_commands(&world, &worktree(&world, 8)), [common::trusted("agent")]);
 
@@ -1403,7 +1403,7 @@ fn kimi_5_hour_usage_limit_is_an_account_quota_by_rule_and_continues() {
     let why = skipped["switched"][0]["skipped"][0]["why"].as_str().unwrap();
     assert!(why.contains("kimi has an account fault") && why.contains(evidence), "{why}");
 
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     tick(&world, 802);
     assert_eq!(open_commands(&world, &worktree(&world, 8)), [common::trusted("agent")]);
 
@@ -1459,7 +1459,7 @@ fn kimi_usage_limit_waits_out_a_running_gate_then_continues() {
     assert_eq!(plan["selection"]["eligible"][0], "claude-code");
 
     world.issue(8, &["ready-for-agent"]);
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     tick(&world, 802);
     assert_eq!(open_commands(&world, &dir), kimi);
     assert_eq!(open_commands(&world, &worktree(&world, 8)), [common::trusted("agent")]);
@@ -1656,7 +1656,7 @@ fn fleet_with_two_workers() -> World {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     world.issue(8, &["ready-for-agent"]);
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     tick(&world, 700);
     world
 }

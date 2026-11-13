@@ -18,7 +18,7 @@ pi is not installed, called for by the range of the role `attending`
 
 ## One issue, from its label to the base branch
 
-A repo holding one small Go package was bound to the team; its gate formats, vets and tests. One issue was opened with the label `flow:fix`: a named form the package was to read, with what each call should give written out. Nobody touched it again. One fleet instance on one laptop worked it, at a concurrency of 3:
+A repo holding one small Go package was bound to the team; its gate formats, vets and tests. One issue was opened with the label `flow:fix`: a named form the package was to read, with what each call should give written out. Nobody touched it again. One fleet instance on one laptop worked it:
 
 ```text
 stage         role             harness      model                 worked    cost

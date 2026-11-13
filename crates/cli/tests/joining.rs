@@ -156,7 +156,7 @@ fn a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick()
     // The base passes; the candidate's change makes its gate fail.
     world.set_gate("if test -f seven.txt; then echo 'FAIL checkout::worker_brief'; exit 1; fi");
     let world = joining_in(world);
-    world.say_concurrency(&world.clone, 1);
+    world.list_checkout(&world.clone);
     let dir = worktree(&world);
     let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
     let file = notes.join("convoy-turn.json");
@@ -202,7 +202,7 @@ fn a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick()
         "1800",
     ]);
     assert!(lines[0].contains("told its turn's answer to #7"), "{lines:?}");
-    assert!(lines[0].contains("holding 1/1"), "{lines:?}");
+    assert!(lines[0].contains("holding 1"), "{lines:?}");
     assert!(!lines[0].contains("nothing to do"), "{lines:?}");
     let sends = turn_answer_lines(&world);
     assert_eq!(sends.len(), 1, "{sends:?}");
@@ -217,9 +217,8 @@ fn a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick()
         assert!(line.contains(expected), "missing {expected}: {line}");
     }
     assert_eq!(open_terminals(&world, &dir), terminals, "the idle worker took the answer");
-    world.issue(8, &["ready-for-agent"]);
     let next = tick(&world, 1801);
-    assert_eq!(next["frontier_remaining"], 1, "the handed worker holds its slot: {next}");
+    assert_eq!(next["held"], 1, "the handed worker is at work: {next}");
     assert_eq!(turn_answer_lines(&world).len(), 1, "no duplicate handoff");
     // The worker asks again: its turn replaces the handoff receipt.
     world.with_orca(|orca| {
@@ -542,7 +541,7 @@ fn a_landed_worker_leaves_health_and_is_settled_without_another_worker() {
 fn a_landing_workers_turn_wait_retires_health_without_an_operator_finding() {
     for outcome in ["round_red", "waiting_for_capacity"] {
         let world = gated();
-        world.say_concurrency(&world.clone, 3);
+        world.list_checkout(&world.clone);
         let dir = worktree(&world);
         tick(&world, 1300);
         tick(&world, 1600);
@@ -587,7 +586,7 @@ fn a_landing_workers_turn_wait_retires_health_without_an_operator_finding() {
 #[test]
 fn new_work_restores_health_after_a_landing_turn_wait() {
     let world = gated();
-    world.say_concurrency(&world.clone, 3);
+    world.list_checkout(&world.clone);
     let dir = worktree(&world);
     let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
     let note = git_dir.join("convoy-turn.json");
@@ -787,7 +786,7 @@ fn a_silent_joining_worker_waits_for_the_operator_without_consuming_its_restart(
 #[test]
 fn the_loop_keeps_the_joining_claim_while_waiting_for_the_operator() {
     let world = joining();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     tick(&world, 1090);
     let args = [
         "run",
@@ -804,7 +803,7 @@ fn the_loop_keeps_the_joining_claim_while_waiting_for_the_operator() {
         "1390",
     ];
     let lines = world.afk_lines(&args).0;
-    assert!(lines[0].contains("nothing to do · holding 0/2 · 1 taking no slot"), "{lines:?}");
+    assert!(lines[0].contains("nothing to do · holding 0 · 1 taking no slot"), "{lines:?}");
     assert_eq!(world.claims().len(), 1);
     assert!(restarts(&world).is_empty());
 }
