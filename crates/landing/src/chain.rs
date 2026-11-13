@@ -106,6 +106,11 @@ pub struct Candidate<N = Plain> {
     /// candidate is this one or one before it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub holds_red: bool,
+    /// When it was assigned, in epoch seconds; `None` on a record written
+    /// before candidates said so. A reader tells a wedged candidate by it
+    /// (`Candidate::wedged`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned: Option<u64>,
 }
 
 /// How a candidate's gate run ended, as its evidence says.
@@ -351,6 +356,25 @@ impl<N> Candidate<N> {
         self.phase == Phase::Green && (self.slow.is_none() || self.slowed)
     }
 
+    /// The seconds its whole gate may take: its own gate's, and its slow
+    /// gate's where its commit splits its gate.
+    pub fn limit(&self) -> u64 {
+        self.seconds.saturating_add(self.slow.as_ref().map_or(0, |slow| slow.seconds))
+    }
+
+    /// It is wedged at `now`: valid and not landed — building, gating,
+    /// green or waiting in its round — longer after it was assigned than its
+    /// whole gate may take (`limit`). A reader of the chain names it so: its
+    /// run ended before it landed, or nothing carries it on. One assigned
+    /// when no record said so is not judged.
+    pub fn wedged(&self, now: u64) -> bool {
+        self.valid()
+            && self
+                .assigned
+                .and_then(|assigned| crate::lease::stamp_age(assigned, now))
+                .is_some_and(|age| age > self.limit())
+    }
+
     pub fn waiting(&self) -> &'static str {
         match self.phase {
             Phase::Building => "constructing_worktree",
@@ -493,6 +517,109 @@ impl<N: Clone> Chain<N> {
             }
         }
         self.heartbeats.remove(host);
+    }
+
+    /// The processes of `host` that own a member: a candidate not confirmed
+    /// stopped, a barrier or a pending turn. Its own host reads each, to
+    /// tell one that runs no more (`take_over`).
+    pub fn processes(&self, host: &str) -> Vec<Process> {
+        let mut owners: Vec<&Process> = vec![];
+        for c in &self.candidates {
+            if !c.stopped {
+                owners.push(&c.owner);
+            }
+        }
+        for b in &self.barriers {
+            owners.push(&b.owner);
+        }
+        for b in &self.pending {
+            owners.push(&b.owner);
+        }
+        let mut processes: Vec<Process> = vec![];
+        for owner in owners {
+            if owner.host == host && !processes.contains(owner) {
+                processes.push(owner.clone());
+            }
+        }
+        processes
+    }
+
+    /// Takes over what the processes `gone` owned, which their own host read
+    /// running no more (a pid gone, or another process's under its start
+    /// time): as `abandon` does for a dead host, their barriers and pending
+    /// turns are dropped, each of their valid candidates whose gate is not
+    /// confirmed stopped is invalidated `owner_died` with its suffix, and
+    /// each of their candidates not confirmed stopped is abandoned. A
+    /// stopped candidate one left valid — green, or waiting in a batch round
+    /// — holds no process, and any later run carries it on. Only a process's
+    /// own host can tell whether its pid runs: another host's members are
+    /// left to the lease (`abandon`).
+    pub fn take_over(&mut self, gone: &[Process]) {
+        self.barriers.retain(|b| !gone.contains(&b.owner));
+        self.pending.retain(|b| !gone.contains(&b.owner));
+        let mut roots: Vec<String> = vec![];
+        for c in &self.candidates {
+            if c.valid() && !c.stopped && gone.contains(&c.owner) {
+                roots.push(c.id.clone());
+            }
+        }
+        for root in roots {
+            self.invalidate(&root, "owner_died");
+        }
+        for c in &mut self.candidates {
+            if !c.stopped && !c.abandoned && c.phase != Phase::Landed && gone.contains(&c.owner) {
+                c.abandoned = true;
+                if c.phase == Phase::Cancelling {
+                    c.phase = Phase::Cancelled;
+                }
+            }
+        }
+    }
+
+    /// The candidate of `change` a run that asks to land it at `head` takes
+    /// up again, where the chain holds a valid one merged from that head, for
+    /// a batch round where `batch` as it was assigned → its id. Every other
+    /// valid candidate of the change is invalidated first, with its suffix:
+    /// one merged from a head the change has moved from (`head_changed`),
+    /// one of the other kind of round (`reassigned`), and any after the one
+    /// taken up (`duplicate`). The chain holds no two valid candidates of one
+    /// change after it.
+    pub fn reuse(&mut self, change: u64, head: &str, batch: bool) -> Option<String> {
+        let mut stale: Vec<(String, &str)> = vec![];
+        for c in &self.candidates {
+            if !c.valid() || c.change != change {
+                continue;
+            }
+            if c.original_head != head {
+                stale.push((c.id.clone(), "head_changed"));
+            } else if c.batch != batch {
+                stale.push((c.id.clone(), "reassigned"));
+            }
+        }
+        for (id, cause) in stale {
+            self.invalidate(&id, cause);
+        }
+        let mut kept: Option<String> = None;
+        let mut after: Vec<String> = vec![];
+        for c in &self.candidates {
+            if !c.valid() || c.change != change {
+                continue;
+            }
+            if kept.is_none() {
+                kept = Some(c.id.clone());
+            } else {
+                after.push(c.id.clone());
+            }
+        }
+        for id in after {
+            self.invalidate(&id, "duplicate");
+        }
+        kept
+    }
+
+    /// The candidates wedged at `now` (`Candidate::wedged`), in chain order.
+    pub fn wedged(&self, now: u64) -> Vec<&Candidate<N>> {
+        self.candidates.iter().filter(|c| c.wedged(now)).collect()
     }
 
     pub fn predecessor(&self, base: &str) -> String {
@@ -1065,6 +1192,7 @@ mod tests {
             slowed: false,
             batch: false,
             holds_red: false,
+            assigned: None,
         }
     }
 
@@ -1137,6 +1265,80 @@ mod tests {
         assert!(chain.beats("here", 1001 + crate::lease::BEAT_EVERY + crate::lease::LEASE));
         assert!(!chain.beats("here", 1002 + crate::lease::BEAT_EVERY + crate::lease::LEASE));
         assert!(!chain.beats("elsewhere", 5000));
+    }
+
+    /// guild/ledger's chain of sunfmin/control#900: four candidates of one
+    /// change, every one merged from its head, green and stopped, stacked
+    /// by runs that ended unpublished. A run asking for it takes up the
+    /// first, at the chain's head, invalidates the rest, and it is ripe.
+    #[test]
+    fn a_change_asked_again_takes_up_its_candidate_and_no_second_stays_valid() {
+        let stacked = |n: usize| Candidate {
+            change: 1,
+            original_head: "dc1fb01".into(),
+            phase: Phase::Green,
+            stopped: true,
+            ..candidate(n)
+        };
+        let mut chain = Chain { candidates: (0..4).map(stacked).collect(), ..Chain::default() };
+        assert!(chain.ripe("c0", "base"), "the head is ripe, whoever assigned it");
+        assert!(!chain.ripe("c3", "base"), "one behind a whole-gated one is not");
+        assert_eq!(chain.reuse(1, "dc1fb01", false).as_deref(), Some("c0"));
+        let valid: Vec<_> = chain.candidates.iter().filter(|c| c.valid()).collect();
+        assert_eq!(valid.len(), 1);
+        assert_eq!(chain.candidates[1].cause.as_deref(), Some("duplicate"));
+        assert!(chain.ripe("c0", "base"));
+        assert_eq!(chain.reuse(1, "dc1fb01", false).as_deref(), Some("c0"), "again, the same");
+        // Its head moves: no candidate of it is taken up, and none stays valid.
+        assert_eq!(chain.reuse(1, "moved", false), None);
+        assert_eq!(chain.candidates[0].cause.as_deref(), Some("head_changed"));
+        assert!(chain.candidates.iter().all(|c| !c.valid()));
+    }
+
+    /// A candidate a process of this host left gating, once that process
+    /// runs no more, is taken over as a dead host's is, with its suffix; a
+    /// stopped green one it left stays for a later run, and another host's
+    /// is left to the lease.
+    #[test]
+    fn a_gone_process_on_a_live_host_is_taken_over_its_stopped_green_kept() {
+        let gone = Process { host: "here".into(), pid: 7, started: "gone".into() };
+        let of = |c: Candidate, owner: &Process| Candidate { owner: owner.clone(), ..c };
+        let green = Candidate { phase: Phase::Green, stopped: true, ..of(candidate(0), &gone) };
+        let gating = of(candidate(1), &gone);
+        let behind = owned(candidate(2), "here");
+        let behind_owner = behind.owner.clone();
+        let far = Candidate { predecessor: "base".into(), ..owned(candidate(3), "far") };
+        let mut chain = Chain {
+            candidates: vec![green, gating, behind, far],
+            pending: vec![Barrier { id: "p".into(), owner: gone.clone() }],
+            ..Chain::default()
+        };
+        assert_eq!(chain.processes("here"), [gone.clone(), behind_owner]);
+        chain.take_over(&[gone]);
+        let c = &chain.candidates;
+        assert!(c[0].valid(), "a stopped green candidate holds no process");
+        assert_eq!(
+            (c[1].phase, c[1].cause.as_deref(), c[1].abandoned),
+            (Phase::Cancelled, Some("owner_died"), true)
+        );
+        assert_eq!(c[2].cancelled_by.as_deref(), Some("c1"), "its suffix is cancelled");
+        assert!(c[3].valid(), "another host's is left to the lease");
+        assert!(chain.pending.is_empty());
+    }
+
+    /// A candidate is wedged once it stood valid past its whole gate's
+    /// seconds; a landed one, or one whose record says not when it was
+    /// assigned, is not.
+    #[test]
+    fn a_candidate_past_its_whole_gate_s_seconds_is_wedged() {
+        let c = Candidate { assigned: Some(1000), phase: Phase::Green, ..split(0) };
+        assert_eq!(c.limit(), 120);
+        assert!(!c.wedged(1120));
+        assert!(c.wedged(1121));
+        assert!(!Candidate { phase: Phase::Landed, ..c.clone() }.wedged(5000));
+        assert!(!Candidate { assigned: None, ..c.clone() }.wedged(5000));
+        let chain = Chain { candidates: vec![c], ..Chain::default() };
+        assert_eq!(chain.wedged(1121).len(), 1);
     }
 
     /// A candidate whose commit declares a fast gate and a slow gate: its own
