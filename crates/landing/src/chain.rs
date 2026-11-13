@@ -519,31 +519,55 @@ impl<N: Clone> Chain<N> {
         self.heartbeats.remove(host);
     }
 
-    /// Takes over what a process of `host`, this one's own host, owned and
-    /// `running` says runs no more (its pid gone, or another process's under
-    /// its start time): as `abandon` does for a dead host, its barriers and
-    /// pending turns are dropped, each of its valid candidates whose gate is
-    /// not confirmed stopped is invalidated `owner_died` with its suffix, and
-    /// each of its candidates not confirmed stopped is abandoned. A stopped
-    /// candidate it left valid — green, or waiting in a batch round — holds
-    /// no process, and any later run carries it on. Only `host` itself can
-    /// tell whether a pid of it runs: another host's members are left to the
-    /// lease (`abandon`).
-    pub fn take_over(&mut self, host: &str, running: impl Fn(&Process) -> bool) {
-        let gone = |owner: &Process| owner.host == host && !running(owner);
-        self.barriers.retain(|b| !gone(&b.owner));
-        self.pending.retain(|b| !gone(&b.owner));
-        let roots: Vec<String> = self
-            .candidates
-            .iter()
-            .filter(|c| c.valid() && !c.stopped && gone(&c.owner))
-            .map(|c| c.id.clone())
-            .collect();
+    /// The processes of `host` that own a member: a candidate not confirmed
+    /// stopped, a barrier or a pending turn. Its own host reads each, to
+    /// tell one that runs no more (`take_over`).
+    pub fn processes(&self, host: &str) -> Vec<Process> {
+        let mut owners: Vec<&Process> = vec![];
+        for c in &self.candidates {
+            if !c.stopped {
+                owners.push(&c.owner);
+            }
+        }
+        for b in &self.barriers {
+            owners.push(&b.owner);
+        }
+        for b in &self.pending {
+            owners.push(&b.owner);
+        }
+        let mut processes: Vec<Process> = vec![];
+        for owner in owners {
+            if owner.host == host && !processes.contains(owner) {
+                processes.push(owner.clone());
+            }
+        }
+        processes
+    }
+
+    /// Takes over what the processes `gone` owned, which their own host read
+    /// running no more (a pid gone, or another process's under its start
+    /// time): as `abandon` does for a dead host, their barriers and pending
+    /// turns are dropped, each of their valid candidates whose gate is not
+    /// confirmed stopped is invalidated `owner_died` with its suffix, and
+    /// each of their candidates not confirmed stopped is abandoned. A
+    /// stopped candidate one left valid — green, or waiting in a batch round
+    /// — holds no process, and any later run carries it on. Only a process's
+    /// own host can tell whether its pid runs: another host's members are
+    /// left to the lease (`abandon`).
+    pub fn take_over(&mut self, gone: &[Process]) {
+        self.barriers.retain(|b| !gone.contains(&b.owner));
+        self.pending.retain(|b| !gone.contains(&b.owner));
+        let mut roots: Vec<String> = vec![];
+        for c in &self.candidates {
+            if c.valid() && !c.stopped && gone.contains(&c.owner) {
+                roots.push(c.id.clone());
+            }
+        }
         for root in roots {
             self.invalidate(&root, "owner_died");
         }
         for c in &mut self.candidates {
-            if !c.stopped && !c.abandoned && c.phase != Phase::Landed && gone(&c.owner) {
+            if !c.stopped && !c.abandoned && c.phase != Phase::Landed && gone.contains(&c.owner) {
                 c.abandoned = true;
                 if c.phase == Phase::Cancelling {
                     c.phase = Phase::Cancelled;
@@ -562,7 +586,10 @@ impl<N: Clone> Chain<N> {
     /// change after it.
     pub fn reuse(&mut self, change: u64, head: &str, batch: bool) -> Option<String> {
         let mut stale: Vec<(String, &str)> = vec![];
-        for c in self.candidates.iter().filter(|c| c.valid() && c.change == change) {
+        for c in &self.candidates {
+            if !c.valid() || c.change != change {
+                continue;
+            }
             if c.original_head != head {
                 stale.push((c.id.clone(), "head_changed"));
             } else if c.batch != batch {
@@ -572,9 +599,18 @@ impl<N: Clone> Chain<N> {
         for (id, cause) in stale {
             self.invalidate(&id, cause);
         }
-        let mut of_change = self.candidates.iter().filter(|c| c.valid() && c.change == change);
-        let kept = of_change.next().map(|c| c.id.clone());
-        let after: Vec<String> = of_change.map(|c| c.id.clone()).collect();
+        let mut kept: Option<String> = None;
+        let mut after: Vec<String> = vec![];
+        for c in &self.candidates {
+            if !c.valid() || c.change != change {
+                continue;
+            }
+            if kept.is_none() {
+                kept = Some(c.id.clone());
+            } else {
+                after.push(c.id.clone());
+            }
+        }
         for id in after {
             self.invalidate(&id, "duplicate");
         }
@@ -1270,13 +1306,15 @@ mod tests {
         let green = Candidate { phase: Phase::Green, stopped: true, ..of(candidate(0), &gone) };
         let gating = of(candidate(1), &gone);
         let behind = owned(candidate(2), "here");
+        let behind_owner = behind.owner.clone();
         let far = Candidate { predecessor: "base".into(), ..owned(candidate(3), "far") };
         let mut chain = Chain {
             candidates: vec![green, gating, behind, far],
             pending: vec![Barrier { id: "p".into(), owner: gone.clone() }],
             ..Chain::default()
         };
-        chain.take_over("here", |p| p.pid != 7);
+        assert_eq!(chain.processes("here"), [gone.clone(), behind_owner]);
+        chain.take_over(&[gone]);
         let c = &chain.candidates;
         assert!(c[0].valid(), "a stopped green candidate holds no process");
         assert_eq!(

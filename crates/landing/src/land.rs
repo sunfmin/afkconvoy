@@ -225,8 +225,13 @@ where
     /// Takes over in `chain` what a process of this host owned and that runs
     /// no more (`Chain::take_over`): this process runs.
     fn take_over(&self, chain: &mut Chain<F::Note>) {
-        let running = |p: &Process| *p == self.owner || (self.running)(p);
-        chain.take_over(&self.owner.host, running);
+        let mut gone: Vec<Process> = vec![];
+        for p in chain.processes(&self.owner.host) {
+            if p != self.owner && !(self.running)(&p) {
+                gone.push(p);
+            }
+        }
+        chain.take_over(&gone);
     }
 
     /// Changes the chain of `target` by `edit`, from the record as it is →
