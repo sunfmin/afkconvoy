@@ -647,7 +647,8 @@ fn a_silent_peer_s_cut_opens_its_issue_and_the_next_cut_starts_again() {
     assert!(!claimed(&world));
     assert_eq!(standing(&world, "beta", late + 10), "due");
     assert_eq!(cut(&tick_as(&world, "beta", late + 10)), ["cut done"]);
-    assert_eq!(cut_branches(&world), Vec::<String>::new(), "the silent cut's branch is gone");
+    // Its branch stands on the base tip: the next cut of v0.1.1 takes it up.
+    assert_eq!(cut_branches(&world), ["afkconvoy-cut/v0.1.1-10000"], "taken up, not deleted");
 }
 
 /// A cut takes no turn: while its gate hangs, a turn on the same repo lands.
@@ -1045,7 +1046,7 @@ fn a_cut_whose_terminal_is_gone_opens_one_issue_and_the_next_cut_starts_while_it
     let evidence = found["evidence"].as_str().unwrap();
     assert!(evidence.starts_with(&format!("#{issue}: the step `set` failed: it was ended")));
     let fix = found["fix"].as_str().unwrap();
-    assert!(fix.contains("its checkout is kept here"), "{fix}");
+    assert!(fix.contains("Its checkout is kept here"), "{fix}");
     assert!(fix.contains("afkconvoy cut --from 'set'"), "{fix}");
     let plan = planned(&world, "alpha", 10_200);
     assert_eq!(plan["cut"]["failed"]["kept"], "here", "{plan}");
