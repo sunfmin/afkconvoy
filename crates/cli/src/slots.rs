@@ -5,7 +5,10 @@
 //! its owner left behind (`left_behind`): one that only a server shared by
 //! the host still holds, as sccache's server, started by a gate's build,
 //! inherits the descriptor and serves every worktree long after the gate
-//! ended (sunfmin/control#822). Such a slot is free.
+//! ended (sunfmin/control#822). Such a slot is free. A repo lease, the
+//! `repo-*` lock that keeps an ordinary command of a repo from another of
+//! it, names its owners in it as a lane's place names its one, and is free
+//! the same way (sunfmin/control#829).
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -21,7 +24,7 @@ use afkconvoy_core::exclusive::Ticket;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Owner {
     process: afkconvoy_core::candidate::Process,
     dir: String,
@@ -53,7 +56,7 @@ pub(crate) fn standing() -> Result<Vec<Ticket>> {
             "cannot observe inherited worker lease"
         );
         let owner: Owner = serde_json::from_slice(&read(&file)?)?;
-        if left_behind(&file, &owner) {
+        if left_behind(&file, std::slice::from_ref(&owner)) {
             continue;
         }
         let mut ticket = owner.ticket.ok_or_else(|| {
@@ -71,8 +74,8 @@ pub(crate) struct Slot(File, Option<File>);
 
 /// Discover dead candidate owners before repo exclusion can hold a new
 /// ordinary command outside the capacity-acquisition path. Kernel locks
-/// distinguish live inherited leases from stale recovery notes. A slot its
-/// owner left behind is freed (`free_left_behind`).
+/// distinguish live inherited leases from stale recovery notes. A slot or a
+/// repo lease its owners left behind is freed (`free_left_behind`).
 pub(crate) fn recover() -> Result<()> {
     let cache = crate::copies::cache()?.join("worker-slots");
     if !cache.exists() {
@@ -80,9 +83,6 @@ pub(crate) fn recover() -> Result<()> {
     }
     for entry in std::fs::read_dir(cache)? {
         let entry = entry?;
-        if entry.file_name().to_string_lossy().starts_with("repo-") {
-            continue;
-        }
         let file = OpenOptions::new().read(true).write(true).open(entry.path())?;
         // SAFETY: inspect this slot without waiting or assuming owner death.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
@@ -126,29 +126,50 @@ const LOOKED_FOR: Duration = Duration::from_secs(2);
 /// was found.
 static LOOKED: Mutex<BTreeMap<Looked, (Instant, bool)>> = Mutex::new(BTreeMap::new());
 
-/// A slot's file, by its device and inode, and the pid of its owner.
-type Looked = (u64, u64, u32);
+/// A slot's file, by its device and inode, and the pids of its owners.
+type Looked = (u64, u64, Vec<u32>);
 
-/// Whether the slot open as `file`, whose lock is held, was left behind by
-/// `owner`: its owner ended, and every process still holding the file is a
-/// server shared by the host or under one (`only_shared`). One whose gate's
-/// own work runs on — a test or a build whose gate was killed — is held
-/// until it ends (docs/adr/0037). What cannot be looked at is held.
-fn left_behind(file: &File, owner: &Owner) -> bool {
-    if !dead(owner).unwrap_or(false) {
+/// Who took the slot or repo lease whose file says `bytes`: a lane's place
+/// names its one owner, a repo lease the list of those that took it
+/// (`take_repo`). None where it says neither, as a repo lease taken before
+/// its owners were written in it: held.
+fn owners(bytes: &[u8]) -> Option<Vec<Owner>> {
+    serde_json::from_slice::<Vec<Owner>>(bytes)
+        .ok()
+        .or_else(|| serde_json::from_slice::<Owner>(bytes).ok().map(|owner| vec![owner]))
+        .filter(|owners| !owners.is_empty())
+}
+
+/// Whether the slot or repo lease open as `file`, whose lock is held, was
+/// left behind by `owners`: each of them ended, and every process still
+/// holding the file is a server shared by the host or under one
+/// (`only_shared`), outside the worktree of each. One whose gate's own work
+/// runs on — a test or a build whose gate was killed — is held until it
+/// ends (docs/adr/0037). What cannot be looked at is held.
+fn left_behind(file: &File, owners: &[Owner]) -> bool {
+    if owners.is_empty() || !owners.iter().all(|owner| dead(owner).unwrap_or(false)) {
         return false;
     }
     let Ok(meta) = file.metadata() else { return false };
-    let key = (meta.dev(), meta.ino(), owner.process.pid);
+    let key = (meta.dev(), meta.ino(), owners.iter().map(|owner| owner.process.pid).collect());
     let mut looked = LOOKED.lock().unwrap_or_else(PoisonError::into_inner);
     looked.retain(|_, (at, _)| at.elapsed() < LOOKED_FOR);
     if let Some((_, found)) = looked.get(&key) {
         return *found;
     }
-    let worktree = owner.ticket.as_ref().map_or(owner.dir.as_str(), |ticket| ticket.dir.as_str());
-    let worktree = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.into());
+    let worktrees: Vec<std::path::PathBuf> = owners
+        .iter()
+        .map(|owner| {
+            let worktree =
+                owner.ticket.as_ref().map_or(owner.dir.as_str(), |ticket| ticket.dir.as_str());
+            std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.into())
+        })
+        .collect();
     let found = holders(file)
-        .and_then(|holders| Ok(only_shared(&holders, &crate::hot::listed_checked()?, &worktree)))
+        .and_then(|holders| {
+            let procs = crate::hot::listed_checked()?;
+            Ok(worktrees.iter().all(|worktree| only_shared(&holders, &procs, worktree)))
+        })
         .unwrap_or(false);
     looked.insert(key, (Instant::now(), found));
     found
@@ -203,44 +224,50 @@ fn only_shared(holders: &[u32], procs: &[crate::hot::Proc], worktree: &Path) -> 
     holders.iter().all(|pid| theirs.contains(pid))
 }
 
-/// Frees the slot at `path`, open as `file` and locked by another, where its
-/// owner left it behind (`left_behind`) → whether it did. A candidate's dead
-/// owner is cleaned up first (`candidates::abandoned`). The file is taken
-/// off its path: its lock stays with what holds it, on a file nothing opens
-/// any more, and the next to open the path makes a new one. One frees at a
-/// time, under the lock of the slots' directory, and only the very file it
-/// read: one another made there meanwhile is kept.
+/// Frees the slot or repo lease at `path`, open as `file` and locked by
+/// another, where its owners left it behind (`left_behind`) → whether it
+/// did. A candidate's dead owner is cleaned up first
+/// (`candidates::abandoned`). The file is taken off its path: its lock stays
+/// with what holds it, on a file nothing opens any more, and the next to
+/// open the path makes a new one. One frees at a time, under the lock of the
+/// slots' directory, and only the very file it read, saying what it read: one
+/// another made or took there meanwhile is kept.
 fn free_left_behind(path: &Path, file: &File) -> Result<bool> {
-    let Some(owner) =
-        read(file).ok().and_then(|bytes| serde_json::from_slice::<Owner>(&bytes).ok())
+    let Some((bytes, owners)) =
+        read(file).ok().and_then(|bytes| owners(&bytes).map(|owners| (bytes, owners)))
     else {
         return Ok(false);
     };
-    if !left_behind(file, &owner) {
+    if !left_behind(file, &owners) {
         return Ok(false);
     }
-    if owner.candidate {
+    for owner in owners.iter().filter(|owner| owner.candidate) {
         crate::candidates::abandoned(&owner.dir)?;
     }
-    let dir = File::open(path.parent().unwrap_or(path))?;
-    // SAFETY: a blocking lock of a live descriptor, released as it closes.
-    ensure!(
-        unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_EX) } == 0,
-        "cannot lock the worker slots: {}",
-        std::io::Error::last_os_error()
-    );
+    let _dir = lock_dir(path.parent().unwrap_or(path))?;
     let open = file.metadata()?;
     match std::fs::metadata(path) {
         Ok(named) if (named.dev(), named.ino()) == (open.dev(), open.ino()) => {
+            // One took the repo lease beside them as it was looked at.
+            if read(file)? != bytes {
+                return Ok(false);
+            }
             std::fs::remove_file(path)?;
-            let lane = owner
-                .ticket
-                .as_ref()
-                .map_or_else(|| "worker".to_string(), afkconvoy_core::exclusive::lane);
+            let pids: Vec<String> =
+                owners.iter().map(|owner| owner.process.pid.to_string()).collect();
+            let what = if path_named_repo(path) {
+                "repo lease".to_string()
+            } else {
+                let lane = owners[0]
+                    .ticket
+                    .as_ref()
+                    .map_or_else(|| "worker".to_string(), afkconvoy_core::exclusive::lane);
+                format!("{lane} lane's place")
+            };
             eprintln!(
-                "[afkconvoy] exclusive: freed the {lane} lane's place pid {} left behind: \
+                "[afkconvoy] exclusive: freed the {what} pid {} left behind: \
                  only a server shared by the host still held it",
-                owner.process.pid
+                pids.join(", ")
             );
             Ok(true)
         }
@@ -250,9 +277,28 @@ fn free_left_behind(path: &Path, file: &File) -> Result<bool> {
     }
 }
 
+/// Whether the file at `path` is a repo lease, not a lane's place.
+fn path_named_repo(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("repo-"))
+}
+
+/// The lock of the slots' directory `dir`, held until it is dropped: what
+/// one taking a repo lease writes itself in under, and one freeing a lease
+/// frees it under.
+fn lock_dir(dir: &Path) -> Result<File> {
+    let dir = File::open(dir)?;
+    // SAFETY: a blocking lock of a live descriptor, released as it closes.
+    ensure!(
+        unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_EX) } == 0,
+        "cannot lock the worker slots: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(dir)
+}
+
 /// A fast gate holds no repo lease: fast gates run in their own worktrees,
 /// side by side whatever their repo (docs/adr/0049).
-fn repo_file(ticket: &Ticket) -> Result<Option<File>> {
+fn repo_file(ticket: &Ticket) -> Result<Option<(std::path::PathBuf, File)>> {
     let Some(repo) = ticket.repo.as_ref().filter(|_| !afkconvoy_core::exclusive::is_fast(ticket))
     else {
         return Ok(None);
@@ -261,18 +307,19 @@ fn repo_file(ticket: &Ticket) -> Result<Option<File>> {
     std::fs::create_dir_all(&cache)?;
     let key =
         afkconvoy_core::gate::key(&format!("{repo}:{}", afkconvoy_core::exclusive::lane(ticket)));
-    Ok(Some(
-        OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(cache.join(format!("repo-{key:016x}")))?,
-    ))
+    let path = cache.join(format!("repo-{key:016x}"));
+    let file =
+        OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path)?;
+    Ok(Some((path, file)))
 }
 
 fn try_repo(file: &File, ticket: &Ticket) -> Result<bool> {
-    let mode = if ticket.candidate { libc::LOCK_SH } else { libc::LOCK_EX };
+    try_lock(file, if ticket.candidate { libc::LOCK_SH } else { libc::LOCK_EX })
+}
+
+/// Takes the lock `mode` of `file` where none stands in its way → whether it
+/// did.
+fn try_lock(file: &File, mode: libc::c_int) -> Result<bool> {
     // SAFETY: lock only this live descriptor, without waiting.
     if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } == 0 {
         return Ok(true);
@@ -286,23 +333,66 @@ fn try_repo(file: &File, ticket: &Ticket) -> Result<bool> {
 
 /// A replacement runner may have no ticket for a still-running gate. Its
 /// inherited repo lease retains ordinary-command exclusion independently.
+/// One its owners left behind is free (`free_left_behind`).
 pub(crate) fn repo_available(ticket: &Ticket) -> Result<bool> {
-    match repo_file(ticket)? {
-        Some(file) => try_repo(&file, ticket),
-        None => Ok(true),
+    let Some((path, file)) = repo_file(ticket)? else { return Ok(true) };
+    if try_repo(&file, ticket)? {
+        return Ok(true);
+    }
+    if free_left_behind(&path, &file)? {
+        let Some((_, file)) = repo_file(ticket)? else { return Ok(true) };
+        return try_repo(&file, ticket);
+    }
+    Ok(false)
+}
+
+/// Takes the repo lease of `ticket`, waiting while it is held, and writes
+/// `owner` in it → the lease, or none for a ticket that takes none. One that
+/// nothing holds names its new owner alone; a shared one still held names
+/// each that took it since it was last free beside it, whether ended or not,
+/// so that the work of none is taken for a shared server's (`left_behind`).
+/// It is taken and written under the lock of the slots' directory, so that
+/// one freeing it reads either the lease as it was or with its new owner
+/// (`free_left_behind`).
+fn take_repo(ticket: &Ticket, owner: &Owner) -> Result<Option<File>> {
+    loop {
+        let Some((path, mut file)) = repo_file(ticket)? else { return Ok(None) };
+        let dir = lock_dir(path.parent().unwrap_or(&path))?;
+        let mut owners = if try_lock(&file, libc::LOCK_EX)? {
+            // SAFETY: a live descriptor; turning its own lock shared.
+            if ticket.candidate && unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } != 0 {
+                anyhow::bail!("cannot share repo command ownership");
+            }
+            Some(vec![])
+        } else if ticket.candidate && try_lock(&file, libc::LOCK_SH)? {
+            Some(
+                read(&file)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Vec<Owner>>(&bytes).ok())
+                    .unwrap_or_default(),
+            )
+        } else {
+            None
+        };
+        if let Some(owners) = &mut owners {
+            owners.push(owner.clone());
+            let bytes = serde_json::to_vec(owners)?;
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&bytes)?;
+            file.set_len(bytes.len() as u64)?;
+            file.flush()?;
+            drop(dir);
+            return Ok(Some(file));
+        }
+        drop(dir);
+        recover()?;
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
 impl Slot {
     pub fn take(ticket: &Ticket) -> Result<Self> {
         recover()?;
-        let repo = repo_file(ticket)?;
-        if let Some(file) = &repo {
-            while !try_repo(file, ticket)? {
-                recover()?;
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
         let cache = crate::copies::cache()?.join("worker-slots");
         std::fs::create_dir_all(&cache)?;
         let lane = afkconvoy_core::gate::key(&afkconvoy_core::exclusive::lane(ticket));
@@ -317,6 +407,7 @@ impl Slot {
             candidate: ticket.candidate,
             ticket: Some(Ticket { ran: Some(crate::clock()), ..ticket.clone() }),
         };
+        let repo = take_repo(ticket, &owner)?;
         let owner_bytes = serde_json::to_vec(&owner)?;
         loop {
             let count =
@@ -377,5 +468,38 @@ impl Slot {
                 Ok(())
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::owners;
+
+    fn owner(pid: u32) -> serde_json::Value {
+        serde_json::json!({
+            "process": {"host": "h", "pid": pid, "started": "then"},
+            "dir": "/w",
+            "candidate": true,
+        })
+    }
+
+    fn pids(bytes: &[u8]) -> Option<Vec<u32>> {
+        owners(bytes).map(|owners| owners.iter().map(|owner| owner.process.pid).collect())
+    }
+
+    #[test]
+    fn a_lane_place_names_its_one_owner_and_a_repo_lease_each_that_took_it() {
+        assert_eq!(pids(owner(1).to_string().as_bytes()), Some(vec![1]));
+        let shared = serde_json::json!([owner(1), owner(2)]).to_string();
+        assert_eq!(pids(shared.as_bytes()), Some(vec![1, 2]));
+    }
+
+    #[test]
+    fn a_repo_lease_that_names_no_owner_is_held() {
+        // Taken before its owners were written in it, or as it is written.
+        assert_eq!(pids(b""), None);
+        assert_eq!(pids(b"[]"), None);
+        let torn = serde_json::json!([owner(1)]).to_string();
+        assert_eq!(pids(&torn.as_bytes()[..torn.len() - 3]), None);
     }
 }
