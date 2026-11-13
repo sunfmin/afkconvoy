@@ -75,7 +75,8 @@ pub enum Waits {
     /// It reports a failed run of this patrol, which is not run again while
     /// it is open.
     PatrolFailed { patrol: String },
-    /// It says a cut failed (docs/adr/0028): no cut starts while it is open.
+    /// It says a cut failed, and a watch handed it to a human (docs/adr/0028).
+    /// It holds no cut back (docs/adr/0072).
     CutFailed,
 }
 
@@ -199,8 +200,8 @@ impl Waits {
                 return vec![close(
                     issue,
                     tracker,
-                    "go on from the step that failed with the line its body gives, which closes \
-                     it — or close it once you have looked: the fleet cuts again from the start",
+                    "fix what failed it; the fleet cuts again by itself from the start, and a cut \
+                     that publishes closes it — or close it once you have looked",
                 )];
             }
         };

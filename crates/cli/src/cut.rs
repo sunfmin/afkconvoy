@@ -38,7 +38,16 @@ use crate::stage::Flows;
 
 /// What a rebuild reads of the cut: version tags, base tip, open issues
 /// and a running cut's claim. Without declared steps only its claim remains.
-pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue], base: &str) -> Result<Option<Seen>> {
+/// An open failure issue holds no cut back; the same failure `REPEATS` times
+/// in a row, with nothing landed past the last one's base, does
+/// (docs/adr/0072): what the issue and its comments, in `open`, record.
+pub fn seen(
+    fleet: &Fleet,
+    read: &Flows,
+    issues: &[Issue],
+    open: &crate::gh::OpenIssues,
+    base: &str,
+) -> Result<Option<Seen>> {
     let claim = fleet.scan.runs.iter().find(|run| run.key == CLAIM_KEY).cloned();
     let Some(steps) = &fleet.config.cut else {
         let going = claim.is_some();
@@ -50,6 +59,11 @@ pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue], base: &str) -> Result
         None => 0,
     };
     let failure = cut::failure_of(issues, &escalate_label(fleet, read));
+    let held = failure.is_some_and(|issue| {
+        let body = open.body(issue).map(|body| body.body.as_str());
+        let comments = open.comments(issue).iter().map(|comment| comment.body.as_str());
+        cut::repeats(body.into_iter().chain(comments)).is_some_and(|run| run.holds(base))
+    });
     let initial = steps.initial_version();
     let oldest_landing = match &newest {
         Some(tag) if past > 0 => {
@@ -73,14 +87,15 @@ pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue], base: &str) -> Result
         busy_after_seconds: steps.busy_after_seconds,
         claim,
         failure,
+        held,
     }))
 }
 
 /// Whether a cut will come for an issue that waits on the next one: one is
 /// running; or the base branch holds landed work past the newest version tag,
 /// or the repo declares its initial version on an untagged remote, so one is
-/// due or will be — a failed cut too, which holds the next back only until a
-/// human answers. A repo that names no cut steps is never cut, and one with
+/// due or will be — a failed cut too, which holds the next back at most until
+/// more lands. A repo that names no cut steps is never cut, and one with
 /// nothing past its newest tag has no cut to come until more lands.
 pub fn wait(fleet: &Fleet) -> Result<CutWait> {
     let Some(steps) = &fleet.config.cut else {
@@ -172,6 +187,7 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
         prs,
         minor,
         started: now,
+        base: Some(base.to_string()),
         branch: None,
         commit: None,
         at: None,
@@ -187,7 +203,9 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
 /// keeps what the cut is there (`cut::Record`), and starts `afkconvoy cut`
 /// in a terminal of it, under the host kit's first harness's worker
 /// environment, as a caster is. A checkout an earlier cut left is removed
-/// first. `Lost` when a peer claimed it, or nothing is left to cut.
+/// first, and every branch an earlier cut pushed but the one this cut takes
+/// up is deleted: a failed cut's leftovers do not pile up (docs/adr/0072).
+/// `Lost` when a peer claimed it, or nothing is left to cut.
 ///
 /// A step that fails after the claim gives the claim back and is an error:
 /// held, a later tick would read the record a cut before it left in the
@@ -239,6 +257,7 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Opti
     if let Some(left) = Worktree::named(&source, CHECKOUT)? {
         left.remove()?;
     }
+    clear_branches(fleet, &record.version, &base)?;
     let checkout = Worktree::cut(&source, CHECKOUT, &base, None)?;
     checkout.record_cut(&record)?;
     let path = checkout.path.display().to_string();
@@ -248,13 +267,34 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Opti
     Ok(Some(record))
 }
 
+/// Deletes, on the remote, every branch an earlier cut pushed but the one a
+/// cut of `version` on the base tip `base` takes up (`branch_of`): it holds
+/// one cut at a time, so none of them is another cut's going on. A version
+/// tag keeps the commit of a branch that was tagged.
+fn clear_branches(fleet: &Fleet, version: &str, base: &str) -> Result<()> {
+    let kept = branch_of(fleet, version, base)?.filter(|branch| branch.taken_up);
+    let gone: Vec<String> = cut_heads(&fleet.repo)?
+        .into_iter()
+        .filter(|(name, _)| kept.as_ref().is_none_or(|kept| kept.name != *name))
+        .map(|(name, _)| format!("refs/heads/{name}"))
+        .collect();
+    if gone.is_empty() {
+        return Ok(());
+    }
+    fleet.repo.remote().push(&Push::deleting(gone.iter().map(String::as_str)))?;
+    Ok(())
+}
+
 /// Ends the cut `row` once it is over. Mine is read off its checkout
 /// (`cut::ending`) — it took every step, failed at one, ran out of time, or
 /// its terminal is gone. One that took every step is said, and its checkout
 /// removed. One that ended short is said too, opens one issue under the
 /// watch's label (`cut::FAILED_LABEL`) saying which step failed, why, and
-/// the line that goes on from there — no cut starts while it is open — and
-/// keeps its checkout for that line, its terminal closed. A cut whose checkout is gone from here,
+/// the line that goes on from there — or, while that issue is open, adds to
+/// it in a comment — and keeps its checkout until the next cut starts, its
+/// terminal closed. The issue holds no cut back; the `cut::REPEATS`th
+/// failure of the same way in a row makes it a ticket of the fleet's, under
+/// the ready label (docs/adr/0072). A cut whose checkout is gone from here,
 /// and a peer's presumed dead, ended short as well, out of sight: each opens
 /// that issue too, named by the version its branch says, and is unclaimed.
 /// Unclaimed without that issue, the next idle tick would start the same
@@ -294,6 +334,7 @@ pub fn end(fleet: &mut Fleet, found: &mut Found, me: &Me, row: &Row) -> Result<O
             prs: vec![],
             minor: false,
             started,
+            base: None,
             branch: None,
             commit: None,
             at: None,
@@ -335,13 +376,24 @@ pub fn end(fleet: &mut Fleet, found: &mut Found, me: &Me, row: &Row) -> Result<O
                 None => starts_again(fleet, &version)?,
             };
             let kept = checkout.as_ref().map(|_| path.as_str());
-            // One report stands for a cut until the watch, or a human, closes
-            // it. It is the watch's to answer (sunfmin/control#801).
+            // A record out of reach names no base: the base as it stands now
+            // is the one a landing must pass.
+            let mut said = record.clone();
+            if said.base.is_none() {
+                said.base = Some(fleet.base_tip()?);
+            }
+            let report = cut::failure_report(&said, &failure, &me.host, kept, &line);
+            // One issue stands for the failures until a cut publishes; each
+            // later one adds to it (docs/adr/0072).
             let issue = match row.failure {
-                Some(open) => open,
+                Some(open) => {
+                    fleet.gh.comment(open, &report)?;
+                    ticket(fleet, open)?;
+                    open
+                }
                 None => fleet.gh.open_report(
                     &cut::failure_title(&version),
-                    &cut::failure_report(&record, &failure, &me.host, kept, &line),
+                    &report,
                     &format!("the step `{}` failed: {}", failure.step.word(), failure.why.trim()),
                     &[cut::FAILED_LABEL],
                 )?,
@@ -362,6 +414,23 @@ pub fn end(fleet: &mut Fleet, found: &mut Found, me: &Me, row: &Row) -> Result<O
     }
     drop_run(&fleet.repo, &mut fleet.scan, claim)?;
     Ok(if record.superseded.is_some() { Outcome::Superseded } else { Outcome::Done })
+}
+
+/// Makes the failure issue `issue` a ticket of the fleet's — puts the ready
+/// label on it — once it records `cut::REPEATS` failures of the same way in a
+/// row: an ordinary ticket, not a human's. One a watch handed to a human,
+/// under the escalate label, or already a ticket, is left as it is.
+fn ticket(fleet: &Fleet, issue: u64) -> Result<()> {
+    let read = fleet.gh.issue(issue)?;
+    let ready = &fleet.config.ready_label;
+    if read.labels.iter().any(|label| label == ready || *label == fleet.config.escalate_label) {
+        return Ok(());
+    }
+    let comments = fleet.gh.comments(issue)?;
+    let bodies = read.body.as_deref().into_iter().chain(comments.iter().map(|c| c.body.as_str()));
+    let Some(run) = cut::repeats(bodies).filter(cut::Repeats::ticketed) else { return Ok(()) };
+    fleet.gh.add_label(issue, ready)?;
+    fleet.gh.comment(issue, &cut::ticket_said(run.times, &run.way))
 }
 
 /// Takes the label that waits on the next cut (`cut::WAITING_LABEL`) off
@@ -392,8 +461,8 @@ fn cut_heads(repo: &Repo) -> Result<Vec<(String, String)>> {
 }
 
 /// How a cut of `version` whose checkout is gone starts again, in words:
-/// its issue closed, the next cut starts from the start, and the branch it
-/// pushed is taken up, or left to go.
+/// by itself, the next cut from the start, and the branch it pushed taken
+/// up, or deleted as that cut starts.
 fn starts_again(fleet: &Fleet, version: &str) -> Result<String> {
     let fate = match branch_of(fleet, version, &fleet.base_tip()?)? {
         None => String::new(),
@@ -403,13 +472,15 @@ fn starts_again(fleet: &Fleet, version: &str) -> Result<String> {
             branch.name
         ),
         Some(branch) => format!(
-            "; its branch `{}` stands on an older base, and that cut takes up nothing of it: \
-             `{}` removes it",
-            branch.name,
-            delete_line(fleet, &branch.name)
+            "; its branch `{}` stands on an older base, and that cut takes up nothing of it, \
+             and deletes it as it starts",
+            branch.name
         ),
     };
-    Ok(format!("close this issue: the next cut starts from the start, on the base tip{fate}."))
+    Ok(format!(
+        "the next cut starts from the start, on the base tip, whether or not this issue is \
+         open{fate}."
+    ))
 }
 
 /// The branch a cut of `version` pushed, as the remote has it now, and
@@ -425,25 +496,23 @@ fn branch_of(fleet: &Fleet, version: &str, base: &str) -> Result<Option<cut::Bra
     Ok(Some(cut::Branch { name, commit, taken_up }))
 }
 
-/// The line that deletes the cut's branch `branch` on the remote, naming
-/// the checkout so that it runs from any directory.
-fn delete_line(fleet: &Fleet, branch: &str) -> String {
-    let dir = fleet.repo.dir.display().to_string();
-    Line::new().fixed("git -C ").word(&dir).fixed(" push origin --delete ").word(branch).own()
-}
-
 /// What the open issue `issue` says of the cut that failed, read off its
-/// body, and how the cut starts again from this host: with its `--from`
-/// line where its checkout is kept here, on the host it was kept on, or by
-/// closing the issue where it is gone — and the fate of the branch it
-/// pushed, the base branch at `base`. `None` where the body is no report.
+/// body or the latest comment that adds a failure to it, and how the cut
+/// starts again: by itself at the next due cut — or, `held`, once more lands
+/// — its `--from` line kept where its checkout is, and the fate of the branch
+/// it pushed, the base branch at `base`. `None` where nothing is a report.
 pub fn failed(
     fleet: &Fleet,
     open: &crate::gh::OpenIssues,
     issue: u64,
     base: &str,
+    held: bool,
 ) -> Result<Option<cut::Failed>> {
-    let Some(reported) = open.body(issue).and_then(|body| cut::reported(&body.body)) else {
+    let latest = open.comments(issue).iter().rev().find_map(|c| cut::reported(&c.body));
+    let reported = latest
+        .filter(|reported| !reported.why.is_empty())
+        .or_else(|| open.body(issue).and_then(|body| cut::reported(&body.body)));
+    let Some(reported) = reported else {
         return Ok(None);
     };
     let here = Worktree::named(&Source::of(&fleet.repo)?, CHECKOUT)?
@@ -455,9 +524,7 @@ pub fn failed(
         _ => cut::Kept::Gone,
     };
     let branch = branch_of(fleet, &reported.version, base)?;
-    let delete = branch.as_ref().map(|b| delete_line(fleet, &b.name)).unwrap_or_default();
-    let close = fleet.gh.tracker.gh_issue("close", issue).own();
-    let restart = cut::restart(issue, &reported, kept, branch.as_ref(), &close, &delete);
+    let restart = cut::restart(issue, &reported, kept, branch.as_ref(), held);
     Ok(Some(cut::Failed {
         issue,
         version: reported.version,
@@ -512,10 +579,13 @@ pub fn says(repo: &Repo, row: &Row) -> Option<String> {
         },
         Standing::Locked => format!("{}; a fleet lock stands, and no cut starts", past()),
         Standing::Failed => match row.failure {
-            Some(issue) => {
-                format!("the last cut failed: #{issue} says which step, and how to go on")
-            }
-            None => "the last cut failed".to_string(),
+            Some(issue) => format!(
+                "{}; the last {} cuts failed the same way: #{issue} is a ticket, and the next \
+                 cut waits for a landing",
+                past(),
+                cut::REPEATS
+            ),
+            None => format!("{}; the next cut waits for a landing", past()),
         },
         Standing::Tagged => format!("{}: nothing to cut", past()),
         Standing::Untagged => "the remote has no version tag to count a version from".to_string(),
@@ -546,8 +616,8 @@ pub fn says(repo: &Repo, row: &Row) -> Option<String> {
 /// from the step after the last it took, or from `from` — to its last,
 /// timing each, and keeping what it did in the checkout as it goes for the
 /// fleet to read once it ends. A step that fails ends it there, saying why.
-/// One that took its last closes the open issue that said this version's cut
-/// failed. `config` is the checkout's own, whose cut steps it takes; on
+/// One that took its last closes every open issue that says a cut failed, of
+/// this version or an earlier one, saying which version went out. `config` is the checkout's own, whose cut steps it takes; on
 /// `host`, at the time `clock` says.
 pub fn run(
     repo: &Repo,
@@ -621,11 +691,15 @@ pub fn run(
         checkout.record_cut(&record)?;
         eprintln!("[afkconvoy] cut: {} passed after {seconds}s", step.word());
     }
-    let title = cut::failure_title(&record.version);
     let open = gh.open_issues()?;
-    let closed: Vec<u64> =
-        open.rows.iter().filter(|issue| issue.title == title).map(|issue| issue.number).collect();
+    let closed: Vec<u64> = open
+        .rows
+        .iter()
+        .filter(|issue| cut::is_failure_title(&issue.title))
+        .map(|issue| issue.number)
+        .collect();
     for issue in &closed {
+        gh.comment(*issue, &cut::published_said(&record.version))?;
         gh.close_issue(*issue)?;
     }
     Ok(json!({"version": record.version, "tag": format!("v{}", record.version),
@@ -1000,7 +1074,7 @@ pub(crate) const HELP: &str = r#"## When to run it
 
 The fleet runs it: in a repo that turns cutting on, a tick starts a cut once landed work is past the newest version tag and either the fleet is idle or the oldest landing reaches `busy_after_seconds` (default {const:CUT_BUSY_AFTER_SECONDS}s). At the bound it starts while busy too, whatever claims or frontier remain, even while admission holds workers back. It cuts from the base branch as it stands; work still in flight goes into a later version. A remote with no version tag and a declared `initial` is cut on an idle tick. No flag, command or fixed schedule starts one.
 
-The host's watch runs it with `--from <step>` once, after a cut failed, to go on from the step that failed, once it fixed the cause: the issue the failure opened gives the exact line, in the checkout the cut kept. A failed cut is the watch's to answer, and a look that finds one starts a watch, whether or not the rest of the fleet moves; only the four human kinds in `afkconvoy help humans` go to a human, under the escalate label, and a human runs the line then. To have a landed fix cut, the watch wakes the repo's checkout and fixes what holds its fleet back: the next idle tick, or busy tick past the age bound, starts the due cut through these same steps.
+A failed cut holds no cut back (docs/adr/0072): the next due cut — an idle tick, or a busy tick past the age bound — cuts again from the start, on the base tip as it stands, whether or not the failure's issue is open. Nothing waits for `--from <step>`: it goes on from the step that failed, in the checkout the cut kept, until the next cut starts and removes it. A look that finds a failed cut starts a watch, which looks for its cause and lands a fix where it is code; only the four human kinds in `afkconvoy help humans` go to a human, under the escalate label. To have a landed fix cut, the watch wakes the repo's checkout and fixes what holds its fleet back: the next idle tick, or busy tick past the age bound, starts the due cut through these same steps.
 
 ## Who runs it
 
@@ -1062,11 +1136,15 @@ A cut's gate and exclusive commands go ahead of waiting worker commands, keeping
 
 A cut that took every step is a line of the tick log — `cut v0.5.17 (past v0.5.16, holding #451, #452) · its commit 0123456789 on afkconvoy-cut/v0.5.17-1793666786 · set 3s, push 2s, gate 610s, tag 1s, publish 95s` — `afkconvoy doctor` lists it among its events, and the panel shows it; its checkout is removed.
 
-A cut that failed, ran out of time, was ended from outside, whose checkout is gone, or whose host went silent opens one issue under the label `convoy-cut-failed`, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there — or, where its checkout is gone, how the cut starts again and the fate of the branch it pushed. The tick log, `doctor` and the panel say it too. Its checkout is kept, its terminal closed. No cut starts while that issue is open, under that label or the escalate label a watch swaps it for (`afkconvoy help humans`).
+A cut that failed, ran out of time, was ended from outside, whose checkout is gone, or whose host went silent opens one issue under the label `convoy-cut-failed`, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there — or, where its checkout is gone, the fate of the branch it pushed. While that issue is open, each later failure adds the same report to it as a comment instead of opening another. The tick log, `doctor` and the panel say it too. Its checkout is kept until the next cut starts, its terminal closed.
 
-`doctor`'s finding for it (`cuts no version: its last cut failed`, `afkconvoy help troubleshooting`) says, from the host it runs on, how the cut starts again: its `--from` line where its checkout is kept there or on the host the issue names; where that checkout is gone, closing the issue, so the next cut starts from the start on the base tip. A branch the failed cut pushed on the base tip as it stands is taken up by that cut, which pushes no second; one on an older base is taken up by nothing, and the finding gives the line that deletes it. `plan` says the same as `cut.failed`.
+The issue holds no cut back: the next due cut — an idle tick, or a busy tick past the age bound — cuts again from the start, on the base tip as it stands, whether it is open or not, and whether its label is `convoy-cut-failed` or the escalate label a watch swaps it for (`afkconvoy help humans`). Where {const:CUT_REPEATS} cuts in a row fail at the same step the same way — the same step and, for a gate that ran red, the same failing tests — the issue takes the ready label, with the repo label it carries: an ordinary ticket for the fleet to fix, not a human's. Then the next cut waits for a landing past the base the last of them was cut from, and `plan` says the cut `failed`; it is attempted again after each landing.
 
-With `--from <step>` it takes that step and those after it, the record kept as it was; without, the step after the last it took. Once it took its last, it closes the open issue that said this version's cut failed.
+The next cut, as it starts, removes the checkout a failed cut kept on its host, and deletes every branch an earlier cut pushed but the one it takes up — a branch of its own version on the base tip as it stands. A version tag keeps the commit of a branch that was tagged.
+
+`doctor`'s finding for it (`its last cut failed`, `afkconvoy help troubleshooting`) says, from the host it runs on, that the next cut starts by itself, or that it waits for a landing; where the failed cut's checkout is kept, and its `--from` line; and the fate of the branch it pushed. `plan` says the same as `cut.failed`.
+
+With `--from <step>` it takes that step and those after it, the record kept as it was; without, the step after the last it took. Once it took its last, it closes every open issue that says a cut failed — of this version or an earlier one — with a comment naming the version that went out.
 
 ## What it answers
 
@@ -1076,9 +1154,9 @@ Errors: the checkout is no cut's, or keeps no cut's record; the repo names no cu
 
 ## What trips you up
 
-- One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, which opens the failure issue for it: no cut of that version starts again on its own. A fleet lock and an open cut failure hold a new one back.
+- One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, which opens the failure issue for it, or adds to the one open. A fleet lock holds a new one back; an open cut failure does not, but where the same failure repeated {const:CUT_REPEATS} times with nothing landed since.
 - A cut interrupted after tagging goes on from the tag; one interrupted before, from its branch. A cut started again for the same version takes up that commit, and pushes no second branch.
 - Cut records and serial barriers that earlier versions left on the remote candidate chain are read as before, and drain: nothing new names a cut there.
 - `sh -e` fails a step at a line whose command fails, not at one whose command it tests: a command of an `if` or `while` test, on the left of `&&` or `||`, after `!`, or before the last of a pipe fails nothing. `./packaging/release.sh publish "$VERSION" | tee published` passes whatever `release.sh` did.
 - The cut's commit is made in the checkout's name, by its git config: a repo whose base branch is protected against pushes is as good as any other here, for the cut pushes nothing to it.
-- Turns keep landing while a cut runs. A cut that hangs costs only its own version: its time limit ends it, and its failure issue holds the next cut back."#;
+- Turns keep landing while a cut runs. A cut that hangs costs only its own version: its time limit ends it, its failure issue opens, and the next due cut starts again from the base tip."#;

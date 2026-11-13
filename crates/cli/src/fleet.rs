@@ -671,7 +671,7 @@ impl Fleet {
         let idle = self.idle_landings(me, prs, &closed);
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing().records, &base)?;
-        let cut = crate::cut::seen(self, &stages, issues, &base)?;
+        let cut = crate::cut::seen(self, &stages, issues, &open.issues, &base)?;
         let seen = Observed {
             unworked_blockers: &unworked_blockers,
             handoffs: &handoffs,
@@ -703,11 +703,13 @@ impl Fleet {
             row.not_cutting_here =
                 crate::probe::check_cut_needs(&self.repo, &self.config, self.now, false)?;
         }
-        if let Some(row) =
-            set.cut.as_mut().filter(|row| row.standing == afkconvoy_core::cut::Standing::Failed)
+        // An open failure is said whatever the cut's standing: it holds no
+        // cut back but where the same failure repeats (docs/adr/0072).
+        if let Some(row) = set.cut.as_mut()
             && let Some(issue) = row.failure
         {
-            row.failed = crate::cut::failed(self, &open.issues, issue, &base)?;
+            let held = row.standing == afkconvoy_core::cut::Standing::Failed;
+            row.failed = crate::cut::failed(self, &open.issues, issue, &base, held)?;
         }
         open.issues.explain(&mut set.waiting_on_human);
 

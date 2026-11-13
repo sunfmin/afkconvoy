@@ -41,11 +41,19 @@ pub const MINOR_LABEL: &str = "release:minor";
 /// version — nothing else does.
 pub const WAITING_LABEL: &str = "convoy-waits-on-cut";
 
-/// The label on the issue a failed cut opens: the host's watch answers it,
-/// as it answers anything that holds a fleet back. A watch that finds the
-/// failure one of the four kinds left to a human swaps it for the escalate
-/// label, and only then is the issue a human's (sunfmin/control#801).
+/// The label on the issue a failed cut opens. It holds no cut back: the next
+/// due cut cuts again from the start, on the base tip, whether or not the
+/// issue is open, and a cut that publishes closes it (docs/adr/0072). A watch
+/// that finds the failure one of the four kinds left to a human swaps it for
+/// the escalate label, and only then is the issue a human's
+/// (sunfmin/control#801).
 pub const FAILED_LABEL: &str = "convoy-cut-failed";
+
+/// How many cuts in a row failing at the same step the same way
+/// (`Failure::way`) make the failure an ordinary ticket of the fleet's: its
+/// issue takes the ready label, and the next cut waits for a landing past the
+/// base the last of them was cut from (docs/adr/0072).
+pub const REPEATS: usize = 3;
 
 /// Whether a failed cut's issue carrying `labels` is the watch's to answer.
 pub fn watched(labels: &[String]) -> bool {
@@ -252,8 +260,13 @@ pub struct Seen {
     pub busy_after_seconds: u64,
     /// The claim on a cut, while one stands.
     pub claim: Option<RunClaim>,
-    /// The open issue that says a cut failed, while one is open.
+    /// The open issue that says a cut failed, while one is open. It holds no
+    /// cut back.
     pub failure: Option<u64>,
+    /// That issue says the last `REPEATS` cuts failed the same way, and
+    /// nothing has landed past the base the last of them was cut from: the
+    /// next cut waits for a landing (docs/adr/0072).
+    pub held: bool,
 }
 
 /// How a repo's cut stands: what a tick does about it.
@@ -262,7 +275,8 @@ pub struct Seen {
 pub enum Standing {
     /// The repo names no cut steps: it turns cutting off, and nothing is cut.
     Off,
-    /// A cut failed, and the issue that says so is still open.
+    /// The last `REPEATS` cuts failed the same way, and nothing has landed
+    /// since the base the last was cut from: the next cut waits for a landing.
     Failed,
     /// The remote has no version tag, and the repo declares no initial version.
     Untagged,
@@ -390,8 +404,9 @@ impl Serialize for Held {
 /// How the cut `seen` stands for the fleet instance `me` at `now`, with
 /// each instance's heartbeat in `heartbeats`, and `locked` while a fleet lock
 /// stands. A cut still going comes first, whoever holds it and whatever the
-/// rest says; then a repo that turns cutting off, the failure nobody
-/// answered, the tags, and the lock.
+/// rest says; then a repo that turns cutting off, the tags, the same failure
+/// repeated with nothing landed since, and the lock. An open failure issue
+/// alone holds nothing back (docs/adr/0072).
 pub fn row(
     seen: &Seen,
     me: Option<&InstanceId>,
@@ -406,9 +421,9 @@ pub fn row(
             Holder::Peer => Standing::PeerRunning,
         },
         None if !seen.on => Standing::Off,
-        None if seen.failure.is_some() => Standing::Failed,
         None if seen.newest.is_none() && seen.initial.is_none() => Standing::Untagged,
         None if seen.newest.is_some() && seen.past == 0 => Standing::Tagged,
+        None if seen.held => Standing::Failed,
         None if locked => Standing::Locked,
         None => Standing::Due,
     };
@@ -509,6 +524,22 @@ impl Failure {
     pub fn at(step: Step, why: impl Into<String>) -> Failure {
         Failure { step, why: why.into(), red: None }
     }
+
+    /// How it failed, as two failures of the same way say it alike: its
+    /// step, and of a gate that ran red the tests it named, sorted. Its
+    /// `why` names a commit and a file of the run's own, and is no part of it.
+    pub fn way(&self) -> String {
+        let mut tests: Vec<&str> = match &self.red {
+            Some(red) => red.tests.iter().map(String::as_str).collect(),
+            None => vec![],
+        };
+        tests.sort_unstable();
+        tests.dedup();
+        match tests.as_slice() {
+            [] => self.step.word().to_string(),
+            tests => format!("{}:{}", self.step.word(), tests.join(",")),
+        }
+    }
 }
 
 /// What a cut's gate that ran red named: the tests its output names as
@@ -543,6 +574,10 @@ pub struct Record {
     pub minor: bool,
     /// When the fleet started it, in epoch seconds.
     pub started: u64,
+    /// The base tip it was cut from, its snapshot: what a failure records, so
+    /// that a cut held after `REPEATS` failures starts once more has landed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// Its own branch, once it pushed it, and the version's commit, once it
     /// made it: the commit it gates and tags, whose one parent is the
     /// snapshot. An earlier afkconvoy's record names the commit its turn
@@ -702,7 +737,7 @@ pub fn failure_title(version: &str) -> String {
 
 /// Whether `title` is the title of the issue a failed cut opens, of any
 /// version: how the report is found again.
-fn is_failure_title(title: &str) -> bool {
+pub fn is_failure_title(title: &str) -> bool {
     title.strip_prefix("afkconvoy: the cut of v").is_some_and(|rest| rest.ends_with(" failed"))
 }
 
@@ -722,10 +757,13 @@ pub fn failure_of(issues: &[Issue], escalate_label: &str) -> Option<u64> {
     found
 }
 
-/// The body of the issue a cut that failed opens: which step failed, why,
-/// what it did before, and how it goes on, which `goes_on` is — the line
-/// run in its checkout `checkout` on the host `host`, which is kept; where
-/// its checkout is gone (`None`), how the cut starts again, in words.
+/// The body of the issue a cut that failed opens, and of the comment each
+/// later failure adds to it while it is open: which step failed, why, what
+/// it did before, and how it goes on, which `goes_on` is — the line run in
+/// its checkout `checkout` on the host `host`, which is kept until the next
+/// cut starts; where its checkout is gone (`None`), how the cut starts again,
+/// in words. Its marker names the way it failed (`Failure::way`), the base
+/// it was cut from and when it started, which `repeats` counts by.
 pub fn failure_report(
     record: &Record,
     failure: &Failure,
@@ -734,6 +772,8 @@ pub fn failure_report(
     goes_on: &str,
 ) -> String {
     let step = failure.step.word();
+    let way = failure.way();
+    let started = record.started.to_string();
     let marker = record::marker(
         FAILED,
         &[
@@ -741,6 +781,9 @@ pub fn failure_report(
             ("step", step),
             ("host", host),
             ("checkout", checkout.unwrap_or("")),
+            ("way", &way),
+            ("base", record.base.as_deref().unwrap_or("")),
+            ("started", &started),
         ],
     );
     let mut said = format!(
@@ -755,31 +798,100 @@ pub fn failure_report(
     match checkout {
         Some(checkout) => said.push_str(&format!(
             "Its checkout is kept, `{checkout}` on the host `{host}`, with what each step \
-             printed in its git dir. The line that goes on from the step that failed, once what \
-             failed it is fixed:\n\n```sh\n{goes_on}\n```\n\nIt takes that step and the ones \
-             after it, and closes this issue once it took the last. No cut starts while this \
-             issue is open: close it once the version is cut, or once you have looked and want \
-             the fleet to cut again from the start.\n"
+             printed in its git dir, until the next cut starts. The line that goes on from the \
+             step that failed, in it:\n\n```sh\n{goes_on}\n```\n\nNothing waits for it.\n"
         )),
         None => said.push_str(&format!(
-            "Its checkout is gone from the host `{host}`, so no `--from` line can go on with it. \
-             To start the cut again, once what failed it is fixed: {goes_on}\n\nNo cut starts \
-             while this issue is open.\n"
+            "Its checkout is gone from the host `{host}`, so no `--from` line can go on with \
+             it: {goes_on}\n"
         )),
     }
     said.push_str(&format!(
-        "\nThe host's watch answers this issue, labelled `{FAILED_LABEL}`. Where what failed it \
-         is one of the four kinds left to a human, the watch swaps that label for the escalate \
-         label.\n"
+        "\nThis issue holds no cut back: the next due cut — an idle tick, or a busy tick past \
+         the age bound — cuts again from the start, on the base tip as it stands, whether or not \
+         it is open. A cut that publishes a version closes it, saying which. Where {REPEATS} \
+         cuts in a row fail at the same step the same way, it becomes a ticket of the fleet's, \
+         under the ready label, and the next cut waits for a landing. Where what failed it is \
+         one of the four kinds left to a human, the host's watch swaps the label \
+         `{FAILED_LABEL}` for the escalate label.\n"
     ));
     if failure.step == Step::Publish {
         said.push_str(&format!(
-            "\nIts tag is pushed: closed with no line run, v{} stays tagged and is never \
-             published, and the next cut is of the version after it, once more lands.\n",
+            "\nIts tag is pushed: v{} stays tagged and is never published, and the next cut is \
+             of the version after it, once more lands.\n",
             record.version
         ));
     }
     said
+}
+
+/// The failures of a cut its open issue records in `bodies` — its body, then
+/// its comments, oldest first — as their markers say them: the latest run of
+/// failures of the same way, how many in a row, and the base the last was cut
+/// from. A failure said twice, in the body and the reason comment, counts once
+/// (by when its cut started). `None` where no marker says one.
+pub fn repeats<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<Repeats> {
+    let mut run: Option<Repeats> = None;
+    let mut last: Option<String> = None;
+    for fields in bodies.into_iter().flat_map(|body| record::markers(FAILED, body)) {
+        let started = fields.get("started").map(str::to_string);
+        if started.is_some() && started == last {
+            continue;
+        }
+        last = started;
+        let way = fields
+            .get("way")
+            .or_else(|| fields.get("step"))
+            .map(str::to_string)
+            .unwrap_or_default();
+        let base = fields.get("base").filter(|base| !base.is_empty()).map(str::to_string);
+        run = Some(match run {
+            Some(run) if run.way == way => Repeats { way, times: run.times + 1, base },
+            _ => Repeats { way, times: 1, base },
+        });
+    }
+    run
+}
+
+/// The latest run of failures of the same way an open failure issue records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repeats {
+    pub way: String,
+    pub times: usize,
+    /// The base the last of them was cut from, where its marker names one.
+    pub base: Option<String>,
+}
+
+impl Repeats {
+    /// Whether the run makes the failure a ticket of the fleet's.
+    pub fn ticketed(&self) -> bool {
+        self.times >= REPEATS
+    }
+
+    /// Whether the next cut, on the base tip `base`, waits for a landing: the
+    /// failure is a ticket, and nothing has landed past the last one's base.
+    pub fn holds(&self, base: &str) -> bool {
+        self.ticketed() && self.base.as_deref() == Some(base)
+    }
+}
+
+/// What the comment that makes a failure a ticket of the fleet's says: it
+/// failed `times` times the same `way`.
+pub fn ticket_said(times: usize, way: &str) -> String {
+    format!(
+        "**afkconvoy** — {times} cuts in a row failed the same way (`{way}`): this is now a \
+         ticket for the fleet to fix, under the ready label. Cuts are attempted again after \
+         each landing; a cut that publishes closes it.\n"
+    )
+}
+
+/// What the comment a cut that published `version` closes a failure issue
+/// with says.
+pub fn published_said(version: &str) -> String {
+    format!(
+        "**afkconvoy** — v{version} went out: a later cut took every step, published and \
+         installed it. The failure this issue reports holds nothing back any more.\n"
+    )
 }
 
 /// What the report of a cut whose gate ran red says of that run: the tests
@@ -889,52 +1001,53 @@ pub struct Failed {
 }
 
 /// How the cut that `reported` failed starts again from a host where its
-/// checkout stands `kept`, its pushed branch `branch`: `close` is the line
-/// that closes its issue, and `delete` the one that deletes that branch.
+/// checkout stands `kept`, its pushed branch `branch`: by itself, at the next
+/// due cut, from the start on the base tip — or, `held`, once more lands.
 pub fn restart(
     issue: u64,
     reported: &Reported,
     kept: Kept,
     branch: Option<&Branch>,
-    close: &str,
-    delete: &str,
+    held: bool,
 ) -> String {
-    let starts_again = format!(
-        "`{close}`, once what failed it is fixed: the next idle tick, or busy tick past the age \
-         bound, cuts again from the start, on the base tip as it stands"
-    );
+    let starts_again = match held {
+        false => "the next due cut — an idle tick, or a busy tick past the age bound — cuts \
+                  again from the start, on the base tip as it stands, whether or not it is open"
+            .to_string(),
+        true => format!(
+            "{REPEATS} cuts in a row failed the same way and nothing has landed since: it is a \
+             ticket of the fleet's, under the ready label, and the next cut starts once a fix, \
+             or anything else, lands"
+        ),
+    };
     let goes_on = reported.goes_on.as_deref().unwrap_or("afkconvoy cut --from <step>");
     let mut said = match kept {
         Kept::Here => format!(
-            "#{issue}: its checkout is kept here; once what failed it is fixed, `{goes_on}` goes \
-             on from the step `{}` and closes it. A fix that must land first is not in that \
-             checkout's snapshot: then {starts_again}",
+            "#{issue}: {starts_again}. Its checkout is kept here until then, where `{goes_on}` \
+             goes on from the step `{}`; nothing waits for it",
             reported.step
         ),
         Kept::Elsewhere => format!(
-            "#{issue}: its checkout is kept on the host `{}`, where `{goes_on}` goes on from the \
-             step `{}`; where it is gone there too, or a fix must land first, {starts_again}",
+            "#{issue}: {starts_again}. Its checkout is kept on the host `{}` until then, where \
+             `{goes_on}` goes on from the step `{}`; nothing waits for it",
             reported.host.as_deref().unwrap_or("?"),
             reported.step
         ),
-        Kept::Gone => format!(
-            "#{issue}: its kept checkout is gone, so no `--from` line can go on with it: \
-             {starts_again}"
-        ),
+        Kept::Gone => format!("#{issue}: {starts_again}. Its kept checkout is gone"),
     };
     said.push_str(&match branch {
-        None => ". It pushed no branch.".to_string(),
+        None => ". It pushed no branch. A cut that publishes closes the issue.".to_string(),
         Some(branch) if branch.taken_up => format!(
             ". Its branch `{}` ({}) stands on the base tip: the next cut of v{} takes up that \
-             commit and pushes no second branch, so it stays.",
+             commit and pushes no second branch, so it stays. A cut that publishes closes the \
+             issue.",
             branch.name,
             short(&branch.commit),
             reported.version
         ),
         Some(branch) => format!(
             ". Its branch `{}` ({}) stands on an older base: the next cut makes its own commit \
-             on the base tip and pushes a branch of its own, taking up nothing of it, so it may \
-             go: `{delete}`.",
+             on the base tip, and deletes it as it starts. A cut that publishes closes the issue.",
             branch.name,
             short(&branch.commit)
         ),
@@ -1049,6 +1162,7 @@ mod tests {
             busy_after_seconds: BUSY_AFTER_SECONDS,
             claim: None,
             failure: None,
+            held: false,
         }
     }
 
@@ -1068,7 +1182,12 @@ mod tests {
         assert_eq!(standing(&Seen { on: false, ..seen() }, false), Standing::Off);
         assert_eq!(standing(&Seen { past: 0, ..seen() }, false), Standing::Tagged);
         assert_eq!(standing(&Seen { newest: None, ..seen() }, false), Standing::Untagged);
-        assert_eq!(standing(&Seen { failure: Some(9), ..seen() }, false), Standing::Failed);
+        // An open failure holds no cut back; the same failure repeated with
+        // nothing landed since does (docs/adr/0072).
+        assert_eq!(standing(&Seen { failure: Some(9), ..seen() }, false), Standing::Due);
+        let held = Seen { failure: Some(9), held: true, ..seen() };
+        assert_eq!(standing(&held, false), Standing::Failed);
+        assert_eq!(standing(&Seen { past: 0, ..held }, false), Standing::Tagged);
         assert_eq!(standing(&seen(), true), Standing::Locked);
         let said = row(&seen(), None, &[], 1000, false);
         assert_eq!((said.newest_tag.as_deref(), said.past), (Some("v0.5.16"), 4));
@@ -1099,7 +1218,8 @@ mod tests {
         assert_eq!(row.initial.as_deref(), Some("1.2.3"));
         assert_eq!(row.newest_tag, None);
         assert_eq!(standing(&first, true), Standing::Locked);
-        assert_eq!(standing(&Seen { failure: Some(9), ..first }, false), Standing::Failed);
+        assert_eq!(standing(&Seen { failure: Some(9), ..first.clone() }, false), Standing::Due);
+        assert_eq!(standing(&Seen { held: true, ..first }, false), Standing::Failed);
         let tagged = Seen { initial: Some(version(1, 2, 3)), past: 0, ..seen() };
         assert_eq!(standing(&tagged, false), Standing::Tagged);
         assert_eq!(super::row(&tagged, None, &[], 1000, false).initial, None);
@@ -1130,7 +1250,9 @@ mod tests {
         let locked = row(&seen, None, &[], bound, true);
         assert!(!starts(&locked, 8, 4, false));
         let failed = row(&Seen { failure: Some(9), ..seen.clone() }, None, &[], bound, false);
-        assert!(!starts(&failed, 8, 4, false));
+        assert!(starts(&failed, 8, 4, false), "an open failure holds nothing back");
+        let held = row(&Seen { held: true, ..seen.clone() }, None, &[], bound, false);
+        assert!(!starts(&held, 8, 4, false));
         let running = row(
             &Seen { claim: Some(claim("peer")), ..seen },
             None,
@@ -1181,6 +1303,7 @@ mod tests {
             prs: vec![451, 452],
             minor: false,
             started: 1000,
+            base: Some("s".into()),
             branch: None,
             commit: None,
             at: None,
@@ -1296,13 +1419,16 @@ mod tests {
         );
         assert!(
             said.starts_with(
-                "<!--convoy:cut-failed version=0.5.17 step=publish host=h1 checkout=/w/cut-->\n"
+                "<!--convoy:cut-failed version=0.5.17 step=publish host=h1 checkout=/w/cut \
+                 way=publish base=s started=1000-->\n"
             ),
             "{said}"
         );
         assert!(said.contains("failed at its step `publish`: exited 1"), "{said}");
         assert!(said.contains("cd '/w/cut' && afkconvoy cut --from publish"), "{said}");
-        assert!(said.contains("No cut starts while this issue is open"), "{said}");
+        assert!(!said.contains("No cut starts while"), "{said}");
+        assert!(said.contains("This issue holds no cut back"), "{said}");
+        assert!(said.contains("cuts again from the start, on the base tip"), "{said}");
         // Its tag is pushed: closed, the version stays unpublished.
         assert!(said.contains("v0.5.17 stays tagged and is never published"), "{said}");
         let failure = Failure::at(Step::Gate, "red");
@@ -1350,39 +1476,76 @@ mod tests {
             }
         );
         // One written before its marker named host and checkout.
-        let old = body.replacen(" host=h1 checkout=/w/cut", "", 1);
+        let old = body.replacen(" host=h1 checkout=/w/cut way=gate base=s started=1000", "", 1);
         assert_eq!(reported(&old).unwrap(), read);
         assert_eq!(reported("a body that is no report"), None);
 
-        let gone = failure_report(&record(), &failure, "h1", None, "close this issue");
+        let gone = failure_report(&record(), &failure, "h1", None, "the next cut starts");
         assert!(gone.contains("Its checkout is gone from the host `h1`"), "{gone}");
         let gone = reported(&gone).unwrap();
         assert_eq!((gone.checkout, gone.goes_on), (None, None));
 
-        let close = "gh issue close 9";
-        let delete = "git push origin --delete afkconvoy-cut/v0.5.17-1000";
         let stale = Branch {
             name: "afkconvoy-cut/v0.5.17-1000".into(),
             commit: "0123456789abcdef".into(),
             taken_up: false,
         };
-        let here = restart(9, &read, Kept::Here, None, close, delete);
+        let here = restart(9, &read, Kept::Here, None, false);
+        assert!(here.contains("cuts again from the start"), "{here}");
+        assert!(here.contains("whether or not it is open"), "{here}");
         assert!(here.contains("kept here"), "{here}");
         assert!(here.contains(line), "{here}");
         assert!(here.contains("It pushed no branch."), "{here}");
-        let elsewhere = restart(9, &read, Kept::Elsewhere, Some(&stale), close, delete);
+        let elsewhere = restart(9, &read, Kept::Elsewhere, Some(&stale), false);
         assert!(elsewhere.contains("kept on the host `h1`"), "{elsewhere}");
-        assert!(elsewhere.contains(close), "{elsewhere}");
-        let gone = restart(9, &read, Kept::Gone, Some(&stale), close, delete);
-        assert!(gone.contains("its kept checkout is gone"), "{gone}");
-        assert!(gone.contains(&format!("`{close}`")), "{gone}");
+        assert!(!elsewhere.contains("gh issue close"), "nothing waits for a close: {elsewhere}");
+        let gone = restart(9, &read, Kept::Gone, Some(&stale), false);
+        assert!(gone.contains("Its kept checkout is gone"), "{gone}");
         assert!(gone.contains("stands on an older base"), "{gone}");
-        assert!(gone.contains(&format!("so it may go: `{delete}`")), "{gone}");
+        assert!(gone.contains("deletes it as it starts"), "{gone}");
         let kept = Branch { taken_up: true, ..stale };
-        let gone = restart(9, &read, Kept::Gone, Some(&kept), close, delete);
+        let gone = restart(9, &read, Kept::Gone, Some(&kept), false);
         assert!(gone.contains("takes up that commit"), "{gone}");
         assert!(gone.contains("so it stays"), "{gone}");
-        assert!(!gone.contains(delete), "{gone}");
+        let held = restart(9, &read, Kept::Gone, None, true);
+        assert!(held.contains("ticket of the fleet's, under the ready label"), "{held}");
+        assert!(held.contains("once a fix, or anything else, lands"), "{held}");
+    }
+
+    #[test]
+    fn the_same_failure_three_times_in_a_row_is_a_ticket_and_waits_for_a_landing() {
+        let red = |tests: &[&str]| Failure {
+            red: Some(RedGate {
+                tests: tests.iter().map(|t| t.to_string()).collect(),
+                quote: vec![],
+                output: "o".into(),
+            }),
+            ..Failure::at(Step::Gate, "red on a commit of its own")
+        };
+        assert_eq!(red(&["b", "a"]).way(), red(&["a", "b"]).way());
+        assert_eq!(red(&["a", "b"]).way(), "gate:a,b");
+        assert_eq!(Failure::at(Step::Publish, "exited 1").way(), "publish");
+        let report = |failure: &Failure, started: u64, base: &str| {
+            let record = Record { started, base: Some(base.into()), ..record() };
+            failure_report(&record, failure, "h1", None, "x")
+        };
+        // The body, and its reason comment carrying the same marker, count once.
+        let first = report(&red(&["a"]), 1, "b1");
+        let reason = format!("{}\nwhy", first.lines().next().unwrap());
+        let two = [first.clone(), reason.clone(), report(&red(&["a"]), 2, "b1")];
+        let run = repeats(two.iter().map(String::as_str)).unwrap();
+        assert_eq!((run.times, run.ticketed()), (2, false));
+        let three = [first.clone(), reason.clone(), two[2].clone(), report(&red(&["a"]), 3, "b2")];
+        let run = repeats(three.iter().map(String::as_str)).unwrap();
+        assert_eq!((run.times, run.ticketed()), (3, true));
+        assert!(run.holds("b2"), "nothing landed past the last one's base");
+        assert!(!run.holds("b3"), "a landing starts the next cut");
+        // Another way between breaks the run.
+        let set = report(&Failure::at(Step::Set, "x"), 3, "b2");
+        let broken = [first, two[2].clone(), set, report(&red(&["a"]), 4, "b2")];
+        let run = repeats(broken.iter().map(String::as_str)).unwrap();
+        assert_eq!(run.times, 1);
+        assert_eq!(repeats(["no report"]), None);
     }
 
     #[test]
