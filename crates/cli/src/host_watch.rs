@@ -42,12 +42,24 @@ const FAILED_CUT: &str = afkconvoy_core::cut::FAILED_LABEL;
 /// The linked checkout a watch makes for a change of a listed repo.
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
-/// The four kinds every watch leaves with a human, in either directory.
-pub(crate) const HUMAN_KINDS: &str = "\
-- spending money, or needing an account, a credential or a person's hands;\n\
-- what cannot be undone;\n\
-- taking a secret or private data off the host;\n\
-- changing what a product is for, or who it is for.";
+/// What every watch leaves with a human, in either directory: spending
+/// money, and nothing else (docs/adr/0073).
+pub(crate) const HUMAN_KINDS: &str = "- spending money.";
+
+/// What every watch decides itself, by the recommended answer, and how it
+/// records each decision; and how a step only a person can do is listed
+/// without holding the rest back (docs/adr/0073).
+pub(crate) const DECIDES: &str = "\
+Decide everything else by its recommended answer, as the operator would, and act on it:\n\
+what cannot be undone, taking a secret or private data off the host, and changing what a\n\
+product is for or who it is for among them. For what cannot be undone, first make what way\n\
+back you can: a backup, the old copy kept. Record each decision in your report's `decided`,\n\
+with what you chose, why, and how to undo it: the round's daybook entry carries it.\n\n\
+A step that needs a person's hands (an account, a credential, a login, a click) holds\n\
+nothing else back: go on with everything else, and list that one step under `human`, with\n\
+its question and answer line, for the asking session. Only the work that needs it waits.\n\n\
+A prohibition (a hook, a guard, a role's prohibition) that guards money only a human\n\
+loosens. Any other you may loosen, recorded in `decided`.";
 
 /// What a watch, and the asking session acting on the operator's words, may
 /// touch: one home for both briefs.
@@ -66,8 +78,10 @@ check that the work goes on, and say what you did.
 A resident session whose brief names it “afkconvoy asks” is not the stock watch:
 it runs no watch round, takes no look and reports nothing through `afkconvoy watched`;
 it asks the human questions its brief carries and carries out what the operator tells it there.
-Leave these with a human, never act on them, and list each in your report:
+Leave only this with a human, never act on it, and list each in your report:
 {HUMAN_KINDS}
+
+{DECIDES}
 "
     )
 }
@@ -1498,10 +1512,11 @@ fn brief(watch: &Watch) -> String {
          blocked-by changes what holds it back. Wake its checkout and verify the resulting \
          position and that work which can proceed does proceed. You may fix the cause on \
          the host or in a repo under the bounds above.\n\n\
-         Leave only these four kinds with a human; never act on them, and list each with \
+         Leave only spending money with a human; never act on it, and list each with \
          its repo, issue, question and answer line in your report, which `doctor` \
          lists as what you did:\n\n\
          {HUMAN_KINDS}\n\n\
+         {DECIDES}\n\n\
          ## Research the host kit's unplaced models\n\n\
          Take the host kit's unplaced models after anything holding work up. Read \
          `afkconvoy kit --help` for the research file's format and `afkconvoy doctor --all` \
@@ -1563,20 +1578,21 @@ fn brief(watch: &Watch) -> String {
          change lands, then have that repo's fleet cut a version through its declared cut \
          steps (`afkconvoy cut --help`). Wake its checkout and read `afkconvoy plan`'s `cut`: \
          the next idle tick starts a due cut. Fix what holds that work back; do not bypass \
-         the landing turn, tag by hand, or manufacture a cut record. If cutting is off or one \
-         of the four human kinds holds it back, say so.\n\n\
+         the landing turn, tag by hand, or manufacture a cut record. If cutting is off or \
+         spending money holds it back, say so.\n\n\
          ## Answer a failed cut\n\n\
-         A failed cut holds every later version of its repo back, while turns keep landing. \
-         Its issue, under the label `{FAILED_CUT}`, is yours to answer, not a human's. The \
-         look's `cut_failed` finding names its issue, version, step and why, and its `fix` \
-         says how the cut starts again from this host: the `cut --from <step>` line where \
-         its checkout is kept, or closing its issue where that checkout is gone or a fix had \
-         to land first, so the next cut starts from the start on the base tip; and the fate \
-         of the branch it pushed, with the line that deletes one nothing takes up. Read the \
-         issue, fix the cause — landing a fix as above where it is code — then do what `fix` \
-         says, wake its checkout and check that the next cut starts. Only where the cause is \
-         one of the four human kinds, swap that label for the repo's escalate label \
-         (`afkconvoy config`) and list it in your report: then it is a human's.\n\n\
+         A failed cut never holds the next cut back: the next due cut cuts again from the \
+         start, on the base tip, whether or not its issue is open, and a cut that publishes \
+         closes that issue. Its issue, under the label `{FAILED_CUT}`, is yours to look into, \
+         not a human's. The look's `cut_failed` finding names its issue, version, step and \
+         why, and its `fix` says what becomes of it: that the next cut starts by itself, or, \
+         where the same step failed the same way three times in a row, that the issue is a \
+         ticket for the fleet under the ready label and the next cut waits for a landing. Read \
+         the issue and find the cause. Where it is code, land a fix as above: the next cut \
+         takes it. Run no `cut --from` line and close nothing for the cut to start again; \
+         wake its checkout and check that the next cut starts. Only where the cause is \
+         spending money, swap that label for the repo's escalate label (`afkconvoy \
+         config`) and list it in your report: then it is a human's.\n\n\
          Check that the cut published and installed the version containing your change. \
          For afkconvoy, let the host runner move onto it by itself; read `doctor --all`'s \
          `host.installed` for what holds the move back and `checkouts` for its version. Never \
@@ -1594,8 +1610,10 @@ fn brief(watch: &Watch) -> String {
          ## What the look answered\n\n`afkconvoy doctor --all --since <until of the look \
          before>` answered:\n\n```json\n{}\n```\n\n\
          ## Report this round, then await the next message\n\n\
-         Write `{}` as a JSON object with all five keys: `held_back`, `did`, `verified`, \
-         `human`, `pending`. The first three and `pending` are lists of nonempty strings; \
+         Write `{}` as a JSON object with all six keys: `held_back`, `did`, `verified`, \
+         `decided`, `human`, `pending`. The first three and `pending` are lists of nonempty \
+         strings; `decided` is a list of objects with `chose`, `why` and `undo` strings: \
+         each decision you made by its recommended answer, why, and how to undo it; \
          `human` is a list of objects with `condition`, `question` and `answer` strings: the \
          condition's exact id from this round's look, the question left alone and its answer \
          command. Choose `condition` from the ids below. An older report may omit it only \

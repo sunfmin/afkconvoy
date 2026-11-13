@@ -192,7 +192,7 @@ fn cut_failed(world: &World, now: u64) -> Value {
 }
 
 /// Swaps the watch's label on `issue` for the escalate label, as a watch
-/// that finds the failure one of the four human kinds does.
+/// that finds the failure needs money spent does.
 fn hand_to_human(world: &World, issue: u64) {
     let escalate = world.afk(&["config"]).ok()["escalate_label"].as_str().unwrap().to_string();
     world.with_gh(|gh| {
@@ -478,8 +478,9 @@ fn a_cut_interrupted_after_tagging_goes_on_from_the_tag_and_pushes_no_second_bra
 
 /// A cut whose checkout is gone from its host while it holds the claim —
 /// how the FelixMBP14 cut of v0.5.64 started again four times — opens the
-/// one failure issue, and no cut of that version starts on its own. Once a
-/// human closes it, the next cut takes up the branch the first pushed.
+/// one failure issue. That issue holds nothing back (sunfmin/control#814):
+/// the next due cut, with it still open, takes up the branch the first
+/// pushed on the base tip, publishes, and closes it, naming the version.
 #[test]
 fn a_cut_whose_checkout_is_gone_opens_its_issue_and_the_next_takes_up_its_branch() {
     let world = initial(false);
@@ -512,28 +513,69 @@ fn a_cut_whose_checkout_is_gone_opens_its_issue_and_the_next_takes_up_its_branch
     // that its branch, on the base tip still, is taken up and stays.
     let found = cut_failed(&world, 10_200);
     let fix = found["fix"].as_str().unwrap();
-    assert!(fix.contains("its kept checkout is gone"), "{fix}");
-    assert!(fix.contains(&format!("gh issue close {}", failed[0].0)), "{fix}");
+    assert!(fix.contains("Its kept checkout is gone"), "{fix}");
+    assert!(fix.contains("cuts again from the start"), "{fix}");
+    assert!(!fix.contains("gh issue close"), "nothing waits for a close: {fix}");
     assert!(fix.contains(&format!("Its branch `{}`", pushed[0])), "{fix}");
     assert!(fix.contains("takes up that commit"), "{fix}");
     let plan = planned(&world, "alpha", 10_200);
     assert_eq!(plan["cut"]["failed"]["kept"], "gone", "{plan}");
     assert_eq!(plan["cut"]["failed"]["branch"]["taken_up"], true, "{plan}");
-    for now in [10_200, 10_300 + 1800 + 60] {
-        assert_eq!(standing(&world, "alpha", now), "failed");
-        assert_eq!(cut(&tick_as(&world, "alpha", now)), Vec::<String>::new(), "no restart");
-    }
-    assert_eq!(failures(&world).len(), 1, "one issue");
 
-    world.close_issue(failed[0].0);
-    assert_eq!(cut(&tick_as(&world, "alpha", 20_000)), ["cut done"]);
+    // Its issue still open, the next due cut starts from the base tip.
+    let issue = failed[0].0;
+    assert_eq!(standing(&world, "alpha", 10_200), "due");
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), ["cut done"]);
+    assert_eq!(failures(&world).len(), 1, "still open while it cuts");
     let answer = finish(&world, &self::checkout(&world));
     assert_eq!(answer["commit"], made, "{answer}");
     assert_eq!(cut_branches(&world), pushed, "no second branch for the same version");
+    // Published, it closes the issue itself, naming the version.
+    assert_eq!(answer["closed"], json!([issue]), "{answer}");
+    assert!(failures(&world).is_empty());
+    let said = world.comments(issue).pop().unwrap();
+    assert!(said.contains("v1.2.3 went out"), "{said}");
 }
 
-/// A cut gated red pushed its branch, untagged; a fix lands and its issue
-/// is closed, so the next cut starts again from the start. That cut makes a
+/// The same step failing the same way on three cuts in a row makes the
+/// failure an ordinary ticket of the fleet's — the ready label, not the
+/// escalate label — and the next cut waits for a landing; one more landing
+/// and it is due again (sunfmin/control#814).
+#[test]
+fn three_failures_of_the_same_step_in_a_row_make_a_fleet_ticket_and_wait_for_a_landing() {
+    let world = cutting();
+    let mut now = 10_000;
+    for nth in 1..=3 {
+        assert_eq!(standing(&world, "alpha", now), "due", "before the cut {nth}");
+        assert_eq!(cut(&tick_as(&world, "alpha", now)), ["cut done"], "the cut {nth}");
+        workers_leave(&world);
+        now += 100;
+        assert_eq!(cut(&tick_as(&world, "alpha", now)), ["end_cut done"], "the cut {nth}");
+        now += 100;
+        let failed = failures(&world);
+        assert_eq!(failed.len(), 1, "one issue for them all: {failed:?}");
+        let ticket = failed[0].1.iter().any(|label| label == "ready-for-agent");
+        assert_eq!(ticket, nth == 3, "after the cut {nth}: {failed:?}");
+    }
+    let (issue, labels) = failures(&world).remove(0);
+    assert!(labels.contains(&FAILED_LABEL.to_string()), "{labels:?}");
+    assert!(!labels.contains(&"ready-for-human".to_string()), "no human: {labels:?}");
+    let reports = world.comments(issue);
+    let added = reports.iter().filter(|c| c.contains("failed at its step `set`")).count();
+    assert_eq!(added, 2, "each later failure adds to the one issue: {reports:#?}");
+    assert!(reports.last().unwrap().contains("3 cuts in a row failed the same way"));
+
+    // Nothing landed past the base the last was cut from: no cut starts.
+    assert_eq!(standing(&world, "alpha", now), "failed");
+    let found = cut_failed(&world, now);
+    assert!(found["what"].as_str().unwrap().starts_with("the fleet cuts no version until"));
+    assert!(frontier(&world, now).contains(&issue), "the fleet works the ticket");
+    land(&world, "Fix the cut (#9)");
+    assert_eq!(standing(&world, "alpha", now), "due", "a landing starts the next cut");
+}
+
+/// A cut gated red pushed its branch, untagged; a fix lands, and the next
+/// cut starts again from the start, its issue open or not. That cut makes a
 /// new commit on the base as it stands now, on a branch of its own, and
 /// gates what its record says it holds — not the stale branch's base, as
 /// the v0.5.74 cut did twice (control#639).
@@ -564,13 +606,10 @@ fn a_cut_started_again_after_the_base_moved_makes_a_new_commit_on_the_new_base()
     assert_eq!((&branch["name"], &branch["taken_up"]), (&json!(pushed[0]), &json!(false)));
     let fix = cut_failed(&world, 10_200)["fix"].as_str().unwrap().to_string();
     assert!(fix.contains("stands on an older base"), "{fix}");
-    let delete = fix.rsplit_once("so it may go: `").unwrap().1.trim_end_matches("`.");
-    assert!(delete.ends_with(&format!("push origin --delete '{}'", pushed[0])), "{delete}");
-    let deleted = world.command("sh", &world.root).args(["-c", delete]).output().unwrap();
-    assert!(deleted.status.success(), "{}", String::from_utf8_lossy(&deleted.stderr));
-    assert_eq!(cut_branches(&world), Vec::<String>::new());
-    world.close_issue(failed[0].0);
+    assert!(fix.contains("deletes it as it starts"), "{fix}");
+    // Its issue still open, the next cut starts, and deletes the stale branch.
     assert_eq!(cut(&tick_as(&world, "alpha", 20_000)), ["cut done"]);
+    assert_eq!(cut_branches(&world), Vec::<String>::new(), "the stale branch is gone");
     let again = self::checkout(&world);
     let held = record(&again);
     assert_eq!((&held["version"], &held["prs"]), (&json!("1.2.3"), &json!([7, 9])), "{held}");
@@ -588,10 +627,10 @@ fn a_cut_started_again_after_the_base_moved_makes_a_new_commit_on_the_new_base()
 }
 
 /// A peer's cut whose host went silent is a failed cut too: the tick that
-/// unclaims it opens the one issue, named by the version its branch says,
-/// and no cut of that version starts on its own.
+/// unclaims it opens the one issue, named by the version its branch says;
+/// the next due cut starts again all the same (sunfmin/control#814).
 #[test]
-fn a_silent_peer_s_cut_opens_its_issue_and_starts_no_cut_on_its_own() {
+fn a_silent_peer_s_cut_opens_its_issue_and_the_next_cut_starts_again() {
     let world = cutting();
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let checkout = checkout(&world);
@@ -606,8 +645,10 @@ fn a_silent_peer_s_cut_opens_its_issue_and_starts_no_cut_on_its_own() {
     assert_eq!(opened["title"], "afkconvoy: the cut of v0.1.1 failed", "{opened}");
     assert!(opened["body"].as_str().unwrap().contains("h1, went silent"), "{opened}");
     assert!(!claimed(&world));
-    assert_eq!(standing(&world, "beta", late + 10), "failed");
-    assert_eq!(cut(&tick_as(&world, "beta", late + 10)), Vec::<String>::new());
+    assert_eq!(standing(&world, "beta", late + 10), "due");
+    assert_eq!(cut(&tick_as(&world, "beta", late + 10)), ["cut done"]);
+    // Its branch stands on the base tip: the next cut of v0.1.1 takes it up.
+    assert_eq!(cut_branches(&world), ["afkconvoy-cut/v0.1.1-10000"], "taken up, not deleted");
 }
 
 /// A cut takes no turn: while its gate hangs, a turn on the same repo lands.
@@ -719,8 +760,8 @@ fn first_cut(preset: bool) {
     assert_eq!(cut(&tick_as(&world, "beta", 10_010)), Vec::<String>::new());
     assert_eq!(world.worktrees().iter().filter(|p| p.ends_with("afkconvoy-cut")).count(), 1);
 
-    // Failure at gate leaves one PR and a record that resumes at gate. A
-    // peer still starts no cut, and the retry closes the reported failure.
+    // Failure at gate leaves a record that resumes at gate; the next due
+    // cut would start again, and the retry closes the reported failure.
     std::fs::write(world.root.join("red"), "red").unwrap();
     let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]);
     let screen = failed.stderr.clone();
@@ -737,8 +778,7 @@ fn first_cut(preset: bool) {
         == git(&world.clone, &["rev-parse", "HEAD^{tree}"]);
     assert_eq!(same_tree, preset, "a version already set still gets a commit");
     assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
-    assert_eq!(standing(&world, "beta", 10_110), "failed");
-    assert_eq!(cut(&tick_as(&world, "beta", 10_110)), Vec::<String>::new());
+    assert_eq!(standing(&world, "beta", 10_110), "due", "the open failure holds nothing back");
     std::fs::remove_file(world.root.join("red")).unwrap();
 
     let answer = finish(&world, &checkout);
@@ -982,7 +1022,7 @@ fn a_pr_labelled_for_a_minor_version_raises_the_minor_one() {
 }
 
 #[test]
-fn a_cut_whose_terminal_is_gone_opens_one_issue_and_no_cut_starts_while_it_is_open() {
+fn a_cut_whose_terminal_is_gone_opens_one_issue_and_the_next_cut_starts_while_it_is_open() {
     let world = cutting();
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     workers_leave(&world);
@@ -992,7 +1032,7 @@ fn a_cut_whose_terminal_is_gone_opens_one_issue_and_no_cut_starts_while_it_is_op
     assert_eq!(failed[0].1, [FAILED_LABEL], "the watch's to answer, not a human's");
     assert!(!claimed(&world));
 
-    assert_eq!(standing(&world, "alpha", 10_200), "failed");
+    assert_eq!(standing(&world, "alpha", 10_200), "due");
     let issue = failed[0].0;
     // Nothing waits for a human: doctor's finding, which starts a watch,
     // names the failure and the line that goes on with it here.
@@ -1006,7 +1046,7 @@ fn a_cut_whose_terminal_is_gone_opens_one_issue_and_no_cut_starts_while_it_is_op
     let evidence = found["evidence"].as_str().unwrap();
     assert!(evidence.starts_with(&format!("#{issue}: the step `set` failed: it was ended")));
     let fix = found["fix"].as_str().unwrap();
-    assert!(fix.contains("its checkout is kept here"), "{fix}");
+    assert!(fix.contains("Its checkout is kept here"), "{fix}");
     assert!(fix.contains("afkconvoy cut --from 'set'"), "{fix}");
     let plan = planned(&world, "alpha", 10_200);
     assert_eq!(plan["cut"]["failed"]["kept"], "here", "{plan}");
@@ -1017,7 +1057,7 @@ fn a_cut_whose_terminal_is_gone_opens_one_issue_and_no_cut_starts_while_it_is_op
 
     // Handed to a human, under the escalate label, it waits for one.
     hand_to_human(&world, issue);
-    assert_eq!(standing(&world, "alpha", 10_200), "failed");
+    assert_eq!(standing(&world, "alpha", 10_200), "due");
     let comment = world.comments(issue).pop().unwrap();
     let url = world.comment_url(issue, &comment);
     world.comment(issue, "A later investigation update.");
@@ -1036,11 +1076,9 @@ fn a_cut_whose_terminal_is_gone_opens_one_issue_and_no_cut_starts_while_it_is_op
     let waiting = &old["waiting_on_human"][0];
     assert!(waiting["why"].as_str().unwrap().contains("its terminal is gone"), "{waiting}");
     assert_eq!(waiting["url"], format!("https://gh/i/{issue}"));
-    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), Vec::<String>::new());
+    // A human's or not, the issue holds no cut back.
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), ["cut done"]);
     assert_eq!(failures(&world).len(), 1);
-
-    world.close_issue(failed[0].0);
-    assert_eq!(standing(&world, "alpha", 10_300), "due");
 }
 
 #[test]

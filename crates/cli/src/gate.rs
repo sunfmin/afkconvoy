@@ -795,6 +795,17 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
              (`afkconvoy config --help`); run `afkconvoy gate`, the whole gate"
         )
     })?;
+    // Its lane is held before its limit starts: a command declared through
+    // `afkconvoy exclusive` runs in it then, and waits for nothing more.
+    let _permit = if crate::exclusive::held() || !crate::config::heavy_gate(&gate.command) {
+        None
+    } else {
+        let lane = match which {
+            Which::Fast => afkconvoy_core::exclusive::Gate::Fast,
+            Which::Slow => afkconvoy_core::exclusive::Gate::Slow,
+        };
+        Some(crate::exclusive::Permit::alone(repo, &gate.command, lane)?)
+    };
     let run = run_command(
         repo,
         &gate.command,
@@ -844,7 +855,7 @@ Before running any gate, a worker's AFKCONVOY_ISSUE claim is read live. If anoth
 
 The config's gate_command runs on this worktree, with its log streaming to stderr and its gate limit, gate_seconds (default {const:GATE_SECONDS}). A green run on the committed tree is recorded with the tree, command, host, kind of machine (`macos-aarch64`) and elapsed seconds. The record has the tested commit as its parent, so its push sends only objects the remote lacks; parentless records already on the remote are still found by tree and command. A dirty worktree or artifacts the gate fails to ignore cannot produce a record. Its first green run records the fresh build for worker disk observations.
 
-With --fast or --slow, the fast gate's or the slow gate's command runs alone, as the ```yaml gates block of the config declares it (`afkconvoy config --help`), under that gate's own limit, `seconds`. A run here is put on record as neither, and neither stands in for the whole gate: a landing turn runs the fast gate per candidate and the slow gate per round, and records the whole gate only from both on one tree (`afkconvoy land --help`). A run past that gate's `budget_seconds` is green and says it is slow. A repo that declares no gates block answers an error.
+With --fast or --slow, the fast gate's or the slow gate's command runs alone, as the ```yaml gates block of the config declares it (`afkconvoy config --help`), under that gate's own limit, `seconds`, which its wait for its lane does not use: a command declared through `afkconvoy exclusive` is given its lane before its limit starts. A run here is put on record as neither, and neither stands in for the whole gate: a landing turn runs the fast gate per candidate and the slow gate per round, and records the whole gate only from both on one tree (`afkconvoy land --help`). A run past that gate's `budget_seconds` is green and says it is slow. A repo that declares no gates block answers an error.
 
 With --land, open the PR first. One turn makes the PR's merge commit on the current base tip, gates that commit, records green and lands it as a fast-forward. An unrecorded base tip is gated alone first; worker turns wait while it is red and the fleet dispatches its repair. Only the fleet-lock issue's repair may take a turn on a red base. `land --help` describes every outcome.
 
