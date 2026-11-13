@@ -539,7 +539,6 @@ fn an_issue_at_a_human_s_stage_is_not_dispatched_and_holds_no_claim_and_no_slot(
     let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
     let row = plan["excluded"].as_array().unwrap().iter().find(|row| row["number"] == 7).unwrap();
     assert!(row["reason"].as_str().unwrap().contains("waits for a human"), "{row}");
-    assert_eq!(plan["free_slots"], 1);
     world.issue(8, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1300)), ["dispatch 8 done"]);
     assert_eq!(world.claims(), [(8, "alpha".to_string())]);

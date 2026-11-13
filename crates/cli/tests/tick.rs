@@ -27,7 +27,7 @@ fn did(ticked: &Value) -> Vec<String> {
         .collect()
 }
 
-/// A world whose fleet holds two claims at once, with `numbers` ready.
+/// A world with `numbers` ready.
 fn backlog(numbers: &[u64]) -> World {
     let world = World::new();
     world.list_checkout(&world.clone);
@@ -42,19 +42,22 @@ fn alpha(numbers: &[u64]) -> Vec<(u64, String)> {
 }
 
 #[test]
-fn a_tick_dispatches_into_the_free_slots_lowest_number_first() {
+fn a_tick_dispatches_the_whole_frontier_lowest_number_first() {
     let world = backlog(&[9, 3, 5]);
     let ticked = tick(&world, "1000");
-    assert_eq!(did(&ticked), ["dispatch 3 done", "dispatch 5 done", "heartbeat done"]);
-    assert_eq!(ticked["held"], 2);
-    assert_eq!(ticked["frontier_remaining"], 1);
+    assert_eq!(
+        did(&ticked),
+        ["dispatch 3 done", "dispatch 5 done", "dispatch 9 done", "heartbeat done"]
+    );
+    assert_eq!(ticked["held"], 3);
+    assert_eq!(ticked["frontier_remaining"], 0);
     assert_eq!(ticked["errors"], json!([]));
-    assert_eq!(world.claims(), alpha(&[3, 5]));
+    assert_eq!(world.claims(), alpha(&[3, 5, 9]));
 
-    // at the bound: the next tick takes nothing
+    // nothing left: the next tick takes nothing
     let again = tick(&world, "1090");
     assert_eq!(did(&again), ["heartbeat done"]);
-    assert_eq!(world.claims(), alpha(&[3, 5]));
+    assert_eq!(world.claims(), alpha(&[3, 5, 9]));
 }
 
 #[test]
@@ -239,8 +242,9 @@ fn a_brief_waits_for_the_harness_to_end_its_quiet_startup_working_episode() {
 
 #[test]
 fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
-    let world = backlog(&[3, 5, 9]);
+    let world = backlog(&[3, 5]);
     tick(&world, "1000");
+    world.issue(9, &["ready-for-agent"]);
     let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
     let tmp = world.tmp(std::path::Path::new(&worktree));
     assert!(tmp.is_dir(), "its worker's TMPDIR");
@@ -742,9 +746,12 @@ fn a_start_that_failed_holds_its_claim_and_its_slot() {
     let world = backlog(&[3, 5, 9]);
     world.with_orca(|orca| orca["create_fails"] = json!([3]));
     let ticked = tick(&world, "1000");
-    assert_eq!(did(&ticked), ["dispatch 3 failed", "dispatch 5 done", "heartbeat done"]);
-    assert_eq!(ticked["held"], 2);
-    assert_eq!(world.claims(), alpha(&[3, 5]));
+    assert_eq!(
+        did(&ticked),
+        ["dispatch 3 failed", "dispatch 5 done", "dispatch 9 done", "heartbeat done"]
+    );
+    assert_eq!(ticked["held"], 3);
+    assert_eq!(world.claims(), alpha(&[3, 5, 9]));
 }
 
 #[test]
@@ -958,14 +965,14 @@ fn run_ticks_until_stopped_and_says_what_each_tick_did() {
     assert_eq!(
         lines,
         [
-            "tick 1: dispatched #3, #5 · holding 2 · frontier 1 · next in 90s",
+            "tick 1: dispatched #3, #5, #9 · holding 3 · frontier 0 · next in 90s",
             // their workers, started a moment ago, are left a grace period
-            "tick 2: nothing to do · holding 2 · frontier 1 · next in 90s",
+            "tick 2: nothing to do · holding 3 · frontier 0 · next in 90s",
         ]
     );
     assert_eq!(stopped["ticks"], 2);
     // stopping is exiting: nothing is released on the way out
-    assert_eq!(world.claims(), alpha(&[3, 5]));
+    assert_eq!(world.claims(), alpha(&[3, 5, 9]));
 }
 
 #[test]
@@ -1119,8 +1126,9 @@ fn a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled() {
         ("transferred", "the issue was transferred to acme/elsewhere#1003"),
         ("missing", "there is no such issue"),
     ] {
-        let world = backlog(&[3, 5, 9]);
+        let world = backlog(&[3, 5]);
         tick(&world, "1000");
+        world.issue(9, &["ready-for-agent"]);
         let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
         gone(&world, 3, how, 0);
 
@@ -1184,8 +1192,9 @@ fn an_issue_deleted_before_its_dispatch_claims_nothing_and_takes_no_slot() {
 
 #[test]
 fn a_claimed_issue_the_rebuild_cannot_read_is_an_error_of_that_tick_alone() {
-    let world = backlog(&[3, 5, 9]);
+    let world = backlog(&[3, 5]);
     tick(&world, "1000");
+    world.issue(9, &["ready-for-agent"]);
     world.with_gh(|gh| {
         gh["issues"].as_array_mut().unwrap().retain(|issue| issue["number"] != 3);
         gh["fail"] = json!(["issues/3 --jq"]);

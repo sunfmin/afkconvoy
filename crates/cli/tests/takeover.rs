@@ -229,7 +229,7 @@ fn a_slept_hosts_next_tick_stops_its_taken_worker_and_keeps_unpushed_work() {
 }
 
 #[test]
-fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
+fn a_tick_reclaims_stale_claims_ahead_of_the_frontier() {
     let world = World::new();
     world.list_checkout(&world.clone);
     for issue in [2, 3, 4, 5, 6, 8] {
@@ -245,19 +245,27 @@ fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
     let ticked = tick_as(&world, "alpha", "h1", LATER);
     assert_eq!(
         did(&ticked),
-        ["unlock 8 done", "reclaim 3 done", "reclaim 4 done", "heartbeat done"],
-        "lowest first, and nothing off the frontier while stale work waits"
+        [
+            "unlock 8 done",
+            "reclaim 3 done",
+            "reclaim 4 done",
+            "reclaim 6 done",
+            "dispatch 2 done",
+            "heartbeat done"
+        ],
+        "lowest first, and stale work ahead of the frontier"
     );
-    assert_eq!(ticked["held"], 2);
+    assert_eq!(ticked["held"], 4);
     assert_eq!(
         world.claims(),
         [
+            (2, "alpha".to_string()),
             (3, "alpha".to_string()),
             (4, "alpha".to_string()),
             (5, "live".to_string()),
-            (6, "dead".to_string()),
+            (6, "alpha".to_string()),
         ],
-        "#6, past the free slots, is left stale; the lock on closed #8 is gone"
+        "the live peer's #5 is left alone; the lock on closed #8 is gone"
     );
     // each take is one push of the claim ref; the heartbeat goes ahead of the first
     assert_eq!(
@@ -266,7 +274,10 @@ fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
             "refs/convoy/claim/8",
             "refs/convoy/heartbeat/alpha",
             "refs/convoy/claim/3",
-            "refs/convoy/claim/4"
+            "refs/convoy/claim/4",
+            "refs/convoy/claim/6",
+            "refs/convoy/target/2",
+            "refs/convoy/claim/2"
         ]
     );
     // a claim taken is continued: each has a worker in a worktree
@@ -277,13 +288,7 @@ fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
         .iter()
         .filter_map(|row| row["linkedIssue"].as_u64())
         .collect();
-    assert_eq!(linked, [3, 4]);
-
-    // #6 is taken once a slot is free
-    world.close(3, "completed");
-    let next = did(&tick_as(&world, "alpha", "h1", LATER + 90));
-    assert!(next.contains(&"reclaim 6 done".to_string()), "{next:?}");
-    assert!(!next.iter().any(|step| step.starts_with("dispatch")), "{next:?}");
+    assert_eq!(linked, [3, 4, 6, 2]);
 }
 
 #[test]
@@ -353,16 +358,16 @@ fn a_start_takes_every_claim_stamped_with_its_host_whatever_the_heartbeat() {
         "start: took #3, #7, #9 stamped with this host · swept 1 dead heartbeat(s) that held \
          nothing"
     );
-    // over its bound of two, it continues what it took and takes nothing new
+    // it continues what it took, and starts the frontier beside them
     assert_eq!(
         lines[1],
-        "tick 1: continued #3, #7, #9 · holding 2 · 1 past the bound · frontier 1 · next in 90s"
+        "tick 1: dispatched #2 · continued #3, #7, #9 · holding 4 · frontier 0 · next in 90s"
     );
-    assert!(!lines[2].contains("dispatched"), "{}", lines[2]);
     assert!(!lines.iter().skip(1).any(|line| line.starts_with("start:")), "taken once: {lines:?}");
     assert_eq!(
         world.claims(),
         [
+            (2, "alpha".to_string()),
             (3, "alpha".to_string()),
             (5, "peer".to_string()),
             (7, "alpha".to_string()),

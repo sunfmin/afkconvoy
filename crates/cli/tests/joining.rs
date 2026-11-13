@@ -217,9 +217,8 @@ fn a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick()
         assert!(line.contains(expected), "missing {expected}: {line}");
     }
     assert_eq!(open_terminals(&world, &dir), terminals, "the idle worker took the answer");
-    world.issue(8, &["ready-for-agent"]);
     let next = tick(&world, 1801);
-    assert_eq!(next["frontier_remaining"], 1, "the handed worker holds its slot: {next}");
+    assert_eq!(next["held"], 1, "the handed worker is at work: {next}");
     assert_eq!(turn_answer_lines(&world).len(), 1, "no duplicate handoff");
     // The worker asks again: its turn replaces the handoff receipt.
     world.with_orca(|orca| {

@@ -131,8 +131,8 @@ fn already_satisfied_with_nothing_on_the_branch_closes_the_issue() {
     let world = fleet(1000);
     world.list_checkout(&world.clone);
     world.issue(9, &["ready-for-agent"]);
-    world.issue(10, &["ready-for-agent"]);
     assert_eq!(did(&tick(&world, 1090))[1], "dispatch 9 done");
+    world.issue(10, &["ready-for-agent"]);
     declare(&world, "escalate");
     declare(&world, "already-satisfied");
     let dir = worktree(&world);

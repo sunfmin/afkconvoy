@@ -368,7 +368,8 @@ fn a_claim_whose_worker_died_is_continued_in_the_worktree_still_here() {
 
     // the same worktree, with everything in it, and a new worker told to inspect it first
     let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
-    assert!(!calls.contains(&"worktree create".to_string()), "{calls:?}");
+    let created = calls.iter().filter(|call| *call == "worktree create").count();
+    assert_eq!(created, 1, "only #9's: {calls:?}");
     assert!(!calls.contains(&"worktree rm".to_string()), "{calls:?}");
     assert_eq!(std::fs::read_to_string(dir.join("scratch.txt")).unwrap(), "uncommitted");
     assert_eq!(open_terminals(&world, &dir).len(), 1);

@@ -76,7 +76,6 @@ fn plan_assembles_the_working_set() {
     assert_eq!(plan["stale"][0]["instance"], "dead");
     assert_eq!(plan["stale"][0]["sha"], world.remote(&["rev-parse", "refs/convoy/claim/3"]));
     assert_eq!(numbers(&plan["stale_closed"]), [10]);
-    assert_eq!(plan["free_slots"], 1, "the idle landing #4 takes none of the two slots");
 }
 
 #[test]
@@ -106,7 +105,6 @@ fn an_unclaimed_ready_issue_is_on_the_frontier_in_number_order() {
     let plan = world.afk(&["plan"]).ok();
     assert_eq!(numbers(&plan["frontier"]), [3, 7, 12]);
     assert_eq!(plan["frontier"][0]["title"], "issue 3");
-    assert_eq!(plan["free_slots"], 2);
 }
 
 #[test]

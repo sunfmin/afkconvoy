@@ -250,7 +250,7 @@ fn a_retired_concurrency_is_info_wherever_it_is_named() {
     for (named, kept) in [(Some(4), None), (None, Some(5)), (Some(4), Some(5))] {
         let world = World::new();
         let more = named.map(|named| format!("\nconcurrency: {named}")).unwrap_or_default();
-        world.set_gate_config(&format!("gate_command: ./gate.sh\ngate_seconds: 600{more}"));
+        world.set_gate_config(&format!("gate_command: ./gate.sh\ngate_seconds: 900{more}"));
         if let Some(kept) = kept {
             world.say_concurrency(&world.clone, kept);
         }
@@ -366,7 +366,6 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     let issues = &answer["issues"];
     assert_eq!(issues["frontier"], json!([]));
     assert_eq!(issues["excluded"][1]["reason"], "no ready-for-agent label");
-    assert_eq!(issues["free_slots"], 1);
 
     // the one finding is the one this world has: its `run` ended
     assert_eq!(answer["findings"].as_array().unwrap().len(), 1, "{answer}");

@@ -484,13 +484,11 @@ fn the_next_stages_worker_starts_beside_the_frontier_with_no_bound_between_them(
     assert_eq!(did(&first), ["dispatch 7 done", "dispatch 8 done"]);
     assert_eq!((&first["held"], &first["frontier_remaining"]), (&json!(2), &json!(0)));
 
-    // A verdict starts its issue's next stage, and an issue new to the
-    // frontier starts beside it.
-    world.issue(5, &["flow:feature"]);
+    // A verdict starts its issue's next stage beside the worker of #8.
     declare(&world, 7, "build", "pass", &["--text", "Built."]);
     let second = tick(&world, 1090);
-    assert_eq!(did(&second), ["advance 7 done", "dispatch 7 done", "dispatch 5 done"]);
-    assert_eq!((&second["held"], &second["frontier_remaining"]), (&json!(3), &json!(0)));
+    assert_eq!(did(&second), ["advance 7 done", "dispatch 7 done"]);
+    assert_eq!((&second["held"], &second["frontier_remaining"]), (&json!(2), &json!(0)));
 }
 
 /// `FEATURE` under these breakers, its `build` naming a consult.
@@ -730,20 +728,18 @@ fn run_starts_what_a_verdict_left_the_next_tick_with_no_sleep() {
 }
 
 #[test]
-fn run_gives_the_slot_a_verdict_freed_to_the_stage_it_led_to() {
+fn run_starts_the_next_stage_in_the_tick_that_read_its_verdict() {
     let world = bound();
     world.issue(7, &["flow:feature"]);
-    world.issue(8, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     declare(&world, 7, "build", "pass", &["--text", "Built."]);
 
-    // #8, never started, has no slot to start in.
     let (lines, _) = run(&world, "1090", "1", &["--second-ms", "0"]);
     assert_eq!(
         lines,
         [
             "woken during tick 1: tick 2 follows",
-            "tick 1: advanced #7 → review · dispatched #7 · holding 1 · frontier 1 · next in 90s",
+            "tick 1: advanced #7 → review · dispatched #7 · holding 1 · frontier 0 · next in 90s",
         ]
     );
 }
