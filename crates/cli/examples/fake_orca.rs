@@ -262,8 +262,13 @@ fn worktree_ps(st: &mut State) -> ! {
                         return None;
                     }
                     if agent["paneKey"].is_null() {
-                        agent["paneKey"] =
-                            json!(format!("{}:pane", terminal["handle"].as_str().unwrap()));
+                        agent["paneKey"] = json!(format!(
+                            "{}:{}",
+                            terminal["tabId"]
+                                .as_str()
+                                .unwrap_or(terminal["handle"].as_str().unwrap()),
+                            terminal["leafId"].as_str().unwrap_or("pane")
+                        ));
                     }
                     Some(agent)
                 })
@@ -721,6 +726,8 @@ fn terminal_list(st: &State) -> ! {
             json!({"handle": t["handle"], "worktreePath": t["worktreePath"],
                 "title": t["title"], "ptyId": t["ptyId"].as_str().unwrap_or(t["handle"].as_str().unwrap()),
                 "incarnationId": t["incarnationId"].as_str().unwrap_or("fake-runtime"),
+                "tabId": t["tabId"].as_str().unwrap_or(t["handle"].as_str().unwrap()),
+                "leafId": t["leafId"].as_str().unwrap_or("pane"),
                 "connected": t["connected"].as_bool().unwrap_or(true), "writable": true,
                 "lastOutputAt": t["lastOutputAt"].as_u64().unwrap_or(i as u64)})
         })
@@ -760,7 +767,9 @@ fn terminal_show(st: &State) -> ! {
     done(
         st,
         json!({"terminal": {"handle": terminal["handle"],
-        "tabId": terminal["handle"], "leafId": "pane", "lastOutputAt": terminal["lastOutputAt"]}}),
+        "tabId": terminal["tabId"].as_str().unwrap_or(terminal["handle"].as_str().unwrap()),
+        "leafId": terminal["leafId"].as_str().unwrap_or("pane"),
+        "lastOutputAt": terminal["lastOutputAt"]}}),
     )
 }
 
