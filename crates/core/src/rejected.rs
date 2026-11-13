@@ -22,16 +22,9 @@ fn the_first_of_a_vec_that_may_be_empty(numbers: &Vec<u64>) -> u64 {
 mod relied_on {
     use flux_rs::attrs::*;
 
-    use crate::config::Config;
     use crate::lease::{stamp_due, stamp_stale};
     use crate::position::Count;
     use crate::team::Stage;
-
-    /// A config's concurrency is a slot at least.
-    #[spec(fn(&Config) -> usize{n: n > 0})]
-    fn a_config_has_a_slot(config: &Config) -> usize {
-        config.concurrency()
-    }
 
     /// A count is never past its breaker.
     #[spec(fn(&Count[@c]) -> u64{v: v <= c.limit})]
