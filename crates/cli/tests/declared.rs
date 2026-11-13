@@ -24,16 +24,18 @@ fn did(ticked: &Value) -> Vec<String> {
         .collect()
 }
 
-/// A world whose two slots are taken at 1000, by workers on #7 and #8, with
-/// `more` ready on the frontier.
+/// A world whose fleet started workers on #7 and #8 at 1000, with `more`
+/// ready on the frontier since.
 fn full(more: &[u64]) -> World {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
-    for issue in [7, 8].iter().chain(more) {
-        world.issue(*issue, &["ready-for-agent"]);
+    for issue in [7, 8] {
+        world.issue(issue, &["ready-for-agent"]);
     }
     let first = did(&tick(&world, 1000));
     assert_eq!(first[..2], ["dispatch 7 done", "dispatch 8 done"]);
+    for issue in more {
+        world.issue(*issue, &["ready-for-agent"]);
+    }
     world
 }
 
@@ -60,17 +62,23 @@ fn run_line(world: &World, now: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_claim_whose_worker_declared_frees_its_slot_for_the_frontier() {
+fn a_claim_whose_worker_declared_takes_no_slot_and_is_said_apart() {
     let world = full(&[9, 10]);
     declare(&world, "phase=escalate", 1050);
 
-    // Within the grace of its worker the verdict waits, and its slot does not.
+    // Within the grace of its worker the verdict waits, and the frontier does not.
     let ticked = tick(&world, 1100);
     assert_eq!(
         did(&ticked),
-        ["judge 7 nothing", "judge 8 nothing", "dispatch 9 done", "heartbeat done"]
+        [
+            "judge 7 nothing",
+            "judge 8 nothing",
+            "dispatch 9 done",
+            "dispatch 10 done",
+            "heartbeat done"
+        ]
     );
-    assert_eq!(ticked["held"], 3);
+    assert_eq!(ticked["held"], 4);
 
     let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1110"]).ok();
     let declared: Vec<(u64, bool)> = plan["mine"]
@@ -79,8 +87,7 @@ fn a_claim_whose_worker_declared_frees_its_slot_for_the_frontier() {
         .iter()
         .map(|mine| (mine["number"].as_u64().unwrap(), mine["declared"].as_bool().unwrap()))
         .collect();
-    assert_eq!(declared, [(7, false), (8, true), (9, false)]);
-    assert_eq!(plan["free_slots"], 0, "the two slots are taken by #7 and #9");
+    assert_eq!(declared, [(7, false), (8, true), (9, false), (10, false)]);
 
     let panel = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
@@ -90,37 +97,39 @@ fn a_claim_whose_worker_declared_frees_its_slot_for_the_frontier() {
     let page = String::from_utf8(panel.stdout).unwrap();
     let gauges = page.split("<dl class=\"gauges\">").nth(1).unwrap().split("</dl>").next();
     let gauges = gauges.unwrap();
-    assert!(gauges.contains("<dt>Claims held</dt><dd>2 <small>of 2</small></dd>"), "{gauges}");
+    assert!(gauges.contains("<dt>Claims held</dt><dd>3</dd>"), "{gauges}");
     assert!(gauges.contains("<dt>Taking no slot</dt><dd>1</dd>"), "{gauges}");
 
-    // The line says the three claims apart: two of two slots, and one declared.
+    // The line says the four claims apart: three at work, and one declared.
     assert_eq!(
         run_line(&world, "1120"),
-        ["tick 1: nothing to do · holding 2/2 · 1 taking no slot · frontier 1 · next in 90s"]
+        ["tick 1: nothing to do · holding 3 · 1 taking no slot · frontier 0 · next in 90s"]
     );
 
-    // Once the grace runs out it is acted on as ever, and frees no slot it never took.
+    // Once the grace runs out it is acted on as ever.
     let ticked = tick(&world, 1400);
     assert_eq!(did(&ticked)[..2], ["judge 7 nothing", "judge 8 done"]);
-    assert!(!did(&ticked).contains(&"dispatch 10 done".to_string()), "{ticked}");
     assert_eq!(world.labels(8), ["ready-for-human"]);
-    assert_eq!(ticked["held"], 2);
+    assert_eq!(ticked["held"], 3);
 }
 
 #[test]
-fn a_verdict_from_an_earlier_claim_frees_no_slot() {
+fn a_verdict_from_an_earlier_claim_is_not_its_own() {
     let world = full(&[9]);
     // Left on the issue before the claim held now was made at 1000.
     declare(&world, "phase=escalate", 900);
     let ticked = tick(&world, 1100);
-    assert_eq!(did(&ticked), ["judge 7 nothing", "judge 8 nothing", "heartbeat done"]);
-    assert_eq!(ticked["held"], 2);
+    assert_eq!(
+        did(&ticked),
+        ["judge 7 nothing", "judge 8 nothing", "dispatch 9 done", "heartbeat done"]
+    );
+    assert_eq!(ticked["held"], 3);
     let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1110"]).ok();
     assert_eq!(plan["mine"][1]["declared"], false);
 }
 
 #[test]
-fn a_worker_started_again_under_a_declared_claim_waits_for_a_free_slot() {
+fn a_worker_started_again_under_a_declared_claim_is_continued() {
     // Every blocker it named has closed by the time its grace runs out.
     let blocked = |world: &World| {
         world.issue(5, &[]);
@@ -128,16 +137,6 @@ fn a_worker_started_again_under_a_declared_claim_waits_for_a_free_slot() {
         declare(world, "phase=blocked blocked_by=5", 1050);
     };
 
-    // The two slots are taken by #7 and #9: the start waits, and the claim is held.
-    let world = full(&[9]);
-    blocked(&world);
-    assert_eq!(did(&tick(&world, 1100))[2], "dispatch 9 done");
-    let ticked = tick(&world, 1400);
-    assert_eq!(did(&ticked)[1], "judge 8 nothing");
-    assert_eq!(world.claims().len(), 3);
-    assert_eq!(ticked["held"], 3);
-
-    // With a slot free, it is started again into it.
     let world = full(&[]);
     blocked(&world);
     let ticked = tick(&world, 1400);

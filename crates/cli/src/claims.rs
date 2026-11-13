@@ -728,7 +728,7 @@ Errors: no run is claimed under that name — it was ended already, or never sta
 ## What trips you up
 
 - It ends nothing itself: the fleet ends the run, at its next tick. A worker that goes on working after it is cut short.
-- A worker that never runs it loses nothing but time: the fleet ends the run once the worker is gone, or has been stopped for the grace period — five minutes in which the run holds a slot of the concurrency no issue can be worked in.
+- A worker that never runs it loses nothing but time: the fleet ends the run once the worker is gone, or has been stopped for the grace period — five minutes in which the run is held at work for nothing.
 - The record names the claim it was read from: left behind, it says nothing of the next run of the same patrol."#;
 
 #[cfg(test)]

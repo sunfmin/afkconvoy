@@ -69,6 +69,11 @@ pub enum TickStep {
     StageLabel { issue: u64 },
     /// Refresh my heartbeat, if it is due.
     Heartbeat,
+    /// Read admission again before one more start into a free slot, the
+    /// pass having started one since it last read it: one reading per start,
+    /// so that each start's load is counted before the next. `Done`: it
+    /// admits; `Held`: it holds. It takes no slot.
+    Admit,
 }
 
 /// How a step ended, as the pass reads it.
@@ -118,6 +123,9 @@ pub enum Outcome {
     /// left the frontier meanwhile. Nothing was claimed or started, no slot
     /// was taken, and nothing failed.
     Closed,
+    /// `Admit` read the host and the accounts again, and admission holds:
+    /// the pass starts nothing more (`WorkingSet::held_back`).
+    Held,
     /// It failed. Whatever claim it was about is still held.
     Failed,
 }
@@ -295,7 +303,10 @@ impl Pass {
         self.did.iter().any(|(step, outcome)| {
             !matches!(
                 step,
-                TickStep::Heartbeat | TickStep::Board { .. } | TickStep::StageLabel { .. }
+                TickStep::Heartbeat
+                    | TickStep::Admit
+                    | TickStep::Board { .. }
+                    | TickStep::StageLabel { .. }
             ) && matches!(
                 outcome,
                 Outcome::Done
@@ -314,6 +325,7 @@ impl Pass {
     /// started into a free slot (`WorkingSet::held_back`).
     pub fn held_back(&self, set: &WorkingSet) -> bool {
         held_back(set, self.bound, self.held)
+            || self.did.contains(&(TickStep::Admit, Outcome::Held))
     }
 
     /// Whether a cut of mine runs as the pass over `set` ends: the pass
@@ -324,15 +336,15 @@ impl Pass {
     }
 
     /// Whether the pass left the tick after it a worker to start that it
-    /// could not start itself: under a bound of `concurrency` claims a slot
+    /// could not start itself: under `bound` claims a slot
     /// is free, and it advanced an issue or settled one. What follows either
     /// — a consult, the join, an issue the landing unblocked — is on no
     /// frontier before the next rebuild. Not an issue the pass started the
     /// next stage's worker on: nothing is left of that. A slot any other
     /// step freed was the pass's own to fill: it ends claims before it takes
     /// any.
-    pub fn follow_up_due(&self, concurrency: usize) -> bool {
-        if self.held >= concurrency {
+    pub fn follow_up_due(&self, bound: usize) -> bool {
+        if self.held >= bound {
             return false;
         }
         for (step, outcome) in &self.did {
@@ -381,9 +393,9 @@ fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
     false
 }
 
-/// Runs one pass over `set` under a bound of `concurrency` claims — what
-/// `WorkingSet::bound` makes of the config's — with `held` slots taken as it
-/// starts (`WorkingSet::held`): settle the
+/// Runs one pass over `set` under a bound of `bound` claims — `UNBOUNDED` in a
+/// fleet, where admission alone decides each start — with `held` slots taken
+/// as it starts (`WorkingSet::held`): settle the
 /// claims whose work landed, ask after the workers
 /// not on the train yet — starting, into the slot its claim freed, the worker
 /// of the stage a verdict led to — end the patrol runs that are over, delete the stale
@@ -391,7 +403,8 @@ fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
 /// human the unclaimed issues that call for one, take stale
 /// claims, then the due patrols, then frontier issues into the free slots,
 /// lowest number first — none of
-/// these while admission holds (`WorkingSet::held_back`) —
+/// these while admission holds (`WorkingSet::held_back`), read again before
+/// each start after the first (`TickStep::Admit`) —
 /// start the repo's cut where it is due and the pass ends idle or the age bound is reached
 /// (`cut::starts`), having ended one of mine that is over beside the patrols,
 /// open the issue for a slow gate that has none, bring the status boards and the `stage:` labels up to date, then refresh
@@ -405,19 +418,19 @@ fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
 /// issue's. The frontier it is handed holds lock issues only, and no patrol
 /// in it is due.
 ///
-/// The claims held afterwards are at most `concurrency`, or no more than
+/// The claims held afterwards are at most `bound`, or no more than
 /// before: a pass never takes a claim past the bound.
-#[spec(fn(set: &WorkingSet, concurrency: usize, held: usize, carry_out: F)
-    -> Pass{pass: pass.held <= concurrency || pass.held <= held})]
-pub fn run_pass<F>(set: &WorkingSet, concurrency: usize, held: usize, mut carry_out: F) -> Pass
+#[spec(fn(set: &WorkingSet, bound: usize, held: usize, carry_out: F)
+    -> Pass{pass: pass.held <= bound || pass.held <= held})]
+pub fn run_pass<F>(set: &WorkingSet, bound: usize, held: usize, mut carry_out: F) -> Pass
 where
     F: FnMut(TickStep) -> Outcome,
 {
     let mut did = Vec::new();
-    let slots = Slots::new(concurrency, held);
+    let slots = Slots::new(bound, held);
     let slots = end_claims(set, Sweep::Landed, slots, &mut did, &mut carry_out);
     let slots = end_claims(set, Sweep::Stopped, slots, &mut did, &mut carry_out);
-    let concurrency = slots.limit();
+    let bound = slots.limit();
     let held = end_patrols(set, slots.held(), &mut did, &mut carry_out);
     let ends_cut =
         |cut: &cut::Row| matches!(cut.standing, cut::Standing::Running | cut::Standing::StaleRun);
@@ -429,11 +442,11 @@ where
         let step = TickStep::Unlock { issue: lock.number };
         did.push((step, carry_out(step)));
     }
-    let held = hand_over(set, concurrency, held, &mut did, &mut carry_out);
-    let held = admit(set, concurrency, held, &mut did, &mut carry_out);
+    let held = hand_over(set, bound, held, &mut did, &mut carry_out);
+    let held = admit(set, bound, held, &mut did, &mut carry_out);
     finish_pass(set, held, &mut did, &mut carry_out);
     let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
-    Pass { did, held, bound: concurrency, frontier_remaining: left }
+    Pass { did, held, bound, frontier_remaining: left }
 }
 
 /// Takes the remaining steps that neither use nor free a claim slot: the
@@ -712,12 +725,12 @@ pub fn takes(set: &WorkingSet) -> Vec<TickStep> {
 /// Hands each unclaimed issue that calls for a human to one → the claims
 /// held. The claim an escalation is made under is taken into a free slot and
 /// released as its last step, so only one that failed half way is still held.
-#[spec(fn(set: &WorkingSet, concurrency: usize, held: usize, did: &mut Vec<(TickStep, Outcome)>,
+#[spec(fn(set: &WorkingSet, bound: usize, held: usize, did: &mut Vec<(TickStep, Outcome)>,
         carry_out: &mut F)
-    -> usize{after: held <= after && (after <= concurrency || after == held)})]
+    -> usize{after: held <= after && (after <= bound || after == held)})]
 fn hand_over<F>(
     set: &WorkingSet,
-    concurrency: usize,
+    bound: usize,
     held: usize,
     did: &mut Vec<(TickStep, Outcome)>,
     carry_out: &mut F,
@@ -725,7 +738,7 @@ fn hand_over<F>(
 where
     F: FnMut(TickStep) -> Outcome,
 {
-    let mut slots = Slots::new(concurrency, held);
+    let mut slots = Slots::new(bound, held);
     for issue in &set.escalating {
         // What stays true on every turn, which Flux does not find alone.
         qualifier!(now: int, limit: int, before: int; now <= limit || now == before);
@@ -744,21 +757,21 @@ where
 }
 
 /// Whether admission held back a worker a pass that ended holding `held`
-/// under a bound of `concurrency` would have started (`WorkingSet::held_back`):
+/// under `bound` would have started (`WorkingSet::held_back`):
 /// there was one to start, and a slot to start it in — admission holding, the
 /// pass took none after it would have.
-fn held_back(set: &WorkingSet, concurrency: usize, held: usize) -> bool {
-    !set.held_back.is_empty() && !takes(set).is_empty() && held < concurrency
+fn held_back(set: &WorkingSet, bound: usize, held: usize) -> bool {
+    !set.held_back.is_empty() && !takes(set).is_empty() && held < bound
 }
 
 /// Carries out `takes` while a slot is free, unless admission holds → the
 /// claims held. A busy host starts no new worker; the rest of the pass goes on.
-#[spec(fn(set: &WorkingSet, concurrency: usize, held: usize,
+#[spec(fn(set: &WorkingSet, bound: usize, held: usize,
         did: &mut Vec<(TickStep, Outcome)>, carry_out: &mut F)
-    -> usize{after: held <= after && (after <= concurrency || after == held)})]
+    -> usize{after: held <= after && (after <= bound || after == held)})]
 fn admit<F>(
     set: &WorkingSet,
-    concurrency: usize,
+    bound: usize,
     held: usize,
     did: &mut Vec<(TickStep, Outcome)>,
     carry_out: &mut F,
@@ -769,18 +782,18 @@ where
     if !set.held_back.is_empty() {
         return held;
     }
-    fill_slots(&takes(set), concurrency, held, did, carry_out)
+    fill_slots(&takes(set), bound, held, did, carry_out)
 }
 
 /// Carries out `takes` while a slot is free → the claims held. A fleet over
 /// its bound — after a takeover — takes nothing; what is past the free slots
 /// is left as it is.
-#[spec(fn(takes: &[TickStep], concurrency: usize, held: usize, did: &mut Vec<(TickStep, Outcome)>,
+#[spec(fn(takes: &[TickStep], bound: usize, held: usize, did: &mut Vec<(TickStep, Outcome)>,
         carry_out: &mut F)
-    -> usize{after: held <= after && (after <= concurrency || after == held)})]
+    -> usize{after: held <= after && (after <= bound || after == held)})]
 fn fill_slots<F>(
     takes: &[TickStep],
-    concurrency: usize,
+    bound: usize,
     held: usize,
     did: &mut Vec<(TickStep, Outcome)>,
     carry_out: &mut F,
@@ -788,7 +801,8 @@ fn fill_slots<F>(
 where
     F: FnMut(TickStep) -> Outcome,
 {
-    let mut slots = Slots::new(concurrency, held);
+    let mut slots = Slots::new(bound, held);
+    let mut started = false;
     for step in takes {
         // What stays true on every turn, which Flux does not find alone.
         qualifier!(now: int, limit: int, before: int; now <= limit || now == before);
@@ -796,7 +810,18 @@ where
         if !slots.has_free() {
             break;
         }
+        // The reading the pass opened with admitted the first start; each
+        // start after one is admitted by a reading of its own.
+        if started {
+            let admitted = carry_out(TickStep::Admit);
+            did.push((TickStep::Admit, admitted));
+            if admitted == Outcome::Held {
+                break;
+            }
+        }
         let outcome = carry_out(*step);
+        started |=
+            !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone | Outcome::Closed);
         did.push((*step, outcome));
         // A start that failed after its claim was won still holds the claim.
         if !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone | Outcome::Closed) {
@@ -805,6 +830,11 @@ where
     }
     slots.held()
 }
+
+/// The bound a fleet runs its pass under: none. No number of workers bounds
+/// a fleet; admission alone decides each start (docs/adr/0072). A smaller
+/// bound is a test's, of how a pass takes and frees its slots.
+pub const UNBOUNDED: usize = usize::MAX;
 
 /// The loop's sleep while there is work, or a claim held, in seconds.
 pub const BUSY_SECONDS: u64 = 90;
@@ -859,16 +889,16 @@ mod rejected {
 
     /// A claim taken with no look at the bound.
     #[should_fail]
-    fn a_claim_taken_past_the_bound(concurrency: usize, held: usize) {
-        let mut slots = Slots::new(concurrency, held);
+    fn a_claim_taken_past_the_bound(bound: usize, held: usize) {
+        let mut slots = Slots::new(bound, held);
         slots.take();
     }
 
     /// A worker started again under a claim whose worker declared, with no
     /// look at the bound.
     #[should_fail]
-    fn a_declared_claim_restarted_past_the_bound(concurrency: usize, held: usize) {
-        let mut slots = Slots::new(concurrency, held);
+    fn a_declared_claim_restarted_past_the_bound(bound: usize, held: usize) {
+        let mut slots = Slots::new(bound, held);
         slots.restart_declared();
     }
 }
@@ -888,14 +918,14 @@ mod relied_on {
     }
 
     /// A pass that starts within the bound ends within it.
-    #[spec(fn(set: &WorkingSet, concurrency: usize, held: usize{held <= concurrency})
-        -> Pass{pass: pass.held <= concurrency})]
+    #[spec(fn(set: &WorkingSet, bound: usize, held: usize{held <= bound})
+        -> Pass{pass: pass.held <= bound})]
     fn a_pass_within_the_bound_stays_within_it(
         set: &WorkingSet,
-        concurrency: usize,
+        bound: usize,
         held: usize,
     ) -> Pass {
-        run_pass(set, concurrency, held, |_| Outcome::Failed)
+        run_pass(set, bound, held, |_| Outcome::Failed)
     }
 
     /// A fleet that holds a claim sleeps half a lease at most: its heartbeat
@@ -947,7 +977,6 @@ mod tests {
             stale: vec![],
             stale_closed: vec![],
             gone: vec![],
-            free_slots: 0,
             now: 0,
             locks: vec![],
             flowing: vec![],
@@ -1252,9 +1281,16 @@ mod tests {
     }
 
     /// Carries every step out, and finds every worker asked after at work.
-    /// What a pass did, without the status boards it brought up to date.
+    /// What a pass did, without the status boards it brought up to date nor
+    /// the readings of admission that admitted.
     fn acts(pass: &Pass) -> Vec<(TickStep, Outcome)> {
-        pass.did.iter().copied().filter(|(step, _)| !matches!(step, Board { .. })).collect()
+        pass.did
+            .iter()
+            .copied()
+            .filter(|(step, outcome)| {
+                !matches!(step, Board { .. }) && (*step, *outcome) != (Admit, Done)
+            })
+            .collect()
     }
 
     fn steps(pass: &Pass) -> Vec<TickStep> {
@@ -1573,6 +1609,52 @@ mod tests {
         let mut peer = set(&[], &[]);
         peer.cut = cut(Cutting::PeerRunning);
         assert_eq!(steps(&run_pass(&peer, 3, 0, |_| Done)), []);
+    }
+
+    #[test]
+    fn with_no_bound_a_pass_starts_the_whole_frontier_reading_admission_before_each_start() {
+        let set = set(&[1, 2, 3, 4, 5, 6, 7], &[]);
+        let pass = run_pass(&set, UNBOUNDED, 0, |_| Done);
+        let dispatched = steps(&pass).iter().filter(|step| matches!(step, Dispatch { .. })).count();
+        assert_eq!((dispatched, pass.held, pass.frontier_remaining), (7, 7, 0));
+        let readings = pass.did.iter().filter(|(step, _)| *step == Admit).count();
+        assert_eq!(readings, 6, "the pass's own reading admitted the first start");
+        assert!(!pass.held_back(&set));
+    }
+
+    #[test]
+    fn a_reading_that_holds_starts_nothing_more_and_the_rest_stays_on_the_frontier() {
+        let set = set(&[1, 2, 3, 4], &[]);
+        let mut readings = 0;
+        let pass = run_pass(&set, UNBOUNDED, 0, |step| match step {
+            // The second start's load is counted by the reading after it.
+            Admit => {
+                readings += 1;
+                if readings < 2 { Done } else { Outcome::Held }
+            }
+            _ => Done,
+        });
+        assert_eq!(
+            acts(&pass),
+            [
+                (Dispatch { issue: 1 }, Done),
+                (Dispatch { issue: 2 }, Done),
+                (Admit, Outcome::Held),
+                (Heartbeat, Done)
+            ]
+        );
+        assert_eq!((pass.held, pass.frontier_remaining), (2, 2));
+        assert!(pass.held_back(&set), "it would have started #3");
+    }
+
+    #[test]
+    fn a_start_that_took_nothing_asks_admission_nothing_before_the_next() {
+        let set = set(&[1, 2], &[]);
+        let pass = run_pass(&set, UNBOUNDED, 0, |step| match step {
+            Dispatch { issue: 1 } => Lost,
+            _ => Done,
+        });
+        assert!(!pass.did.iter().any(|(step, _)| *step == Admit), "{:?}", pass.did);
     }
 
     #[test]

@@ -32,15 +32,15 @@ stages:
 ";
 
 /// A world whose repo is bound to a team with the one workflow `feature`,
-/// and runs `concurrency` workers at once.
-fn bound(feature: &str, concurrency: u64) -> World {
+///.
+fn bound(feature: &str) -> World {
     let kit = |world: &World| world.kit_researched_models("claude-code", &["opus", "sonnet"]);
-    bound_to(TEAM, kit, feature, concurrency)
+    bound_to(TEAM, kit, feature)
 }
 
 /// The same, of the team `team`, whose roster runs what `kit` has the host
 /// kit hold.
-fn bound_to(team: &str, kit: impl FnOnce(&World), feature: &str, concurrency: u64) -> World {
+fn bound_to(team: &str, kit: impl FnOnce(&World), feature: &str) -> World {
     let began = std::time::Instant::now();
     let world = World::new();
     world.reuse_repository_templates();
@@ -59,7 +59,7 @@ fn bound_to(team: &str, kit: impl FnOnce(&World), feature: &str, concurrency: u6
     write(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
-    world.say_concurrency(&world.clone, concurrency);
+    world.list_checkout(&world.clone);
     common::fixture_timing("consult bound setup", began);
     world
 }
@@ -206,7 +206,7 @@ fn asked(world: &World) {
 
 #[test]
 fn an_escalate_starts_the_consult_its_stage_names_with_the_history_and_the_reason() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     asked(&world);
     // The issue is still the fleet's: nothing was handed to a human.
     assert_eq!(world.labels(7), ["flow:feature", "stage:build"]);
@@ -257,7 +257,7 @@ fn an_escalate_starts_the_consult_its_stage_names_with_the_history_and_the_reaso
 
 #[test]
 fn an_escalate_with_an_outside_blocker_starts_its_consult_and_names_the_blocker() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     declared_unread(&world);
     world.with_gh(|gh| {
         gh["edges"]["7"] = json!([
@@ -278,7 +278,7 @@ fn an_escalate_with_an_outside_blocker_starts_its_consult_and_names_the_blocker(
 
 #[test]
 fn a_worked_blocker_holds_a_consult_even_when_an_outside_blocker_has_the_same_number() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     declared_unread(&world);
     world.with_gh(|gh| {
         gh["edges"]["7"] = json!([
@@ -297,7 +297,7 @@ fn a_worked_blocker_holds_a_consult_even_when_an_outside_blocker_has_the_same_nu
 fn a_declared_human_hand_off_with_an_outside_blocker_escalates() {
     let feature =
         FEATURE.replace("escalate: { to: reviewer, do: rule }", "escalate: { to: human }");
-    let world = bound(&feature, 2);
+    let world = bound(&feature);
     declared_unread(&world);
     world.with_gh(|gh| {
         gh["edges"]["7"] = json!([
@@ -311,7 +311,7 @@ fn a_declared_human_hand_off_with_an_outside_blocker_escalates() {
 
 #[test]
 fn an_unlabelled_tracker_blocker_does_not_hold_its_consult() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.name_origin(&world.clone, "acme/app");
     world.say_tracker(&world.clone, "acme/tracker");
     world.with_tracker(|gh| {
@@ -341,7 +341,7 @@ fn an_unlabelled_tracker_blocker_does_not_hold_its_consult() {
 
 #[test]
 fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_under_it() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     asked(&world);
     tick(&world, 1180);
     let ruled = rule(&world, "Keep the v1 schema.");
@@ -384,7 +384,7 @@ fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_unde
 
 #[test]
 fn a_consult_s_own_escalate_always_goes_to_a_human() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     asked(&world);
     tick(&world, 1180);
     let through = let_through(&world, "Not mine to rule: the schema is a product decision.");
@@ -413,7 +413,7 @@ fn a_consult_s_own_escalate_always_goes_to_a_human() {
 #[test]
 fn a_stage_that_says_to_a_human_escalates_to_a_human_as_before() {
     let human = "    escalate: { to: human }\n";
-    let world = bound(&FEATURE.replace("    escalate: { to: reviewer, do: rule }\n", human), 2);
+    let world = bound(&FEATURE.replace("    escalate: { to: reviewer, do: rule }\n", human));
     asked(&world);
     let said = world.comments(7).join("\n");
     assert!(
@@ -428,7 +428,7 @@ fn a_stage_that_says_to_a_human_escalates_to_a_human_as_before() {
 
 #[test]
 fn a_stage_that_names_no_consult_escalates_for_the_watch() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     declare(&world, "build", "pass", "Built.");
@@ -453,7 +453,7 @@ fn a_stage_that_names_no_consult_escalates_for_the_watch() {
 
 #[test]
 fn a_consult_s_ruling_past_the_rework_breaker_escalates_with_it_listed() {
-    let world = bound(&FEATURE.replacen("```yaml\n", "```yaml\nmax_rework: 0\n", 1), 2);
+    let world = bound(&FEATURE.replacen("```yaml\n", "```yaml\nmax_rework: 0\n", 1));
     asked(&world);
     tick(&world, 1180);
     rule(&world, "Keep the v1 schema.");
@@ -466,7 +466,7 @@ fn a_consult_s_ruling_past_the_rework_breaker_escalates_with_it_listed() {
 
 #[test]
 fn a_consult_that_leaves_a_commit_has_failed_and_the_issue_escalates() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     asked(&world);
     tick(&world, 1180);
     // Past its guard, in a script: the consult fixes what it was asked about.
@@ -490,27 +490,24 @@ fn a_consult_that_leaves_a_commit_has_failed_and_the_issue_escalates() {
 }
 
 #[test]
-fn a_consult_takes_one_slot_of_concurrency() {
-    let world = bound(FEATURE, 1);
+fn a_consult_starts_beside_the_frontier_with_no_bound_between_them() {
+    let world = bound(FEATURE);
     asked(&world);
     world.issue(8, &["flow:feature"]);
-    // The one slot goes to the consult of 7; 8 waits for it like any issue.
+    // The consult of 7 goes first; 8 is started beside it, as admission admits.
     let ticked = tick(&world, 1180);
-    assert_eq!(did(&ticked), ["dispatch 7 done"]);
-    assert_eq!((&ticked["held"], &ticked["frontier_remaining"]), (&json!(1), &json!(1)));
-    assert!(started(&world).pop().unwrap().contains("AFKCONVOY_CONSULT='true'"));
-    let next = tick(&world, 1270);
-    assert_eq!(did(&next), [] as [&str; 0]);
-    assert_eq!((&next["held"], &next["frontier_remaining"]), (&json!(1), &json!(1)));
+    assert_eq!(did(&ticked), ["dispatch 7 done", "dispatch 8 done"]);
+    assert_eq!((&ticked["held"], &ticked["frontier_remaining"]), (&json!(2), &json!(0)));
+    assert!(started(&world).iter().any(|start| start.contains("AFKCONVOY_CONSULT='true'")));
 
-    // Its ruling frees the slot, for the stage that asked.
+    // Its ruling runs the stage that asked again.
     rule(&world, "Keep the v1 schema.");
     assert_eq!(did(&tick(&world, 1360)), ["advance 7 done", "dispatch 7 done"]);
 }
 
 #[test]
 fn a_silent_consult_waits_for_the_operator_without_handing_its_claim_to_a_human() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     asked(&world);
     tick(&world, 1180);
     stop(&world, 1200);
@@ -525,7 +522,7 @@ fn a_silent_consult_waits_for_the_operator_without_handing_its_claim_to_a_human(
 
 #[test]
 fn a_verdict_declared_before_run_is_started_again_is_read_by_its_first_tick() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     declared_unread(&world);
     // `run` was killed before a tick read the verdict, and is started again:
     // the start takes the claim, and it is still the claim `build` declared under.
@@ -551,7 +548,7 @@ fn a_verdict_declared_before_run_is_started_again_is_read_by_its_first_tick() {
 
 #[test]
 fn a_verdict_declared_before_a_takeover_by_hand_is_read_by_the_next_tick() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     declared_unread(&world);
     taken_over(&world, 1060);
     // Its worker, asked again, finds its verdict standing under the claim.
@@ -564,7 +561,7 @@ fn a_verdict_declared_before_a_takeover_by_hand_is_read_by_the_next_tick() {
 
 #[test]
 fn a_verdict_declared_under_a_claim_gone_stale_is_read_by_the_tick_that_reclaims_it() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     declared_unread(&world);
     // The lease of `alpha` lapses, and a peer's tick takes its claim.
     assert_eq!(did(&tick_as(&world, "beta", 1000 + 4500 + 1)), ["reclaim 7 done"]);
@@ -573,7 +570,7 @@ fn a_verdict_declared_under_a_claim_gone_stale_is_read_by_the_tick_that_reclaims
 
 #[test]
 fn a_verdict_declared_after_its_claim_was_taken_over_is_read() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     taken_over(&world, 1060);
@@ -585,7 +582,7 @@ fn a_verdict_declared_after_its_claim_was_taken_over_is_read() {
 
 #[test]
 fn a_ruling_declared_before_its_claim_is_taken_over_is_read() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     asked(&world);
     tick(&world, 1180);
     rule(&world, "Keep the v1 schema.");
@@ -606,7 +603,7 @@ fn a_ruling_declared_before_its_claim_is_taken_over_is_read() {
 
 #[test]
 fn a_taken_over_silent_stage_keeps_its_stage_and_claim_while_waiting_for_the_operator() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.issue(7, &["flow:feature"]);
     tick(&world, 1000);
     stop(&world, 1010);
@@ -624,7 +621,7 @@ fn a_taken_over_silent_stage_keeps_its_stage_and_claim_while_waiting_for_the_ope
 /// panel list it as waiting for a human — the same list.
 #[test]
 fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     asked(&world);
     tick(&world, 1180);
     let_through(&world, "Not mine to rule: the schema is a product decision.");
@@ -643,7 +640,7 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     ];
     let (lines, _) = world.afk_lines(&[&run[..], &["--second-ms", "0"]].concat());
     assert_eq!(lines.len(), 1, "{lines:?}");
-    let said = "tick 1: escalated #7 (build: consult let it through) · holding 0/2 · frontier 0";
+    let said = "tick 1: escalated #7 (build: consult let it through) · holding 0 · frontier 0";
     assert!(lines[0].starts_with(said) && !lines[0].contains("advanced"), "{lines:?}");
 
     // The comment and the status board end with each way out, the number filled in.
@@ -790,7 +787,7 @@ fn silent(world: &World, stopped: u64) {
 
 #[test]
 fn silent_stage_observations_do_not_consume_the_consult_or_breaker() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.issue(7, &["flow:feature"]);
     tick(&world, 1000);
     silent(&world, 1010);
@@ -801,7 +798,7 @@ fn silent_stage_observations_do_not_consume_the_consult_or_breaker() {
 
 #[test]
 fn a_consult_rules_with_the_commits_and_harness_of_its_environment() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     asked(&world);
     assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done"]);
     let line = ["rule", "--issue", "7", "--text", "Use v2."];
@@ -830,7 +827,7 @@ fn a_consult_rules_with_the_commits_and_harness_of_its_environment() {
 
 #[test]
 fn a_verdict_its_stage_may_not_declare_goes_to_its_consult() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     // `build` has no `reject`.
@@ -854,7 +851,7 @@ fn a_verdict_its_stage_may_not_declare_goes_to_its_consult() {
 
 #[test]
 fn a_tripped_breaker_goes_to_its_consult_and_one_tripping_again_to_a_human() {
-    let world = bound(&FEATURE.replacen("```yaml\n", "```yaml\nmax_rework: 0\n", 1), 2);
+    let world = bound(&FEATURE.replacen("```yaml\n", "```yaml\nmax_rework: 0\n", 1));
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     declare(&world, "build", "pass", "Built.");
@@ -896,7 +893,7 @@ fn a_tripped_breaker_goes_to_its_consult_and_one_tripping_again_to_a_human() {
 
 #[test]
 fn a_blocked_whose_waiting_closes_a_cycle_goes_to_its_consult() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["flow:feature"]);
     world.with_gh(|gh| gh["edges"]["8"] = json!([7]));
@@ -910,7 +907,7 @@ fn a_blocked_whose_waiting_closes_a_cycle_goes_to_its_consult() {
 
 #[test]
 fn a_workflow_changed_under_the_issue_goes_to_its_consult() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.issue(7, &["flow:feature"]);
     // A record of `deploy`, a stage the workflow had once, with `build` to perform.
     world.comment(
@@ -923,7 +920,7 @@ fn a_workflow_changed_under_the_issue_goes_to_its_consult() {
 
 #[test]
 fn already_satisfied_over_a_branch_that_holds_work_goes_to_its_consult() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     commit(&worktree(&world), "half.txt", "half\n");
@@ -944,7 +941,7 @@ fn already_satisfied_over_a_branch_that_holds_work_goes_to_its_consult() {
 #[test]
 fn a_stage_that_writes_nothing_and_left_a_commit_goes_to_its_consult() {
     let review = "    writes: false\n    escalate: { to: reviewer, do: rule }\n";
-    let world = bound(&FEATURE.replace("    writes: false\n", review), 2);
+    let world = bound(&FEATURE.replace("    writes: false\n", review));
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     declare(&world, "build", "pass", "Built.");
@@ -958,7 +955,7 @@ fn a_stage_that_writes_nothing_and_left_a_commit_goes_to_its_consult() {
 
 #[test]
 fn an_issue_handed_to_a_human_that_no_consult_saw_is_put_to_its_consult_once() {
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     // Handed over before every hand-off went to a consult first.
@@ -994,7 +991,7 @@ fn a_health_escalation_is_said_though_the_tick_reads_its_fleet_again_for_a_consu
             kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] == "codex")
         });
     };
-    let world = bound_to(&team, codex, FEATURE, 2);
+    let world = bound_to(&team, codex, FEATURE);
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done", "dispatch 8 done"]);
@@ -1031,7 +1028,7 @@ fn a_failed_start_or_trust_gap_escalates_with_or_without_a_named_consult() {
             FEATURE.replace("    escalate: { to: reviewer, do: rule }\n", "")
         };
         for knob in ["never_ready", "trust_prompt"] {
-            let world = bound(&feature, 2);
+            let world = bound(&feature);
             world.issue(7, &["flow:feature"]);
             world.with_orca(|orca| orca[knob] = json!(true));
             assert_eq!(tick(&world, 1000)["errors"].as_array().unwrap().len(), 1);
@@ -1102,7 +1099,7 @@ fn a_consult_runs_the_commands_a_human_answering_runs_and_the_two_lists_are_one(
         .collect();
     assert_eq!(named, answering, "{section}");
     // The consult is given the same list, and its guard lets each through.
-    let world = bound(FEATURE, 2);
+    let world = bound(FEATURE);
     asked(&world);
     tick(&world, 1180);
     let told = brief(&worktree(&world));
@@ -1145,7 +1142,7 @@ fn world_help(topic: &str) -> String {
 #[test]
 fn consult_close_and_park_are_outcomes_and_a_park_waits_for_an_explicit_send() {
     for verdict in ["close", "park"] {
-        let world = bound(FEATURE, 2);
+        let world = bound(FEATURE);
         asked(&world);
         if verdict == "close" {
             commit(&worktree(&world), "investigation.txt", "builder evidence\n");
