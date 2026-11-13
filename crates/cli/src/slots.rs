@@ -124,7 +124,10 @@ const LOOKED_FOR: Duration = Duration::from_secs(2);
 
 /// Each dead owner's slot looked at, by its file and owner, as when and what
 /// was found.
-static LOOKED: Mutex<BTreeMap<(u64, u64, u32), (Instant, bool)>> = Mutex::new(BTreeMap::new());
+static LOOKED: Mutex<BTreeMap<Looked, (Instant, bool)>> = Mutex::new(BTreeMap::new());
+
+/// A slot's file, by its device and inode, and the pid of its owner.
+type Looked = (u64, u64, u32);
 
 /// Whether the slot open as `file`, whose lock is held, was left behind by
 /// `owner`: its owner ended, and every process still holding the file is a

@@ -598,3 +598,45 @@ fn a_fast_gate_that_ended_frees_its_lane_though_a_server_it_started_holds_its_sl
     assert_eq!(lines(&order), ["first", "next"]);
     assert_eq!(tickets(&world), 0, "no holder is left of the gate that ended");
 }
+
+#[test]
+fn a_fast_gate_s_wait_for_its_lane_uses_none_of_its_limit() {
+    let world = World::new();
+    let afk = afkconvoy_core::line::Line::new().program(env!("CARGO_BIN_EXE_afkconvoy")).own();
+    let alone = |part: &str| {
+        format!(
+            "  command: \"{afk} exclusive -- sh -c 'echo {part} >> ../ran'\"\n  seconds: 3\n  budget_seconds: 1"
+        )
+    };
+    let config = format!(
+        "```yaml\nbase_branch: main\ngate_command: \"{afk} exclusive -- true\"\ngate_seconds: 600\n```\n\n```yaml gates\nfast:\n{}\nslow:\n{}\n```\n",
+        alone("fast"),
+        alone("slow")
+    );
+    std::fs::write(world.clone.join("docs/agents/afkconvoy.md"), config).unwrap();
+    common::git(&world.clone, &["commit", "-q", "-am", "split the gate"]);
+    world.say_host_settings(json!({"fast_lanes": 1}));
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    // Another worker's fast gate holds the one fast lane past the limit.
+    let held = fast_gate(
+        &world,
+        &cache,
+        1,
+        "touch \"$CACHE/held\"; while test ! -f \"$CACHE/release\"; do sleep 0.02; done",
+    );
+    until(|| cache.join("held").exists());
+    let release = cache.join("release");
+    let letting_go = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(4));
+        std::fs::write(release, "").unwrap();
+    });
+
+    let answer = world.afk(&["gate", "--fast"]).ok();
+    letting_go.join().unwrap();
+    assert!(held.wait_with_output().unwrap().status.success());
+    assert_eq!(answer["status"], "green", "{answer}");
+    assert_eq!(answer["timed_out"], false);
+    assert!(answer["seconds"].as_u64().unwrap() < 3, "{answer}");
+    assert_eq!(lines(&world.root.join("ran")), ["fast"]);
+}
