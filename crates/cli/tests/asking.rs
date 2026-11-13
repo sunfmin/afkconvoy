@@ -504,6 +504,168 @@ fn an_unverified_terminal_pauses_delivery_until_its_identity_is_restored() {
     assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 2);
 }
 
+/// Two questions, the first delivered: the asking terminal's handle, and
+/// the journal of its launch and delivery.
+fn first_delivered(world: &World) -> (String, String) {
+    let watch = until(world, "watch", || watch_running(world));
+    let (wait, host) = conditions(&watch);
+    report_humans(
+        world,
+        &watch,
+        json!([
+            {"condition": wait, "question": "First question?", "answer": "first answer"},
+            {"condition": host, "question": "Second question?", "answer": "second answer"}
+        ]),
+    );
+    until(world, "first question", || {
+        (asking_state(world)["current"]["delivered"] == true).then_some(())
+    });
+    let state = asking_state(world);
+    let session = state["session"]["id"].as_str().unwrap().to_string();
+    (state["session"]["terminal"].as_str().unwrap().to_string(), session)
+}
+
+fn journal(world: &World) -> Value {
+    serde_json::from_slice(
+        &std::fs::read(world.cache().join("afkconvoy/asking/terminal.json")).unwrap(),
+    )
+    .unwrap()
+}
+
+/// The asking session's marked executor, as its wrapper is in a real pane:
+/// the fake starts no harness. Ended when dropped.
+struct Executor(std::process::Child);
+
+impl Executor {
+    fn of(session: &str) -> Self {
+        let marker = format!("afkconvoy-watch-session-{session}");
+        // One process, its command line carrying the marker: killing it
+        // leaves no child behind.
+        let child = std::process::Command::new("perl")
+            .args(["-e", "sleep 120", &marker])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        Executor(child)
+    }
+}
+
+impl Drop for Executor {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The asking terminal's row comes back under a new handle and incarnation,
+/// keeping `pty`, its tab and its leaf only as given.
+fn reincarnate(world: &World, old: &str, pty: &str, tab: &str) {
+    world.with_orca(|orca| {
+        let terminal = orca["terminals"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["handle"] == old)
+            .unwrap();
+        terminal["ptyId"] = json!(pty);
+        terminal["tabId"] = json!(tab);
+        terminal["handle"] = json!("restarted-handle");
+        terminal["incarnationId"] = json!("restarted-incarnation");
+    });
+}
+
+fn restarted(world: &World) -> Value {
+    world.orca()["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["handle"] == "restarted-handle")
+        .unwrap()
+        .clone()
+}
+
+/// The session inside the asking terminal restarted in the same pty
+/// (sunfmin/control#836): Orca lists the same ptyId, tab and leaf under a
+/// new handle and incarnation. Its executor still runs, so the pane is taken
+/// back: nothing is resent and the session goes on running in it.
+#[test]
+fn an_asking_terminal_back_in_the_same_pty_under_a_new_incarnation_is_taken_back() {
+    let world = World::new();
+    let (_dir, _runner) = two_conditions(&world);
+    let (old, session) = first_delivered(&world);
+    let _executor = Executor::of(&session);
+    reincarnate(&world, &old, &old, &old);
+    until(&world, "the restarted pane taken back", || {
+        let state = asking_state(&world);
+        (state["session"]["terminal"] == "restarted-handle" && state["unavailable"].is_null())
+            .then_some(())
+    });
+    let journal = journal(&world);
+    assert_eq!(journal["status"], "running");
+    assert_eq!(journal["session"]["terminal"], "restarted-handle");
+    assert_eq!(journal["terminal"]["incarnationId"], "restarted-incarnation");
+    assert_eq!(asking_state(&world)["session"]["id"], session);
+    assert_eq!(restarted(&world)["sent"].as_array().unwrap().len(), 1, "nothing resent");
+    assert_eq!(asking_creates(&world), 1);
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    assert_eq!(doctor["host"]["asking"]["status"], "asking", "{doctor}");
+    settle(&world, "settled");
+    until(&world, "second question in the restarted pane", || {
+        let current = asking_state(&world)["current"].clone();
+        (current["question"]["human"]["question"] == "Second question?"
+            && current["delivered"] == true)
+            .then_some(())
+    });
+    assert_eq!(restarted(&world)["sent"].as_array().unwrap().len(), 2);
+    assert_eq!(asking_creates(&world), 1);
+}
+
+/// A terminal with the asking title in another pty, or in the same pty under
+/// another tab, is not the asking session's, whatever it is named.
+#[test]
+fn a_same_name_terminal_in_another_pty_or_pane_is_still_refused() {
+    for (pty, tab) in [(Some("another-pty"), None), (None, Some("another-tab"))] {
+        let world = World::new();
+        let (_dir, _runner) = two_conditions(&world);
+        let (old, session) = first_delivered(&world);
+        let _executor = Executor::of(&session);
+        reincarnate(&world, &old, pty.unwrap_or(&old), tab.unwrap_or(&old));
+        let why = until(&world, "refused association", || {
+            asking_state(&world)["unavailable"].as_str().map(str::to_string)
+        });
+        assert!(why.contains("ownership is unverified"), "{why}");
+        std::thread::sleep(Duration::from_millis(1200));
+        assert_eq!(asking_state(&world)["session"]["terminal"], json!(old));
+        assert_eq!(journal(&world)["session"]["terminal"], json!(old));
+        assert_eq!(restarted(&world)["sent"].as_array().unwrap().len(), 1);
+        assert!(restarted(&world)["open"] == true, "a terminal not ours is left open");
+        assert_eq!(asking_creates(&world), 1);
+    }
+}
+
+/// The same pane under a new incarnation, but the session's executor is
+/// gone: the pane is ours and empty of it. It is closed, and a fresh asking
+/// session asks the current question again.
+#[test]
+fn a_restored_asking_pane_whose_executor_is_gone_is_closed_and_replaced() {
+    let world = World::new();
+    let (_dir, _runner) = two_conditions(&world);
+    let (old, session) = first_delivered(&world);
+    reincarnate(&world, &old, &old, &old);
+    until(&world, "a fresh asking session", || {
+        let state = asking_state(&world);
+        (state["session"]["id"] != json!(session)
+            && state["current"]["delivered"] == true
+            && state["current"]["question"]["human"]["question"] == "First question?")
+            .then_some(())
+    });
+    assert_eq!(restarted(&world)["open"], false, "the restored pane closed");
+    assert_eq!(restarted(&world)["sent"].as_array().unwrap().len(), 1);
+    assert_eq!(asking_creates(&world), 2);
+}
+
 #[test]
 fn a_condition_recovered_after_delivery_is_told_as_withdrawn() {
     let world = World::new();
