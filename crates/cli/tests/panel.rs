@@ -295,7 +295,7 @@ fn a_bound_repo_shows_each_workflow_as_its_stages_with_the_issues_at_each() {
 
 fn get(port: u16, path: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    stream.set_read_timeout(Some(SOON)).unwrap();
     write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
     let mut answer = String::new();
     // An `events` answer never ends: what came before the wait ran out is it.
@@ -308,7 +308,7 @@ fn get(port: u16, path: &str) -> String {
 const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "100"];
 
 /// How long anything the host runner should do is waited for.
-const SOON: Duration = Duration::from_secs(30);
+const SOON: Duration = common::PATIENCE;
 
 /// The port of the panel's address `panel`: `http://127.0.0.1:<port>/`.
 fn port_in(panel: &Value) -> u16 {
@@ -460,20 +460,17 @@ fn a_panel_port_that_is_taken_is_served_around_and_run_panel_sets_the_next_host_
 }
 
 #[test]
-fn with_no_port_said_the_panel_is_on_7070_or_any_free_port_where_that_is_taken() {
+fn with_no_port_said_the_panel_s_port_is_7070() {
+    // No host runner is started: 7070 is the panel's port of the host the
+    // tests run on, which a test leaves alone (sunfmin/control#820).
     let world = World::new();
-    let answer = world.afk(&RUN).ok();
-    let panel = answer["host_runner"]["panel"].as_str().unwrap().to_string();
-    let log = world.runner_log();
-    let said = log.iter().find(|line| line.starts_with("panel: ")).unwrap();
-    match panel.as_str() {
-        "http://127.0.0.1:7070/" => assert_eq!(said, "panel: http://127.0.0.1:7070/"),
-        // another host runner of this host, or something else, has it
-        _ => assert_eq!(*said, format!("panel: {panel}, port 7070 being taken")),
-    }
+    let mut list = world.checkout_list();
+    list["settings"].as_object_mut().unwrap().remove("panel");
+    std::fs::write(world.cache().join("afkconvoy/checkouts.json"), list.to_string()).unwrap();
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     assert_eq!(doctor["host"]["settings"]["in_force"]["panel"], 7070, "{doctor}");
     assert_eq!(doctor["host"]["settings"]["said"]["panel"], Value::Null, "{doctor}");
+    assert_eq!(world.host_runner(), None, "{doctor}");
 }
 
 #[test]

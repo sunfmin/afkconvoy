@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use afkconvoy::log::{Entry, What};
-use common::{World, asked, commit, git};
+use common::{PATIENCE, World, asked, commit, git};
 use serde_json::{Value, json};
 
 /// A `run` of the first repo on the host `h1`, its sleeps short.
@@ -57,7 +57,7 @@ fn a_host_runner_ends_when_its_test_is_killed() {
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + PATIENCE;
     while !pid_file.exists() {
         assert!(child.try_wait().unwrap().is_none(), "probe ended before starting its runner");
         assert!(Instant::now() < until, "probe did not start its runner");
@@ -132,10 +132,10 @@ fn each_line_stamped(world: &World) {
     }
 }
 
-/// Waits up to 30 seconds for the host runner's log to hold a line that
+/// Waits up to `PATIENCE` for the host runner's log to hold a line that
 /// starts with `start` → that line.
 pub(crate) fn logged(world: &World, start: &str) -> String {
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + PATIENCE;
     loop {
         if let Some(line) = world.runner_log().into_iter().find(|line| line.starts_with(start)) {
             return line;
@@ -525,14 +525,22 @@ fn a_fleet_instance_that_ended_stops_watching_its_workers() {
     // its loop ends after its first tick, which `run` may answer or not
     let _ = world.afk(&["run", "--host", "h1", "--second-ms", "10", "--ticks", "1"]);
     logged(&world, &format!("fleet instance ended: {}: ", shown(&world.clone)));
-    // a sample it took as it ended is over
-    std::thread::sleep(Duration::from_secs(1));
-    let calls = || world.orca()["calls"].as_array().unwrap().clone();
-    let ended = calls().len();
-    // a watcher left watching asks orca for the worktrees every sixth
-    // sample, each a tenth of a second here and what it takes
-    std::thread::sleep(Duration::from_secs(3));
-    assert_eq!(calls()[ended..], [] as [Value; 0], "asked after its fleet instance ended");
+    // A watcher left watching asks orca for the worktrees every sixth sample,
+    // each a tenth of a second here and what it takes: well under a second
+    // apart. A sample it took as it ended may still be finishing, longer
+    // under load: orca is waited on to be asked nothing for 3 seconds, which
+    // a watcher left watching never lets it be.
+    let calls = || world.orca()["calls"].as_array().unwrap().len();
+    let until = Instant::now() + PATIENCE;
+    let (mut seen, mut since) = (calls(), Instant::now());
+    while since.elapsed() < Duration::from_secs(3) {
+        assert!(Instant::now() < until, "orca still asked, {seen} calls, {PATIENCE:?} on");
+        std::thread::sleep(Duration::from_millis(100));
+        let now = calls();
+        if now != seen {
+            (seen, since) = (now, Instant::now());
+        }
+    }
 }
 
 #[test]
@@ -562,10 +570,10 @@ fn sigterm_stops_every_fleet_instance_and_keeps_the_list() {
 /// says it.
 const PAST_ANY: &str = "100000.00";
 
-/// Waits up to 30 seconds for a tick of the fleet instance `answer` names
+/// Waits up to `PATIENCE` for a tick of the fleet instance `answer` names
 /// whose line holds `said` → that line.
 fn ticked(answer: &Value, said: &str) -> String {
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + PATIENCE;
     loop {
         let lines = tick_log(answer).into_iter().filter(|line| kind(line) == "tick");
         let entries = lines.map(|line| serde_json::from_value::<Entry>(line).unwrap().said());
@@ -928,14 +936,14 @@ pub(crate) fn as_built() -> String {
     format!("exec {} \"$@\"", env!("CARGO_BIN_EXE_afkconvoy"))
 }
 
-/// Waits up to 30 seconds for `got` to give something → it.
+/// Waits up to `PATIENCE` for `got` to give something → it.
 fn until<T>(what: &str, mut got: impl FnMut() -> Option<T>) -> T {
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + PATIENCE;
     loop {
         if let Some(got) = got() {
             return got;
         }
-        assert!(Instant::now() < until, "no {what} within 30s");
+        assert!(Instant::now() < until, "no {what} within {PATIENCE:?}");
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -1214,10 +1222,10 @@ fn the_host_runner_moves_with_claims_and_an_open_pr_after_only_the_running_comma
     );
 }
 
-/// Waits up to 30 seconds for the host runner's log to hold `count` lines
+/// Waits up to `PATIENCE` for the host runner's log to hold `count` lines
 /// that start with `start` → the first `count` of them.
 fn logged_times(world: &World, start: &str, count: usize) -> Vec<String> {
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + PATIENCE;
     loop {
         let log = world.runner_log();
         let lines: Vec<String> = log.into_iter().filter(|line| line.starts_with(start)).collect();
@@ -1284,7 +1292,7 @@ fn a_fleet_instance_that_panics_breaks_alone_and_is_started_again_after_a_backof
     assert_eq!(listed(&world), [shown(&clone2), clone.clone()]);
     let ticked = |answer: &Value| of_kind(&tick_log(answer), "tick").len();
     let before = ticked(&other);
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + PATIENCE;
     while ticked(&other) == before {
         assert!(Instant::now() < until, "the other ticks on: {:#?}", tick_log(&other));
         std::thread::sleep(Duration::from_millis(50));
@@ -1500,7 +1508,7 @@ fn a_running_fleet_uses_commands_and_codex_preferences_changed_after_it_started(
         world.afk(&["switch", "--harness", "codex"]).ok();
         world.issue(number, &["ready-for-agent", "harness:codex"]);
         world.afk(&["wake"]).ok();
-        let until = Instant::now() + Duration::from_secs(30);
+        let until = Instant::now() + PATIENCE;
         loop {
             if world.orca()["terminals"].as_array().unwrap().iter().any(|terminal| {
                 terminal["command"].as_str().is_some_and(|line| {
