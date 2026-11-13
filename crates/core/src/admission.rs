@@ -1,6 +1,9 @@
 //! Admission: a tick starts no new worker while its host is busy — past a
 //! share of its load, below its share of available memory, or low on free disk
-//! (docs/adr/0019). Whether admission holds is decided here, from what the
+//! (docs/adr/0019) — while a usage window of the account it would start on
+//! would run out before it resets, or while the host's exclusive queue would
+//! take longer than its bound to drain (docs/adr/0072). It alone decides each
+//! start: no number of workers bounds a fleet. Whether admission holds is decided here, from what the
 //! effect layer read of the host and the shares it is held to; reading the
 //! host is the effect layer's.
 //!
@@ -78,7 +81,7 @@ fn share_of(bytes: u64, percent: u64) -> u64 {
 }
 
 /// One threshold the host is past, with what was read of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "by", rename_all = "snake_case")]
 pub enum Hold {
     /// The load, in hundredths, is past `limit`.
@@ -87,6 +90,107 @@ pub enum Hold {
     Memory { free: u64, floor: u64 },
     /// The bytes free on the checkout's volume are under `floor`.
     Disk { free: u64, floor: u64 },
+    /// The usage window `window` of the account of the harness `account`,
+    /// `used` percent used, would at its present rate, with one more worker
+    /// beside the `running` ones, be `projected` percent used as it resets in
+    /// `resets_in` seconds: past all of it.
+    Window {
+        account: String,
+        window: String,
+        used: u64,
+        projected: u64,
+        running: usize,
+        resets_in: u64,
+    },
+    /// The commands waiting in the host's exclusive queue would take `drain`
+    /// seconds to run, by their recent run times: past `bound`.
+    Queue { drain: u64, bound: u64 },
+}
+
+/// The longest, in seconds, the host's exclusive queue may take to drain
+/// before admission starts no new worker, where the host says none: a new
+/// worker would only wait behind its gate.
+pub const QUEUE_BOUND: u64 = 900;
+
+/// One usage window of an account a checkout's workers start on, as its
+/// engine reported it last (GLOSSARY: Usage window).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Window {
+    /// The harness whose account it is, by its key.
+    pub account: String,
+    /// The engine's own name for it.
+    pub window: String,
+    /// How much of it is used, in percent.
+    pub used: u64,
+    /// How long it is, in seconds.
+    pub length: u64,
+    /// How long until it resets, in seconds.
+    pub resets_in: u64,
+}
+
+/// How much of `window` would be used as it resets, in percent, at the rate
+/// it was used at since it began, with one more worker beside `running`:
+/// each running worker uses its share of that rate, and the new one as much
+/// again. `None`: no rate can be told — the window has only just begun, or
+/// says it resets later than its length.
+pub fn projected(window: &Window, running: usize) -> Option<u64> {
+    let elapsed = window.length.checked_sub(window.resets_in).filter(|elapsed| *elapsed > 0)?;
+    let workers = running.max(1) as u128;
+    let more = (window.used as u128)
+        .saturating_mul(window.resets_in as u128)
+        .saturating_mul(running as u128 + 1)
+        .checked_div((elapsed as u128).saturating_mul(workers))?;
+    Some(u64::try_from((window.used as u128).saturating_add(more)).unwrap_or(u64::MAX))
+}
+
+/// The windows of `windows` that would run out before they reset with one
+/// more worker beside the `running` ones on their account (`projected`):
+/// none, and the accounts admit a start. A window already used up holds too.
+pub fn window_holds(windows: &[Window], running: impl Fn(&str) -> usize) -> Vec<Hold> {
+    let mut holds = vec![];
+    for window in windows {
+        let running = running(&window.account);
+        let projected = match projected(window, running) {
+            Some(projected) => projected,
+            None if window.used >= 100 => window.used,
+            None => continue,
+        };
+        if projected > 100 || window.used >= 100 {
+            holds.push(Hold::Window {
+                account: window.account.clone(),
+                window: window.window.clone(),
+                used: window.used,
+                projected,
+                running,
+                resets_in: window.resets_in,
+            });
+        }
+    }
+    holds
+}
+
+/// Whether the host's exclusive queue, `drain` seconds from empty, is past
+/// `bound`: a new worker would only wait behind its gate. What could not be
+/// told holds nothing back; at its bound holds nothing.
+pub fn queue_hold(drain: Option<u64>, bound: u64) -> Option<Hold> {
+    drain.filter(|drain| *drain > bound).map(|drain| Hold::Queue { drain, bound })
+}
+
+/// How long the host's exclusive queue takes to drain, in seconds: each
+/// lane's commands one after another, as many at once as it has places, the
+/// longest lane's. Each command is `(lane, places, seconds)`: what is left of
+/// a running one, the whole of a waiting one, by its recent run times.
+pub fn drain(commands: &[(String, u64, u64)]) -> u64 {
+    let mut lanes: std::collections::BTreeMap<&str, (u64, u64)> = Default::default();
+    for (lane, places, seconds) in commands {
+        let entry = lanes.entry(lane.as_str()).or_insert((*places, 0));
+        entry.1 = entry.1.saturating_add(*seconds);
+    }
+    lanes
+        .values()
+        .map(|(places, seconds)| seconds.checked_div(*places).unwrap_or(*seconds))
+        .max()
+        .unwrap_or(0)
 }
 
 /// The thresholds a host read as `reading` is past under `shares`, load
@@ -182,6 +286,7 @@ mod tests {
                 Hold::Load { .. } => "load",
                 Hold::Memory { .. } => "memory",
                 Hold::Disk { .. } => "disk",
+                _ => "other",
             })
             .collect();
         assert_eq!(by, ["load", "memory", "disk"]);
@@ -200,6 +305,73 @@ mod tests {
         let lax = Shares { load: 10_000, memory: 0, disk: 0 };
         let busy = Reading { load: Some(9000), memory_free: Some(0), ..idle() };
         assert_eq!(holds(lax, &busy), []);
+    }
+
+    /// A five-hour window `used` percent used, resetting in `resets_in`
+    /// seconds.
+    fn five_hour(used: u64, resets_in: u64) -> Window {
+        Window {
+            account: "codex".into(),
+            window: "primary".into(),
+            used,
+            length: 5 * 3600,
+            resets_in,
+        }
+    }
+
+    #[test]
+    fn a_window_is_projected_at_its_present_rate_with_room_for_one_more() {
+        // 40% in the first half: alone, 80% as it resets.
+        assert_eq!(projected(&five_hour(40, 9000), 0), Some(80));
+        // Two at work make that rate; a third adds half of it again.
+        assert_eq!(projected(&five_hour(40, 9000), 2), Some(100));
+        assert_eq!(projected(&five_hour(40, 9000), 3), Some(93));
+        assert_eq!(projected(&five_hour(10, 5 * 3600), 1), None, "only just begun");
+        assert_eq!(projected(&five_hour(10, 6 * 3600), 1), None, "longer than it is");
+    }
+
+    #[test]
+    fn a_window_holds_only_once_it_would_run_out_before_it_resets() {
+        let windows = [five_hour(40, 9000)];
+        assert_eq!(window_holds(&windows, |_| 2), [], "at 100% it runs out as it resets");
+        let held = window_holds(&[five_hour(60, 9000)], |_| 1);
+        assert_eq!(
+            held,
+            [Hold::Window {
+                account: "codex".into(),
+                window: "primary".into(),
+                used: 60,
+                projected: 180,
+                running: 1,
+                resets_in: 9000,
+            }]
+        );
+        let spent = window_holds(&[five_hour(100, 5 * 3600)], |_| 0);
+        assert_eq!(spent.len(), 1, "a window used up holds, rate or none");
+        assert_eq!(window_holds(&[], |_| 9), [], "a harness that reports none");
+    }
+
+    #[test]
+    fn a_queue_holds_only_once_it_takes_longer_than_its_bound_to_drain() {
+        assert_eq!(queue_hold(Some(QUEUE_BOUND), QUEUE_BOUND), None);
+        assert_eq!(
+            queue_hold(Some(QUEUE_BOUND + 1), QUEUE_BOUND),
+            Some(Hold::Queue { drain: QUEUE_BOUND + 1, bound: QUEUE_BOUND })
+        );
+        assert_eq!(queue_hold(None, 0), None, "a queue that could not be read");
+    }
+
+    #[test]
+    fn a_queue_drains_lane_by_lane_as_many_at_once_as_each_has_places() {
+        let commands = [
+            ("worker".to_string(), 2, 600),
+            ("worker".to_string(), 2, 600),
+            ("worker".to_string(), 2, 600),
+            ("fast".to_string(), 1, 200),
+        ];
+        assert_eq!(drain(&commands), 900);
+        assert_eq!(drain(&[]), 0);
+        assert_eq!(drain(&[("fast".to_string(), 0, 300)]), 300, "a lane of no place runs one");
     }
 
     #[test]

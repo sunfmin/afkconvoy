@@ -72,7 +72,7 @@ fn bound() -> World {
     write(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world
 }
 

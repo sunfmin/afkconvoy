@@ -133,10 +133,12 @@ fn decide(
 }
 
 /// The processes of this host the fleets of this host started
-/// (`hot::fleets`), and its host runner's pid where one is known.
+/// (`hot::fleets`), and its host runner's pid and its keeper's where one
+/// is known.
 struct OnHost {
     fleets: HashSet<u32>,
     runner: Option<u32>,
+    keeper: Option<u32>,
 }
 
 /// What `ps` and the host runner's lock say now. A worktree the fleet put
@@ -146,13 +148,17 @@ fn on_host() -> OnHost {
     let ours = |worktree: &std::path::Path| {
         Worktree::at(worktree.to_path_buf(), String::new()).holds_a_worker()
     };
-    OnHost { fleets: crate::hot::fleets(&procs, ours), runner: crate::host_runner::pid() }
+    OnHost {
+        fleets: crate::hot::fleets(&procs, ours),
+        runner: crate::host_runner::pid(),
+        keeper: crate::host_runner::keeper(),
+    }
 }
 
 /// Whom `pid` is on the host `read`: the host runner before all, as it
 /// may itself have been started by a worker.
 fn whom(read: &OnHost, pid: u32) -> Process {
-    if read.runner == Some(pid) {
+    if read.runner == Some(pid) || read.keeper == Some(pid) {
         Process::Runner
     } else if read.fleets.contains(&pid) {
         Process::Fleets
@@ -208,7 +214,7 @@ Refused besides in a stage its workflow marks `writes: false`, for every consult
 
 A watch is no consult: it is the operator on its host, started so that the fleet's work goes on (`afkconvoy run --help`). It commits, pushes a branch of its own and changes the host, whatever the facts of its role say. It is held instead to the bounds of any unattended worker — refused, beside what every worker is:
 
-- ending what the fleets of this host did not start: `kill` of a pid that is no worker's, watch's process, nor one they left behind; of the host runner; of what names no pid the guard can read — a variable, a process group; and `pkill` and `killall`, which end whatever a name matches, the user's own among them
+- ending what the fleets of this host did not start: `kill` of a pid that is no worker's, watch's process, nor one they left behind; of the host runner or its keeper; of what names no pid the guard can read — a variable, a process group; and `pkill` and `killall`, which end whatever a name matches, the user's own among them
 - deleting what cannot be rebuilt: `rm`, `rmdir`, `unlink` or `shred` of a path that is, or holds, model weights, downloads, media, Docker's images or the user's own files under the home folder, or of a path outside it but for the system's temporary files; a path it cannot place — relative, or named by another variable — is its own to place
 - deleting a change no commit holds: `git clean` without `-X`, `git worktree remove --force`, `git reset --hard`, `orca worktree rm --force`
 - a force push: `--force`, `-f`, `--force-with-lease`, or a refspec that begins with `+`
@@ -307,9 +313,10 @@ mod tests {
 
     #[test]
     fn whom_a_process_is_reads_the_host_runner_first() {
-        let read = OnHost { fleets: HashSet::from([10, 77]), runner: Some(77) };
+        let read = OnHost { fleets: HashSet::from([10, 77]), runner: Some(77), keeper: Some(76) };
         assert_eq!(whom(&read, 10), Process::Fleets);
         assert_eq!(whom(&read, 77), Process::Runner, "started by a worker, it is still the runner");
+        assert_eq!(whom(&read, 76), Process::Runner, "its keeper is the runner's as much");
         assert_eq!(whom(&read, 501), Process::Other);
     }
 }

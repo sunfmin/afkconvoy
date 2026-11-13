@@ -29,9 +29,6 @@ pub struct FleetReport {
     /// What the team's roles make of the host kit: `None` of an unbound repo,
     /// or where the team or the host kit cannot be read.
     pub roles: Option<Roles>,
-    /// The concurrency in force, as `concurrency::json` says it; {error}
-    /// where it cannot be read.
-    pub concurrency: Value,
     /// The harness in force, as `named_harness::json_of` says it.
     pub harness: Value,
     /// The repo the fleet reads its issues in, where it is not its own: as
@@ -92,7 +89,10 @@ impl FleetReport {
         set: &WorkingSet,
         readings: &Readings,
     ) -> FleetReport {
-        let admission = Admission::read_from(&fleet.repo.dir, readings);
+        // The account its next worker starts on, as its workers at work say it.
+        let usage = crate::tick::usage_of(fleet, set, 0);
+        let admission =
+            Admission::read_from(&fleet.repo.dir, readings).map(|read| read.with_usage(usage));
         FleetReport::admitted(fleet, flows, set, admission.map_err(|e| format!("{e:#}")))
     }
 
@@ -131,7 +131,6 @@ impl FleetReport {
         FleetReport {
             intake: None,
             roles: None,
-            concurrency: crate::concurrency::json_of(repo),
             harness: crate::named_harness::json_of(repo),
             tracker,
             deliveries: None,
@@ -168,18 +167,12 @@ impl FleetReport {
         FleetReport {
             intake: bound.map(|bound| (seen.taken_in, bound.intake_limit)),
             roles,
-            concurrency: crate::concurrency::json(seen.config),
             harness,
             tracker: json!(seen.tracker),
             deliveries: Some(seen.deliveries),
             admission: seen.admission,
             launches,
         }
-    }
-
-    /// How many claims the fleet may hold at once, where that was read.
-    pub fn concurrency_in_force(&self) -> Option<usize> {
-        self.concurrency["in_force"].as_u64().map(|n| n as usize)
     }
 
     /// The tracker, where it is not the checkout's own repo.
@@ -234,7 +227,6 @@ impl FleetReport {
             }
             plan.insert("unmatched_models".into(), serde_json::to_value(&roles.unmatched_models)?);
         }
-        plan.insert("concurrency".into(), self.concurrency.clone());
         plan.insert("harness".into(), self.harness.clone());
         plan.insert("tracker".into(), self.tracker.clone());
         let deliveries = self.deliveries.clone().unwrap_or(Ok(vec![]));
@@ -304,6 +296,9 @@ mod tests {
             total_load: reading.load,
             queue_load: Some(0),
             span: 600,
+            queue_drain: None,
+            queue_bound: afkconvoy_core::admission::QUEUE_BOUND,
+            usage: None,
         }
     }
 
@@ -349,26 +344,23 @@ mod tests {
         let report = FleetReport::of(seen(&config, Ok(&kit), Some(&tracker), &[]));
         assert_eq!(report.intake, None, "an unbound repo takes in nothing");
         assert_eq!(report.roles, None);
-        assert_eq!(report.concurrency, json!({"in_force": 3, "said_by": "default"}));
-        assert_eq!(report.concurrency_in_force(), Some(3));
         assert_eq!(report.harness, json!({"in_force": "codex", "said_by": "host_kit"}));
         assert_eq!(report.tracker_named().as_deref(), Some("acme/issues"));
         assert_eq!(report.admission_json()["admits"], true);
         let plan = report.plan_json().unwrap();
         let keys: Vec<&str> = plan.keys().map(String::as_str).collect();
-        assert_eq!(keys, ["admission", "concurrency", "deliveries", "harness", "tracker"]);
+        assert_eq!(keys, ["admission", "deliveries", "harness", "tracker"]);
         assert_eq!(plan["deliveries"][0]["detail"], "not ready");
         assert_eq!(report.deliveries_json(), plan["deliveries"].as_array().unwrap().clone());
     }
 
     #[test]
-    fn the_checkouts_own_harness_and_concurrency_hold_over_the_host_kit_and_the_default() {
-        let config = config("").laid(5);
+    fn the_checkouts_own_harness_holds_over_the_host_kit() {
+        let config = config("");
         let mut seen = seen(&config, Err("no host kit".into()), None, &[]);
         seen.pinned = Some(Harness::ClaudeCode);
         let report = FleetReport::of(seen);
         assert_eq!(report.harness, json!({"in_force": "claude-code", "said_by": "checkout"}));
-        assert_eq!(report.concurrency, json!({"in_force": 5, "said_by": "checkout"}));
         assert_eq!(report.tracker, Value::Null, "the checkout's own repo is its tracker");
         let config = self::config("");
         let report = FleetReport::of(self::seen(&config, Err("no host kit".into()), None, &[]));

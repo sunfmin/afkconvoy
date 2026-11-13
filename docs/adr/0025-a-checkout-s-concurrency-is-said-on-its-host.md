@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0072
 ---
 
 # A checkout's concurrency is said on its host, and the repo config names none

@@ -33,6 +33,11 @@ pub fn file_of(repo: &Repo) -> PathBuf {
     repo.dir.join(FILE)
 }
 
+/// The config of the checkout `repo`, read anew: an error names the file.
+pub fn of(repo: &Repo) -> Result<Config> {
+    load(&file_of(repo))
+}
+
 pub fn load(file: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read the config file {}", file.display()))?;
@@ -248,7 +253,7 @@ No command writes this file: write it, commit it, and run `afkconvoy config`.
 
 ## What it answers
 
-{"base_branch", "gate_command", "gate_seconds", "ready_label", "epic_labels", "escalate_label", "lock_label"} — every key, the defaults filled in. `gate_seconds` is the gate limit: how many seconds a run of `gate_command` is given, by `afkconvoy gate` and by a landing turn alike, before it is ended and is red (default {const:GATE_SECONDS}). It is written nowhere else: neither command has a flag for it. A config that leaves it out is a finding of `afkconvoy doctor`. `lock_label` is the label of a fleet lock (default fleet-lock): while an open issue carries it, the fleet works lock issues only (`afkconvoy lock --help`). How many claims a fleet instance holds at work at once is no key: it is its checkout's, said on the host that works it (`afkconvoy run --concurrency`), and {const:CONCURRENCY} until that host says otherwise. A config that still names `concurrency` is read all the same, but for that key, which changes nothing: `afkconvoy doctor` reports it as `info`, since nothing is held up, with the file and key to delete. Where the checkout says none and the config names a different number than the one in force, its fix first gives the `afkconvoy run` that keeps that number on the host. `afkconvoy plan` says the concurrency in force, and who says it.
+{"base_branch", "gate_command", "gate_seconds", "ready_label", "epic_labels", "escalate_label", "lock_label"} — every key, the defaults filled in. `gate_seconds` is the gate limit: how many seconds a run of `gate_command` is given, by `afkconvoy gate` and by a landing turn alike, before it is ended and is red (default {const:GATE_SECONDS}). It is written nowhere else: neither command has a flag for it. A config that leaves it out is a finding of `afkconvoy doctor`. `lock_label` is the label of a fleet lock (default fleet-lock): while an open issue carries it, the fleet works lock issues only (`afkconvoy lock --help`). How many workers a fleet instance holds at work at once is no key, nor any number anywhere: admission alone decides each start, by what the host and the accounts can carry now (`afkconvoy run --help`, ADMISSION). A config that still names `concurrency` is read all the same, but for that key, which changes nothing: `afkconvoy doctor` reports it as `info`, since nothing is held up, with the file and key to delete.
 
 A repo may declare host requirements in a separate block, which older releases read past:
 

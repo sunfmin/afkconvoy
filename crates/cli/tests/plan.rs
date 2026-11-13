@@ -76,7 +76,6 @@ fn plan_assembles_the_working_set() {
     assert_eq!(plan["stale"][0]["instance"], "dead");
     assert_eq!(plan["stale"][0]["sha"], world.remote(&["rev-parse", "refs/convoy/claim/3"]));
     assert_eq!(numbers(&plan["stale_closed"]), [10]);
-    assert_eq!(plan["free_slots"], 1, "the idle landing #4 takes none of the two slots");
 }
 
 #[test]
@@ -99,14 +98,13 @@ fn a_pr_from_a_fork_is_read_by_nothing() {
 #[test]
 fn an_unclaimed_ready_issue_is_on_the_frontier_in_number_order() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     for n in [12, 3, 7] {
         world.issue(n, &["ready-for-agent"]);
     }
     let plan = world.afk(&["plan"]).ok();
     assert_eq!(numbers(&plan["frontier"]), [3, 7, 12]);
     assert_eq!(plan["frontier"][0]["title"], "issue 3");
-    assert_eq!(plan["free_slots"], 2);
 }
 
 #[test]

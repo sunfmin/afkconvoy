@@ -173,8 +173,8 @@ fn tick(world: &World, now: &str) -> Value {
 fn watching_reads_the_trackers_endings_and_keeps_same_numbered_repos_apart() {
     let world = world();
     let second = world.second_repo();
-    world.say_concurrency(&world.clone, 3);
-    world.say_concurrency(&second, 3);
+    world.list_checkout(&world.clone);
+    world.list_checkout(&second);
     tracker_issue(&world, 7, &[MINE]);
     tracker_issue(&world, 8, &["repo:acme/other"]);
     tracker_issue(&world, 9, &[MINE, "repo:acme/other"]);
@@ -556,7 +556,7 @@ fn bound_with(team: &str, config: &str) -> World {
     write(&world.clone, "docs/agents/afkconvoy.md", &config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
-    world.say_concurrency(&world.clone, 4);
+    world.list_checkout(&world.clone);
     world
 }
 

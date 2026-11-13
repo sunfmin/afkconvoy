@@ -450,6 +450,9 @@ impl Remote {
     /// Lists `patterns` on the remote now, and keeps the answer.
     fn ask(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
         let shared = self.shared();
+        // Before the remote is asked: a write that lands while it answers is
+        // newer than the answer, which must not overwrite it.
+        let began = lock(&shared.seen).began();
         let mut attempts = 1;
         let listed = loop {
             match shared.wire.list(&self.repo.dir, patterns) {
@@ -472,7 +475,7 @@ impl Remote {
             .filter(|(name, _)| !publication::is_scratch(layout, name))
             .map(|(name, sha)| RemoteRecord { name, sha, subject: String::new() })
             .collect();
-        lock(&shared.seen).remember(&records, patterns);
+        lock(&shared.seen).remember(&records, patterns, began);
         Ok(records)
     }
 }
@@ -534,6 +537,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// ref already covered by a listing is not asked again. A write of the ref
 /// drops it, so the next read sees the remote — including a peer that won
 /// the push.
+///
+/// Threads of one process share it, and a read takes the time the remote
+/// takes to answer: what a read began before a write of this process landed
+/// is older than that write, and changes nothing of the ref it wrote
+/// (sunfmin/control#828). Each read says which write it began after
+/// (`began`).
 #[derive(Debug, Default)]
 pub(crate) struct Seen {
     /// `Some` is the sha the remote had; `None` is a read that found it absent.
@@ -542,6 +551,10 @@ pub(crate) struct Seen {
     covered: Vec<String>,
     /// Written by this process since the read that filled `sha`.
     dirty: std::collections::HashSet<String>,
+    /// How many writes this process has made.
+    writes: u64,
+    /// Each ref this process wrote, by the count of its last write.
+    written: HashMap<String, u64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -568,15 +581,31 @@ impl Seen {
         Answer::Miss
     }
 
-    fn clear(&mut self) {
-        self.sha.clear();
-        self.covered.clear();
-        self.dirty.clear();
+    /// What a read beginning now is to say it began after (`remember`).
+    pub(crate) fn began(&self) -> u64 {
+        self.writes
     }
 
-    /// A fetch by name found the remote no longer has `name`: it is absent
-    /// until a read finds it again.
-    pub(crate) fn vanished(&mut self, name: &str) {
+    /// Whether this process wrote `name` after a read that `began` then.
+    fn newer(&self, name: &str, began: u64) -> bool {
+        self.written.get(name).is_some_and(|&at| at > began)
+    }
+
+    /// Forgets every read but of a ref written after `began`.
+    fn clear(&mut self, began: u64) {
+        let written = &self.written;
+        let newer = |name: &str| written.get(name).is_some_and(|&at| at > began);
+        self.sha.retain(|name, _| newer(name));
+        self.dirty.retain(|name| newer(name));
+        self.covered.clear();
+    }
+
+    /// A fetch by name, begun after the write `began` says, found the remote
+    /// no longer has `name`: it is absent until a read finds it again.
+    pub(crate) fn vanished(&mut self, name: &str, began: u64) {
+        if self.newer(name, began) {
+            return;
+        }
         self.sha.insert(name.to_string(), None);
         self.dirty.remove(name);
     }
@@ -584,37 +613,47 @@ impl Seen {
     /// A write to the remote changed `refs`, each an exact name: the next
     /// read of each asks the remote. Other refs stay.
     fn wrote(&mut self, refs: &[String]) {
+        self.writes += 1;
         for name in refs {
             self.sha.remove(name);
             self.dirty.insert(name.clone());
+            self.written.insert(name.clone(), self.writes);
         }
     }
 
-    /// `records` is what `patterns` just listed. A glob prefix becomes complete:
-    /// a name under it that was not listed is absent.
-    fn remember(&mut self, records: &[RemoteRecord], patterns: &[&str]) {
+    /// `records` is what `patterns` listed, in a read that `began` after
+    /// that many writes. A glob prefix becomes complete: a name under it that
+    /// was not listed is absent. A ref written since the read began keeps
+    /// what that write left: the next read of it asks the remote, or answers
+    /// what a read begun after the write found.
+    fn remember(&mut self, records: &[RemoteRecord], patterns: &[&str], began: u64) {
         if patterns.iter().any(|pattern| glob_prefix(pattern).is_none() && !is_exact(pattern)) {
-            self.clear();
+            self.clear(began);
             return;
         }
+        let written = &self.written;
+        let older = |name: &str| written.get(name).is_none_or(|&at| at <= began);
         for pattern in patterns {
             if let Some(prefix) = glob_prefix(pattern) {
-                self.sha.retain(|name, _| !name.starts_with(&prefix));
-                self.dirty.retain(|name| !name.starts_with(&prefix));
+                self.sha.retain(|name, _| !name.starts_with(&prefix) || !older(name));
+                self.dirty.retain(|name| !name.starts_with(&prefix) || !older(name));
                 if !self.covered.iter().any(|had| had == &prefix) {
                     self.covered.push(prefix);
                 }
-            } else {
+            } else if older(pattern) {
                 self.sha.remove(*pattern);
                 self.dirty.remove(*pattern);
             }
         }
-        for record in records {
+        for record in records.iter().filter(|record| older(&record.name)) {
             self.sha.insert(record.name.clone(), Some(record.sha.clone()));
             self.dirty.remove(&record.name);
         }
         for pattern in patterns {
-            if is_exact(pattern) && !records.iter().any(|record| record.name == *pattern) {
+            if is_exact(pattern)
+                && older(pattern)
+                && !records.iter().any(|record| record.name == *pattern)
+            {
                 self.sha.insert((*pattern).to_string(), None);
             }
         }
@@ -835,6 +874,24 @@ pub(crate) mod tests {
         /// The next pushes of a ref it refuses, in order.
         refusals: Mutex<VecDeque<Refusal>>,
         pushes: Mutex<usize>,
+        /// The next listings, each answering what the remote had as it was
+        /// asked only once its `Stall` lets it.
+        stalls: Mutex<VecDeque<Stall>>,
+    }
+
+    /// A listing that has read the remote waits at `read`, and then at
+    /// `answer` before it answers.
+    #[derive(Debug, Clone)]
+    struct Stall {
+        read: Arc<std::sync::Barrier>,
+        answer: Arc<std::sync::Barrier>,
+    }
+
+    impl Stall {
+        fn new() -> Stall {
+            let barrier = || Arc::new(std::sync::Barrier::new(2));
+            Stall { read: barrier(), answer: barrier() }
+        }
     }
 
     /// A push of `name` the remote refuses saying `stderr`; meanwhile
@@ -901,8 +958,7 @@ pub(crate) mod tests {
             if let Some(error) = lock(&self.failures).pop_front() {
                 bail!(error);
             }
-            let refs = lock(&self.refs);
-            Ok(refs
+            let listed = lock(&self.refs)
                 .iter()
                 .filter(|(name, _)| {
                     patterns.iter().any(|pattern| match pattern.strip_suffix('*') {
@@ -911,7 +967,13 @@ pub(crate) mod tests {
                     })
                 })
                 .map(|(name, sha)| (name.clone(), sha.clone()))
-                .collect())
+                .collect();
+            let stall = lock(&self.stalls).pop_front();
+            if let Some(stall) = stall {
+                stall.read.wait();
+                stall.answer.wait();
+            }
+            Ok(listed)
         }
 
         fn push(&self, _: &Path, push: &Push) -> Result<Ran> {
@@ -1348,10 +1410,66 @@ pub(crate) mod tests {
     #[test]
     fn a_listing_answers_an_absent_ref_under_its_prefix() {
         let mut seen = Seen::default();
-        seen.remember(&[RemoteRecord::of("refs/heads/main", "abc")], &["refs/heads/*"]);
+        seen.remember(&[RemoteRecord::of("refs/heads/main", "abc")], &["refs/heads/*"], 0);
         assert_eq!(seen.answer("refs/heads/main"), Answer::Sha("abc".into()));
         assert_eq!(seen.answer("refs/heads/other"), Answer::Absent);
         assert_eq!(seen.answer("refs/convoy/target/7"), Answer::Miss);
+    }
+
+    /// sunfmin/control#828: one thread lists every fleet ref while another
+    /// pins a target and reads it back; the listing, begun before the pin,
+    /// answers after the read-back. The target is never read as absent.
+    #[test]
+    fn a_listing_begun_before_a_write_never_answers_for_the_ref_written() {
+        let target = "refs/convoy/target/5";
+        for patterns in [&["refs/convoy/*"][..], &["refs/convoy/target/5"], &["refs/*/x?"]] {
+            let mut seen = Seen::default();
+            let listing = seen.began();
+            seen.wrote(&[target.to_string()]);
+            assert_eq!(seen.answer(target), Answer::Miss);
+            let read_back = seen.began();
+            seen.remember(&[RemoteRecord::of(target, "t5")], &[target], read_back);
+            assert_eq!(seen.answer(target), Answer::Sha("t5".into()));
+            // the old listing, which did not see the pin
+            seen.remember(&[], patterns, listing);
+            assert_eq!(seen.answer(target), Answer::Sha("t5".into()), "{patterns:?}");
+        }
+
+        // Before any read-back, the old listing leaves the write to be asked.
+        let mut seen = Seen::default();
+        let listing = seen.began();
+        seen.wrote(&[target.to_string()]);
+        seen.remember(&[], &["refs/convoy/*"], listing);
+        assert_eq!(seen.answer(target), Answer::Miss);
+        seen.vanished(target, listing);
+        assert_eq!(seen.answer(target), Answer::Miss);
+        // Any other ref under the prefix is answered from the listing.
+        assert_eq!(seen.answer("refs/convoy/claim/5"), Answer::Absent);
+
+        // A listing begun after the write answers for it as ever.
+        let after = seen.began();
+        seen.remember(&[], &["refs/convoy/*"], after);
+        assert_eq!(seen.answer(target), Answer::Absent);
+    }
+
+    /// The same race through the remote view and two threads: a listing
+    /// whose remote answers only once a pin landed and was read back.
+    #[test]
+    fn a_slow_listing_beside_a_pin_leaves_the_pin_readable() {
+        let fake = Fake::with(&[]);
+        let view = remote(&fake);
+        let target = "refs/convoy/target/5";
+        let stall = Stall::new();
+        lock(&fake.stalls).push_back(stall.clone());
+        std::thread::scope(|scope| {
+            let listing = scope.spawn(|| view.refs(&["refs/convoy/*"], Fresh::Live).unwrap());
+            stall.read.wait();
+            view.push(&Push::set("t5", target)).unwrap();
+            assert_eq!(view.sha(target, Fresh::Process).unwrap().as_deref(), Some("t5"));
+            stall.answer.wait();
+            assert!(listing.join().unwrap().is_empty(), "the listing began before the pin");
+        });
+        assert_eq!(view.sha(target, Fresh::Process).unwrap().as_deref(), Some("t5"));
     }
 
     #[test]

@@ -493,7 +493,7 @@ fn response_headers_supply_reset_and_secondary_http_date_backoff() {
 fn watching_keeps_all_pr_endings_and_late_intake_records_in_both_directions() {
     for api in ["core", "graphql"] {
         let world = World::new();
-        world.say_concurrency(&world.clone, 3);
+        world.list_checkout(&world.clone);
         world.issue(3, &[]);
         world.with_gh(|gh|{
             let mut comments:Vec<_>=(0..101).map(|n|json!({"id":n+1,"at":900+n,"body":"discussion","html_url":"comment"})).collect();

@@ -254,7 +254,7 @@ fn every_blocker_closed_starts_a_worker_on_the_issue_again() {
 fn blockers_closed_before_parking_continue_the_same_worktree_after_a_fleet_lock() {
     for locked in [false, true] {
         let world = fleet();
-        world.say_concurrency(&world.clone, 1);
+        world.list_checkout(&world.clone);
         let dir = worktree(&world);
         let tip = commit(&dir, "work.txt", "kept work\n");
         std::fs::write(dir.join("scratch.txt"), "uncommitted work\n").unwrap();

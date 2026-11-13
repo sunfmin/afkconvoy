@@ -35,13 +35,13 @@ stages:
 ";
 
 /// A world whose repo is bound to a team with the one workflow `feature`,
-/// and runs `concurrency` workers at once.
-fn bound(concurrency: u64) -> World {
-    bound_to(FEATURE, concurrency)
+///.
+fn bound() -> World {
+    bound_to(FEATURE)
 }
 
 /// `bound`, the workflow `feature` being `feature`.
-fn bound_to(feature: &str, concurrency: u64) -> World {
+fn bound_to(feature: &str) -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
@@ -56,7 +56,7 @@ fn bound_to(feature: &str, concurrency: u64) -> World {
     write(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
-    world.say_concurrency(&world.clone, concurrency);
+    world.list_checkout(&world.clone);
     world
 }
 
@@ -164,7 +164,7 @@ fn has(world: &World, issue: u64, label: &str) -> bool {
 /// old comment has neither a workflow nor a current command to answer it.
 fn escalation_with_no_position() -> World {
     let feature = FEATURE.replace("max_rework: 1", "label: ready-for-agent\nmax_rework: 1");
-    let world = bound_to(&feature, 2);
+    let world = bound_to(&feature);
     world.name_origin(&world.clone, "acme/dev");
     world.say_tracker(&world.clone, "acme/tracker");
     world.with_tracker(|gh| {
@@ -251,7 +251,7 @@ fn an_escalation_with_no_position_lists_each_flow_label_to_choose_from() {
 
 #[test]
 fn a_ruling_runs_the_stage_that_asked_again_with_the_ruling_in_its_history() {
-    let world = bound(2);
+    let world = bound();
     world.issue(7, &["flow:feature", "bug"]);
     stage(&world, 7, 1000, "build", "escalate");
     // Handed to a human under the label the team names, with no flow label.
@@ -313,7 +313,7 @@ fn a_ruling_runs_the_stage_that_asked_again_with_the_ruling_in_its_history() {
 #[test]
 fn a_workflow_that_names_the_ready_label_takes_an_issue_opened_with_it_and_a_ruling_puts_it_back() {
     let named = FEATURE.replace("```yaml\n", "```yaml\nlabel: ready-for-agent\n");
-    let world = bound_to(&named, 2);
+    let world = bound_to(&named);
     world.issue(7, &["ready-for-agent", "bug"]);
     // An epic stays out, although it carries the workflow's label.
     world.issue(8, &["ready-for-agent", "epic"]);
@@ -330,7 +330,7 @@ fn a_workflow_that_names_the_ready_label_takes_an_issue_opened_with_it_and_a_rul
 
 #[test]
 fn both_rework_counts_are_taken_from_after_the_ruling() {
-    let world = bound(2);
+    let world = bound();
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
     stage(&world, 7, 1100, "review", "reject");
@@ -380,7 +380,7 @@ fn as_the_watch(world: &World, args: &[&str]) -> Value {
 
 #[test]
 fn the_watch_rules_and_sends_as_the_operator_whatever_harness_it_runs_on() {
-    let world = bound(2);
+    let world = bound();
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
     stage(&world, 7, 1100, "review", "reject");
@@ -416,7 +416,7 @@ fn the_watch_rules_and_sends_as_the_operator_whatever_harness_it_runs_on() {
 
 #[test]
 fn a_ruling_answers_a_reviewer_that_declared_escalation() {
-    let world = bound(2);
+    let world = bound();
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
     // A declared escalation is actionable; silence alone waits for diagnosis.
@@ -433,7 +433,7 @@ fn a_ruling_answers_a_reviewer_that_declared_escalation() {
 
 #[test]
 fn a_ruling_is_refused_where_there_is_nothing_to_rule_on() {
-    let world = bound(2);
+    let world = bound();
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["bug"]);
     let refused =
@@ -454,7 +454,7 @@ fn a_ruling_is_refused_where_there_is_nothing_to_rule_on() {
 
 #[test]
 fn an_issue_is_sent_to_a_named_stage_of_its_workflow() {
-    let world = bound(2);
+    let world = bound();
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
     let_go(&world, 7);
@@ -499,7 +499,7 @@ fn an_issue_is_sent_to_a_named_stage_of_its_workflow() {
 
 #[test]
 fn sending_an_escalated_issue_hands_it_back_to_the_fleet() {
-    let world = bound(2);
+    let world = bound();
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
     stage(&world, 7, 1100, "review", "escalate");
@@ -520,7 +520,7 @@ fn sending_an_escalated_issue_hands_it_back_to_the_fleet() {
 
 #[test]
 fn an_issue_at_a_human_s_stage_is_not_dispatched_and_holds_no_claim_and_no_slot() {
-    let world = bound(1);
+    let world = bound();
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
     stage(&world, 7, 1100, "review", "pass");
@@ -539,7 +539,6 @@ fn an_issue_at_a_human_s_stage_is_not_dispatched_and_holds_no_claim_and_no_slot(
     let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
     let row = plan["excluded"].as_array().unwrap().iter().find(|row| row["number"] == 7).unwrap();
     assert!(row["reason"].as_str().unwrap().contains("waits for a human"), "{row}");
-    assert_eq!(plan["free_slots"], 1);
     world.issue(8, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1300)), ["dispatch 8 done"]);
     assert_eq!(world.claims(), [(8, "alpha".to_string())]);
@@ -548,7 +547,7 @@ fn an_issue_at_a_human_s_stage_is_not_dispatched_and_holds_no_claim_and_no_slot(
 
 #[test]
 fn a_human_declares_the_verdict_of_their_stage_with_the_verdict_command() {
-    let world = bound(2);
+    let world = bound();
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
     stage(&world, 7, 1100, "review", "pass");

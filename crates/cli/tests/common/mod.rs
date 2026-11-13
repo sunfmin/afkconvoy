@@ -1417,7 +1417,8 @@ impl Drop for World {
         }
         let until = Instant::now() + Duration::from_secs(5);
         while self.runner_lock_held() && Instant::now() < until {
-            if let Some(pid) = self.host_runner() {
+            // Its keeper first, which would start it again.
+            for pid in [self.keeper(), self.host_runner()].into_iter().flatten() {
                 let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -1629,6 +1630,17 @@ impl World {
         holder["pid"].as_u64().map(|pid| pid as u32)
     }
 
+    /// The pid of the keeper of the host runner that holds this world's host,
+    /// as its lock says it; `None` where none holds it or it says none.
+    pub fn keeper(&self) -> Option<u32> {
+        if !self.runner_lock_held() {
+            return None;
+        }
+        let text = std::fs::read_to_string(self.cache().join("afkconvoy/host-runner.lock"));
+        let holder: Value = serde_json::from_str(&text.ok()?).ok()?;
+        holder["keeper"].as_u64().filter(|pid| *pid > 1).map(|pid| pid as u32)
+    }
+
     /// Whether a process holds this world's host runner's lock.
     fn runner_lock_held(&self) -> bool {
         let file = self.cache().join("afkconvoy/host-runner.lock");
@@ -1661,6 +1673,16 @@ impl World {
     /// to `PATIENCE` for it to let the host go.
     pub fn kill_host_runner(&self, signal: &str) {
         let pid = self.host_runner().expect("a host runner holds this world's host");
+        // A host runner ended by a signal is started again by its keeper: one
+        // a test ends so stays ended, its keeper ended first. One told to stop
+        // ends its keeper as it ends.
+        if signal != "TERM"
+            && signal != "INT"
+            && let Some(keeper) = self.keeper()
+        {
+            let ended = Command::new("kill").args(["-KILL", &keeper.to_string()]).status();
+            assert!(ended.unwrap().success(), "kill -KILL {keeper}, the keeper");
+        }
         let sent = Command::new("kill").arg(format!("-{signal}")).arg(pid.to_string()).status();
         assert!(sent.unwrap().success(), "kill -{signal} {pid}");
         let until = Instant::now() + PATIENCE;

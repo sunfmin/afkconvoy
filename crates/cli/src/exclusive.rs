@@ -318,6 +318,43 @@ struct Hosted {
     /// The display copy of each landing turn's candidate, by its process,
     /// for an inherited lease of it too.
     validations: Mutex<BTreeMap<u32, afkconvoy_core::candidate::Validation>>,
+    /// How long each command ran, by what it is called (`Ran::key`), its
+    /// last `RAN_KEPT` runs: what admission estimates the queue's drain by.
+    ran: Mutex<Ran>,
+}
+
+/// How many runs of one command the queue keeps the seconds of.
+pub const RAN_KEPT: usize = 5;
+
+/// How long the commands the queue ran took, in seconds, the last
+/// `RAN_KEPT` runs of each, oldest first, by what each is called
+/// (`Ran::key`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Ran(pub BTreeMap<String, Vec<u64>>);
+
+impl Ran {
+    /// What a command is called by, whichever worktree runs it: its status
+    /// command.
+    pub fn key(ticket: &Ticket) -> String {
+        afkconvoy_core::exclusive::status_command(&ticket.command)
+    }
+
+    /// Keeps one more run of `key`, of `seconds`.
+    pub fn ran(&mut self, key: String, seconds: u64) {
+        let runs = self.0.entry(key).or_default();
+        runs.push(seconds);
+        if runs.len() > RAN_KEPT {
+            runs.remove(0);
+        }
+    }
+
+    /// How long `ticket` takes by its recent runs: their median. `None`: no
+    /// run of it is kept.
+    pub fn takes(&self, ticket: &Ticket) -> Option<u64> {
+        let mut runs = self.0.get(&Self::key(ticket))?.clone();
+        runs.sort_unstable();
+        runs.get(runs.len() / 2).copied()
+    }
 }
 
 impl Host<Note> for Hosted {
@@ -385,7 +422,7 @@ impl Host<Note> for Hosted {
 
 impl Queue {
     fn with_leases(leases: bool) -> Self {
-        let hosted = Hosted { leases, validations: Mutex::default() };
+        let hosted = Hosted { leases, validations: Mutex::default(), ran: Mutex::default() };
         Self { holder: Holder::new(hosted) }
     }
 
@@ -417,6 +454,21 @@ impl Queue {
         self.holder.resume();
     }
 
+    /// How long the commands it ran took (`Ran`).
+    pub fn ran(&self) -> Ran {
+        self.holder.host().ran.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Keeps how long the ticket `number` ran, where it ran, as it leaves.
+    fn ended(&self, number: u64) {
+        let Ok((tickets, _)) = self.holder.observation() else { return };
+        let Some(ticket) = tickets.iter().find(|ticket| ticket.number == number) else { return };
+        let Some(ran) = ticket.ran else { return };
+        let seconds = crate::clock().saturating_sub(ran);
+        let mut kept = self.holder.host().ran.lock().unwrap_or_else(PoisonError::into_inner);
+        kept.ran(Ran::key(ticket), seconds);
+    }
+
     /// Tickets and whether new grants are paused, under the same lock.
     pub fn observation(&self) -> Result<(Vec<Ticket>, bool)> {
         self.holder.observation().map_err(|error| anyhow::anyhow!(error))
@@ -445,8 +497,11 @@ impl Queue {
     /// none is ahead of it: it leaves the queue once the asker's line closes,
     /// or where it cannot be told.
     fn hold(&self, number: u64, mut kept: Kept) {
-        let holder = self.holder.clone();
-        kept.on_close(move || holder.leave(number));
+        let queue = self.clone();
+        kept.on_close(move || {
+            queue.ended(number);
+            queue.holder.leave(number);
+        });
         let ran = match self.holder.turn(number) {
             holder::Turn::Runs(ran) => ran,
             holder::Turn::Closed => {

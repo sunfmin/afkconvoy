@@ -1,5 +1,5 @@
 ---
-status: accepted, operator lifecycle superseded by ADR-0035, its inspection sections superseded by ADR-0026, its memory-pressure clause superseded by ADR-0029
+status: accepted, operator lifecycle superseded by ADR-0035, its inspection sections superseded by ADR-0026, its memory-pressure clause superseded by ADR-0029, its admission amended by ADR-0072
 ---
 
 # A hot worker is inspected, and a heavy command queues
