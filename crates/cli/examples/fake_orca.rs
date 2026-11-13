@@ -264,7 +264,9 @@ fn worktree_ps(st: &mut State) -> ! {
                     if agent["paneKey"].is_null() {
                         agent["paneKey"] = json!(format!(
                             "{}:{}",
-                            terminal["tabId"].as_str().unwrap_or(terminal["handle"].as_str().unwrap()),
+                            terminal["tabId"]
+                                .as_str()
+                                .unwrap_or(terminal["handle"].as_str().unwrap()),
                             terminal["leafId"].as_str().unwrap_or("pane")
                         ));
                     }
