@@ -1,6 +1,7 @@
 //! Admission's effect half: reading the host — its cores, its load, its
-//! memory free and the disk free under the checkout — and the shares the host
-//! says, in its host settings. Whether admission holds is the core's to decide
+//! memory free, the disk free under the checkout and how long its exclusive
+//! queue takes to drain — the usage windows of the account a checkout's
+//! workers start on, and the shares the host says, in its host settings. Whether admission holds is the core's to decide
 //! (`afkconvoy_core::admission::holds`).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,8 +9,12 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
 
-use afkconvoy_core::admission::{Disk, Hold, Reading, SHARES, Shares, holds, thresholds};
+use afkconvoy_core::admission::{
+    Disk, Hold, QUEUE_BOUND, Reading, SHARES, Shares, Window, holds, queue_hold, thresholds,
+    window_holds,
+};
 use afkconvoy_core::exclusive::Ticket;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::resources::{Reason, SPAN};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -36,24 +41,33 @@ pub struct Readings {
     queue_load: Option<u64>,
     memory_free: Option<u64>,
     memory: Option<u64>,
+    /// How long the exclusive queue takes to drain, in seconds; `None`: it
+    /// could not be read.
+    queue_drain: Option<u64>,
     disks: Mutex<BTreeMap<u64, Option<Disk>>>,
 }
 
 impl Readings {
     /// Reads the host-wide values once; volumes are read on first use.
     pub fn new() -> Readings {
-        Self::read(|load| {
-            crate::exclusive::standing().ok().and_then(|queue| queue_load(load, &queue).ok())
-        })
+        match crate::host_runner::shared() {
+            Ok(shared) => {
+                let shared = shared.unwrap_or_default();
+                Self::with_queue(&shared.exclusive, &shared.exclusive_ran)
+            }
+            Err(_) => Self::read(|_| None, None),
+        }
     }
 
     /// Reads against the runner's existing queue snapshot. Inside the runner
     /// an RPC to itself can wait for a server that has not started yet.
-    pub(crate) fn with_queue(queue: &[Ticket]) -> Readings {
-        Self::read(|load| queue_load(load, queue).ok())
+    pub(crate) fn with_queue(queue: &[Ticket], ran: &crate::exclusive::Ran) -> Readings {
+        let lanes = host_settings::of_host().unwrap_or_default().lanes();
+        let drain = drain_of(queue, ran, lanes, crate::clock());
+        Self::read(|load| queue_load(load, queue).ok(), Some(drain))
     }
 
-    fn read(estimate_queue: impl FnOnce(u64) -> Option<u64>) -> Readings {
+    fn read(estimate_queue: impl FnOnce(u64) -> Option<u64>, queue_drain: Option<u64>) -> Readings {
         let total_load = load().ok();
         let queue_load = total_load.and_then(estimate_queue);
         Readings {
@@ -63,6 +77,7 @@ impl Readings {
             queue_load,
             memory_free: memory_free().ok(),
             memory: crate::hot::memory(),
+            queue_drain,
             disks: Mutex::new(BTreeMap::new()),
         }
     }
@@ -110,6 +125,23 @@ pub struct Admission {
     /// How long, in seconds, admission holds back for one reason before the
     /// host calls for a watch: the host's, or `SPAN`.
     pub span: u64,
+    /// How long the host's exclusive queue takes to drain, in seconds, and
+    /// past how long it holds: `QUEUE_BOUND`. `None`: it could not be read.
+    pub queue_drain: Option<u64>,
+    pub queue_bound: u64,
+    /// The account the checkout's workers start on, as its windows say;
+    /// `None`: none was read — its harness reports none, or nothing asked.
+    pub usage: Option<Usage>,
+}
+
+/// What admission reads of the account a checkout's next worker starts on:
+/// the windows its workers' newest records say, and how many workers run on
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Usage {
+    pub account: Harness,
+    pub windows: Vec<Window>,
+    pub running: usize,
 }
 
 impl Admission {
@@ -126,6 +158,7 @@ impl Admission {
         let mut admission = Admission::of(&host_settings::of_host()?, readings.at(dir));
         admission.total_load = readings.total_load;
         admission.queue_load = readings.queue_load;
+        admission.queue_drain = readings.queue_drain;
         Ok(admission)
     }
 
@@ -145,12 +178,34 @@ impl Admission {
                 said.push(name);
             }
         }
-        Admission { shares, said, total_load: reading.load, queue_load: Some(0), reading, span }
+        Admission {
+            shares,
+            said,
+            total_load: reading.load,
+            queue_load: Some(0),
+            reading,
+            span,
+            queue_drain: None,
+            queue_bound: QUEUE_BOUND,
+            usage: None,
+        }
     }
 
-    /// The thresholds the host is past: none, and new workers start.
+    /// This admission, judging the account `usage` too.
+    pub fn with_usage(self, usage: Option<Usage>) -> Admission {
+        Admission { usage, ..self }
+    }
+
+    /// The thresholds the host is past, then the account's windows that
+    /// would run out before they reset, then the queue: none, and new
+    /// workers start.
     pub fn holds(&self) -> Vec<Hold> {
-        holds(self.shares, &self.reading)
+        let mut held = holds(self.shares, &self.reading);
+        if let Some(usage) = &self.usage {
+            held.extend(window_holds(&usage.windows, |_| usage.running));
+        }
+        held.extend(queue_hold(self.queue_drain, self.queue_bound));
+        held
     }
 
     /// The reasons admission holds back for now: none, and it admits.
@@ -160,11 +215,11 @@ impl Admission {
 
     /// `hold` as a tick's line and `plan` say it.
     pub fn said(&self, hold: &Hold) -> String {
-        match *hold {
+        match hold {
             Hold::Load { load, limit } => format!(
                 "the load {} is past {}, {}% of its {} cores",
-                hundredths(load),
-                hundredths(limit),
+                hundredths(*load),
+                hundredths(*limit),
                 self.shares.load,
                 self.reading.cores
             ),
@@ -173,9 +228,21 @@ impl Admission {
             }
             Hold::Disk { free, floor } => format!(
                 "{} of the checkout's disk is free, under {}, {}% of it",
-                measure::said(free),
-                measure::said(floor),
+                measure::said(*free),
+                measure::said(*floor),
                 self.shares.disk
+            ),
+            Hold::Window { account, window, used, projected, running, resets_in } => format!(
+                "the `{window}` window of the {account} account is {used}% used and resets in \
+                 {}: at its rate, with {running} worker(s) on it and one more, it would be \
+                 {projected}% used by then",
+                minutes(*resets_in)
+            ),
+            Hold::Queue { drain, bound } => format!(
+                "the exclusive queue would take {} to drain, by its commands' recent run times, \
+                 past {}",
+                minutes(*drain),
+                minutes(*bound)
             ),
         }
     }
@@ -193,6 +260,9 @@ impl Admission {
         }
         if let Some(disk) = reading.disk {
             said.push(format!("{} of the checkout's disk free", measure::said(disk.free)));
+        }
+        if let Some(drain) = self.queue_drain {
+            said.push(format!("an exclusive queue {} from drained", minutes(drain)));
         }
         said
     }
@@ -228,6 +298,12 @@ impl Admission {
                 "disk_free_bytes": reading.disk.map(|disk| disk.free),
                 "disk_size_bytes": reading.disk.map(|disk| disk.size),
             },
+            "queue": {"drain_seconds": self.queue_drain, "bound_seconds": self.queue_bound},
+            "usage": self.usage.as_ref().map(|usage| json!({
+                "account": usage.account.key(),
+                "running": usage.running,
+                "windows": usage.windows,
+            })),
         })
     }
 }
@@ -256,6 +332,70 @@ fn share_of(load: u64, procs: &[crate::hot::Proc], of: &BTreeSet<u32>) -> u64 {
         return 0;
     }
     ((load as f64 * queued as f64 / total as f64).round() as u64).min(load)
+}
+
+/// How long the queue `queue` takes to drain, in seconds, by the recent run
+/// times `ran` keeps of its commands, in the lanes `lanes` give it
+/// (`admission::drain`): what is left of each running command, the whole of
+/// each waiting one. A command no run of which is kept counts for nothing.
+fn drain_of(
+    queue: &[Ticket],
+    ran: &crate::exclusive::Ran,
+    lanes: afkconvoy_core::exclusive::Lanes,
+    now: u64,
+) -> u64 {
+    let commands: Vec<(String, u64, u64)> = queue
+        .iter()
+        .filter_map(|ticket| {
+            let takes = ran.takes(ticket)?;
+            let left = match ticket.ran {
+                Some(began) => takes.saturating_sub(now.saturating_sub(began)),
+                None => takes,
+            };
+            let lane = afkconvoy_core::exclusive::lane(ticket);
+            let places = match lane.as_str() {
+                "worker" => lanes.worker,
+                "fast" => lanes.fast,
+                "slow" => lanes.slow,
+                _ => 1,
+            };
+            Some((lane, places, left))
+        })
+        .collect();
+    afkconvoy_core::admission::drain(&commands)
+}
+
+/// The windows `said` of the account of `account`, as admission reads them
+/// `now`: each with its length and how long until it resets. A window that
+/// says no reset, or has reset since it was said, is left out; so is one
+/// whose length neither its engine says nor its name tells.
+pub fn windows_of(
+    account: Harness,
+    said: &[afkconvoy_core::harness::window::Window],
+    now: u64,
+) -> Vec<Window> {
+    said.iter()
+        .filter_map(|window| {
+            let resets_in = window.resets_at?.checked_sub(now).filter(|left| *left > 0)?;
+            let minutes = window.minutes.or(match window.name.as_str() {
+                "five_hour" | "limit_5h" => Some(5 * 60),
+                "seven_day" | "seven_day_opus" | "seven_day_sonnet" => Some(7 * 24 * 60),
+                _ => None,
+            })?;
+            Some(Window {
+                account: account.key().to_string(),
+                window: window.name.clone(),
+                used: window.used_percent.max(0.0).round() as u64,
+                length: minutes.saturating_mul(60),
+                resets_in,
+            })
+        })
+        .collect()
+}
+
+/// `seconds` in whole minutes, as a span is said: `14 min`.
+fn minutes(seconds: u64) -> String {
+    format!("{} min", seconds.div_ceil(60))
 }
 
 /// `hundredths` as a load is written: `105.43`.
@@ -340,6 +480,9 @@ mod tests {
             total_load: Some(10543),
             queue_load: Some(0),
             span: SPAN,
+            queue_drain: None,
+            queue_bound: afkconvoy_core::admission::QUEUE_BOUND,
+            usage: None,
         };
         let said: Vec<String> = admission.holds().iter().map(|hold| admission.said(hold)).collect();
         assert_eq!(
@@ -371,5 +514,103 @@ mod tests {
         assert_eq!(said.span, 900);
         assert_eq!(said.said, ["admit_load", "admit_memory", "admit_inspect_after"]);
         assert!(said.holds().is_empty(), "400% of 14 cores is 56, and 0% free never holds");
+    }
+}
+
+#[cfg(test)]
+mod readings_tests {
+    use super::*;
+    use afkconvoy_core::harness::window::Window as Said;
+
+    fn at_ease() -> Admission {
+        let reading = Reading { cores: 14, load: Some(100), memory_free: Some(60), disk: None };
+        Admission::of(&host_settings::Settings::default(), reading)
+    }
+
+    fn ticket(number: u64, command: &str, ran: Option<u64>) -> Ticket {
+        serde_json::from_value(json!({
+            "number": number, "pid": 1, "command": command, "dir": "/w",
+            "asked": 0, "ran": ran,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_window_that_would_run_out_holds_and_is_said_with_its_numbers() {
+        let now = 100_000;
+        let said = [
+            Said {
+                name: "primary".into(),
+                used_percent: 60.0,
+                minutes: Some(300),
+                resets_at: Some(now + 9000),
+            },
+            // reset since it was said: left out
+            Said {
+                name: "secondary".into(),
+                used_percent: 99.0,
+                minutes: Some(10_080),
+                resets_at: Some(now - 1),
+            },
+            // no length its engine says nor its name tells: left out
+            Said {
+                name: "other".into(),
+                used_percent: 99.0,
+                minutes: None,
+                resets_at: Some(now + 60),
+            },
+        ];
+        let windows = windows_of(Harness::Codex, &said, now);
+        assert_eq!(windows.len(), 1);
+        assert_eq!((windows[0].used, windows[0].length, windows[0].resets_in), (60, 18_000, 9000));
+        let usage = Usage { account: Harness::Codex, windows, running: 2 };
+        let held = at_ease().with_usage(Some(usage));
+        let holds = held.holds();
+        assert_eq!(holds.len(), 1);
+        assert_eq!(
+            held.said(&holds[0]),
+            "the `primary` window of the codex account is 60% used and resets in 150 min: at its \
+             rate, with 2 worker(s) on it and one more, it would be 150% used by then"
+        );
+        assert_eq!(held.reasons(), [Reason::Window]);
+        assert_eq!(held.json()["usage"]["running"], 2);
+        assert!(at_ease().with_usage(None).holds().is_empty(), "no window: the host alone");
+    }
+
+    #[test]
+    fn a_queue_that_would_take_past_its_bound_to_drain_holds() {
+        let mut ran = crate::exclusive::Ran::default();
+        let gate = ticket(1, "./gate.sh", None);
+        for seconds in [500, 600, 700] {
+            ran.ran(crate::exclusive::Ran::key(&gate), seconds);
+        }
+        assert_eq!(ran.takes(&gate), Some(600));
+        let lanes = afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 };
+        // one running 100s of its 600, two waiting: 500 + 600 + 600
+        let queue = [
+            ticket(1, "./gate.sh", Some(900)),
+            ticket(2, "./gate.sh", None),
+            ticket(3, "./gate.sh", None),
+        ];
+        assert_eq!(drain_of(&queue, &ran, lanes, 1000), 1700);
+        assert_eq!(drain_of(&[ticket(4, "make", None)], &ran, lanes, 1000), 0, "never ran");
+        let held = Admission { queue_drain: Some(1700), ..at_ease() };
+        let holds = held.holds();
+        assert_eq!(
+            held.said(&holds[0]),
+            "the exclusive queue would take 29 min to drain, by its commands' recent run times, \
+             past 15 min"
+        );
+        assert_eq!(held.json()["queue"]["drain_seconds"], 1700);
+        assert!(Admission { queue_drain: Some(QUEUE_BOUND), ..at_ease() }.holds().is_empty());
+    }
+
+    #[test]
+    fn the_queue_keeps_the_last_runs_of_each_command() {
+        let mut ran = crate::exclusive::Ran::default();
+        for seconds in 1..=7 {
+            ran.ran("cmd".into(), seconds);
+        }
+        assert_eq!(ran.0["cmd"], [3, 4, 5, 6, 7]);
     }
 }

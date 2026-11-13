@@ -26,7 +26,7 @@ fn operator(world: &World) -> PathBuf {
 fn run(world: &World, dir: &Path) -> FixtureProcess {
     world.say_host_settings(json!({"watch_dir": dir, "watch_every": 1}));
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root);
-    command.arg("host-runner");
+    command.args(["host-runner", "--kept-by", "0"]);
     let runner = FixtureProcess::spawn(&mut command);
     until(world, "owned host runner", || {
         (world.host_runner() == Some(runner.id())
@@ -236,7 +236,7 @@ fn takeover_fences_outbox(notify: bool) {
         });
     }
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root);
-    command.arg("host-runner");
+    command.args(["host-runner", "--kept-by", "0"]);
     let _restarted = FixtureProcess::spawn(&mut command);
     until(&world, "taken wait dropped without another look", || {
         let path = world.cache().join("afkconvoy/watch/notify.json");

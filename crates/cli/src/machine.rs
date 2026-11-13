@@ -101,11 +101,23 @@ fn row(line: &str) -> Option<Row<'_>> {
 /// each with what its account's processes use, by pid.
 fn runners(table: &str, me: u32) -> Vec<Runner> {
     let rows: Vec<Row> = table.lines().filter_map(row).collect();
+    // A host runner a keeper started says its keeper's pid; the keeper,
+    // `afkconvoy host-runner` alone as a host runner of an older release
+    // is, holds nothing of the host and is not named.
+    fn kept<'a>(row: &Row<'a>) -> Option<(&'a str, &'a str)> {
+        row.command.rsplit_once(" host-runner --kept-by ")
+    }
+    let keepers: Vec<u32> =
+        rows.iter().filter_map(|row| kept(row)?.1.trim().parse().ok()).collect();
     let mut found: Vec<Runner> = rows
         .iter()
         .filter(|row| row.uid != me)
         .filter_map(|row| {
-            let program = row.command.strip_suffix(" host-runner")?;
+            let program = match kept(row) {
+                Some((program, _)) => program,
+                None if keepers.contains(&row.pid) => return None,
+                None => row.command.strip_suffix(" host-runner")?,
+            };
             let named = Path::new(program).file_name().is_some_and(|name| name == "afkconvoy");
             named.then(|| {
                 let of_account = rows.iter().filter(|other| other.uid == row.uid);
@@ -286,6 +298,23 @@ mod tests {
         assert_eq!(elsewhere(table, 502), None);
         assert_eq!(elsewhere(TABLE, 501).map(|held| held.processes), Some(3));
         assert_eq!(elsewhere(TABLE, 502), None, "this account holds more than 501, root is none");
+    }
+
+    #[test]
+    fn a_kept_host_runner_is_named_once_by_its_own_pid_and_not_its_keeper_s() {
+        let table = "\
+  502 felix      4099   0.0 2048 /opt/homebrew/bin/afkconvoy host-runner
+  502 felix      4100  12.0 4096 /opt/homebrew/bin/afkconvoy host-runner --kept-by 4099
+  503 kim        5000   0.0 2048 /opt/homebrew/bin/afkconvoy host-runner
+";
+        let found = runners(table, 501);
+        let named: Vec<_> =
+            found.iter().map(|runner| (runner.pid, runner.program.as_str())).collect();
+        assert_eq!(
+            named,
+            [(4100, "/opt/homebrew/bin/afkconvoy"), (5000, "/opt/homebrew/bin/afkconvoy")],
+            "a keeper is no host runner; one of an older release, with none, is"
+        );
     }
 
     #[test]

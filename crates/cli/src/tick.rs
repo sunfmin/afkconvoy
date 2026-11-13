@@ -11,15 +11,15 @@ use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{
-    Fact, First, Outcome, Pass, Seen, TickStep, Unread, empty_streak, first, idle, pace, run_pass,
-    sleeps_skipped,
+    Fact, First, Outcome, Pass, Seen, TickStep, UNBOUNDED, Unread, empty_streak, first, idle, pace,
+    run_pass, sleeps_skipped,
 };
 use afkconvoy_core::wake::turn;
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
-use crate::admission::Admission;
+use crate::admission::{Admission, Usage};
 use crate::advance::{advance, hand_to_human, run_again_unclaimed};
 use crate::board::show;
 use crate::claims::{Me, beat, goodbye};
@@ -118,8 +118,9 @@ pub struct Ticked {
     /// Wake routes from the open issues this tick read, including those
     /// still held back by another blocker or by their labels.
     blockers: Vec<u64>,
-    /// The concurrency in force (`concurrency::config_of`).
-    concurrency: usize,
+    /// The base the pass's bound was raised from (`WorkingSet::bound`): no
+    /// bound at all, less room for the claims that take no slot.
+    base: usize,
     /// The claims the pass could hold as it ended (`Pass::bound`).
     bound: usize,
     /// What its rebuild read: the pass was made over these.
@@ -272,12 +273,17 @@ pub fn tick(
         (fleet, open) = Fleet::read(repo, me.now)?;
         (set, flows, claimed) = fleet.rebuild(&open, Some(&me.instance))?;
     }
-    // A busy host starts no new worker this tick (docs/adr/0019).
-    let admission = Admission::read(&fleet.repo.dir)?;
+    // A busy host, an account that would run out or a long exclusive queue
+    // starts no new worker this tick (docs/adr/0019, docs/adr/0072).
+    let mut admission = admission_of(&fleet, &set, 0)?;
     set.held_back = admission.holds();
     let me_said = me.instance.as_str();
     let lost = before.map(|before| before.lost(&fleet.scan.claims, me_said)).unwrap_or_default();
-    let bound = set.bound(fleet.config.concurrency());
+    // No number bounds the pass: admission alone decides each start. Room is
+    // kept above the base for the claims that take no slot, so the line still
+    // tells them apart.
+    let base = UNBOUNDED - set.left_alone().saturating_add(set.slotless());
+    let bound = set.bound(base);
     // A claimed issue the rebuild could not read is this tick's error, and
     // only its own.
     let mut failures: Vec<Failure> = claimed
@@ -290,7 +296,23 @@ pub fn tick(
     }
     failures.extend(taken_failures);
     let read = Read { set: &set, flows: &flows, issues: &open.issues };
+    // Each start after the first is admitted by a reading of its own, which
+    // counts the workers this pass started on the account.
+    let (mut started, mut read_again) = (0, None);
     let pass = run_pass(&set, bound, set.held(), |step| {
+        if step == TickStep::Admit {
+            return match admission_of(&fleet, read.set, started) {
+                Ok(again) => {
+                    let held = !again.holds().is_empty();
+                    read_again = Some(again);
+                    if held { Outcome::Held } else { Outcome::Done }
+                }
+                Err(error) => {
+                    failures.push(Failure::of(Failed::Step(step), &error));
+                    Outcome::Held
+                }
+            };
+        }
         // What the step found is the tick's whichever way it ended: one that
         // failed after it escalated an issue or ended a cut still did that.
         let mut stepped = Found::default();
@@ -300,7 +322,7 @@ pub fn tick(
         };
         found.extend(stepped);
         // Whatever a step raised, the rest of the tick is still owed.
-        made.unwrap_or_else(|error| {
+        let outcome = made.unwrap_or_else(|error| {
             // A start waiting for its predecessor's terminal to close
             // keeps its claim and fails nothing (sunfmin/control#559).
             if error.is::<crate::orca::StillClosing>() {
@@ -321,9 +343,27 @@ pub fn tick(
             }
             failures.push(Failure::of(Failed::Step(step), &error));
             Outcome::Failed
-        })
+        });
+        let takes = matches!(
+            step,
+            TickStep::Dispatch { .. } | TickStep::Reclaim { .. } | TickStep::Patrol { .. }
+        );
+        if takes
+            && !matches!(
+                outcome,
+                Outcome::Lost | Outcome::Blocked | Outcome::Gone | Outcome::Closed
+            )
+        {
+            started += 1;
+        }
+        outcome
     });
-    let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
+    // What the last reading said is what the line and the panel say.
+    if let Some(again) = read_again {
+        admission = again;
+        set.held_back = admission.holds();
+    }
+    let bound = pass.bound;
     let issues = &open.issues.rows;
     let config = &fleet.config;
     let flow_labels = flows.flow_labels();
@@ -355,7 +395,7 @@ pub fn tick(
             .filter(|issue| afkconvoy_core::tracker::repo_labels(&issue.labels).len() <= 1)
             .flat_map(|issue| issue.open_blockers.iter().copied())
             .collect(),
-        concurrency,
+        base,
         bound,
         set,
         flows,
@@ -500,7 +540,58 @@ fn carry_out(
             beat(&fleet.repo, &mut fleet.scan, me)?;
             Ok(Outcome::Done)
         }
+        // The pass reads admission itself, before it carries a step out.
+        TickStep::Admit => Ok(Outcome::Done),
     }
+}
+
+/// Admission for a start of the fleet `fleet` now: the host as read now,
+/// the account its next worker starts on (`usage_of`), with `started` more
+/// workers on it than `set` holds, and the exclusive queue.
+fn admission_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Result<Admission> {
+    Ok(Admission::read(&fleet.repo.dir)?.with_usage(usage_of(fleet, set, started)))
+}
+
+/// How long ago a worker's record of its account's windows may have been
+/// written and still be read, in seconds.
+const WINDOWS_FRESH: u64 = 3600;
+
+/// The account the next worker of `fleet` starts on — its checkout's own
+/// harness, or the host kit's first — as the newest records of its workers
+/// at work on it say its windows, with how many run on it: those of my
+/// claims at work in `set`, and `started` more, each counted as on it. `None`:
+/// none of them said a window within `WINDOWS_FRESH` — its harness reports
+/// none, or nothing could be read — and admission judges the host alone.
+pub(crate) fn usage_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Option<Usage> {
+    let account = match fleet.pinned {
+        Some(harness) => harness,
+        None => crate::kit::load().ok()?.first()?.harness,
+    };
+    let now = crate::clock();
+    let at_work: Vec<u64> = set
+        .mine
+        .iter()
+        .filter(|mine| matches!(mine.status, Status::NoPr | Status::Landing | Status::AtStage))
+        .map(|mine| mine.number)
+        .collect();
+    let source = crate::orca::Source::of(&fleet.repo).ok()?;
+    let linked = Worktree::linked(&source).ok()?;
+    let (mut running, mut newest) = (0, None::<(u64, Vec<_>)>);
+    for (issue, worktree) in &linked {
+        if !at_work.contains(issue) || worktree.recorded_harness().ok().flatten() != Some(account) {
+            continue;
+        }
+        running += 1;
+        let since = now.saturating_sub(WINDOWS_FRESH);
+        if let Ok(Some((at, said))) = crate::session::windows(&worktree.path, account, since)
+            && newest.as_ref().is_none_or(|(newer, _)| at > *newer)
+        {
+            newest = Some((at, said));
+        }
+    }
+    let (_, said) = newest?;
+    let windows = crate::admission::windows_of(account, &said, now);
+    Some(Usage { account, windows, running: running + started })
 }
 
 /// A fact of a claim as it was read (`tick::Fact`).
@@ -563,6 +654,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Board { issue, .. } => ("board", Some(issue)),
         TickStep::StageLabel { issue } => ("stage_label", Some(issue)),
         TickStep::Heartbeat => ("heartbeat", None),
+        TickStep::Admit => ("admit", None),
     }
 }
 
@@ -727,7 +819,6 @@ impl Ticked {
             panel::read(fleet, Some(me), &self.set, &self.flows, &self.pass.did, &report);
         panel.declared = self.declared().min(self.pass.held);
         panel.held = self.pass.held - panel.declared;
-        panel.bound = self.bound - panel.declared;
         panel.frontier = self.pass.frontier_remaining;
         panel.idle = self.idle();
         if let Some(row) = self.cut_said_here() {
@@ -758,7 +849,7 @@ impl Ticked {
     /// The claims whose worker declared a verdict that the pass left held:
     /// what its bound was raised by and still is (`Pass::bound`).
     fn declared(&self) -> usize {
-        self.bound.saturating_sub(self.concurrency.saturating_add(self.set.left_alone()))
+        self.bound.saturating_sub(self.base.saturating_add(self.set.left_alone()))
     }
 
     /// Whether this instance is idle after the tick (GLOSSARY: Idle). A cut
@@ -802,26 +893,21 @@ impl Ticked {
         self.failures.iter().any(|failure| failure.unreached)
     }
 
-    /// The claims held, as the line says them: those that take a slot against
-    /// the `concurrency` they are held under, then the ones a fleet lock has
-    /// the tick leave alone and those whose worker declared a verdict not
-    /// acted on yet, which take none, then those past the bound — a
-    /// start takes every claim stamped with its host, whatever the bound. So
-    /// the first never shows more held than its bound.
+    /// The claims held, as the line says them: those that take a slot, then
+    /// the ones a fleet lock has the tick leave alone and those whose worker
+    /// declared a verdict not acted on yet, which take none. No number bounds
+    /// them: admission alone decides each start.
     fn holding(&self) -> Vec<String> {
-        let (held, concurrency) = (self.pass.held, self.concurrency);
+        let held = self.pass.held;
         let left_alone = self.set.left_alone().min(held);
         let declared = self.declared().min(held - left_alone);
         let taking = held - left_alone - declared;
-        let mut parts = vec![format!("holding {}/{concurrency}", taking.min(concurrency))];
+        let mut parts = vec![format!("holding {taking}")];
         if left_alone > 0 {
             parts.push(format!("{left_alone} left alone"));
         }
         if declared > 0 {
             parts.push(format!("{declared} taking no slot"));
-        }
-        if taking > concurrency {
-            parts.push(format!("{} past the bound", taking - concurrency));
         }
         parts
     }
@@ -831,6 +917,8 @@ impl Ticked {
             .pass
             .did
             .iter()
+            // A reading that admitted is no step of the answer's.
+            .filter(|did| **did != (TickStep::Admit, Outcome::Done))
             .map(|(step, outcome)| {
                 let ended = match outcome {
                     Outcome::Done | Outcome::HandedOn => "done",
@@ -845,6 +933,7 @@ impl Ticked {
                     Outcome::Blocked => "blocked",
                     Outcome::Gone => "gone",
                     Outcome::Closed => "closed",
+                    Outcome::Held => "held",
                     Outcome::Superseded => "superseded",
                     Outcome::Failed => "failed",
                 };
@@ -1481,14 +1570,14 @@ pub fn run(
                 let due = pass.follow_up_due(ticked.bound) || ticked.unreached();
                 skipped = sleeps_skipped(skipped, due);
                 let sleep = if skipped > 0 { 0 } else { pace(busy, pass.held, streak) };
-                let logged = (Some(ticked.bound), Some(ticked.json()), None);
+                let logged = (Some(ticked.json()), None);
                 (ticked.line(), sleep, logged)
             }
             Err(error) => {
                 skipped = sleeps_skipped(skipped, unreached(&error).is_some());
                 let sleep = if skipped > 0 { 0 } else { pace(true, 0, 0) };
                 let error = format!("{error:#}");
-                (format!("FAILED: {error}"), sleep, (None, None, Some(error)))
+                (format!("FAILED: {error}"), sleep, (None, Some(error)))
             }
         };
         let hot_now = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
@@ -1499,7 +1588,7 @@ pub fn run(
         for warning in agent.launches.warned() {
             said.warn(&warning);
         }
-        let (bound, answer, error) = logged;
+        let (answer, error) = logged;
         // Shown before its line is kept: whoever that line answers finds it on the page.
         if let Some(show) = &show {
             // A tick that failed leaves its part as the last one found it.
@@ -1508,7 +1597,7 @@ pub fn run(
             shown.hot = hot_now.iter().map(panel::Hot::from).collect();
             show(shown.clone());
         }
-        let tick = log::Tick { count, sleep, line, bound, answer, error };
+        let tick = log::Tick { count, sleep, line, answer, error };
         said.keep(clock(), log::What::Tick(tick));
         // Resource observations and logging finish before a release move.
         standing.ticked(at_work);
@@ -1560,14 +1649,14 @@ Settling a claim removes that worker's worktree. Directories the gate left under
 - `frontier_remaining`: the frontier issues it left undispatched
 - `idle`: whether the fleet instance is idle after the pass: it holds nothing, nothing of its is on the base branch, its frontier is empty, and no cut it started is going. `afkconvoy checkouts` answers it of each checkout's last tick
 - `locks`: the fleet locks that stood as it ran: the open issues carrying the lock label — none: []. `run` opens its line with them: "FLEET LOCK #7 stands: only it is worked"
-- `held_back_by`: each threshold of the host past which admission started no new worker, as the line says it: "the load 31.20 is past 28.00, 200% of its 14 cores". A slot was free and something waited for it; it stays on the frontier (`afkconvoy run --help`, ADMISSION)
+- `held_back_by`: each reading for which admission started no new worker — a threshold of the host, a usage window of the account, the exclusive queue — as the line says it: "the load 31.20 is past 28.00, 200% of its 14 cores". Something waited to start; it stays on the frontier. A reading taken before a later start that held is said the same way, and its `did` holds `{"do": "admit", "outcome": "held"}` (`afkconvoy run --help`, ADMISSION)
 
 Errors: a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe — its tracker is public, say; the config, GitHub or the remote cannot be read; the host kit cannot be read or lacks a required harness; the worker launch command of a harness the fleet could be asked for resolves to nothing, or does not take the flags the fleet adds for its role or worktree trust; `--instance` is not an instance id ([a-z0-9][a-z0-9-]{0,39}).
 
 ## What trips you up
 
 - `--instance` is required: `run` mints an id, a tick has to be given one. Give every tick of one fleet the same id — a new id holds no claims, and sees the old id's as another instance's.
-- In a bound repo the tick that reads a verdict ends the claim its stage was performed under (`advance`) and, where the verdict leads to a stage a role performs, starts that stage's worker into the slot it freed, under a claim of its own (`dispatch`, on the same issue): a `pass` to the next stage, a `reject` to an earlier one, a ruling that runs a stage again. That worker goes ahead of everything else the tick takes a slot for. Only a fleet over its concurrency has no slot for it: the issue is then on the frontier of the tick after, ahead of the issues no stage has declared on yet.
+- In a bound repo the tick that reads a verdict ends the claim its stage was performed under (`advance`) and, where the verdict leads to a stage a role performs, starts that stage's worker into the slot it freed, under a claim of its own (`dispatch`, on the same issue): a `pass` to the next stage, a `reject` to an earlier one, a ruling that runs a stage again. That worker goes ahead of everything else the tick starts, and admission never holds it back.
 - A dispatch reads the issue's blockers once more, just before its claim: the rebuild can be minutes older (settling runs in between), and a blocker added since holds the issue back. Nothing is claimed, no worker starts and no status board is shown; the step says `blocked`, the line `skipped #68 (blocked by #71)`, and the slot it would have taken goes to the next issue on the frontier, in the same tick. The rebuild's own requests are as many as ever.
 - An issue GitHub has no more is gone, like a closed one, and costs the tick nothing else. GitHub says one of three things of it: deleted, answered 410; transferred, its read redirected to the repo it moved to; no such issue, a 404 with no move — a number nobody issued. Only the first two are called deleted or transferred: a 404 with no move is no such issue. A claim of mine on it is let go (`forget`): released, its worktree removed when it holds nothing the remote does not — else kept, its worker's terminal closed — and nothing written on GitHub. A dispatch that finds it gone, before its claim or after, leaves no claim behind, says `gone` and takes no slot. The line says `released #231 (the issue was deleted)`, `(the issue was transferred to acme/other#12)` or `(there is no such issue)`, or `skipped #231 (…)` of a dispatch that found it gone with no claim to release; `afkconvoy doctor` names a claim on one whose fleet is not running, with its fix.
 - The last stage is different: the tick after a `pass` that leads to `land` starts a worker in the workflow's landing role, which gates the PR and lands in a turn; a `pass` to `land` with no open PR to land is handed to a human. A consult and a stage that runs again once a fleet lock closed are the tick after's too.
@@ -1582,19 +1671,19 @@ Errors: a command the fleet needs is missing or logged out, or orca is not runni
   An issue that lands loses its worktree, and its worker with it, as it is settled: the worker's own session, idle at its prompt after it landed, is ended at settle — its terminal closed and its processes confirmed gone — and then the worktree is removed. A worker still working, or any other process in the worktree, makes settle wait until a later tick finds it gone. After the worker health grace of {const:GRACE} seconds, doctor reports the wait with the worker's state and processes in the worktree.
 
 - A fleet fault — its worker start failed again, its harness's worktree trust gap — escalates at once, in a bound repo and an unbound one alike: no consult is asked and no consult claim is taken. The comment and `doctor`'s `waiting_on_human` say the fix is on the host. The operator fixes it and hands the issue back; another failed start escalates at once again. Every other hand-off goes to a consult first only where the stage names one; otherwise it escalates for the host's watch (`afkconvoy help humans`). This includes a worker gone silent: it had its brief, so the work may be the cause.
-- An `escalate` does not always hand the issue to a human. From a stage that names a consult (`escalate: { to, do }`), the tick that reads it ends the stage's claim, and the next one starts a worker in the consult's role — under a claim of its own, in one slot of the concurrency, in the same worktree. Its ruling (`afkconvoy rule`) runs the stage that asked again, in the tick that reads it, and counts as one more of the issue's rework in total; its own `escalate` goes to a human. A consult that stays silent is nudged once and then escalated, like any worker.
+- An `escalate` does not always hand the issue to a human. From a stage that names a consult (`escalate: { to, do }`), the tick that reads it ends the stage's claim, and the next one starts a worker in the consult's role — under a claim of its own, in the same worktree. Its ruling (`afkconvoy rule`) runs the stage that asked again, in the tick that reads it, and counts as one more of the issue's rework in total; its own `escalate` goes to a human. A consult that stays silent is nudged once and then escalated, like any worker.
 - A `reject` does not always start the earlier stage again. Where it would pass one of the workflow's breakers — `max_rework`, `max_consecutive_rework` — the tick escalates the issue straight to a human instead, whatever consult the stage names; the comment names the breaker and lists every rework's stage and reason in order. `afkconvoy rehearse` trips them at the same verdict.
 - A verdict is not carried out when its stage left what it may not have: a stage marked `writes: false` whose branch holds a commit that was not there when its worker started has failed, and the issue escalates whatever it declared. The same holds for a consult, whatever its stage is marked: it writes no code. The guard (`afkconvoy guard --help`) refuses such a commit as it is made; this is the check of what a guard missed.
-- A patrol the repo names (`patrols`, `afkconvoy config --help`) is run by the tick that finds it due: its interval has passed since its last recorded run, and no run of it is still going. The tick claims the run on the remote — of several hosts one wins, and the rest say `lost` — starts a worker in the patrol's role, in a checkout of the base branch as it stands, linked to no issue, and records the run. A run takes one slot of the concurrency. A patrol is not run while its open issues have reached its `max_open`, nor while a fleet lock stands; one that missed runs is run once. `afkconvoy plan` says how each stands.
+- A patrol the repo names (`patrols`, `afkconvoy config --help`) is run by the tick that finds it due: its interval has passed since its last recorded run, and no run of it is still going. The tick claims the run on the remote — of several hosts one wins, and the rest say `lost` — starts a worker in the patrol's role, in a checkout of the base branch as it stands, linked to no issue, and records the run. A run is held at work as a claim is, and admission holds its start as it holds any. A patrol is not run while its open issues have reached its `max_open`, nor while a fleet lock stands; one that missed runs is run once. `afkconvoy plan` says how each stands.
 - A patrol's worker declares no verdict: it declares its run over (`afkconvoy over --help`), with the line its brief ends with, and the next tick ends the run (`end_patrol`) and frees its slot. One that never does is ended once its worker is gone, or has been stopped for the grace period. Either way a run whose checkout ends on a commit not on the base branch, has working-tree changes, or opened a PR has failed (`afkconvoy help patrols`): the tick opens an issue that says which, with the team's escalate label, and touches no other issue. The patrol is not run again until a human closes it. An operator reading orca sees a patrol's checkout only while its run is going, or has failed.
 - A tick that finds the gate slow opens one issue that says so (`slow_gate`). The gate is slow when, on one host, the last {const:SLOW_GATE_LANDINGS} landings on the base branch that have a recorded run of the config's `gate_command` with a time all exceeded the fixed `gate_budget_seconds` when declared, or took more than {const:SLOW_GATE_PERCENT}% of the termination gate limit, `gate_seconds`, otherwise. The issue carries the config's `ready_label`, so the fleet works it, and the label `slow-gate`, which is how it is found again. Its body gives the warning threshold, the termination limit, the host and the {const:SLOW_GATE_LANDINGS} runs, each with its commit and its seconds, and says what is not a fix: deleting or skipping tests, and raising `gate_seconds` or `gate_budget_seconds`. `afkconvoy plan` shows the same evidence, as `slow_gate`.
-- It opens no other while an issue carrying `slow-gate` is open, on any host, and the opening is claimed on the remote as a patrol's run is: of several hosts that found the gate slow one opens the issue, and the rest say `lost`. After that issue is closed only the landings made since count: the gate is slow again when {const:SLOW_GATE_LANDINGS} of those all exceeded the same warning threshold. It takes no slot of the concurrency.
-- In a repo that turns cutting on, a pass starts a cut (`cut`) when idle with landed commits past the newest version tag, or while busy once the oldest landing reaches the repo's age bound; an untagged remote's declared `initial` version starts only when idle. It claims the cut on the remote — of several hosts one wins, and the rest say `lost` — picks the version from the tags as they are then, and starts `afkconvoy cut` in a checkout of its own (`afkconvoy cut --help`). Its line says `fleet idle` or `fleet busy`. A cut takes no slot of the concurrency; while it goes the fleet keeps its heartbeat, and dispatches what comes as ever. The tick that finds it over ends it (`end_cut`): its line says what it did with each step's seconds, or where it failed and the issue that says so. A patch superseded by a minor landing ends without failure and starts the minor in that pass. A fleet lock or an open cut failure holds cuts back; admission holds only a cut before its age bound.
+- It opens no other while an issue carrying `slow-gate` is open, on any host, and the opening is claimed on the remote as a patrol's run is: of several hosts that found the gate slow one opens the issue, and the rest say `lost`. After that issue is closed only the landings made since count: the gate is slow again when {const:SLOW_GATE_LANDINGS} of those all exceeded the same warning threshold. It takes no slot.
+- In a repo that turns cutting on, a pass starts a cut (`cut`) when idle with landed commits past the newest version tag, or while busy once the oldest landing reaches the repo's age bound; an untagged remote's declared `initial` version starts only when idle. It claims the cut on the remote — of several hosts one wins, and the rest say `lost` — picks the version from the tags as they are then, and starts `afkconvoy cut` in a checkout of its own (`afkconvoy cut --help`). Its line says `fleet idle` or `fleet busy`. A cut takes no slot; while it goes the fleet keeps its heartbeat, and dispatches what comes as ever. The tick that finds it over ends it (`end_cut`): its line says what it did with each step's seconds, or where it failed and the issue that says so. A patch superseded by a minor landing ends without failure and starts the minor in that pass. A fleet lock or an open cut failure holds cuts back; admission holds only a cut before its age bound.
 - A ruling makes its stage run again with the existing rework semantics. Lasting rules are amended through ordinary work in their owning ADR, team or role rules, preserving source decisions. No proposal worker is started.
-- Upgrade: a retired team key `precedents` is refused with migration instructions. Before upgrading a configured team, migrate its effective rules and source links into their owning documents and remove that key. Existing proposal claims take no concurrency slot and cannot keep a fleet from idle. A tick stops only its verified local owned worker, or releases a stale remote claim without stopping any worker. Worktrees, branches, PRs and ruling comments are retained. Once per checkout/team binding it reads legacy open PRs from the team's own branches and comments their links and disposition for ordinary content migration; it neither closes nor merges them. A failed retirement retries while normal issues continue.
+- Upgrade: a retired team key `precedents` is refused with migration instructions. Before upgrading a configured team, migrate its effective rules and source links into their owning documents and remove that key. Existing proposal claims take no slot and cannot keep a fleet from idle. A tick stops only its verified local owned worker, or releases a stale remote claim without stopping any worker. Worktrees, branches, PRs and ruling comments are retained. Once per checkout/team binding it reads legacy open PRs from the team's own branches and comments their links and disposition for ordinary content migration; it neither closes nor merges them. A failed retirement retries while normal issues continue.
 
-- With a fleet lock standing a tick works lock issues only (`afkconvoy lock --help`). It dispatches nothing else, runs no patrol, takes no stale claim of another issue, hands no other issue to a human, and leaves alone every claim of its own on another issue whose PR is not on the base branch: no judge, no watch, no advance, no nudge. What those workers declared is acted on by the first tick after the last lock issue closed. Their claims take no slot meanwhile, so `held` may pass the concurrency by as many; the line of `run` shows them apart, as `left alone`.
-- A claim whose worker declared a verdict under it takes no slot either: the slot is free the tick it is read, though the claim is held until the verdict is acted on — once its worker has been quiet the grace period, as ever. A verdict on the issue from before the claim was created is not one declared under it. So `held` may pass the concurrency by as many, and the line of `run` shows them apart, as `taking no slot`. Where acting on the verdict starts a worker under the claim again — every blocker closed, a gone worker continued — that start waits for a free slot as any dispatch does, and is made by a later tick while none is free.
+- With a fleet lock standing a tick works lock issues only (`afkconvoy lock --help`). It dispatches nothing else, runs no patrol, takes no stale claim of another issue, hands no other issue to a human, and leaves alone every claim of its own on another issue whose PR is not on the base branch: no judge, no watch, no advance, no nudge. What those workers declared is acted on by the first tick after the last lock issue closed. Their claims take no slot meanwhile; the line of `run` shows them apart, as `left alone`.
+- A claim whose worker declared a verdict under it takes no slot either: the slot is free the tick it is read, though the claim is held until the verdict is acted on — once its worker has been quiet the grace period, as ever. A verdict on the issue from before the claim was created is not one declared under it. The line of `run` shows them apart, as `taking no slot`.
 - A landing claim — its PR open and not on the base branch — takes a slot while its worker is changing the tree: resolving a `conflict` or `speculative_conflict`, fixing a `gate_red`, or still preparing the branch for the turn. While its worker is gone or idle, or its turn is being asked for, or the last turn answered a wait (`afkconvoy land --help`), it takes none, and is still held until the PR lands. Its worker stops on a wait; the tick asks for the turn again itself (`asked for a turn again for #7` in its line), in the worktree, with no harness started. If that turn answers `conflict`, `speculative_conflict` or `gate_red`, the next tick hands its worker the answer, including the files or failing output, the ending's instructions and the worktree's full `convoy-turn.log` path. Its line says `told its turn's answer to #7`. A worker gone is continued onto its land step with that answer in its brief. Giving the worker this answer waits for a free slot; once the worker takes it, the claim takes that slot until it asks for a turn again, even while its harness still reports idle. Changes the fleet's turn made in the worktree count as no worker sign of life.
 - What a closed lock explains is run again, not carried out. In a bound repo, a stage whose own worker declared `escalate` before the lock closed and was not acted on since — and one whose worker stayed silent past a nudge sent before it closed — is not handed to its consult or to a human: the fleet leaves a stage record (`verdict=lock-closed by=fleet`), the claim is released (`advance`, `done`), and the next tick starts a worker on that stage, whose brief says a lock stood. It is no rework. A `pass`, a `blocked` and an `already-satisfied` stand as they are. What landed is still settled.
 - A step that failed is not a failed command: the exit is 0 and the failure is in `errors`. Read `errors`, not the exit code.

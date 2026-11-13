@@ -27,10 +27,10 @@ fn did(ticked: &Value) -> Vec<String> {
         .collect()
 }
 
-/// A world whose fleet holds two claims at once, with `numbers` ready.
+/// A world with `numbers` ready.
 fn backlog(numbers: &[u64]) -> World {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     for &n in numbers {
         world.issue(n, &["ready-for-agent"]);
     }
@@ -42,19 +42,22 @@ fn alpha(numbers: &[u64]) -> Vec<(u64, String)> {
 }
 
 #[test]
-fn a_tick_dispatches_into_the_free_slots_lowest_number_first() {
+fn a_tick_dispatches_the_whole_frontier_lowest_number_first() {
     let world = backlog(&[9, 3, 5]);
     let ticked = tick(&world, "1000");
-    assert_eq!(did(&ticked), ["dispatch 3 done", "dispatch 5 done", "heartbeat done"]);
-    assert_eq!(ticked["held"], 2);
-    assert_eq!(ticked["frontier_remaining"], 1);
+    assert_eq!(
+        did(&ticked),
+        ["dispatch 3 done", "dispatch 5 done", "dispatch 9 done", "heartbeat done"]
+    );
+    assert_eq!(ticked["held"], 3);
+    assert_eq!(ticked["frontier_remaining"], 0);
     assert_eq!(ticked["errors"], json!([]));
-    assert_eq!(world.claims(), alpha(&[3, 5]));
+    assert_eq!(world.claims(), alpha(&[3, 5, 9]));
 
-    // at the bound: the next tick takes nothing
+    // nothing left: the next tick takes nothing
     let again = tick(&world, "1090");
     assert_eq!(did(&again), ["heartbeat done"]);
-    assert_eq!(world.claims(), alpha(&[3, 5]));
+    assert_eq!(world.claims(), alpha(&[3, 5, 9]));
 }
 
 #[test]
@@ -239,8 +242,9 @@ fn a_brief_waits_for_the_harness_to_end_its_quiet_startup_working_episode() {
 
 #[test]
 fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
-    let world = backlog(&[3, 5, 9]);
+    let world = backlog(&[3, 5]);
     tick(&world, "1000");
+    world.issue(9, &["ready-for-agent"]);
     let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
     let tmp = world.tmp(std::path::Path::new(&worktree));
     assert!(tmp.is_dir(), "its worker's TMPDIR");
@@ -342,6 +346,96 @@ fn a_worktree_a_process_is_in_waits_until_that_process_is_gone() {
     assert_eq!(did(&again)[0], "settle 3 done", "{again}");
     assert!(!worktree.exists(), "the next tick removes it once the process is gone");
     assert_eq!(world.claims(), []);
+}
+
+/// A gate a scheduler paused, with what it started, both stopped, and the
+/// scheduler itself killed: nothing is left to resume them. Dropped, it
+/// resumes and kills both, so a failing test leaves neither stopped.
+struct Paused {
+    gate: u32,
+    child: u32,
+}
+
+impl Paused {
+    fn start(worktree: &Path, marks: &Path) -> Self {
+        let script = r#"cd "$1"
+sh -c 'sleep 120 & echo $! > "$0/child"; wait' "$2" &
+echo $! > "$2/gate"
+while ! test -s "$2/child"; do sleep 0.01; done
+kill -STOP "$(cat "$2/child")" "$(cat "$2/gate")"
+touch "$2/paused"
+exec sleep 120"#;
+        let mut scheduler =
+            Command::new("sh").args(["-c", script, "sh"]).arg(worktree).arg(marks).spawn().unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !marks.join("paused").exists() {
+            assert!(std::time::Instant::now() < until, "the scheduler never paused its gate");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let pid = |name: &str| -> u32 {
+            std::fs::read_to_string(marks.join(name)).unwrap().trim().parse().unwrap()
+        };
+        let paused = Self { gate: pid("gate"), child: pid("child") };
+        // The scheduler goes without a chance to resume what it paused.
+        scheduler.kill().unwrap();
+        scheduler.wait().unwrap();
+        assert_eq!(state(paused.gate).as_deref(), Some("T"), "the gate stays stopped");
+        assert_eq!(state(paused.child).as_deref(), Some("T"), "what it started stays stopped");
+        paused
+    }
+}
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        for pid in [self.child, self.gate] {
+            if state(pid).is_some() {
+                // SAFETY: these pids are this test's own paused fixture.
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGCONT);
+                    libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+    }
+}
+
+/// The first letter of `pid`'s state, `None` once it is gone or a zombie.
+fn state(pid: u32) -> Option<String> {
+    let out = Command::new("ps").args(["-p", &pid.to_string(), "-o", "stat="]).output().unwrap();
+    let state = String::from_utf8_lossy(&out.stdout).trim().chars().next()?;
+    (state != 'Z').then(|| state.to_string())
+}
+
+#[test]
+fn settling_ends_a_gate_its_killed_scheduler_left_stopped_and_removes_the_worktree() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    world.close_issue(3);
+    let paused = Paused::start(&worktree, &world.root);
+
+    let began = std::time::Instant::now();
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked)[0], "settle 3 done", "{ticked}");
+    assert!(began.elapsed() < std::time::Duration::from_secs(30), "ended within a bound");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while state(paused.gate).is_some() || state(paused.child).is_some() {
+        assert!(std::time::Instant::now() < until, "the paused gate's processes still exist");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!worktree.exists(), "the worktree is removed");
+    assert_eq!(world.claims(), []);
+    let logged: String = std::fs::read_dir(world.cache().join("afkconvoy/runs"))
+        .unwrap()
+        .flatten()
+        .map(|file| std::fs::read_to_string(file.path()).unwrap_or_default())
+        .collect();
+    for pid in [paused.gate, paused.child] {
+        assert!(
+            logged.contains(&format!("ended stopped orphan pid {pid},")),
+            "what settling ended is recorded: {logged}"
+        );
+    }
 }
 
 #[test]
@@ -742,9 +836,12 @@ fn a_start_that_failed_holds_its_claim_and_its_slot() {
     let world = backlog(&[3, 5, 9]);
     world.with_orca(|orca| orca["create_fails"] = json!([3]));
     let ticked = tick(&world, "1000");
-    assert_eq!(did(&ticked), ["dispatch 3 failed", "dispatch 5 done", "heartbeat done"]);
-    assert_eq!(ticked["held"], 2);
-    assert_eq!(world.claims(), alpha(&[3, 5]));
+    assert_eq!(
+        did(&ticked),
+        ["dispatch 3 failed", "dispatch 5 done", "dispatch 9 done", "heartbeat done"]
+    );
+    assert_eq!(ticked["held"], 3);
+    assert_eq!(world.claims(), alpha(&[3, 5, 9]));
 }
 
 #[test]
@@ -958,14 +1055,14 @@ fn run_ticks_until_stopped_and_says_what_each_tick_did() {
     assert_eq!(
         lines,
         [
-            "tick 1: dispatched #3, #5 · holding 2/2 · frontier 1 · next in 90s",
+            "tick 1: dispatched #3, #5, #9 · holding 3 · frontier 0 · next in 90s",
             // their workers, started a moment ago, are left a grace period
-            "tick 2: nothing to do · holding 2/2 · frontier 1 · next in 90s",
+            "tick 2: nothing to do · holding 3 · frontier 0 · next in 90s",
         ]
     );
     assert_eq!(stopped["ticks"], 2);
     // stopping is exiting: nothing is released on the way out
-    assert_eq!(world.claims(), alpha(&[3, 5]));
+    assert_eq!(world.claims(), alpha(&[3, 5, 9]));
 }
 
 #[test]
@@ -980,7 +1077,7 @@ fn a_tick_says_which_issue_it_skipped_for_a_blocker_read_after_its_rebuild() {
     assert_eq!(
         lines,
         [
-            "tick 1: dispatched #5 · skipped #3 (blocked by #5) · holding 1/2 · frontier 0 · next in 90s"
+            "tick 1: dispatched #5 · skipped #3 (blocked by #5) · holding 1 · frontier 0 · next in 90s"
         ]
     );
     assert_eq!(world.claims(), alpha(&[5]));
@@ -1007,12 +1104,12 @@ fn a_frontier_issue_closed_after_its_rebuild_is_skipped_and_fails_nothing() {
 #[test]
 fn run_goes_idle_after_three_empty_ticks() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     let (lines, _) = run(&world, &["--ticks", "4"]);
     let sleeps: Vec<&str> =
         lines.iter().map(|line| line.rsplit("next in ").next().unwrap()).collect();
     assert_eq!(sleeps, ["90s", "90s", "1500s", "1500s"]);
-    assert!(lines[0].starts_with("tick 1: nothing to do · holding 0/2 · frontier 0"));
+    assert!(lines[0].starts_with("tick 1: nothing to do · holding 0 · frontier 0"));
 }
 
 #[test]
@@ -1025,8 +1122,8 @@ fn run_follows_a_tick_that_settled_a_claim_with_no_sleep_and_sleeps_after_one_th
         lines,
         [
             // what the landing unblocked is the next tick's to find
-            "tick 1: settled #3 · holding 0/2 · frontier 0 · next now",
-            "tick 2: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+            "tick 1: settled #3 · holding 0 · frontier 0 · next now",
+            "tick 2: nothing to do · holding 0 · frontier 0 · next in 90s",
         ]
     );
 }
@@ -1046,11 +1143,11 @@ fn every_tick_says_as_it_starts_why_it_started() {
         [
             "start: run as alpha on h1, its workers started with `agent`",
             "tick 1: started (start)",
-            "tick 1: settled #3 · holding 0/2 · frontier 0 · next now",
+            "tick 1: settled #3 · holding 0 · frontier 0 · next now",
             "tick 2: started (follow-up)",
-            "tick 2: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+            "tick 2: nothing to do · holding 0 · frontier 0 · next in 90s",
             "tick 3: started (timer)",
-            "tick 3: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+            "tick 3: nothing to do · holding 0 · frontier 0 · next in 90s",
         ]
     );
 }
@@ -1098,7 +1195,7 @@ fn a_failed_step_shows_in_the_line() {
     assert!(lines[0].contains("FAILED dispatch #3: orca worktree create failed"), "{lines:?}");
     // every step it had failed: that is not having had nothing to do
     assert!(!lines[0].contains("nothing to do"), "{lines:?}");
-    assert!(lines[0].starts_with("tick 1: holding 1/2 · frontier 0 · FAILED"), "{lines:?}");
+    assert!(lines[0].starts_with("tick 1: holding 1 · frontier 0 · FAILED"), "{lines:?}");
 }
 
 /// Takes issue `number` off the stand-in GitHub as `how` — `deleted`,
@@ -1119,8 +1216,9 @@ fn a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled() {
         ("transferred", "the issue was transferred to acme/elsewhere#1003"),
         ("missing", "there is no such issue"),
     ] {
-        let world = backlog(&[3, 5, 9]);
+        let world = backlog(&[3, 5]);
         tick(&world, "1000");
+        world.issue(9, &["ready-for-agent"]);
         let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
         gone(&world, 3, how, 0);
 
@@ -1128,7 +1226,7 @@ fn a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled() {
         assert_eq!(
             lines,
             [format!(
-                "tick 1: released #3 ({said}) · dispatched #9 · holding 2/2 · frontier 0 · \
+                "tick 1: released #3 ({said}) · dispatched #9 · holding 2 · frontier 0 · \
                  next in 90s"
             )],
             "{how}"
@@ -1159,7 +1257,7 @@ fn an_issue_deleted_during_its_own_dispatch_leaves_no_claim_behind() {
     let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
     assert_eq!(
         lines,
-        ["tick 1: released #3 (the issue was deleted) · dispatched #5 · holding 1/2 · frontier \
+        ["tick 1: released #3 (the issue was deleted) · dispatched #5 · holding 1 · frontier \
              0 · next in 90s"]
     );
     assert_eq!(world.claims(), alpha(&[5]));
@@ -1184,8 +1282,9 @@ fn an_issue_deleted_before_its_dispatch_claims_nothing_and_takes_no_slot() {
 
 #[test]
 fn a_claimed_issue_the_rebuild_cannot_read_is_an_error_of_that_tick_alone() {
-    let world = backlog(&[3, 5, 9]);
+    let world = backlog(&[3, 5]);
     tick(&world, "1000");
+    world.issue(9, &["ready-for-agent"]);
     world.with_gh(|gh| {
         gh["issues"].as_array_mut().unwrap().retain(|issue| issue["number"] != 3);
         gh["fail"] = json!(["issues/3 --jq"]);

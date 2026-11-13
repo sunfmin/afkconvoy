@@ -2323,7 +2323,7 @@ mod tests {
                     made(Kind::TickFailed, json!(["tick", "alpha", []]),
                         "a tick failed since the last look: one of alpha"),
                     made(Kind::RetiredConcurrency, json!(["retired-concurrency"]),
-                        "`concurrency: 2`, which nothing reads any more"),
+                        "`concurrency: 2`, which is ignored"),
                 ]).unwrap(),
                 "waiting_on_human": [{"issue": 7, "why": "escalated", "answer": "gh issue view 7"}],
             }}]})

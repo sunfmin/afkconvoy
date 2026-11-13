@@ -17,6 +17,8 @@ use std::process::Command;
 const PACKAGE: &str = "crates/cli/";
 /// Where the example teams are, in this package.
 const EXAMPLES: &str = "src/scaffold/examples";
+/// The commit a build is of, as `./gate.sh` names it to every build it runs.
+pub const COMMIT_ENV: &str = "AFKCONVOY_BUILD_COMMIT";
 
 fn main() {
     let release = env!("CARGO_PKG_VERSION");
@@ -25,6 +27,11 @@ fn main() {
     // Asked again whenever the checkout moved or a tracked file changed. With
     // no git there is nothing to watch but this script.
     println!("cargo:rerun-if-changed=build.rs");
+    // And whenever the commit the gate names changes: a candidate's gate
+    // builds in its worker's target directory, where the paths watched are
+    // those of the checkout this script last ran in, which a candidate whose
+    // merge has its branch's tree leaves as they were (sunfmin/control#838).
+    println!("cargo:rerun-if-env-changed={COMMIT_ENV}");
     println!("cargo:rerun-if-changed={EXAMPLES}");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     std::fs::write(out.join("examples.rs"), examples()).expect("OUT_DIR can be written in");
@@ -123,6 +130,12 @@ fn describe() -> Option<String> {
 
 /// What changes when the answer may: where git keeps the commit checked out,
 /// the index and the tags, and every tracked entry of the checkout's root.
+///
+/// The checkout's own entries are named from this package, `../../<entry>`,
+/// and `.git` with them: cargo looks for a relative path in the package it
+/// builds, so a build from another worktree of the repo sharing the target
+/// directory watches that worktree, and not the one this script last ran in.
+/// Where git keeps a worktree's commit is outside it and is named whole.
 fn watched() -> Option<Vec<String>> {
     if !checkout() {
         return None;
@@ -136,8 +149,9 @@ fn watched() -> Option<Vec<String>> {
         format!("{common}/refs/tags"),
         format!("{common}/packed-refs"),
     ];
-    let root = git(&["rev-parse", "--show-toplevel"])?;
     let tracked = git(&["ls-tree", "--name-only", "--full-tree", "HEAD"])?;
-    paths.extend(tracked.lines().map(|entry| format!("{root}/{entry}")));
+    let up = "../".repeat(PACKAGE.matches('/').count());
+    paths.push(format!("{up}.git"));
+    paths.extend(tracked.lines().map(|entry| format!("{up}{entry}")));
     Some(paths)
 }

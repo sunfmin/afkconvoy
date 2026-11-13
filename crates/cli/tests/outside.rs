@@ -43,7 +43,7 @@ fn by_command(world: &World, command: impl FnOnce()) -> (String, String) {
 #[test]
 fn a_claim_another_host_took_over_is_said_lost_at_the_next_tick() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(3, &["ready-for-agent"]);
     let (first, second) = by_command(&world, || {
         let from = ["takeover", "--from", "alpha", "--instance", "beta", "--host", "h2"];
@@ -53,7 +53,7 @@ fn a_claim_another_host_took_over_is_said_lost_at_the_next_tick() {
     assert!(first.starts_with("tick 1: dispatched #3 · "), "{first}");
     assert_eq!(
         second,
-        "tick 2: lost #3 to instance beta on host h2 (takeover); stopped its worker · holding 0/2 · frontier 0 · \
+        "tick 2: lost #3 to instance beta on host h2 (takeover); stopped its worker · holding 0 · frontier 0 · \
          next in 90s"
     );
 }
@@ -78,7 +78,7 @@ fn a_claim_taken_as_stale_is_said_lost_past_the_lease() {
 #[test]
 fn an_issue_labelled_ready_on_github_is_dispatched_saying_since_when() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(5, &[]);
     world.issue(7, &[]);
     let (first, second) = two_ticks(&world, || {
@@ -91,7 +91,7 @@ fn an_issue_labelled_ready_on_github_is_dispatched_saying_since_when() {
     assert!(first.starts_with("tick 1: nothing to do · "), "{first}");
     assert_eq!(
         second,
-        "tick 2: dispatched #5 (labelled ready-for-agent since tick 1) · holding 1/2 · frontier \
+        "tick 2: dispatched #5 (labelled ready-for-agent since tick 1) · holding 1 · frontier \
          0 · next in 90s"
     );
 }
@@ -99,7 +99,7 @@ fn an_issue_labelled_ready_on_github_is_dispatched_saying_since_when() {
 #[test]
 fn a_claimed_issue_closed_on_github_is_left_saying_who_closed_it() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(3, &["ready-for-agent"]);
     let (_, second) = two_ticks(&world, || {
         world.with_gh(|gh| {
@@ -107,13 +107,13 @@ fn a_claimed_issue_closed_on_github_is_left_saying_who_closed_it() {
             gh["issues"][0]["closed_by"] = json!("alice");
         });
     });
-    assert_eq!(second, "tick 2: left #3 (closed by @alice) · holding 0/2 · frontier 0 · next now");
+    assert_eq!(second, "tick 2: left #3 (closed by @alice) · holding 0 · frontier 0 · next now");
 }
 
 #[test]
 fn a_blocker_added_on_github_is_named_on_the_skip_with_since_when() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(3, &[]);
     world.issue(5, &[]);
     let (_, second) = two_ticks(&world, || {
@@ -126,7 +126,7 @@ fn a_blocker_added_on_github_is_named_on_the_skip_with_since_when() {
     });
     assert_eq!(
         second,
-        "tick 2: skipped #3 (blocked by #5, added since tick 1) · holding 0/2 · frontier 0 · \
+        "tick 2: skipped #3 (blocked by #5, added since tick 1) · holding 0 · frontier 0 · \
          next in 90s"
     );
 }
@@ -134,7 +134,7 @@ fn a_blocker_added_on_github_is_named_on_the_skip_with_since_when() {
 #[test]
 fn a_change_the_tick_does_nothing_about_is_in_no_line() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(3, &["ready-for-agent"]);
     world.issue(9, &[]);
     let (_, second) = two_ticks(&world, || {
@@ -143,5 +143,5 @@ fn a_change_the_tick_does_nothing_about_is_in_no_line() {
             gh["issues"][0]["title"] = json!("renamed");
         });
     });
-    assert_eq!(second, "tick 2: nothing to do · holding 1/2 · frontier 0 · next in 90s");
+    assert_eq!(second, "tick 2: nothing to do · holding 1 · frontier 0 · next in 90s");
 }

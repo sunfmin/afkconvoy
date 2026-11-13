@@ -159,6 +159,46 @@ pub(crate) fn working_directories() -> anyhow::Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
+/// The stopped orphans working in `worktree`, and every process under one:
+/// each stopped (`T`), handed to pid 1 — what paused it is gone — and
+/// working in the worktree. Nothing is left to resume one: it stays stopped
+/// for good, and a SIGTERM to it stays pending (sunfmin/control#837).
+pub(crate) fn stopped_orphans(procs: &[Proc], worktree: &Path) -> anyhow::Result<Vec<u32>> {
+    let out = crate::process::output(Command::new("ps").args(["-axo", "pid=,stat="]))?;
+    anyhow::ensure!(out.status.success(), "cannot read which processes are stopped: ps failed");
+    let stopped: HashSet<u32> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|row| {
+            let mut fields = row.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            fields.next()?.starts_with('T').then_some(pid)
+        })
+        .collect();
+    let mut found: Vec<u32> = procs
+        .iter()
+        .filter(|proc| {
+            proc.ppid == 1
+                && stopped.contains(&proc.pid)
+                && proc
+                    .cwd
+                    .as_ref()
+                    .is_some_and(|cwd| occupies(std::slice::from_ref(cwd), worktree))
+        })
+        .map(|proc| proc.pid)
+        .collect();
+    let mut next = 0;
+    while next < found.len() {
+        let pid = found[next];
+        next += 1;
+        for child in procs.iter().filter(|proc| proc.ppid == pid) {
+            if !found.contains(&child.pid) {
+                found.push(child.pid);
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// Processes whose current directory is in this worktree, without their environment.
 pub(crate) fn working_in(worktree: &Path) -> anyhow::Result<Vec<String>> {
     Ok(listed_checked()?

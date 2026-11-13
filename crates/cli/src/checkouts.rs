@@ -8,7 +8,6 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use crate::checkout_list::{self, Entry, List};
-use crate::concurrency;
 use crate::git::Repo;
 use crate::host_runner::{self, Holding};
 use crate::log::{Log, What};
@@ -42,11 +41,9 @@ pub fn checkouts() -> Result<Value> {
 /// logged; else the last one its tick log names. That instance's last tick
 /// says when it ended, `ticked`, and whether it was idle, the claims it held
 /// and the frontier it left as it did: null with no tick, and the three
-/// where it failed whole. Its concurrency is the one its fleet instance goes
-/// by (`concurrency::json_of`), read from its config and its entry; its
+/// where it failed whole. Its
 /// tracker the one its entry says, null where it says none. Its repo
-/// and its tick log are null where the checkout is no git checkout any more,
-/// and its concurrency {error}.
+/// and its tick log are null where the checkout is no git checkout any more.
 fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
     let root = &listed.checkout;
     let repo = Repo::at(root).ok();
@@ -82,10 +79,6 @@ fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
         "idle": last.and_then(|(_, tick)| tick.idle()),
         "holding": stood.map(|(held, _)| held),
         "frontier": stood.map(|(_, frontier)| frontier),
-        "concurrency": match &repo {
-            Some(repo) => concurrency::json_of(repo),
-            None => json!({"error": format!("{} is no git checkout", root.display())}),
-        },
         "harness": match &repo {
             Some(repo) => crate::named_harness::json_of(repo),
             None => json!({"error": format!("{} is no git checkout", root.display())}),
@@ -108,7 +101,7 @@ The operator, or a session of theirs that looks after every repo of the host: an
 
 ## What it reads and writes
 
-The checkout list: checkouts.json in the cache directory (`afkconvoy help cache` says where it is). The host runner, asked on its socket which checkouts it holds a fleet instance of: where none runs, the list alone answers. Each checkout's tick log, for whether its fleet instance is broken and for its last tick, and its entry, for its concurrency, its tracker and its harness. It writes nothing, asks neither GitHub nor the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like.
+The checkout list: checkouts.json in the cache directory (`afkconvoy help cache` says where it is). The host runner, asked on its socket which checkouts it holds a fleet instance of: where none runs, the list alone answers. Each checkout's tick log, for whether its fleet instance is broken and for its last tick, and its entry, for its tracker and its harness. It writes nothing, asks neither GitHub nor the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like.
 
 ## What it answers
 
@@ -118,7 +111,6 @@ The checkout list: checkouts.json in the cache directory (`afkconvoy help cache`
  "checkouts": [{"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj",
   "instance": "me-h1-1a2b3c4d", "state": "running", "broken": null,
   "ticked": 1767225600, "idle": false, "holding": 2, "frontier": 1,
-  "concurrency": {"in_force": 6, "said_by": "checkout"},
   "harness": {"in_force": "kimi", "said_by": "checkout"}, "tracker": "me/issues",
   "tick_log": "<cache>/runs/hkj-0123456789abcdef.jsonl"}]}
 ```
@@ -132,7 +124,6 @@ The checkout list: checkouts.json in the cache directory (`afkconvoy help cache`
   - `instance`: its fleet instance id: the one running, null until its start is logged; else the last one its tick log names, null where it names none
   - `ticked`: when that fleet instance's last tick ended, in epoch seconds; null with none
   - `idle`, `holding`, `frontier`: as that tick ended: whether the fleet instance was idle — it held nothing, nothing of its was on the base branch, and its frontier was empty — the claims it held, and the frontier issues it left undispatched (`afkconvoy tick --help`). null with no tick, or one that failed whole; `idle` null too of a tick logged by an older release
-  - `concurrency`: {in_force, said_by}: how many claims its fleet instance holds at work at once on this host, and who says it, as `afkconvoy plan` answers it: `checkout` (`afkconvoy run --concurrency`) or `default`. {error} where its config cannot be read, or it is no git checkout any more
   - `harness`: {in_force, said_by}: the harness its workers start on, and who says it, as `afkconvoy plan` answers it: `checkout` (`afkconvoy run --harness`) or `host_kit`. {error} where the host kit cannot be read, or it is no git checkout any more
   - `tracker`: the repo its fleet reads and writes its issues in, `<owner>/<repo>`, as its entry says it (`afkconvoy run --tracker`); null where it says none, and the checkout's own repo is its tracker
   - `tick_log`: the file its fleet instance logs its ticks in, as `run` answers it; null where it is no git checkout any more
