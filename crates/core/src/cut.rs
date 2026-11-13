@@ -43,8 +43,9 @@ pub const WAITING_LABEL: &str = "convoy-waits-on-cut";
 
 /// The label on the issue a failed cut opens: the host's watch answers it,
 /// as it answers anything that holds a fleet back. A watch that finds the
-/// failure one of the four kinds left to a human swaps it for the escalate
-/// label, and only then is the issue a human's (sunfmin/control#801).
+/// failure needs money spent, the one kind left to a human, swaps it for the
+/// escalate label, and only then is the issue a human's (sunfmin/control#801,
+/// docs/adr/0072).
 pub const FAILED_LABEL: &str = "convoy-cut-failed";
 
 /// Whether a failed cut's issue carrying `labels` is the watch's to answer.
@@ -769,8 +770,8 @@ pub fn failure_report(
     }
     said.push_str(&format!(
         "\nThe host's watch answers this issue, labelled `{FAILED_LABEL}`. Where what failed it \
-         is one of the four kinds left to a human, the watch swaps that label for the escalate \
-         label.\n"
+         needs money spent, the one kind left to a human, the watch swaps that label for the \
+         escalate label.\n"
     ));
     if failure.step == Step::Publish {
         said.push_str(&format!(
