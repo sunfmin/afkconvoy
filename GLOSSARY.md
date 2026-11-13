@@ -17,8 +17,12 @@ One repo's fleet in its host's host runner, and everything it owns: the workers 
 _Avoid_: launcher, coordinator, node (the Node executable), process (the host runner is the process)
 
 **Host runner**:
-A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list. Once a newer release is installed where it was started from, it moves onto it by itself between ticks once no exclusive command runs, on the same list, with its workers and work carried over.
+A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list. Once a newer release is installed where it was started from, it moves onto it by itself between ticks once no exclusive command runs, on the same list, with its workers and work carried over. Its **keeper** starts it again after an unexpected end.
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
+
+**Keeper**:
+The process `run` starts for the host runner, `afkconvoy host-runner` alone: it holds nothing of the host, starts the host runner as its child, in a process group of its own, and starts it again, on the same checkout list, after an unexpected end — a signal ended it, or an error once it held the host — saying so in the host runner's log. A host runner that stops as told, or moves onto a newer release, ends its keeper with it; the newer one's `run` start is a keeper of its own. It works in the cache directory, not in `/` as the host runner does, so what ends every process of one directory does not end both (ADR-0072).
+_Avoid_: supervisor, watchdog (the watch is the host's operator), launch agent (launchd's)
 
 **Checkout list**:
 The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency**, its **tracker** and its **harness** there, which a `run` that names them changes, and its fleet instance reads at each tick — a `run` that starts the host runner says the tracker there before it starts it, so that the host runner's start of the checkout from the list goes by it. A checkout that names no harness starts on the host kit's first eligible one.
