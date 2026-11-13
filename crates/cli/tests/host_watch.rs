@@ -732,9 +732,9 @@ fn a_watch_decides_what_cannot_be_undone_and_leaves_only_money_to_a_human() {
     run(&world, &dir);
     let watch = until(&world, "the watch of both decisions", || {
         running(&world).filter(|watch| {
-            watch["conditions"].as_object().is_some_and(|ids| {
-                ids.keys().filter(|id| id.contains("\"human\"")).count() == 2
-            })
+            watch["conditions"]
+                .as_object()
+                .is_some_and(|ids| ids.keys().filter(|id| id.contains("\"human\"")).count() == 2)
         })
     });
     let told = brief(&world, &starts(&world)[0]);

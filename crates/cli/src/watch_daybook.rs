@@ -466,7 +466,10 @@ mod tests {
         }];
         let said = said(&watch(json!({})), &report);
         let did = said.did.as_deref().unwrap();
-        assert!(did.contains("**Decided by the recommended answer**\n\n- deleted the stale"), "{did}");
+        assert!(
+            did.contains("**Decided by the recommended answer**\n\n- deleted the stale"),
+            "{did}"
+        );
         assert!(did.contains("because the recommended answer"), "{did}");
         assert_eq!(
             said.undo.as_deref().unwrap(),
