@@ -88,8 +88,11 @@ fn a_new_host_asks_nothing_of_host_sleep() {
     refused(&world, &world.clone, &[], &all);
     refused(&world, &world.clone, &["--foreground"], &all);
     // Its tracker given, a new host starts: no fleet puts a host to sleep,
-    // so there is nothing of it to settle (docs/adr/0050).
-    let first = run(&world, &world.clone, &["--tracker", "default", "--hot-memory", "2"]).ok();
+    // so there is nothing of it to settle (docs/adr/0050). Its panel is
+    // served on any free port: 7070 is the panel of the host the tests run on.
+    let first =
+        run(&world, &world.clone, &["--tracker", "default", "--hot-memory", "2", "--panel", "0"])
+            .ok();
     assert_eq!(first["added"], true);
     world.afk(&["stop", "--all"]).ok();
 }
