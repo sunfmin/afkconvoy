@@ -747,7 +747,10 @@ fn unexpectedly(ended: std::process::ExitStatus) -> String {
 pub fn serve(kept_by: Option<u32>) -> Result<Value> {
     lifeline();
     let Some(keeper) = kept_by else { return keep() };
-    let _ = KEEPER.set(keeper);
+    // 0: held as it is, with no keeper — a test's own fixture.
+    if keeper > 0 {
+        let _ = KEEPER.set(keeper);
+    }
     // Before any thread starts: nothing moves it after, and nothing the
     // fleet does leans on it.
     std::env::set_current_dir("/").context("the host runner cannot work from /")?;

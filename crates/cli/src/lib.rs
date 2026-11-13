@@ -691,7 +691,7 @@ enum Command {
     #[command(hide = true)]
     HostRunner {
         /// The pid of the keeper that started this host runner, and starts it
-        /// again after an unexpected end; none: this process is the keeper
+        /// again after an unexpected end, 0 for none; none: this process is the keeper
         #[arg(long, hide = true)]
         kept_by: Option<u32>,
     },

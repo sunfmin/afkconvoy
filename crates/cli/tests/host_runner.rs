@@ -24,7 +24,7 @@ const RUN: [&str; 7] = ["run", "--tracker", "default", "--host", "h1", "--second
 fn the_initial_panel_does_not_ask_the_host_runner_before_it_can_answer() {
     let world = World::new();
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root);
-    command.arg("host-runner");
+    command.args(["host-runner", "--kept-by", "0"]);
     let _runner = common::FixtureProcess::spawn(&mut command);
     let began = Instant::now();
     while !world.cache().join("afkconvoy/host-runner.sock").exists() {

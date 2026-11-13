@@ -1615,7 +1615,7 @@ impl World {
         }
         let text = std::fs::read_to_string(self.cache().join("afkconvoy/host-runner.lock"));
         let holder: Value = serde_json::from_str(&text.ok()?).ok()?;
-        holder["keeper"].as_u64().map(|pid| pid as u32)
+        holder["keeper"].as_u64().filter(|pid| *pid > 1).map(|pid| pid as u32)
     }
 
     /// Whether a process holds this world's host runner's lock.
