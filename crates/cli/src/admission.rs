@@ -377,7 +377,7 @@ pub fn windows_of(
     said.iter()
         .filter_map(|window| {
             let resets_in = window.resets_at?.checked_sub(now).filter(|left| *left > 0)?;
-            let minutes = window.minutes.or_else(|| match window.name.as_str() {
+            let minutes = window.minutes.or(match window.name.as_str() {
                 "five_hour" | "limit_5h" => Some(5 * 60),
                 "seven_day" | "seven_day_opus" | "seven_day_sonnet" => Some(7 * 24 * 60),
                 _ => None,
