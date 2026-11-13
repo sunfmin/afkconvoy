@@ -47,7 +47,7 @@ pub fn issue_url(watch: &crate::host_watch::Watch, condition: &str) -> Option<St
 }
 
 /// One decision a watch made by its recommended answer rather than leave
-/// it with a human (docs/adr/0072): what it chose, why, and how to undo it.
+/// it with a human (docs/adr/0073): what it chose, why, and how to undo it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Decided {

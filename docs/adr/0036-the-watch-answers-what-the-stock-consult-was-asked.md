@@ -4,7 +4,7 @@ status: accepted
 
 # The watch answers what the stock consult was asked
 
-Amended by ADR-0072 (sunfmin/control#815): only spending money stays with a human. The watch decides the other kinds below by the recommended answer and records each in the daybook, and a step that needs a person's hands is listed without holding the rest back.
+Amended by ADR-0073 (sunfmin/control#815): only spending money stays with a human. The watch decides the other kinds below by the recommended answer and records each in the daybook, and a step that needs a person's hands is listed without holding the rest back.
 
 The stock consult repeated the host faults it could not fix: on this tracker its eight starts answered no escalation, and its own start met the same fault. Its instruction duplicated the host's watch, but without the operator's authority. We remove it (sunfmin/control#96). An unbound repo's escalation and every hand-off from a stage with no named consult now escalate immediately, remaining visible in `waiting_on_human` for the host's next look. No consult claim, issue marker, instruction, guard or ready-label answer handling remains. Old unbound `escalate_to: consult` configs still load, resolving to `human`; neither value starts a consult.
 

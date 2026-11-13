@@ -707,7 +707,7 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     assert!(help.contains("stock-watch"), "{help}");
 }
 
-/// Only money is a human's (docs/adr/0072): a watch given a decision that
+/// Only money is a human's (docs/adr/0073): a watch given a decision that
 /// cannot be undone, with its recommended answer, acts on it and its round's
 /// daybook entry records what it chose, why and how to undo it; a decision
 /// to spend money it lists for the asking session and leaves waiting.
@@ -1115,7 +1115,7 @@ fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
     assert!(last["did"][1].as_str().unwrap().contains("left #8 with the human"));
 }
 
-/// sunfmin/control#801: a failed cut holds every later version back while
+/// sunfmin/control#801: a failed cut's issue is the watch's to look into while
 /// turns keep landing, so the fleet never stops for it. With the fleet
 /// otherwise moving — an issue taken by its worker — the failure's issue,
 /// the watch's to answer and no human's, starts a watch whose brief names
@@ -1159,11 +1159,12 @@ fn a_failed_cut_starts_a_watch_while_the_fleet_moves_and_its_brief_names_the_fai
     assert!(!items.iter().any(|id| id.contains(r#""human""#)), "no human waits: {items:?}");
     let told = brief(&world, &starts(&world)[0]);
     for required in [
-        "the fleet cuts no version: its last cut failed, of v0.1.1 at its step `gate`",
+        "its last cut failed, of v0.1.1 at its step `gate`",
         &format!("#9: the step `gate` failed: {why}"),
-        "gh issue close 9",
+        "whether or not it is open",
         "## Answer a failed cut",
-        &format!("Its issue, under the label `{FAILED_LABEL}`, is yours to answer"),
+        "A failed cut never holds the next cut back",
+        &format!("Its issue, under the label `{FAILED_LABEL}`, is yours to look into"),
     ] {
         assert!(told.contains(required), "brief lacks {required}: {told}");
     }
