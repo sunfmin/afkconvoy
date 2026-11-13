@@ -238,3 +238,103 @@ fn the_binary_prints_what_it_was_built_from() {
         afkconvoy::VERSION
     );
 }
+
+/// A build from another worktree of the repo, or at another commit with the
+/// same tree, sharing one target directory, says the commit it is built from
+/// (sunfmin/control#838): a candidate's gate builds its merge in its worker's
+/// target directory, and a merge may have its branch's tree.
+#[test]
+fn a_build_sharing_a_target_directory_says_the_commit_it_is_built_from() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = tmp.path().join("main");
+    let other = tmp.path().join("other");
+    let target = tmp.path().join("target");
+    let git = |dir: &Path, args: &[&str]| -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+        stdout(&out).trim().to_string()
+    };
+    // A package laid out as this one is, with this build script, saying only
+    // what it was built from. It is a workspace of its own, wherever the
+    // tests' TMPDIR is.
+    let package = main.join("crates/cli");
+    std::fs::create_dir_all(package.join("src/scaffold/examples/one")).unwrap();
+    std::fs::write(
+        package.join("Cargo.toml"),
+        "[package]\nname = \"stamp\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )
+    .unwrap();
+    std::fs::write(package.join("build.rs"), include_str!("../build.rs")).unwrap();
+    std::fs::write(
+        package.join("src/main.rs"),
+        "fn main() { print!(\"{}\", env!(\"AFKCONVOY_VERSION\")); }\n",
+    )
+    .unwrap();
+    std::fs::write(package.join("src/scaffold/examples/one/file"), "a file\n").unwrap();
+    std::fs::write(main.join("README.md"), "the root\n").unwrap();
+    git(&main, &["init", "-q", "-b", "main"]);
+    git(&main, &["add", "."]);
+    git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"]);
+    let first = git(&main, &["rev-parse", "HEAD"]);
+    // A merge that has its branch's tree.
+    let merge = git(
+        &main,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit-tree",
+            "HEAD^{tree}",
+            "-p",
+            "HEAD",
+            "-m",
+            "merge",
+        ],
+    );
+    // What a build in `dir` says, and what it should, with the commit the
+    // gate names to it, or none.
+    let build = |dir: &Path, commit: Option<&str>| -> (String, String) {
+        let mut cargo = Command::new(env!("CARGO"));
+        cargo
+            .args(["run", "--quiet", "--manifest-path", "crates/cli/Cargo.toml"])
+            .current_dir(dir)
+            .env("CARGO_TARGET_DIR", &target)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE");
+        match commit {
+            Some(commit) => cargo.env(build::COMMIT_ENV, commit),
+            None => cargo.env_remove(build::COMMIT_ENV),
+        };
+        let said = stdout(&cargo.output().unwrap());
+        let described = git(dir, &["describe", "--tags", "--long", "--dirty", "--always"]);
+        (said, build::built_from("0.1.0", Some(&described)))
+    };
+    let (said, built) = build(&main, None);
+    assert_eq!(said, built, "the first build");
+
+    // A worktree made since watches its own paths, though cargo last ran the
+    // build script in another.
+    git(&main, &["worktree", "add", "-q", "--detach", other.to_str().unwrap(), &merge]);
+    let (said, built) = build(&other, None);
+    assert_eq!(said, built, "a build in a new worktree, at a merge with its branch's tree");
+
+    // Back and forth between two worktrees, neither changed since the last
+    // build, as a worker's checkout and its candidate's are: the commit the
+    // gate names tells them apart.
+    for (dir, commit) in [(&main, &first), (&other, &merge), (&main, &first)] {
+        let (said, built) = build(dir, Some(commit));
+        assert_eq!(said, built, "a gate's build in {}", dir.display());
+    }
+}
