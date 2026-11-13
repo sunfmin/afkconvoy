@@ -795,6 +795,17 @@ pub fn one(repo: &Repo, config: &Config, which: Which) -> Result<Value> {
              (`afkconvoy config --help`); run `afkconvoy gate`, the whole gate"
         )
     })?;
+    // Its lane is held before its limit starts: a command declared through
+    // `afkconvoy exclusive` runs in it then, and waits for nothing more.
+    let _permit = if crate::exclusive::held() || !crate::config::heavy_gate(&gate.command) {
+        None
+    } else {
+        let lane = match which {
+            Which::Fast => afkconvoy_core::exclusive::Gate::Fast,
+            Which::Slow => afkconvoy_core::exclusive::Gate::Slow,
+        };
+        Some(crate::exclusive::Permit::alone(repo, &gate.command, lane)?)
+    };
     let run = run_command(
         repo,
         &gate.command,

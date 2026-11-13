@@ -180,11 +180,11 @@ pub struct Permit {
 
 impl Permit {
     pub fn take(repo: &Repo, command: &str, heavy: bool, is_turn: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, is_turn, false, false)
+        Self::acquire(repo, command, heavy, is_turn, false, None)
     }
 
     pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, true, true, false)
+        Self::acquire(repo, command, heavy, true, true, None)
     }
 
     /// A cut's gate of its own commit (docs/adr/0028), in a worker lane. Its
@@ -192,12 +192,20 @@ impl Permit {
     /// candidate's does: it shares its repo with candidates, and so holds no
     /// turn of that repo up. It is no turn and no candidate on any chain.
     pub(crate) fn cut_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, false, true, false)
+        Self::acquire(repo, command, heavy, false, true, None)
     }
 
     /// A round's slow gate, in the host's slow lanes, not its worker lanes.
     pub(crate) fn slow_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, true, true, true)
+        Self::acquire(repo, command, heavy, true, true, heavy.then_some(Gate::Slow))
+    }
+
+    /// One of the two gates a worker runs alone, `gate --fast` or `--slow`,
+    /// in its lane (docs/adr/0049): the fast lane, or the slow lanes. Taken
+    /// before the gate's command starts, so that the wait for it uses none
+    /// of the gate's limit, which times the command alone (sunfmin/control#822).
+    pub(crate) fn alone(repo: &Repo, command: &str, gate: Gate) -> Result<Self> {
+        Self::acquire(repo, command, true, false, false, Some(gate))
     }
 
     fn acquire(
@@ -206,7 +214,7 @@ impl Permit {
         heavy: bool,
         is_turn: bool,
         candidate: bool,
-        slow: bool,
+        gate: Option<Gate>,
     ) -> Result<Self> {
         if held() {
             bail!("this command already holds a turn");
@@ -225,7 +233,7 @@ impl Permit {
                 issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
                 validation: None,
             },
-            gate: (slow && heavy).then_some(afkconvoy_core::exclusive::Gate::Slow),
+            gate,
             asked: crate::clock(),
             ran: None,
         };

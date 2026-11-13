@@ -339,7 +339,7 @@ pub(crate) fn started_with(proc: &Proc, tmp: &str) -> bool {
 /// each compile it runs for a worker is started with that worker's
 /// `TMPDIR`: counted to it. One handed to pid 1 that works in the worktree —
 /// a test whose runner ended — is the worker's, left behind.
-fn shared(proc: &Proc, worktree: &Path) -> bool {
+pub(crate) fn shared(proc: &Proc, worktree: &Path) -> bool {
     proc.ppid == 1 && proc.cwd.as_ref().is_some_and(|cwd| !cwd.starts_with(worktree))
 }
 
