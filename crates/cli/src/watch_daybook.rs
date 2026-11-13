@@ -132,8 +132,9 @@ fn links_in(text: &str) -> Vec<String> {
 }
 
 /// What the entry of the round `watch` reported as `report` says: its
-/// actions, verification and what it left under `Did`, what held work back
-/// under `Why`, and the links of what it touched. A human question is noted
+/// actions, decisions, verification and what it left under `Did`, what held
+/// work back under `Why`, how to undo each decision under `Undo`, and the
+/// links of what it touched. A human question is noted
 /// as raised, by its link (else its condition) — never its question or answer.
 pub fn said(watch: &Watch, report: &Report) -> Said {
     let list = |items: &[String]| {
@@ -145,6 +146,14 @@ pub fn said(watch: &Watch, report: &Report) -> Said {
         did.push_str(&format!("\n\n**{heading}**\n\n{body}"));
     };
     part("Actions", &report.did, "none");
+    let decided: Vec<String> = report
+        .decided
+        .iter()
+        .map(|decided| format!("{} — because {}", decided.chose.trim(), decided.why.trim()))
+        .collect();
+    if !decided.is_empty() {
+        part("Decided by the recommended answer", &decided, "");
+    }
     part("Verified", &report.verified, "nothing");
     if !report.pending.is_empty() {
         part("Left pending", &report.pending, "");
@@ -155,7 +164,11 @@ pub fn said(watch: &Watch, report: &Report) -> Said {
         .chain(&report.did)
         .chain(&report.verified)
         .chain(&report.pending)
-        .flat_map(|text| links_in(text))
+        .map(String::as_str)
+        .chain(report.decided.iter().flat_map(|decided| {
+            [decided.chose.as_str(), decided.why.as_str(), decided.undo.as_str()]
+        }))
+        .flat_map(links_in)
         .collect();
     if !report.human.is_empty() {
         let raised: Vec<String> = report
@@ -184,7 +197,15 @@ pub fn said(watch: &Watch, report: &Report) -> Said {
     Said {
         did: Some(did),
         why: (!report.held_back.is_empty()).then(|| list(&report.held_back)),
-        undo: None,
+        undo: (!report.decided.is_empty()).then(|| {
+            list(
+                &report
+                    .decided
+                    .iter()
+                    .map(|decided| format!("{}: {}", decided.chose.trim(), decided.undo.trim()))
+                    .collect::<Vec<_>>(),
+            )
+        }),
         lesson: None,
         links,
     }
@@ -376,6 +397,7 @@ mod tests {
             verified: vec![
                 "https://github.com/acme/tracker/issues/7#issuecomment-1 is green".into(),
             ],
+            decided: vec![],
             human,
             pending: vec![],
         }
@@ -432,6 +454,30 @@ mod tests {
         assert!(!entry.contains("afkconvoy rule"), "{entry}");
         assert!(!entry.contains('?'), "asks nothing: {entry}");
         assert!(said.links.contains(&"https://github.com/acme/tracker/issues/9".to_string()));
+    }
+
+    #[test]
+    fn a_decision_by_the_recommended_answer_is_recorded_with_its_undo() {
+        let mut report = report(vec![]);
+        report.decided = vec![crate::watch_report::Decided {
+            chose: "deleted the stale branch of https://github.com/acme/dev/pull/12".into(),
+            why: "the recommended answer: nothing takes it up".into(),
+            undo: "push the kept copy back: git push origin backup/stale:stale".into(),
+        }];
+        let said = said(&watch(json!({})), &report);
+        let did = said.did.as_deref().unwrap();
+        assert!(
+            did.contains("**Decided by the recommended answer**\n\n- deleted the stale"),
+            "{did}"
+        );
+        assert!(did.contains("because the recommended answer"), "{did}");
+        assert_eq!(
+            said.undo.as_deref().unwrap(),
+            "- deleted the stale branch of https://github.com/acme/dev/pull/12: push the kept \
+             copy back: git push origin backup/stale:stale"
+        );
+        let entry = crate::daybook::entry("acme/control", Kind::Watch, &said);
+        assert!(entry.contains("### Undo\n\n- deleted the stale branch"), "{entry}");
     }
 
     #[test]

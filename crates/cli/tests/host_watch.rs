@@ -654,12 +654,18 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
         "fix it with the watch's authority",
         "check that the work goes on",
         "say what you did",
-        "spending money, or needing an account, a credential or a person's hands",
+        "Leave only this with a human",
+        "- spending money.",
+        "never act on it",
+        "list each in your report",
+        "Decide everything else by its recommended answer",
         "what cannot be undone",
         "taking a secret or private data off the host",
-        "changing what a product is for, or who it is for",
-        "never act on them",
-        "list each in your report",
+        "first make what way\nback you can",
+        "Record each decision in your report's `decided`",
+        "holds\nnothing else back",
+        "Only the work that needs it waits",
+        "guards money only a human\nloosens",
     ] {
         assert!(rules.contains(required), "stock instruction lacks {required}: {rules}");
     }
@@ -669,7 +675,8 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     assert!(
         told.contains("gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human")
     );
-    assert!(told.contains("Leave only these four kinds with a human"));
+    assert!(told.contains("Leave only spending money with a human"));
+    assert!(told.contains("Decide everything else by its recommended answer"));
     assert_eq!(open(&world, &dir), [watch["terminal"].as_str().unwrap()]);
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert_eq!(doctor["host"]["watch"]["running"]["stock"], true);
@@ -678,10 +685,9 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     assert_eq!(settings["in_force"]["watch_dir"], json!(dir));
 
     let left = [
-        "left with a human: spending money to create an account and supply a credential",
-        "left with a human: an action that cannot be undone",
-        "left with a human: taking private data off the host",
-        "left with a human: changing who the product is for",
+        "left with a human: spending money on a paid plan",
+        "decided by the recommended answer: an action that cannot be undone, its backup kept",
+        "listed for the asking session: the one login only a person can do",
     ];
     printed(&world, &watch, &left, Some(0));
     until(&world, "the stock watch's record", || ended(&world, "ended"));
@@ -699,6 +705,117 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("stock watch"), "{help}");
     assert!(help.contains("stock-watch"), "{help}");
+}
+
+/// Only money is a human's (docs/adr/0072): a watch given a decision that
+/// cannot be undone, with its recommended answer, acts on it and its round's
+/// daybook entry records what it chose, why and how to undo it; a decision
+/// to spend money it lists for the asking session and leaves waiting.
+#[test]
+fn a_watch_decides_what_cannot_be_undone_and_leaves_only_money_to_a_human() {
+    let world = World::new();
+    world.with_gh(|gh| gh["discussion_categories"] = json!(["Daybook"]));
+    world.name_origin(&world.clone, "acme/dev");
+    world.list_checkout(&world.clone);
+    world.issue(7, &["ready-for-human"]);
+    world.comment(
+        7,
+        "<!--convoy:escalation claim=old-->\nDrop the old `runs` table? It cannot be undone. \
+         Recommended: drop it, nothing reads it.",
+    );
+    world.issue(8, &["ready-for-human"]);
+    world.comment(
+        8,
+        "<!--convoy:escalation claim=old-->\nBuy the paid CI plan? Recommended: buy it.",
+    );
+    let dir = operator(&world);
+    run(&world, &dir);
+    let watch = until(&world, "the watch of both decisions", || {
+        running(&world).filter(|watch| {
+            watch["conditions"]
+                .as_object()
+                .is_some_and(|ids| ids.keys().filter(|id| id.contains("\"human\"")).count() == 2)
+        })
+    });
+    let told = brief(&world, &starts(&world)[0]);
+    for required in [
+        "Leave only spending money with a human",
+        "Decide everything else by its recommended answer",
+        "For what cannot be undone, first make what way\nback you can",
+        "afkconvoy rule --issue 7 --text-file <file>",
+        "afkconvoy rule --issue 8 --text-file <file>",
+        "`decided` is a list of objects with `chose`, `why` and `undo` strings",
+    ] {
+        assert!(told.contains(required), "brief lacks {required}: {told}");
+    }
+    let human: Vec<&String> = watch["conditions"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|id| id.contains("\"human\""))
+        .collect();
+    let money = human
+        .iter()
+        .find(|id| id.contains("\"issue\":8") || id.ends_with(":8") || id.contains("#8"))
+        .unwrap_or_else(|| panic!("no condition of issue 8 among {human:?}"));
+
+    // The stand-in watch acts on the decision that cannot be undone: it hands
+    // issue 7 back with its current answer line, as the brief says.
+    let doctor = world.afk(&["doctor"]).json;
+    let waiting = doctor["waiting_on_human"].as_array().unwrap();
+    let answer =
+        waiting.iter().find(|item| item["issue"] == 7).unwrap()["answer"].as_str().unwrap();
+    let handed = world.command("sh", &world.clone).args(["-c", answer]).output().unwrap();
+    assert!(handed.status.success(), "{}", String::from_utf8_lossy(&handed.stderr));
+    let file = world.root.join("decided-report.json");
+    std::fs::write(
+        &file,
+        json!({
+            "held_back": ["two escalations waited on a human"],
+            "did": ["dumped the `runs` table to runs.sql, dropped it, handed issue 7 back"],
+            "verified": ["issue 7 is ready for an agent again"],
+            "decided": [{
+                "chose": "dropped the old `runs` table (issue 7)",
+                "why": "its recommended answer: nothing reads it",
+                "undo": "restore it from the kept dump: psql < runs.sql",
+            }],
+            "human": [{"condition": money, "question": "Buy the paid CI plan?",
+                "answer": "afkconvoy rule --issue 8 --text-file <file>"}],
+            "pending": [],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    world
+        .afk(&[
+            "watched",
+            "--watch",
+            watch["id"].as_str().unwrap(),
+            "--text-file",
+            file.to_str().unwrap(),
+        ])
+        .ok();
+    let entry = until(&world, "the round's daybook entry", || {
+        world.gh()["discussions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|discussion| discussion["comments"].as_array().cloned().unwrap_or_default())
+            .map(|comment| comment["body"].as_str().unwrap_or_default().to_string())
+            .find(|body| body.contains(watch["id"].as_str().unwrap()))
+    });
+    for said in [
+        "**Decided by the recommended answer**\n\n- dropped the old `runs` table (issue 7) — \
+         because its recommended answer: nothing reads it",
+        "### Undo\n\n- dropped the old `runs` table (issue 7): restore it from the kept dump",
+        "**Raised for the operator**",
+    ] {
+        assert!(entry.contains(said), "the entry lacks {said:?}: {entry}");
+    }
+    assert!(!entry.contains("Buy the paid CI plan"), "the entry asks nothing: {entry}");
+    // The money decision is not acted on: it still waits on a human.
+    assert!(world.labels(8).contains(&"ready-for-human".to_string()), "{:?}", world.labels(8));
+    assert!(!world.labels(7).contains(&"ready-for-human".to_string()), "{:?}", world.labels(7));
 }
 
 #[test]
@@ -931,11 +1048,14 @@ fn a_watch_answers_escalations_and_leaves_only_the_four_human_kinds() {
         "afkconvoy send --issue 8 --stage <stage> --text-file <file>",
         "gh issue close 8 --comment <why>",
         "dependencies/blocked_by",
-        "Leave only these four kinds with a human",
-        "spending money, or needing an account, a credential or a person's hands",
+        "Leave only spending money with a human",
+        "- spending money.",
+        "Decide everything else by its recommended answer",
         "what cannot be undone",
         "taking a secret or private data off the host",
-        "changing what a product is for, or who it is for",
+        "changing what a\nproduct is for or who it is for",
+        "all six keys",
+        "`decided` is a list of objects with `chose`, `why` and `undo` strings",
         "afkconvoy-watch-<digits>",
         "merge commit",
         "afkconvoy land --watch",
