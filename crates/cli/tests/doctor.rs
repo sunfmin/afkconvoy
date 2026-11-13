@@ -1274,6 +1274,7 @@ fn watching_pages_prs_and_comments_and_withholds_until_when_a_source_fails() {
 
 /// Names `harness` on `checkout` in this world's checkout list.
 fn name_harness(world: &World, checkout: &std::path::Path, harness: &str) {
+    world.list_checkout(checkout);
     let file = world.cache().join("afkconvoy/checkouts.json");
     let mut list: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     for entry in list["checkouts"].as_array_mut().unwrap() {
