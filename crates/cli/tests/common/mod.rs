@@ -19,9 +19,10 @@ pub const BASE: &str = "main";
 /// slept for, and a test is held only as long as it takes; the bound is for
 /// what never comes, and is generous: a cut's gate runs beside other gates on
 /// its host, and a wait of 30 seconds lost to their load
-/// (sunfmin/control#833). Within the limit for one test
+/// (sunfmin/control#833); at a load of 200 on 14 cores one tick that leaves
+/// three issues took over 90. Within the limit for one test, 240 seconds
 /// (.config/nextest.toml).
-pub const PATIENCE: Duration = Duration::from_secs(90);
+pub const PATIENCE: Duration = Duration::from_secs(180);
 
 /// Opt-in fixture timings, captured by nextest with `--success-output final`.
 /// The environment belongs to the test driver, never to a world's host.
