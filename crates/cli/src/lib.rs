@@ -598,13 +598,13 @@ enum Command {
             value_parser = whole_or_default
         )]
         admit_inspect_after: Option<To<u64>>,
-        /// The share of this host's cores afkconvoy may use itself, a whole percent (`50%`),
+        /// afkconvoy's own share of this host's cores, the most it may use, a whole percent (`50%`),
         /// so that a co-resident system keeps the rest: no tick starts a new worker while its
         /// own processes take that many cores, and each exclusive command builds and tests
         /// with no more. A host setting; `default` removes it [default: none]
         #[arg(long, env = MAX_SHARE_OF_CORES_ENV, value_name = "PERCENT", value_parser = percent_or_default)]
         max_share_of_cores: Option<To<u64>>,
-        /// The share of this host's memory afkconvoy may hold resident itself, a whole percent:
+        /// afkconvoy's own share of this host's memory, the most it may hold resident, a whole percent:
         /// no tick starts a new worker while its own processes hold that much. A host setting;
         /// `default` removes it [default: none]
         #[arg(long, env = MAX_SHARE_OF_MEMORY_ENV, value_name = "PERCENT", value_parser = percent_or_default)]
