@@ -111,11 +111,12 @@ fn run_tracker_naming_a_private_repo_of_a_checkout_of_a_public_one_is_taken_and_
 }
 
 /// Has `world`'s checkout on the host's checkout list as an older afkconvoy
-/// left it, saying no tracker.
+/// left it, saying no tracker, under the world's host settings.
 fn listed_untracked(world: &World) {
     let file = world.cache().join("afkconvoy/checkouts.json");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    let list = json!({"checkouts": [{"checkout": world.clone, "named": {"host": "h1"}}]});
+    let mut list = world.checkout_list();
+    list["checkouts"] = json!([{"checkout": world.clone, "named": {"host": "h1"}}]);
     std::fs::write(file, list.to_string()).unwrap();
 }
 
