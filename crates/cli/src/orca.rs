@@ -196,7 +196,15 @@ impl Ending {
         }
     }
 
-    fn log_ended(&mut self, worktree: &Path, command: &str) {
+    /// Resumes `pid`, so that a signal pending on it is delivered. Soft:
+    /// the SIGKILL that follows needs no resume.
+    fn resume(pid: u32) {
+        let _ = crate::process::output(Command::new("kill").args(["-CONT", &pid.to_string()]));
+    }
+
+    /// One line of the tick log, under `command`, saying the end of this
+    /// process, `what` it was.
+    fn log_ended(&mut self, worktree: &Path, command: &str, what: &str) {
         if !self.sent || self.logged {
             return;
         }
@@ -210,7 +218,7 @@ impl Ending {
                 command: command.to_string(),
                 on: Some(worktree.display().to_string()),
                 by: "fleet".to_string(),
-                outcome: format!("ended old worker {}, after {signal}", self.description),
+                outcome: format!("ended {what} {}, after {signal}", self.description),
                 failed: false,
             },
         };
@@ -1219,6 +1227,47 @@ impl Worktree {
         self.end_worker("tick", "a later tick removes it")
     }
 
+    /// Ends each stopped orphan working here, and what it started
+    /// (`hot::stopped_orphans`): SIGTERM and SIGCONT, so the signal is
+    /// delivered, then SIGKILL a second later. Each one ended is a line of
+    /// the tick log. One still there after five seconds is left: settling
+    /// waits on it as on any process in the worktree (sunfmin/control#837).
+    pub(crate) fn end_stopped_orphans(&self) -> Result<()> {
+        let clock = TerminationTime::new();
+        let until = clock.now() + Duration::from_secs(5);
+        let mut ending = BTreeMap::<u32, Ending>::new();
+        loop {
+            let processes = crate::hot::listed_checked()?;
+            let orphans = crate::hot::stopped_orphans(&processes, &self.path)?;
+            for proc in &processes {
+                let under = ending.contains_key(&proc.ppid);
+                if orphans.contains(&proc.pid) || under || ending.contains_key(&proc.pid) {
+                    let record = ending.entry(proc.pid).or_insert_with(|| {
+                        let mut record = Ending::observe(proc, &clock);
+                        record.signal(proc.pid, false);
+                        Ending::resume(proc.pid);
+                        record
+                    });
+                    if !record.forced
+                        && clock.now().saturating_sub(record.since) >= Duration::from_secs(1)
+                    {
+                        record.signal(proc.pid, true);
+                    }
+                }
+            }
+            for (pid, record) in &mut ending {
+                if !processes.iter().any(|proc| proc.pid == *pid) {
+                    record.log_ended(&self.path, "tick", "stopped orphan");
+                }
+            }
+            let left = processes.iter().any(|proc| ending.contains_key(&proc.pid));
+            if !left || clock.now() >= until {
+                return Ok(());
+            }
+            clock.sleep(Duration::from_millis(100));
+        }
+    }
+
     /// Closes every terminal here and ends the worker's process tree, each
     /// end confirmed: one still there after SIGKILL is `Unconfirmed`, saying
     /// `consequence`. Each process ended is a line of the tick log, under
@@ -1252,7 +1301,7 @@ impl Worktree {
             }
             for (pid, record) in &mut ending {
                 if !processes.iter().any(|proc| proc.pid == *pid) {
-                    record.log_ended(&self.path, command);
+                    record.log_ended(&self.path, command, "old worker");
                 }
             }
             let old_alive =

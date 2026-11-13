@@ -348,6 +348,96 @@ fn a_worktree_a_process_is_in_waits_until_that_process_is_gone() {
     assert_eq!(world.claims(), []);
 }
 
+/// A gate a scheduler paused, with what it started, both stopped, and the
+/// scheduler itself killed: nothing is left to resume them. Dropped, it
+/// resumes and kills both, so a failing test leaves neither stopped.
+struct Paused {
+    gate: u32,
+    child: u32,
+}
+
+impl Paused {
+    fn start(worktree: &Path, marks: &Path) -> Self {
+        let script = r#"cd "$1"
+sh -c 'sleep 120 & echo $! > "$0/child"; wait' "$2" &
+echo $! > "$2/gate"
+while ! test -s "$2/child"; do sleep 0.01; done
+kill -STOP "$(cat "$2/child")" "$(cat "$2/gate")"
+touch "$2/paused"
+exec sleep 120"#;
+        let mut scheduler =
+            Command::new("sh").args(["-c", script, "sh"]).arg(worktree).arg(marks).spawn().unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !marks.join("paused").exists() {
+            assert!(std::time::Instant::now() < until, "the scheduler never paused its gate");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let pid = |name: &str| -> u32 {
+            std::fs::read_to_string(marks.join(name)).unwrap().trim().parse().unwrap()
+        };
+        let paused = Self { gate: pid("gate"), child: pid("child") };
+        // The scheduler goes without a chance to resume what it paused.
+        scheduler.kill().unwrap();
+        scheduler.wait().unwrap();
+        assert_eq!(state(paused.gate).as_deref(), Some("T"), "the gate stays stopped");
+        assert_eq!(state(paused.child).as_deref(), Some("T"), "what it started stays stopped");
+        paused
+    }
+}
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        for pid in [self.child, self.gate] {
+            if state(pid).is_some() {
+                // SAFETY: these pids are this test's own paused fixture.
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGCONT);
+                    libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+    }
+}
+
+/// The first letter of `pid`'s state, `None` once it is gone or a zombie.
+fn state(pid: u32) -> Option<String> {
+    let out = Command::new("ps").args(["-p", &pid.to_string(), "-o", "stat="]).output().unwrap();
+    let state = String::from_utf8_lossy(&out.stdout).trim().chars().next()?;
+    (state != 'Z').then(|| state.to_string())
+}
+
+#[test]
+fn settling_ends_a_gate_its_killed_scheduler_left_stopped_and_removes_the_worktree() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    world.close_issue(3);
+    let paused = Paused::start(&worktree, &world.root);
+
+    let began = std::time::Instant::now();
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked)[0], "settle 3 done", "{ticked}");
+    assert!(began.elapsed() < std::time::Duration::from_secs(30), "ended within a bound");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while state(paused.gate).is_some() || state(paused.child).is_some() {
+        assert!(std::time::Instant::now() < until, "the paused gate's processes still exist");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!worktree.exists(), "the worktree is removed");
+    assert_eq!(world.claims(), []);
+    let logged: String = std::fs::read_dir(world.cache().join("afkconvoy/runs"))
+        .unwrap()
+        .flatten()
+        .map(|file| std::fs::read_to_string(file.path()).unwrap_or_default())
+        .collect();
+    for pid in [paused.gate, paused.child] {
+        assert!(
+            logged.contains(&format!("ended stopped orphan pid {pid},")),
+            "what settling ended is recorded: {logged}"
+        );
+    }
+}
+
 #[test]
 fn a_landed_worker_idle_at_its_prompt_is_ended_and_its_worktree_removed() {
     let world = backlog(&[3]);

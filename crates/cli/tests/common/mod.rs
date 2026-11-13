@@ -1423,10 +1423,89 @@ impl Drop for World {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+        end_left_behind(&self.root);
         if self.cache().exists() {
             let _ = Command::new("chmod").arg("-R").arg("u+w").arg(self.cache()).status();
         }
     }
+}
+
+/// Ends every process still working under `root`, and each under one, as the
+/// world that owns `root` ends, passing or panicking: a fixture gate, or what
+/// it started, that a test's scheduler left stopped would otherwise stay
+/// stopped for good in the worktree the tests ran in (sunfmin/control#837).
+/// Each is resumed and then killed. The gate's own check still fails a run
+/// whose tests leave one behind in a way no world's end reaches.
+fn end_left_behind(root: &Path) {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let Ok(listed) = Command::new("/bin/ps").args(["-axo", "pid=,ppid="]).output() else {
+        return;
+    };
+    let rows: Vec<(u32, u32)> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|row| {
+            let mut fields = row.split_whitespace();
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .collect();
+    let me = std::process::id();
+    let mut found: Vec<u32> = rows
+        .iter()
+        .filter(|(pid, _)| *pid != me && works_in(*pid).is_some_and(|cwd| cwd.starts_with(&root)))
+        .map(|(pid, _)| *pid)
+        .collect();
+    let mut next = 0;
+    while next < found.len() {
+        let parent = found[next];
+        next += 1;
+        for (pid, _) in rows.iter().filter(|(_, ppid)| *ppid == parent) {
+            if *pid != me && !found.contains(pid) {
+                found.push(*pid);
+            }
+        }
+    }
+    for pid in found.into_iter().rev() {
+        // SAFETY: each works under this world's own directory, or under one
+        // that does: no process outside the test's world.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGCONT);
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+/// The working directory of `pid`, with every link followed; `None` where it
+/// cannot be read.
+#[cfg(target_os = "macos")]
+fn works_in(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    // SAFETY: `info` is a `proc_vnodepathinfo`, the flavor asked for, and
+    // `size` is its size: the kernel writes no more than that.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if read != size {
+        return None;
+    }
+    // SAFETY: zeroed, then written by the kernel: every field is a number.
+    let info = unsafe { info.assume_init() };
+    let path: Vec<u8> = info.pvi_cdir.vip_path.iter().flatten().map(|&byte| byte as u8).collect();
+    let path = &path[..path.iter().position(|&byte| byte == 0)?];
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(path));
+    Some(path.canonicalize().unwrap_or(path))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn works_in(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 /// The calls of a stand-in's `state`, each with the names of a session's
