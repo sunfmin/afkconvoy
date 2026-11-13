@@ -483,6 +483,7 @@ impl Repo {
     /// again. Any other failure fails the read.
     fn fetch_records(&self, records: &mut Vec<RemoteRecord>) -> Result<()> {
         while !records.is_empty() {
+            let began = lock(&self.reads().seen).began();
             let mut fetch = vec!["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE];
             fetch.extend(records.iter().map(|record| record.name.as_str()));
             let ran = self.try_fetch(&fetch)?;
@@ -496,7 +497,7 @@ impl Repo {
                 bail!("git {} failed: {}", fetch.join(" "), ran.stderr.trim());
             };
             records.retain(|record| record.name != gone);
-            lock(&self.reads().seen).vanished(&gone);
+            lock(&self.reads().seen).vanished(&gone, began);
         }
         Ok(())
     }
