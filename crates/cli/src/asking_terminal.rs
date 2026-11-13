@@ -189,6 +189,11 @@ pub(crate) fn locate(session: &Session) -> Result<Option<String>> {
     if !exact.is_empty()
         && let Some(row) = rows.iter().find(|row| row["handle"] == exact)
     {
+        if let Some(saved) = metadata
+            && reincarnated(saved, row)
+        {
+            return take_back(&worktree, record.expect("metadata is the record's"), row);
+        }
         if let Some(saved) = metadata {
             for key in ["ptyId", "incarnationId"] {
                 ensure!(
@@ -230,11 +235,19 @@ pub(crate) fn locate(session: &Session) -> Result<Option<String>> {
             .join(", ")
     );
     let row = candidates[0];
+    let acknowledged_here =
+        acknowledged.as_ref().is_some_and(|handle| row["handle"] == handle.trim());
+    if !acknowledged_here
+        && let Some(saved) = metadata
+        && reincarnated(saved, row)
+    {
+        return take_back(&worktree, record.expect("metadata is the record's"), row);
+    }
     let owned = metadata.is_some_and(|saved| {
         !saved["ptyId"].is_null()
             && saved["ptyId"] == row["ptyId"]
             && saved["incarnationId"] == row["incarnationId"]
-    }) || acknowledged.as_ref().is_some_and(|handle| row["handle"] == handle.trim());
+    }) || acknowledged_here;
     ensure!(owned, "terminal {} is named {TITLE} but its ownership is unverified", row["handle"]);
     let handle = row["handle"].as_str().context("asking terminal has no handle")?.to_string();
     if let Some(mut record) = record {
@@ -245,6 +258,58 @@ pub(crate) fn locate(session: &Session) -> Result<Option<String>> {
         }
         save(&record)?;
     }
+    Ok(Some(handle))
+}
+
+/// Our confirmed pane, the same by its saved ptyId, tabId and leafId, under
+/// a new Orca incarnation and handle: the session inside restarted in the
+/// same pty (sunfmin/control#836). A changed tab or leaf is another pane.
+fn reincarnated(saved: &Value, row: &Value) -> bool {
+    ["ptyId", "tabId", "leafId"].iter().all(|key| !saved[key].is_null() && saved[key] == row[key])
+        && !saved["incarnationId"].is_null()
+        && saved["incarnationId"] != row["incarnationId"]
+}
+
+/// Takes back a re-incarnated pane while the session's marked executor still
+/// runs: the record takes its new handle and identity (ADR-0074). A send
+/// left unresolved is delivered where the session took a turn since it was
+/// offered, and otherwise offered afresh: its saved request key binds the old
+/// incarnation. With the executor gone the pane is ours but the session is
+/// not in it: the pane is closed, which would otherwise block the next
+/// creation by its title, and the session recorded ended (None).
+fn take_back(worktree: &Worktree, mut record: Record, row: &Value) -> Result<Option<String>> {
+    let handle = row["handle"].as_str().context("asking terminal has no handle")?.to_string();
+    if !crate::host_watch::marked_running(&record.session.id)? {
+        worktree.close_terminal(&handle)?;
+        ensure!(
+            !worktree.live(&handle)?,
+            "the re-incarnated asking terminal {handle} is still live after it was closed"
+        );
+        record.status = LaunchState::Ended;
+        record.problem = None;
+        save(&record)?;
+        return Ok(None);
+    }
+    record.session.terminal = handle.clone();
+    record.terminal = Some(row.clone());
+    record.problem = None;
+    if record.status == LaunchState::Sending {
+        let offered = record.offered.unwrap_or_else(crate::clock);
+        if worktree.saw_turn(record.session.harness, offered)? {
+            if let Some(question) = &mut record.question {
+                question.delivered = true;
+                question.started = Some(offered);
+            }
+            record.execution_evidence = Some(json!({"kind": "session_turn"}));
+            record.status = LaunchState::Running;
+        } else {
+            record.status = LaunchState::Ready;
+            record.request = None;
+            record.receipt = None;
+            record.offered = None;
+        }
+    }
+    save(&record)?;
     Ok(Some(handle))
 }
 

@@ -1219,6 +1219,15 @@ fn stop_session(watch: &Watch) -> Result<()> {
     watch_terminal::set_status(watch, LaunchState::Ended)
 }
 
+/// Whether the session's uniquely named wrapper still runs: its harness
+/// survived whatever happened to the pane above it.
+pub(crate) fn marked_running(identity: &str) -> Result<bool> {
+    let marker = format!("{}{identity}", host_watch::SESSION_PROCESS);
+    Ok(crate::hot::listed_checked()?
+        .iter()
+        .any(|proc| proc.line.split_whitespace().any(|word| word == marker)))
+}
+
 pub(crate) fn stop_marked(identity: &str) -> Result<()> {
     let marker = format!("{}{identity}", host_watch::SESSION_PROCESS);
     let began = Instant::now();
