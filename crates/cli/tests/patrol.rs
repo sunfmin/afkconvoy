@@ -50,7 +50,7 @@ fn bound(patrols: &str) -> World {
     write(&world.clone, "docs/agents/afkconvoy.md", &config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     common::fixture_timing("patrol bound setup", began);
     world
 }
@@ -267,7 +267,6 @@ fn a_patrol_the_repo_names_runs_when_due_and_one_it_does_not_name_never_runs() {
         json!([{"name": "sweep", "standing": "due", "every": 3600, "last_run": null, "open": 0,
             "max_open": 2}])
     );
-    assert_eq!(before["free_slots"], 2);
     let base = git(&world.clone, &["rev-parse", "origin/main"]);
     world.orca_calls();
 
@@ -309,7 +308,6 @@ fn a_patrol_the_repo_names_runs_when_due_and_one_it_does_not_name_never_runs() {
     let after = planned(&world, "alpha", 10_001);
     assert_eq!(after["patrols"][0]["standing"], "running");
     assert_eq!(after["patrols"][0]["last_run"], 10_000);
-    assert_eq!(after["free_slots"], 1);
     // The claim on a run is no claim on an issue.
     assert_eq!(world.afk(&["scan"]).ok()["claims"], json!([]));
 }
@@ -416,7 +414,6 @@ fn of_several_hosts_one_runs_a_patrol() {
     // A peer finds the run claimed, and leaves it alone…
     let peer = planned(&world, "beta", 10_010);
     assert_eq!(peer["patrols"][0]["standing"], "peer_running");
-    assert_eq!(peer["free_slots"], 2, "a peer's run takes none of my slots");
     assert_eq!(patrolled(&tick_as(&world, "beta", 10_010)), Vec::<String>::new());
     // …and once it ended, reads on the remote that it ran.
     workers_leave(&world);
@@ -522,30 +519,16 @@ fn no_patrol_runs_while_a_fleet_lock_stands() {
 }
 
 #[test]
-fn a_patrol_takes_one_slot_of_concurrency() {
+fn a_patrol_starts_beside_the_frontier_with_no_bound_between_them() {
     let world = bound("[sweep, audit]");
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["flow:feature"]);
-    world.issue(9, &["flow:feature"]);
-
-    // Two slots: the two patrols due take them, and no issue is dispatched.
     let ticked = tick(&world, 10_000);
     assert_eq!(patrolled(&ticked), ["patrol sweep done", "patrol audit done"]);
-    assert_eq!(ticked["held"], 2);
-    assert_eq!(ticked["frontier_remaining"], 3);
-    assert_eq!(planned(&world, "alpha", 10_001)["free_slots"], 0);
-    assert_eq!(world.claims(), vec![]);
-
-    // A run that ended gives its slot back, to an issue.
-    workers_leave(&world);
-    let ended = tick(&world, 10_400);
-    assert_eq!(patrolled(&ended), ["end_patrol sweep done", "end_patrol audit done"]);
+    assert_eq!(ticked["held"], 4);
+    assert_eq!(ticked["frontier_remaining"], 0);
     let claimed: Vec<u64> = world.claims().into_iter().map(|(issue, _)| issue).collect();
     assert_eq!(claimed, [7, 8]);
-    // …and with every slot held by an issue, a patrol due waits.
-    workers_work(&world, 13_700);
-    assert_eq!(standing(&world, 13_700), ["sweep due", "audit not_due"]);
-    assert_eq!(patrolled(&tick(&world, 13_700)), Vec::<String>::new());
 }
 
 /// The line the brief of the patrol `sweep` ends with: what declares its run over.
@@ -563,18 +546,17 @@ fn a_patrol_s_worker_declares_its_run_over_and_the_next_tick_ends_it() {
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["flow:feature"]);
     tick(&world, 10_000);
-    assert_eq!(world.claims().len(), 1, "the run holds one of the two slots");
+    assert_eq!(world.claims().len(), 2, "the run starts beside both issues");
 
     // The brief ends with the line, the run named in it.
     let line = over_line(&world);
     assert!(line.ends_with(" over --run 'patrol-sweep'"), "{line}");
     assert!(line.starts_with(&format!("cd '{}' && ", checkout(&world).display())), "{line}");
 
-    // A worker that has not run it still holds the slot…
+    // A worker that has not run it is still at work…
     workers_work(&world, 10_010);
     assert_eq!(patrolled(&tick(&world, 10_010)), ["end_patrol sweep nothing"]);
-    // …and once it has, the next tick ends the run, a minute into it, and
-    // gives the slot to an issue.
+    // …and once it has, the next tick ends the run, a minute into it.
     let patrol = checkout(&world);
     let pointer = std::fs::read_to_string(patrol.join(".git")).unwrap();
     let git_dir = pointer.trim().strip_prefix("gitdir:").unwrap().trim();
@@ -852,21 +834,21 @@ fn the_line_of_a_tick_names_the_patrols_it_ran_and_ended() {
 }
 
 #[test]
-fn the_slot_a_patrol_s_end_frees_is_filled_by_the_tick_that_ended_it() {
+fn the_tick_that_ends_a_patrol_starts_the_frontier_beside_it() {
     let world = bound("[sweep]");
     tick(&world, 10_000);
     workers_leave(&world);
     for issue in [5, 6, 7] {
         world.issue(issue, &["flow:feature"]);
     }
-    // The frontier was not empty as the slot came free: the same tick started
-    // a worker in it, and left `run` nothing to skip its sleep for.
+    // The frontier was not empty as the run ended: the same tick started its
+    // workers, and left `run` nothing to skip its sleep for.
     let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1", "--second-ms", "0"];
     let (lines, _) = world.afk_lines(&[&args[..], &["--ticks", "1", "--now", "10400"]].concat());
     assert_eq!(
         lines,
         [
-            "tick 1: dispatched #5, #6 · ended the patrol sweep · holding 2/2 · frontier 1 · next in 90s"
+            "tick 1: dispatched #5, #6, #7 · ended the patrol sweep · holding 3 · frontier 0 · next in 90s"
         ]
     );
 }

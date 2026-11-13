@@ -54,10 +54,6 @@ impl EscalateTo {
     }
 }
 
-/// How many claims a fleet instance holds at work at once where its checkout
-/// says none on its host.
-pub const CONCURRENCY: usize = 3;
-
 /// The gate limit of a repo that declares none, in seconds: an hour.
 pub const GATE_SECONDS: u64 = 3600;
 
@@ -76,9 +72,9 @@ pub struct Settings {
     pub gate_budget_seconds: Option<u64>,
     pub ready_label: Option<String>,
     pub epic_labels: Option<Vec<String>>,
-    /// Read only to be said: a checkout's concurrency is said on its host,
-    /// and a config's changes nothing (docs/adr/0025). `doctor` says the line
-    /// that keeps it on the host.
+    /// Read only to be said: no number of workers bounds a fleet, and a
+    /// config's changes nothing (docs/adr/0072). `doctor` says the key to
+    /// delete.
     pub concurrency: Option<NonZeroUsize>,
     pub escalate_label: Option<String>,
     pub team: Option<String>,
@@ -101,20 +97,9 @@ pub struct Bound {
     pub intake_limit: u64,
 }
 
-/// Who says how many claims a fleet instance holds at work at once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SaidBy {
-    /// Its checkout, on the host it is worked from (`Config::laid`).
-    Checkout,
-    /// Nobody: `CONCURRENCY`.
-    Default,
-}
-
 /// A config a fleet can run on: every key present, defaults filled.
 #[derive(Debug, PartialEq, Eq, Serialize)]
-#[refined_by(concurrency: int, gate_seconds: int)]
-#[invariant(concurrency > 0)]
+#[refined_by(gate_seconds: int)]
 #[invariant(gate_seconds > 0)]
 pub struct Config {
     pub base_branch: String,
@@ -131,14 +116,6 @@ pub struct Config {
     pub gate_limit_declared: bool,
     pub ready_label: String,
     pub epic_labels: Vec<String>,
-    /// The checkout's, on the host it is worked from: never the repo's, so
-    /// never in what `afkconvoy config` answers.
-    #[field(usize[concurrency])]
-    #[serde(skip)]
-    concurrency: usize,
-    /// Who says `concurrency`.
-    #[serde(skip)]
-    concurrency_said_by: SaidBy,
     /// The `concurrency` the repo's config still names, which changes
     /// nothing: what `doctor` says to keep on the host.
     #[serde(skip)]
@@ -315,7 +292,6 @@ impl Config {
             settings.gate_seconds.is_some(),
             ready_label,
             epic_labels,
-            CONCURRENCY,
             settings.concurrency,
             escalate_label,
             lock_label,
@@ -332,28 +308,6 @@ impl Config {
     /// The labels a team's workflows are read against in this repo.
     pub fn labels(&self) -> RepoLabels {
         RepoLabels { lock: self.lock_label.clone(), epics: self.epic_labels.clone() }
-    }
-
-    /// How many claims the fleet holds at once. Never zero.
-    #[spec(fn(&Config[@c]) -> usize[c.concurrency])]
-    pub fn concurrency(&self) -> usize {
-        self.concurrency
-    }
-
-    /// Who says `concurrency`: the checkout, or nobody.
-    pub fn concurrency_said_by(&self) -> SaidBy {
-        self.concurrency_said_by
-    }
-
-    /// This config with `concurrency`, the one its checkout says on the host
-    /// it is worked from, laid over the default. A concurrency of no slot at
-    /// all is none, and leaves it as it is.
-    #[spec(fn(Config[@c], concurrency: usize) -> Config)]
-    pub fn laid(self, concurrency: usize) -> Config {
-        if concurrency == 0 {
-            return self;
-        }
-        Config { concurrency, concurrency_said_by: SaidBy::Checkout, ..self }
     }
 
     /// This config with `steps`, the cut steps its file says in a block of
@@ -385,12 +339,12 @@ impl Config {
     }
 }
 
-/// The one place a `Config` is built: a zero concurrency never gets in, nor
-/// a gate limit of no seconds.
+/// The one place a `Config` is built: a gate limit of no seconds never gets
+/// in.
 #[spec(fn(String, String, gate_seconds: u64, bool, String, Vec<String>,
-        concurrency: usize{concurrency > 0}, Option<NonZeroUsize>, String, String,
+        Option<NonZeroUsize>, String, String,
         Option<EscalateTo>, Option<Bound>)
-    -> Option<Config[concurrency, gate_seconds]>)]
+    -> Option<Config[gate_seconds]>)]
 #[allow(clippy::too_many_arguments)]
 fn checked(
     base_branch: String,
@@ -399,7 +353,6 @@ fn checked(
     gate_limit_declared: bool,
     ready_label: String,
     epic_labels: Vec<String>,
-    concurrency: usize,
     retired_concurrency: Option<NonZeroUsize>,
     escalate_label: String,
     lock_label: String,
@@ -417,8 +370,6 @@ fn checked(
         gate_limit_declared,
         ready_label,
         epic_labels,
-        concurrency,
-        concurrency_said_by: SaidBy::Default,
         retired_concurrency,
         escalate_label,
         lock_label,
@@ -608,7 +559,6 @@ mod tests {
         assert_eq!(config.ready_label, "ready-for-agent");
         assert_eq!(config.escalate_label, "ready-for-human");
         assert_eq!(config.epic_labels, ["epic", "prd"]);
-        assert_eq!((config.concurrency(), config.concurrency_said_by()), (3, SaidBy::Default));
         assert_eq!((config.gate_seconds(), config.gate_limit_declared), (3600, false));
         assert_eq!(config.lock_label, "fleet-lock", "a fleet lock needs no team");
         assert_eq!(config.bound, None, "a repo that names no team is unbound");
@@ -633,29 +583,13 @@ mod tests {
     }
 
     #[test]
-    fn a_checkouts_concurrency_is_laid_over_the_default() {
-        let laid = Config::new(minimal()).unwrap().laid(8);
-        assert_eq!((laid.concurrency(), laid.concurrency_said_by()), (8, SaidBy::Checkout));
-        // No slot at all is none: the default stands.
-        let none = Config::new(minimal()).unwrap().laid(0);
-        assert_eq!((none.concurrency(), none.concurrency_said_by()), (3, SaidBy::Default));
-        // What `afkconvoy config` answers is the repo's alone, and the
-        // concurrency is no fact of the repo's.
-        let said = serde_json::to_value(&laid).unwrap();
-        assert!(said.get("concurrency").is_none(), "{said}");
-        assert!(said.get("concurrency_said_by").is_none(), "{said}");
-    }
-
-    #[test]
     fn a_config_that_names_a_concurrency_is_read_and_it_changes_nothing() {
         let named = Config::new(Settings { concurrency: NonZeroUsize::new(5), ..minimal() });
         let named = named.unwrap();
-        assert_eq!((named.concurrency(), named.concurrency_said_by()), (3, SaidBy::Default));
         assert_eq!(named.retired_concurrency, NonZeroUsize::new(5));
-        let laid = named.laid(6);
-        assert_eq!((laid.concurrency(), laid.retired_concurrency), (6, NonZeroUsize::new(5)));
         assert_eq!(Config::new(minimal()).unwrap().retired_concurrency, None);
-        let said = serde_json::to_value(&laid).unwrap();
+        let said = serde_json::to_value(&named).unwrap();
+        assert!(said.get("concurrency").is_none(), "{said}");
         assert!(said.get("retired_concurrency").is_none(), "{said}");
     }
 

@@ -27,7 +27,7 @@ fn bound(legacy: &str) -> World {
     write(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
-    world.say_concurrency(&world.clone, 4);
+    world.list_checkout(&world.clone);
     world
 }
 
@@ -259,7 +259,7 @@ fn legacy_prs_receive_a_retained_disposition_once_and_are_never_closed_or_merged
 #[test]
 fn retirement_failure_does_not_hold_concurrency_and_the_next_tick_retries() {
     let world = bound("");
-    world.say_concurrency(&world.clone, 1);
+    world.list_checkout(&world.clone);
     let path = legacy_worker(&world);
     record(&world, "claim/precedent-7-c2001", "convoy:claim instance=alpha host=h1 ts=1000");
     world.with_orca(|orca| orca["close_fails"] = json!([path]));

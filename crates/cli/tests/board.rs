@@ -273,11 +273,11 @@ fn an_issue_claimed_again_keeps_its_one_board() {
 #[test]
 fn a_live_peers_board_is_left_alone() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
-    for n in [7, 8, 9] {
+    for n in [7, 8] {
         world.issue(n, &["ready-for-agent"]);
     }
     tick_as(&world, "beta", 1000);
+    world.issue(9, &["ready-for-agent"]);
     let theirs = world.boards(7);
     assert!(theirs[0].contains("fleet instance `beta`"));
     comment_calls(&world);

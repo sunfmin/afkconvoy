@@ -131,9 +131,7 @@ fn a_busy_fleet_shows_every_issue_once_where_it_is() {
         assert_eq!(cards, 1, "#{issue}");
     }
     let gauges = page.part("dl", "gauges");
-    for said in
-        ["Claims held</dt><dd>1 <small>of 3", "Taking no slot</dt><dd>2<", "Queued</dt><dd>3<"]
-    {
+    for said in ["Claims held</dt><dd>1<", "Taking no slot</dt><dd>2<", "Queued</dt><dd>3<"] {
         assert!(gauges.contains(said), "{said}: {gauges}");
     }
     assert!(page.html.contains("Fleet instance <b>alpha</b> on h1, landing on <b>main</b>"));
@@ -149,7 +147,7 @@ fn a_busy_fleet_reads_on_a_phone_too() {
 #[test]
 fn a_fleet_with_nothing_to_do_says_so_at_every_stage() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     let page = shown(&world, "empty", (1440, 520));
     assert_eq!(page.html.matches("data-issue=").count(), 0);
     for stage in ["work", "land"] {
@@ -160,7 +158,7 @@ fn a_fleet_with_nothing_to_do_says_so_at_every_stage() {
         );
     }
     assert!(!page.html.contains("class=\"train\""));
-    assert!(page.part("dl", "gauges").contains("Claims held</dt><dd>0 <small>of 2"));
+    assert!(page.part("dl", "gauges").contains("Claims held</dt><dd>0<"));
     assert!(!page.html.contains("class=\"off\"") && !page.html.contains("class=\"lock\""));
     // no host runner made it: it says what it is, and where the live one is
     assert!(page.html.contains("one rebuild of each checkout, read just now"));
@@ -359,7 +357,7 @@ fn checkouts(page: &Rendered) -> Vec<String> {
 #[test]
 fn the_host_runner_serves_one_page_of_every_checkout_from_its_start_and_after_every_tick() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(3, &["ready-for-agent"]);
     let port = free_port();
     world.say_host_settings(json!({"panel": port}));
@@ -371,8 +369,8 @@ fn the_host_runner_serves_one_page_of_every_checkout_from_its_start_and_after_ev
     assert!(log.contains(&format!("panel: {address}")), "{log:#?}");
     let page = page_with(port, "<b>Tick 1</b>");
     assert_eq!(carded(page.node("work"), "at-work"), [3], "{}", page.html);
-    assert!(page.html.contains("dispatched #3 · holding 1/2 · frontier 0"), "{}", page.html);
-    assert!(page.html.contains("Claims held</dt><dd>1 <small>of 2"), "{}", page.html);
+    assert!(page.html.contains("dispatched #3 · holding 1 · frontier 0"), "{}", page.html);
+    assert!(page.html.contains("Claims held</dt><dd>1<"), "{}", page.html);
 
     // a second checkout is on the same page: the host once, then each repo,
     // in the order of their roots, each named in the row at the top
@@ -386,9 +384,9 @@ fn the_host_runner_serves_one_page_of_every_checkout_from_its_start_and_after_ev
     assert!(page.html.find("class=\"human\"").unwrap() < page.html.find("<nav").unwrap());
     let row = page.part("nav", "checkouts");
     assert!(row.contains("<a href=\"#checkout-1\">"), "{row}");
-    assert!(row.contains("<b>at work</b> · holding 1/2 · frontier 0"), "{row}");
+    assert!(row.contains("<b>at work</b> · holding 1 · frontier 0"), "{row}");
     assert!(row.contains("<a href=\"#checkout-2\">"), "{row}");
-    assert!(row.contains("<b>idle</b> · holding 0/"), "{row}");
+    assert!(row.contains("<b>idle</b> · holding 0"), "{row}");
 
     // an open page is told of every tick of any fleet instance, and the page
     // it then reads shows what that tick read
@@ -462,20 +460,17 @@ fn a_panel_port_that_is_taken_is_served_around_and_run_panel_sets_the_next_host_
 }
 
 #[test]
-fn with_no_port_said_the_panel_is_on_7070_or_any_free_port_where_that_is_taken() {
+fn with_no_port_said_the_panel_s_port_is_7070() {
+    // No host runner is started: 7070 is the panel's port of the host the
+    // tests run on, which a test leaves alone (sunfmin/control#820).
     let world = World::new();
-    let answer = world.afk(&RUN).ok();
-    let panel = answer["host_runner"]["panel"].as_str().unwrap().to_string();
-    let log = world.runner_log();
-    let said = log.iter().find(|line| line.starts_with("panel: ")).unwrap();
-    match panel.as_str() {
-        "http://127.0.0.1:7070/" => assert_eq!(said, "panel: http://127.0.0.1:7070/"),
-        // another host runner of this host, or something else, has it
-        _ => assert_eq!(*said, format!("panel: {panel}, port 7070 being taken")),
-    }
+    let mut list = world.checkout_list();
+    list["settings"].as_object_mut().unwrap().remove("panel");
+    std::fs::write(world.cache().join("afkconvoy/checkouts.json"), list.to_string()).unwrap();
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     assert_eq!(doctor["host"]["settings"]["in_force"]["panel"], 7070, "{doctor}");
     assert_eq!(doctor["host"]["settings"]["said"]["panel"], Value::Null, "{doctor}");
+    assert_eq!(world.host_runner(), None, "{doctor}");
 }
 
 #[test]

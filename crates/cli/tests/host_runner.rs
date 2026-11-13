@@ -8,6 +8,7 @@ use crate::common;
 
 use std::collections::BTreeSet;
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -23,7 +24,7 @@ const RUN: [&str; 7] = ["run", "--tracker", "default", "--host", "h1", "--second
 fn the_initial_panel_does_not_ask_the_host_runner_before_it_can_answer() {
     let world = World::new();
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root);
-    command.arg("host-runner");
+    command.args(["host-runner", "--kept-by", "0"]);
     let _runner = common::FixtureProcess::spawn(&mut command);
     let began = Instant::now();
     while !world.cache().join("afkconvoy/host-runner.sock").exists() {
@@ -494,6 +495,113 @@ fn a_host_runner_started_again_starts_every_checkout_on_the_list() {
 }
 
 #[test]
+fn a_host_runner_ended_unexpectedly_is_started_again_by_its_keeper_on_the_same_list() {
+    let world = World::new();
+    let first = world.afk(&RUN).ok();
+    let clone2 = world.second_repo();
+    world.afk_in(&clone2, &["run", "--second-ms", "100"]).ok();
+    let (old, keeper) = (world.host_runner().unwrap(), world.keeper().unwrap());
+    assert_ne!(old, keeper, "the keeper holds nothing of the host");
+    // not from `/`, as the host runner works: what ends every process working
+    // in `/` leaves it to start the host runner again (sunfmin/control#831)
+    let cwd = Command::new("/usr/sbin/lsof")
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &keeper.to_string()])
+        .output()
+        .unwrap();
+    let cwd = String::from_utf8_lossy(&cwd.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix('n'))
+        .map(str::to_string);
+    let cache = world.cache().join("afkconvoy").canonicalize().unwrap();
+    assert_eq!(cwd.map(PathBuf::from), Some(cache), "the keeper works in the cache directory");
+    assert_eq!(first["host_runner"]["pid"], old, "{first}");
+
+    // kill -9 of the host runner: nobody runs `afkconvoy run`
+    let killed = Command::new("kill").args(["-KILL", &old.to_string()]).status().unwrap();
+    assert!(killed.success());
+    let began = Instant::now();
+    let again =
+        until("host runner started again", || world.host_runner().filter(|pid| *pid != old));
+    assert!(began.elapsed() < Duration::from_secs(60), "{:?}", began.elapsed());
+    assert_eq!(world.keeper(), Some(keeper), "the same keeper starts it again");
+    let said = logged(&world, "host runner restarted after an unexpected end: ");
+    assert!(said.contains(&format!("pid {old} was ended by signal 9")), "{said}");
+    // on the same list, every checkout on it started again
+    assert_eq!(listed(&world), [shown(&world.clone), shown(&clone2)]);
+    until("every checkout started again", || {
+        let answer = world.afk(&["checkouts"]).ok();
+        let rows = answer["checkouts"].as_array()?.clone();
+        let running =
+            rows.iter().all(|row| row["state"] == "running" && row["instance"].is_string());
+        (answer["host_runner"]["pid"] == again && rows.len() == 2 && running).then_some(())
+    });
+    let log = world.runner_log();
+    let started = format!(
+        "host runner started: afkconvoy {}, pid {again}, 2 checkouts on the list",
+        afkconvoy::VERSION
+    );
+    assert!(log.contains(&started), "{log:#?}");
+
+    // told to stop, it ends, and its keeper with it: nothing starts it again
+    world.afk(&["stop", "--all"]).ok();
+    let keeper = json!(keeper);
+    until("the keeper ended", || (!alive(&keeper)).then_some(()));
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(world.host_runner(), None, "{:#?}", world.runner_log());
+    let restarted =
+        world.runner_log().iter().filter(|line| line.starts_with("host runner restarted")).count();
+    assert_eq!(restarted, 1, "{:#?}", world.runner_log());
+}
+
+/// The tests of this file that start, stop, replace, kill and restart a host
+/// runner, which a cut's gate runs on the host whose own host runner runs
+/// that gate.
+const ON_THE_HOST: [&str; 5] = [
+    "host_runner::stop_all_stops_every_fleet_instance_then_the_host_runner_and_keeps_the_list",
+    "host_runner::sigterm_stops_every_fleet_instance_and_keeps_the_list",
+    "host_runner::a_newer_afkconvoy_moves_the_host_runner_onto_itself_on_the_same_list",
+    "host_runner::a_host_runner_started_again_starts_every_checkout_on_the_list",
+    "host_runner::a_host_runner_ended_unexpectedly_is_started_again_by_its_keeper_on_the_same_list",
+];
+
+#[test]
+fn the_suite_s_host_runner_tests_never_stop_nor_signal_the_host_s_own_host_runner() {
+    // The host's own host runner, of a cache of this test's own: the tests
+    // below are run as a cut's gate runs them — under its HOME and cache
+    // directory, and in its process group, as a gate it ran is
+    // (sunfmin/control#820).
+    let host = World::new();
+    host.afk(&RUN).ok();
+    let (runner, keeper) = (host.host_runner().unwrap(), host.keeper().unwrap());
+    let before = host.runner_log().len();
+    let tests = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "--test-threads", "5"])
+        .args(ON_THE_HOST)
+        .env("HOME", host.home())
+        .env("XDG_CACHE_HOME", host.cache())
+        .process_group(runner as i32)
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&tests.stdout);
+    assert!(tests.status.success(), "{said}{}", String::from_utf8_lossy(&tests.stderr));
+    assert!(said.contains(&format!("{} passed", ON_THE_HOST.len())), "{said}");
+
+    // neither stopped, nor ended, nor started again
+    assert!(alive(&json!(runner)) && alive(&json!(keeper)));
+    assert_eq!((host.host_runner(), host.keeper()), (Some(runner), Some(keeper)));
+    let log = host.runner_log();
+    let after: Vec<_> = log[before..]
+        .iter()
+        .filter(|line| {
+            ["host runner told", "host runner stopp", "host runner restarted", "host runner moved"]
+                .iter()
+                .any(|start| line.starts_with(start))
+        })
+        .collect();
+    assert!(after.is_empty(), "{log:#?}");
+}
+
+#[test]
 fn a_run_of_a_listed_checkout_the_host_runner_could_not_start_starts_it_as_its_run_named_it() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
@@ -593,7 +701,7 @@ fn a_host_setting_a_run_names_holds_for_every_fleet_instance_at_once() {
     let second = world.afk_in(&clone2, &[&RUN[..], &["--admit-load", "100000000"]].concat()).ok();
     assert_eq!(second["settings"], json!({"admit_load": {"from": null, "to": 100000000}}));
     assert_eq!(second["host_runner"]["pid"], first["host_runner"]["pid"]);
-    assert!(ticked(&first, "dispatched #7").contains("holding 1/"));
+    assert!(ticked(&first, "dispatched #7").contains("holding 1"));
     assert_eq!(world.claims(), [(7, first["instance"].as_str().unwrap().to_string())]);
 
     // naming it as it is changes nothing, and `default` changes it back
@@ -1116,7 +1224,7 @@ fn the_host_runner_moves_with_claims_and_an_open_pr_after_only_the_running_comma
     let link = installed(&world);
     let first = world.afk_as(&link, &world.clone, &TICKING).ok();
     let old = first["host_runner"]["pid"].as_u64().unwrap();
-    assert!(ticked(&first, "dispatched #7").contains("holding 2/"));
+    assert!(ticked(&first, "dispatched #7").contains("holding 2"));
 
     // Keep the runner here while a worker joins its PR and another command
     // queues. The queued command must run only after the replacement starts.
@@ -1396,173 +1504,84 @@ fn stop_takes_a_broken_checkout_off_the_list_at_once_and_it_is_broken_no_more() 
     assert_eq!(doctor["fleet"]["broken"], Value::Null, "{doctor}");
 }
 
-/// The findings of a `doctor` answer that say the repo config names a
-/// `concurrency`, which nothing reads any more.
+/// The findings of a `doctor` answer that say a concurrency is still named,
+/// which is ignored.
 fn retired_concurrency(doctor: &Value) -> Vec<Value> {
     let found = doctor["findings"].as_array().unwrap().iter();
-    let about = |finding: &&Value| {
-        finding["what"].as_str().unwrap().contains("which nothing reads any more")
-    };
+    let about = |finding: &&Value| finding["what"].as_str().unwrap().contains("which is ignored");
     found.filter(about).cloned().collect()
 }
 
 #[test]
-fn a_concurrency_the_repo_config_names_changes_nothing_and_doctor_gives_the_line_that_keeps_it() {
+fn a_concurrency_the_repo_config_names_changes_nothing_and_doctor_says_to_delete_it() {
     let world = World::new();
     let file = world.clone.join("docs/agents/afkconvoy.md");
     let config = |more: &str| {
         let yaml = "base_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\n";
         std::fs::write(&file, format!("```yaml\n{yaml}{more}```\n")).unwrap();
     };
-    config("concurrency: 5\n");
+    config("concurrency: 2\n");
     for issue in [7, 8, 9, 10] {
         world.issue(issue, &["ready-for-agent"]);
     }
-    // the checkout names none: its fleet instance holds the default, not 5
+    // no number bounds the fleet: its first tick starts the whole frontier
     let first = world.afk(&TICKING).ok();
     let first_tick = first["first_tick"].as_str().unwrap();
-    assert!(first_tick.contains("holding 3/3 · frontier 1"), "{first}");
+    assert!(first_tick.contains("holding 4 · frontier 0"), "{first}");
 
-    // `doctor` explains it: nothing is held up, with the line that keeps it on this host
+    // `doctor` explains it: nothing is held up, and the key is to delete
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     let found = retired_concurrency(&doctor);
     assert_eq!(found.len(), 1, "{doctor}");
     assert_eq!(found[0]["severity"], "info");
     let what = found[0]["what"].as_str().unwrap();
-    assert!(what.contains("names `concurrency: 5`") && what.contains("up to 3 claims"), "{what}");
-    let line = format!("afkconvoy run {} --concurrency 5", shown(&world.clone));
-    let deleted = "delete `concurrency` from docs/agents/afkconvoy.md";
-    assert_eq!(found[0]["fix"], format!("{line}, then {deleted}"));
-
-    // that line, run as it is said: the checkout's own, from its next tick
-    let words: Vec<&str> = line.split(' ').skip(1).collect();
-    let kept = world.afk(&words).ok();
-    assert_eq!(kept["concurrency"], changed((3, "default"), (5, "checkout")), "{kept}");
-    assert!(ticked(&first, "dispatched #10").contains("holding 4/5 · frontier 0"));
-    // the key is all there is left to delete, and once it is, nothing
-    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
-    let found = retired_concurrency(&doctor);
+    assert!(what.contains("names `concurrency: 2`"), "{what}");
+    assert!(what.contains("admission alone decides each start"), "{what}");
     assert_eq!(found[0]["fix"], "docs/agents/afkconvoy.md: concurrency", "{doctor}");
     config("");
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     assert_eq!(retired_concurrency(&doctor), Vec::<Value>::new(), "{doctor}");
-    assert_eq!(doctor["fleet"]["concurrency"], json!({"in_force": 5, "said_by": "checkout"}));
-}
-
-/// What a `run` changed of its checkout's concurrency, as it answers it:
-/// from the one in force, and who said it, to the one in force after.
-fn changed(from: (u64, &str), to: (u64, &str)) -> Value {
-    let (from, to) = (
-        json!({"in_force": from.0, "said_by": from.1}),
-        json!({"in_force": to.0, "said_by": to.1}),
-    );
-    json!({"from": from, "to": to})
-}
-
-/// Each tick's line the tick log of the fleet instance `answer` names
-/// holds, in order.
-fn tick_lines(answer: &Value) -> Vec<String> {
-    let lines = tick_log(answer).into_iter().filter(|line| kind(line) == "tick");
-    lines.map(|line| serde_json::from_value::<Entry>(line).unwrap().said()).collect()
+    assert_eq!(doctor["fleet"].get("concurrency"), None, "{doctor}");
 }
 
 #[test]
-fn a_checkouts_concurrency_a_run_says_holds_at_its_next_tick_and_nothing_is_started_again() {
-    const RUN: [&str; 5] = TICKING;
+fn a_run_that_names_a_concurrency_is_accepted_does_nothing_and_doctor_says_so() {
     let world = World::new();
     for issue in [7, 8, 9, 10] {
         world.issue(issue, &["ready-for-agent"]);
     }
-    let first = world.afk(&RUN).ok();
-    let first_tick = first["first_tick"].as_str().unwrap();
-    assert!(first_tick.contains("holding 3/3 · frontier 1"), "the default: {first}");
-    assert_eq!(first["concurrency"], Value::Null, "it named none: {first}");
+    // accepted, and ignored: the first tick starts the whole frontier
+    let first = world.afk(&[&RUN[..], &["--concurrency", "1"]].concat()).ok();
+    assert!(first["first_tick"].as_str().unwrap().contains("holding 4 · frontier 0"), "{first}");
+    assert_eq!(first["concurrency"]["ignored"], 1, "{first}");
+    assert!(first["concurrency"]["why"].as_str().unwrap().contains("admission alone"), "{first}");
+    assert_eq!(world.checkout_list()["checkouts"][0]["concurrency"], 1);
 
-    // raised: the next tick of the same fleet instance, started once, takes
-    // one more
-    let raised = world.afk(&[&RUN[..], &["--concurrency", "4"]].concat()).ok();
-    assert_eq!(raised["concurrency"], changed((3, "default"), (4, "checkout")), "{raised}");
-    assert_eq!((&raised["added"], &raised["instance"]), (&json!(false), &first["instance"]));
-    assert_eq!(raised["host_runner"]["pid"], first["host_runner"]["pid"]);
-    assert!(ticked(&first, "dispatched #10").contains("holding 4/4 · frontier 0"));
-    let starts = tick_log(&first).iter().filter(|line| kind(line) == "start").count();
-    assert_eq!(starts, 1, "{:#?}", tick_log(&first));
-    // the checkout's, with its entry, apart from what its `run` named
-    let list = world.checkout_list();
-    assert_eq!(
-        list["checkouts"],
-        json!([{"checkout": world.clone, "named": {"host": "h1"},
-        "concurrency": 4}])
-    );
+    // `doctor` says it is ignored, with the line that drops it
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let found = retired_concurrency(&doctor);
+    assert_eq!(found.len(), 1, "{doctor}");
+    assert_eq!(found[0]["severity"], "info");
+    let line = format!("afkconvoy run {} --concurrency default", shown(&world.clone));
+    assert_eq!(found[0]["fix"], line, "{doctor}");
+    // `plan` and `checkouts` say no concurrency at all
+    assert_eq!(world.afk(&["plan"]).ok().get("concurrency"), None);
+    assert_eq!(world.afk(&["checkouts"]).ok()["checkouts"][0].get("concurrency"), None);
 
-    // lowered below the claims held: no worker is ended, and no new claim is
-    // taken until fewer are held
-    world.issue(11, &["ready-for-agent"]);
-    let lowered = world.afk(&[&RUN[..], &["--concurrency", "1"]].concat()).ok();
-    assert_eq!(lowered["concurrency"], changed((4, "checkout"), (1, "checkout")), "{lowered}");
-    let past = ticked(&first, "holding 1/1 · 3 past the bound · frontier 1");
-    assert!(!past.contains("dispatched"), "{past}");
-    assert_eq!(world.claims().len(), 4, "{:?}", world.claims());
-    assert_eq!(world.open_terminals().len(), 4, "every worker works on");
-    for issue in [7, 8, 9] {
-        world.close_issue(issue);
-    }
-    ticked(&first, "holding 1/1 · frontier 1");
-    world.close_issue(10);
-    assert!(ticked(&first, "dispatched #11").contains("holding 1/1 · frontier 0"));
-    let lines = tick_lines(&first);
-    let at = |said: &str| lines.iter().position(|line| line.contains(said)).unwrap();
-    assert!(at("left #10") <= at("dispatched #11"), "{lines:#?}");
-}
-
-#[test]
-fn default_sets_a_checkouts_concurrency_back_and_a_host_runner_started_again_keeps_it() {
-    let world = World::new();
-    // a checkout not on the list yet goes by it from its first tick, which
-    // puts it on the list with it
-    let first = world.afk(&[&RUN[..], &["--concurrency", "4"]].concat()).ok();
-    assert_eq!(first["concurrency"], changed((3, "default"), (4, "checkout")), "{first}");
-    assert!(first["first_tick"].as_str().unwrap().contains("holding 0/4"), "{first}");
-    assert_eq!(world.checkout_list()["checkouts"][0]["concurrency"], 4);
-    world.kill_host_runner("KILL");
-
-    // a host runner started again keeps it, and a `run` that names none
-    // leaves it as it is
-    let again = world.afk(&["run"]).ok();
-    assert_eq!(
-        (&again["host_runner"]["started"], &again["concurrency"]),
-        (&json!(true), &Value::Null)
-    );
-    assert!(again["first_tick"].as_str().unwrap().contains("holding 0/4"), "{again}");
-
-    // `plan`, `doctor` and `checkouts` say the one in force, and who says it
-    let said = |in_force: u64, said_by: &str| {
-        let said = json!({"in_force": in_force, "said_by": said_by});
-        assert_eq!(world.afk(&["plan"]).ok()["concurrency"], said);
-        let doctor = world.afk(&["doctor", "--host", "h1"]).json;
-        assert_eq!(doctor["fleet"]["concurrency"], said, "{doctor}");
-        let checkouts = world.afk(&["checkouts"]).ok();
-        assert_eq!(checkouts["checkouts"][0]["concurrency"], said, "{checkouts}");
-    };
-    said(4, "checkout");
-
-    // naming the one in force changes nothing; `default` goes back to the
-    // default, and says from what to what
-    let same = world.afk(&[&RUN[..], &["--concurrency", "4"]].concat()).ok();
-    assert_eq!(same["concurrency"], Value::Null, "{same}");
-    let back = world.afk(&[&RUN[..], &["--concurrency", "default"]].concat()).ok();
-    assert_eq!(back["concurrency"], changed((4, "checkout"), (3, "default")), "{back}");
+    // that line, run as it is said, drops it
+    let words: Vec<&str> = line.split(' ').skip(1).collect();
+    let dropped = world.afk(&words).ok();
+    assert_eq!(dropped["concurrency"]["ignored"], "default", "{dropped}");
     assert_eq!(world.checkout_list()["checkouts"][0].get("concurrency"), None);
-    said(3, "default");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(retired_concurrency(&doctor), Vec::<Value>::new(), "{doctor}");
 
-    // no slot at all, and what is no whole number, are refused, naming what
-    // is taken; nothing is said
+    // what is no whole number of at least one is still refused
     for wrong in ["0", "1.5"] {
         let error = world.afk(&["run", "--concurrency", wrong]).error();
         let taken = format!("`{wrong}` is not a whole number of at least 1, nor `default`");
         assert!(error.contains(&taken), "{error}");
     }
-    assert_eq!(world.checkout_list()["checkouts"][0].get("concurrency"), None);
 }
 
 #[test]
