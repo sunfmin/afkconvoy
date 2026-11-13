@@ -72,7 +72,7 @@ fn with_a_lock_standing_the_frontier_is_the_lock_issues_and_plan_says_which() {
 #[test]
 fn running_workers_are_left_alone_and_what_they_declared_is_acted_on_once_the_lock_ends() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(3, &["ready-for-agent"]);
     world.issue(5, &["ready-for-agent"]);
     world.issue(9, &["ready-for-agent"]);
@@ -453,7 +453,7 @@ fn the_line_of_a_tick_shows_the_claims_a_lock_leaves_alone_apart_from_the_bound(
     let line = lines.iter().find(|line| line.starts_with("tick 1: ")).expect("a tick's line");
     assert_eq!(
         line,
-        "tick 1: FLEET LOCK #7 stands: only it is worked · dispatched #7 · holding 1/3 · \
+        "tick 1: FLEET LOCK #7 stands: only it is worked · dispatched #7 · holding 1 · \
          2 left alone · frontier 0 · next in 90s"
     );
 }

@@ -30,7 +30,7 @@ fn did(ticked: &Value) -> Vec<String> {
 /// A world whose fleet holds two claims at once, with `numbers` ready.
 fn backlog(numbers: &[u64]) -> World {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     for &n in numbers {
         world.issue(n, &["ready-for-agent"]);
     }
@@ -958,9 +958,9 @@ fn run_ticks_until_stopped_and_says_what_each_tick_did() {
     assert_eq!(
         lines,
         [
-            "tick 1: dispatched #3, #5 · holding 2/2 · frontier 1 · next in 90s",
+            "tick 1: dispatched #3, #5 · holding 2 · frontier 1 · next in 90s",
             // their workers, started a moment ago, are left a grace period
-            "tick 2: nothing to do · holding 2/2 · frontier 1 · next in 90s",
+            "tick 2: nothing to do · holding 2 · frontier 1 · next in 90s",
         ]
     );
     assert_eq!(stopped["ticks"], 2);
@@ -980,7 +980,7 @@ fn a_tick_says_which_issue_it_skipped_for_a_blocker_read_after_its_rebuild() {
     assert_eq!(
         lines,
         [
-            "tick 1: dispatched #5 · skipped #3 (blocked by #5) · holding 1/2 · frontier 0 · next in 90s"
+            "tick 1: dispatched #5 · skipped #3 (blocked by #5) · holding 1 · frontier 0 · next in 90s"
         ]
     );
     assert_eq!(world.claims(), alpha(&[5]));
@@ -1007,12 +1007,12 @@ fn a_frontier_issue_closed_after_its_rebuild_is_skipped_and_fails_nothing() {
 #[test]
 fn run_goes_idle_after_three_empty_ticks() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     let (lines, _) = run(&world, &["--ticks", "4"]);
     let sleeps: Vec<&str> =
         lines.iter().map(|line| line.rsplit("next in ").next().unwrap()).collect();
     assert_eq!(sleeps, ["90s", "90s", "1500s", "1500s"]);
-    assert!(lines[0].starts_with("tick 1: nothing to do · holding 0/2 · frontier 0"));
+    assert!(lines[0].starts_with("tick 1: nothing to do · holding 0 · frontier 0"));
 }
 
 #[test]
@@ -1025,8 +1025,8 @@ fn run_follows_a_tick_that_settled_a_claim_with_no_sleep_and_sleeps_after_one_th
         lines,
         [
             // what the landing unblocked is the next tick's to find
-            "tick 1: settled #3 · holding 0/2 · frontier 0 · next now",
-            "tick 2: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+            "tick 1: settled #3 · holding 0 · frontier 0 · next now",
+            "tick 2: nothing to do · holding 0 · frontier 0 · next in 90s",
         ]
     );
 }
@@ -1046,11 +1046,11 @@ fn every_tick_says_as_it_starts_why_it_started() {
         [
             "start: run as alpha on h1, its workers started with `agent`",
             "tick 1: started (start)",
-            "tick 1: settled #3 · holding 0/2 · frontier 0 · next now",
+            "tick 1: settled #3 · holding 0 · frontier 0 · next now",
             "tick 2: started (follow-up)",
-            "tick 2: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+            "tick 2: nothing to do · holding 0 · frontier 0 · next in 90s",
             "tick 3: started (timer)",
-            "tick 3: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+            "tick 3: nothing to do · holding 0 · frontier 0 · next in 90s",
         ]
     );
 }
@@ -1098,7 +1098,7 @@ fn a_failed_step_shows_in_the_line() {
     assert!(lines[0].contains("FAILED dispatch #3: orca worktree create failed"), "{lines:?}");
     // every step it had failed: that is not having had nothing to do
     assert!(!lines[0].contains("nothing to do"), "{lines:?}");
-    assert!(lines[0].starts_with("tick 1: holding 1/2 · frontier 0 · FAILED"), "{lines:?}");
+    assert!(lines[0].starts_with("tick 1: holding 1 · frontier 0 · FAILED"), "{lines:?}");
 }
 
 /// Takes issue `number` off the stand-in GitHub as `how` — `deleted`,
@@ -1128,7 +1128,7 @@ fn a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled() {
         assert_eq!(
             lines,
             [format!(
-                "tick 1: released #3 ({said}) · dispatched #9 · holding 2/2 · frontier 0 · \
+                "tick 1: released #3 ({said}) · dispatched #9 · holding 2 · frontier 0 · \
                  next in 90s"
             )],
             "{how}"
@@ -1159,7 +1159,7 @@ fn an_issue_deleted_during_its_own_dispatch_leaves_no_claim_behind() {
     let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
     assert_eq!(
         lines,
-        ["tick 1: released #3 (the issue was deleted) · dispatched #5 · holding 1/2 · frontier \
+        ["tick 1: released #3 (the issue was deleted) · dispatched #5 · holding 1 · frontier \
              0 · next in 90s"]
     );
     assert_eq!(world.claims(), alpha(&[5]));

@@ -231,7 +231,7 @@ fn a_slept_hosts_next_tick_stops_its_taken_worker_and_keeps_unpushed_work() {
 #[test]
 fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     for issue in [2, 3, 4, 5, 6, 8] {
         world.issue(issue, &["ready-for-agent"]);
     }
@@ -335,7 +335,7 @@ fn a_reclaimed_claim_is_continued_from_what_its_worker_pushed() {
 #[test]
 fn a_start_takes_every_claim_stamped_with_its_host_whatever_the_heartbeat() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     for issue in [2, 3, 5, 7, 9] {
         world.issue(issue, &["ready-for-agent"]);
     }
@@ -356,7 +356,7 @@ fn a_start_takes_every_claim_stamped_with_its_host_whatever_the_heartbeat() {
     // over its bound of two, it continues what it took and takes nothing new
     assert_eq!(
         lines[1],
-        "tick 1: continued #3, #7, #9 · holding 2/2 · 1 past the bound · frontier 1 · next in 90s"
+        "tick 1: continued #3, #7, #9 · holding 2 · 1 past the bound · frontier 1 · next in 90s"
     );
     assert!(!lines[2].contains("dispatched"), "{}", lines[2]);
     assert!(!lines.iter().skip(1).any(|line| line.starts_with("start:")), "taken once: {lines:?}");

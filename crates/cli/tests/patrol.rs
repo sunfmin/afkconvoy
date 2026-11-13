@@ -50,7 +50,7 @@ fn bound(patrols: &str) -> World {
     write(&world.clone, "docs/agents/afkconvoy.md", &config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     common::fixture_timing("patrol bound setup", began);
     world
 }
@@ -866,7 +866,7 @@ fn the_slot_a_patrol_s_end_frees_is_filled_by_the_tick_that_ended_it() {
     assert_eq!(
         lines,
         [
-            "tick 1: dispatched #5, #6 · ended the patrol sweep · holding 2/2 · frontier 1 · next in 90s"
+            "tick 1: dispatched #5, #6 · ended the patrol sweep · holding 2 · frontier 1 · next in 90s"
         ]
     );
 }

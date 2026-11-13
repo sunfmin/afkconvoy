@@ -1385,7 +1385,7 @@ fn a_watch_is_ended_at_its_hour_and_one_no_harness_can_start_is_a_finding() {
 fn a_busy_watch_is_that_watch_and_its_fix_is_one_command() {
     let world = World::new();
     let dir = operator(&world);
-    world.say_concurrency(&world.clone, 1);
+    world.list_checkout(&world.clone);
     let situation = "the resident watch is busy; its round remains undelivered. \
          No replacement is started and existing work is retained.";
     let watch_dir = world.cache().join("afkconvoy/watch");

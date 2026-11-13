@@ -336,11 +336,11 @@ fn a_process_that_survives_kill_is_named_when_the_repeated_start_escalates() {
 #[test]
 fn a_claim_whose_worker_died_is_continued_in_the_worktree_still_here() {
     let world = fleet();
-    world.say_concurrency(&world.clone, 2);
-    // the slots are full, and an issue waits on the frontier
+    world.list_checkout(&world.clone);
     world.issue(8, &["ready-for-agent"]);
-    world.issue(9, &["ready-for-agent"]);
     assert_eq!(did(&tick(&world, 1090))[1], "dispatch 8 done");
+    // an issue comes to the frontier as the worker of #7 dies
+    world.issue(9, &["ready-for-agent"]);
     let dir = worktree_of(&world, 7);
     commit(&dir, "work.txt", "x\n");
     std::fs::write(dir.join("scratch.txt"), "uncommitted").unwrap();
@@ -357,10 +357,13 @@ fn a_claim_whose_worker_died_is_continued_in_the_worktree_still_here() {
     let ticked = tick(&world, 1180);
     let did = did(&ticked);
     assert_eq!(did[0], "judge 7 continued");
-    assert!(!did.contains(&"dispatch 9 done".to_string()), "continuing takes no slot: {did:?}");
-    assert_eq!(ticked["held"], 2);
+    assert!(
+        did.contains(&"dispatch 9 done".to_string()),
+        "the frontier waits for nothing: {did:?}"
+    );
+    assert_eq!(ticked["held"], 3);
     let claims: Vec<u64> = world.claims().iter().map(|claim| claim.0).collect();
-    assert_eq!(claims, [7, 8], "never released back to the frontier");
+    assert_eq!(claims, [7, 8, 9], "#7 never released back to the frontier");
     assert!(!world.pushes().iter().any(|push| push.contains("claim/7")), "nor pushed again");
 
     // the same worktree, with everything in it, and a new worker told to inspect it first

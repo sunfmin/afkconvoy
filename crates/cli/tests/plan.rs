@@ -99,7 +99,7 @@ fn a_pr_from_a_fork_is_read_by_nothing() {
 #[test]
 fn an_unclaimed_ready_issue_is_on_the_frontier_in_number_order() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     for n in [12, 3, 7] {
         world.issue(n, &["ready-for-agent"]);
     }

@@ -25,7 +25,7 @@ The checkouts a host's runner works, kept on that host and never pushed. The hos
 _Avoid_: registry, workspace list, projects (Codex's config key)
 
 **Concurrency**:
-How many workers a fleet instance happens to hold at work at once: what admission allowed, start by start. No number bounds it, on the host or in the repo, and nothing sets one (ADR-0072): `run --concurrency`, still accepted for one release, changes nothing, and `doctor` says so.
+How many workers a fleet instance happens to hold at work at once: what admission allowed, start by start. No number bounds it, on the host or in the repo: nothing sets one, and a repo config names none (ADR-0072): `run --concurrency`, still accepted for one release, changes nothing, and `doctor` says so.
 _Avoid_: parallelism, workers (the processes it counts), a concurrency limit, slots to set
 
 **Tracker**:

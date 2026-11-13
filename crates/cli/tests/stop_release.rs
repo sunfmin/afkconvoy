@@ -24,7 +24,7 @@ fn at_work() -> World {
     world.set_gate("true");
     world.name_origin(&world.clone, "acme/dev");
     world.say_tracker(&world.clone, TRACKER);
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     for number in [7, 8, 9] {
         world.with_tracker(|gh| {
             let issue = json!({"number": number, "title": format!("tracked {number}"),

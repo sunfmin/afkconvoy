@@ -281,7 +281,6 @@ impl Admission {
                 "memory_free_percent": self.shares.memory,
                 "disk_free_percent": self.shares.disk,
                 "inspect_after_seconds": self.span,
-                "queue_drain_seconds": self.queue_bound,
                 "said_by_host": self.said,
             },
             "thresholds": {
@@ -515,5 +514,103 @@ mod tests {
         assert_eq!(said.span, 900);
         assert_eq!(said.said, ["admit_load", "admit_memory", "admit_inspect_after"]);
         assert!(said.holds().is_empty(), "400% of 14 cores is 56, and 0% free never holds");
+    }
+}
+
+#[cfg(test)]
+mod readings_tests {
+    use super::*;
+    use afkconvoy_core::harness::window::Window as Said;
+
+    fn at_ease() -> Admission {
+        let reading = Reading { cores: 14, load: Some(100), memory_free: Some(60), disk: None };
+        Admission::of(&host_settings::Settings::default(), reading)
+    }
+
+    fn ticket(number: u64, command: &str, ran: Option<u64>) -> Ticket {
+        serde_json::from_value(json!({
+            "number": number, "pid": 1, "command": command, "dir": "/w",
+            "asked": 0, "ran": ran,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_window_that_would_run_out_holds_and_is_said_with_its_numbers() {
+        let now = 100_000;
+        let said = [
+            Said {
+                name: "primary".into(),
+                used_percent: 60.0,
+                minutes: Some(300),
+                resets_at: Some(now + 9000),
+            },
+            // reset since it was said: left out
+            Said {
+                name: "secondary".into(),
+                used_percent: 99.0,
+                minutes: Some(10_080),
+                resets_at: Some(now - 1),
+            },
+            // no length its engine says nor its name tells: left out
+            Said {
+                name: "other".into(),
+                used_percent: 99.0,
+                minutes: None,
+                resets_at: Some(now + 60),
+            },
+        ];
+        let windows = windows_of(Harness::Codex, &said, now);
+        assert_eq!(windows.len(), 1);
+        assert_eq!((windows[0].used, windows[0].length, windows[0].resets_in), (60, 18_000, 9000));
+        let usage = Usage { account: Harness::Codex, windows, running: 2 };
+        let held = at_ease().with_usage(Some(usage));
+        let holds = held.holds();
+        assert_eq!(holds.len(), 1);
+        assert_eq!(
+            held.said(&holds[0]),
+            "the `primary` window of the codex account is 60% used and resets in 150 min: at its \
+             rate, with 2 worker(s) on it and one more, it would be 150% used by then"
+        );
+        assert_eq!(held.reasons(), [Reason::Window]);
+        assert_eq!(held.json()["usage"]["running"], 2);
+        assert!(at_ease().with_usage(None).holds().is_empty(), "no window: the host alone");
+    }
+
+    #[test]
+    fn a_queue_that_would_take_past_its_bound_to_drain_holds() {
+        let mut ran = crate::exclusive::Ran::default();
+        let gate = ticket(1, "./gate.sh", None);
+        for seconds in [500, 600, 700] {
+            ran.ran(crate::exclusive::Ran::key(&gate), seconds);
+        }
+        assert_eq!(ran.takes(&gate), Some(600));
+        let lanes = afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 };
+        // one running 100s of its 600, two waiting: 500 + 600 + 600
+        let queue = [
+            ticket(1, "./gate.sh", Some(900)),
+            ticket(2, "./gate.sh", None),
+            ticket(3, "./gate.sh", None),
+        ];
+        assert_eq!(drain_of(&queue, &ran, lanes, 1000), 1700);
+        assert_eq!(drain_of(&[ticket(4, "make", None)], &ran, lanes, 1000), 0, "never ran");
+        let held = Admission { queue_drain: Some(1700), ..at_ease() };
+        let holds = held.holds();
+        assert_eq!(
+            held.said(&holds[0]),
+            "the exclusive queue would take 29 min to drain, by its commands' recent run times, \
+             past 15 min"
+        );
+        assert_eq!(held.json()["queue"]["drain_seconds"], 1700);
+        assert!(Admission { queue_drain: Some(QUEUE_BOUND), ..at_ease() }.holds().is_empty());
+    }
+
+    #[test]
+    fn the_queue_keeps_the_last_runs_of_each_command() {
+        let mut ran = crate::exclusive::Ran::default();
+        for seconds in 1..=7 {
+            ran.ran("cmd".into(), seconds);
+        }
+        assert_eq!(ran.0["cmd"], [3, 4, 5, 6, 7]);
     }
 }
