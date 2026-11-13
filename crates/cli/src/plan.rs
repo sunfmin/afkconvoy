@@ -141,7 +141,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
   - `due`: the base branch holds commits past `newest_tag`: the next idle tick starts a cut, or the next busy tick once `busy_in_seconds` is zero, whatever claims or frontier remain. An untagged remote with `initial` declared starts on an idle tick only
   - `tagged`: the base branch holds nothing past `newest_tag`: nothing to cut
   - `untagged`: the remote has no version tag and the repo declares no `initial` version: nothing is cut
-  - `failed`: the last {const:CUT_REPEATS} cuts failed at the same step the same way, and nothing has landed past the base the last was cut from: `failure` is a ticket under the ready label, and the next cut waits for a landing. An open `failure` alone holds no cut back: the cut stands `due` beside it (docs/adr/0072)
+  - `failed`: the last {const:CUT_REPEATS} cuts failed at the same step the same way, and nothing has landed past the base the last was cut from: `failure` is a ticket under the ready label, and the next cut waits for a landing. An open `failure` alone holds no cut back: the cut stands `due` beside it
   - `locked`: a fleet lock stands: no cut starts
   - `running`: a cut `--instance` started is still going
   - `peer_running`: a live peer's cut is still going
