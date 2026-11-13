@@ -139,7 +139,7 @@ pub fn projected(window: &Window, running: usize) -> Option<u64> {
     let more = (window.used as u128)
         .saturating_mul(window.resets_in as u128)
         .saturating_mul(running as u128 + 1)
-        / (elapsed as u128).saturating_mul(workers);
+        .checked_div((elapsed as u128).saturating_mul(workers))?;
     Some(u64::try_from((window.used as u128).saturating_add(more)).unwrap_or(u64::MAX))
 }
 
@@ -186,7 +186,11 @@ pub fn drain(commands: &[(String, u64, u64)]) -> u64 {
         let entry = lanes.entry(lane.as_str()).or_insert((*places, 0));
         entry.1 = entry.1.saturating_add(*seconds);
     }
-    lanes.values().map(|(places, seconds)| seconds / places.max(&1)).max().unwrap_or(0)
+    lanes
+        .values()
+        .map(|(places, seconds)| seconds.checked_div(*places).unwrap_or(*seconds))
+        .max()
+        .unwrap_or(0)
 }
 
 /// The thresholds a host read as `reading` is past under `shares`, load
