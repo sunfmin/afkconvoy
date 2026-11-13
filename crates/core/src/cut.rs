@@ -846,7 +846,9 @@ pub fn repeats<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<Repeats>
             .unwrap_or_default();
         let base = fields.get("base").filter(|base| !base.is_empty()).map(str::to_string);
         run = Some(match run {
-            Some(run) if run.way == way => Repeats { way, times: run.times + 1, base },
+            Some(run) if run.way == way => {
+                Repeats { way, times: run.times.saturating_add(1), base }
+            }
             _ => Repeats { way, times: 1, base },
         });
     }
