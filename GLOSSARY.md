@@ -482,7 +482,7 @@ An immutable merge of a PR's original head onto its assigned predecessor, valida
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:
-The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed.
+The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed. It holds at most one valid candidate of a change: a change asked to land again takes up the one it has, where it was merged from the change's head now. A candidate is wedged once it stood valid past its whole gate's seconds.
 _Avoid_: landing train, speculative queue
 
 **Round**:

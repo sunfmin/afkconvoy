@@ -1284,6 +1284,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 slowed: false,
                 batch: false,
                 holds_red: false,
+                assigned: Some(clock()),
             };
             snapshot.chain.assign(c.clone());
             if write(repo, config, &snapshot)? {

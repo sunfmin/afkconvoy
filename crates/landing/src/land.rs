@@ -81,8 +81,15 @@ pub struct Lander<'a, F: Forge> {
     /// run on record of a candidate's tree on this kind answers for its
     /// gate, which does not run again.
     pub machine: String,
-    /// This process, which owns every candidate it assigns.
+    /// This process, which owns every candidate it assigns and every one
+    /// whose gate it runs.
     pub owner: Process,
+    /// Whether a process of this host, as an owner on the chain names it,
+    /// still runs: its pid, under the start time it is named with. The
+    /// program names its processes (`owner`) and reads them back by the same
+    /// rule. A candidate whose owner runs no more is taken over
+    /// (`Chain::take_over`); one of another host is left to the lease.
+    pub running: fn(&Process) -> bool,
     /// Where each candidate's worktree is made, one directory each.
     pub worktrees: PathBuf,
     /// What the commit named declares of its gate, read in the checkout
@@ -215,6 +222,13 @@ where
         }
     }
 
+    /// Takes over in `chain` what a process of this host owned and that runs
+    /// no more (`Chain::take_over`): this process runs.
+    fn take_over(&self, chain: &mut Chain<F::Note>) {
+        let running = |p: &Process| *p == self.owner || (self.running)(p);
+        chain.take_over(&self.owner.host, running);
+    }
+
     /// Changes the chain of `target` by `edit`, from the record as it is →
     /// the chain written.
     fn change(
@@ -234,7 +248,12 @@ where
 
     /// Assigns `change` a candidate: its source's head merged onto the
     /// chain's last valid candidate, or the target's tip, as one merge
-    /// commit → the candidate's id.
+    /// commit → the candidate's id. Where the chain already holds a valid
+    /// candidate of it merged from its head now — one an earlier run
+    /// assigned and did not land — that one is the change's, and no second
+    /// is assigned (`Chain::reuse`); one merged from a head it has moved
+    /// from is invalidated first. What a process of this host that runs no
+    /// more left gating is taken over first (`Chain::take_over`).
     pub fn assign(&self, change: &Change) -> Result<Assigned<F::Refusal>, Error<F::Error>> {
         self.assign_as(change, false)
     }
@@ -258,7 +277,17 @@ where
             .ok_or_else(|| format!("the remote has no branch {:?}", change.source))?;
         loop {
             let mut read = self.read(&change.target)?;
+            let before = read.chain.clone();
             read.chain.observe_base(&read.base);
+            self.take_over(&mut read.chain);
+            if let Some(id) = read.chain.reuse(change.number, &original, batch) {
+                if before == read.chain
+                    || self.write(&change.target, read.sha.as_deref(), &read.chain)?
+                {
+                    return Ok(Ok(id));
+                }
+                continue;
+            }
             let predecessor = read.chain.predecessor(&read.base);
             let merged = Command::new("git")
                 .current_dir(self.dir())
@@ -312,6 +341,7 @@ where
                 slowed: false,
                 batch,
                 holds_red: false,
+                assigned: Some((self.now)()),
             });
             if self.write(&change.target, read.sha.as_deref(), &read.chain)? {
                 return Ok(Ok(id));
@@ -355,17 +385,24 @@ where
     }
 
     /// Runs the candidate `id`'s own gate on its commit, in a worktree of
-    /// its own, and lets the chain decide it.
+    /// its own, and lets the chain decide it; where it is still building:
+    /// one gating, or gated, is left as it is. This process owns it while
+    /// its gate runs.
     pub fn gate(&self, target: &str, id: &str) -> Result<Chain<F::Note>, String> {
-        let chain = self.change(target, |chain| {
-            for c in
-                chain.candidates.iter_mut().filter(|c| c.id == id && c.phase == Phase::Building)
-            {
-                c.phase = Phase::Validating;
-            }
-        })?;
+        let mut started = false;
+        let chain =
+            self.change(target, |chain| {
+                started = false;
+                for c in chain.candidates.iter_mut().filter(|c| {
+                    c.id == id && c.phase == Phase::Building && c.cancelled_by.is_none()
+                }) {
+                    c.phase = Phase::Validating;
+                    c.owner = self.owner.clone();
+                    started = true;
+                }
+            })?;
         let c = chain.candidates.iter().find(|c| c.id == id).ok_or("no such candidate")?;
-        if c.phase != Phase::Validating {
+        if !started {
             return Ok(chain);
         }
         git(self.dir(), &["worktree", "add", "--quiet", "--detach", &c.worktree, &c.commit])?;
@@ -391,7 +428,10 @@ where
     /// it ran.
     pub fn round(&self, target: &str, id: &str) -> Result<bool, String> {
         let mut started = false;
-        let chain = self.change(target, |chain| started = chain.start_round(id))?;
+        let chain = self.change(target, |chain| {
+            started = chain.start_round(id);
+            own(chain, id, started, &self.owner);
+        })?;
         if !started {
             return Ok(false);
         }
@@ -440,7 +480,10 @@ where
     /// chain, or `None` where it did not run.
     pub fn gate_batched(&self, target: &str, id: &str) -> Result<Option<Chain<F::Note>>, String> {
         let mut started = false;
-        let chain = self.change(target, |chain| started = chain.start_batched(id))?;
+        let chain = self.change(target, |chain| {
+            started = chain.start_batched(id);
+            own(chain, id, started, &self.owner);
+        })?;
         if !started {
             return Ok(None);
         }
@@ -564,6 +607,7 @@ where
         let Some(target) = changes.first().map(|c| c.target.clone()) else {
             return Ok(vec![]);
         };
+        self.change(&target, |chain| self.take_over(chain))?;
         let landing = match landing {
             Some(landing) => landing,
             None => {
@@ -578,9 +622,10 @@ where
     }
 
     /// Lands `changes` on `target` candidate by candidate: assigns each a
-    /// candidate in the order given, gates each, runs the round at the
-    /// chain's tip where their commits split their gate, and lands what is
-    /// ripe, in order → what became of each.
+    /// candidate in the order given — or takes up the one an earlier run left
+    /// it — gates each, runs the round at the chain's tip where their commits
+    /// split their gate, and lands what is ripe, in order, whichever run
+    /// assigned it → what became of each.
     fn land_per_candidate(
         &self,
         target: &str,
@@ -610,7 +655,15 @@ where
                 self.round(&target, tip)?;
                 continue;
             }
-            let ripe = mine.iter().rev().find(|id| read.chain.ripe(id, &read.base));
+            // A ripe candidate lands whoever assigned it: one an earlier
+            // run gated and left unpublished is at the chain's head.
+            let ripe = read
+                .chain
+                .candidates
+                .iter()
+                .rev()
+                .map(|c| c.id.as_str())
+                .find(|id| read.chain.ripe(id, &read.base));
             let Some(ripe) = ripe else { break };
             let landed = self.publish(&target, ripe, changes)?;
             if landed.is_empty() && read.chain.next(ripe) == Some(Next::Waiting) {
@@ -653,9 +706,8 @@ where
                 }
                 continue;
             };
-            if !ids.iter().any(|(_, id)| id == step.id()) {
-                break;
-            }
+            // A step at a candidate an earlier run left — a gate it did not
+            // run, or a landing it did not publish — is this run's to take.
             match step {
                 BatchStep::Gate(id) => {
                     self.gate_batched(target, &id)?;
@@ -758,6 +810,14 @@ fn settled<N, R>(
         }
     }
     kept
+}
+
+/// The candidate `id`, whose gate this run `started`, is `owner`'s while it
+/// runs.
+fn own<N>(chain: &mut Chain<N>, id: &str, started: bool, owner: &Process) {
+    for c in chain.candidates.iter_mut().filter(|c| started && c.id == id) {
+        c.owner = owner.clone();
+    }
 }
 
 /// The candidate `id`'s gate has returned: its processes are gone with it,
