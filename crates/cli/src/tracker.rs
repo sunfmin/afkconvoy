@@ -138,7 +138,7 @@ pub fn check(list: &List, repo: &Repo, to: To<RepoName>, host: &str) -> Result<C
         _ => None,
     };
     let was = said_tracker(list, repo)?;
-    let config = crate::concurrency::config_of(repo)?;
+    let config = crate::config::of(repo)?;
     let gh = GitHub::new(
         repo.dir.clone(),
         match &tracker {

@@ -849,7 +849,7 @@ fn the_initial_cut_obeys_admission_and_a_fleet_lock() {
 }
 
 #[test]
-fn a_busy_fleet_cuts_at_the_age_bound_with_claims_and_a_frontier_left() {
+fn a_busy_fleet_cuts_at_the_age_bound_with_claims_held() {
     let world = cutting();
     let landed: u64 = git(&world.clone, &["log", "-1", "--format=%ct"]).trim().parse().unwrap();
     for issue in 1..=4 {
@@ -863,8 +863,8 @@ fn a_busy_fleet_cuts_at_the_age_bound_with_claims_and_a_frontier_left() {
     assert_eq!(plan["cut"]["busy_in_seconds"], 1, "{plan}");
     let at_bound = tick_as(&world, "alpha", landed + 18_000);
     assert_eq!(cut(&at_bound), ["cut done"], "{at_bound}");
-    assert_eq!(at_bound["held"], 3, "the cut takes no slot: {at_bound}");
-    assert_eq!(at_bound["frontier_remaining"], 1, "{at_bound}");
+    assert_eq!(at_bound["held"], 4, "the cut takes no slot: {at_bound}");
+    assert_eq!(at_bound["frontier_remaining"], 0, "{at_bound}");
     assert!(logged(&world).iter().any(|line| line.contains("fleet busy")));
     assert!(claimed(&world));
     assert_eq!(standing(&world, "beta", landed + 18_001), "peer_running");

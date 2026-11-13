@@ -72,13 +72,13 @@ fn with_a_lock_standing_the_frontier_is_the_lock_issues_and_plan_says_which() {
 #[test]
 fn running_workers_are_left_alone_and_what_they_declared_is_acted_on_once_the_lock_ends() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(3, &["ready-for-agent"]);
     world.issue(5, &["ready-for-agent"]);
-    world.issue(9, &["ready-for-agent"]);
     let first = tick(&world, 1000);
     assert_eq!(did(&first), ["dispatch 3 done", "dispatch 5 done", "heartbeat done"]);
     assert_eq!(first["locks"], json!([]));
+    world.issue(9, &["ready-for-agent"]);
 
     // The base branch broke. #7 carries the fix, and #3's worker — silent
     // ever since — declared that its issue needs nothing.
@@ -90,8 +90,8 @@ fn running_workers_are_left_alone_and_what_they_declared_is_acted_on_once_the_lo
     assert_eq!(
         did(&locked),
         ["dispatch 7 done", "heartbeat done"],
-        "the fleet was at its bound: the lock issue does not wait for a slot, and nobody \
-         asks after the workers of #3 and #5"
+        "the lock issue is started, #9 waits for the lock to end, and nobody asks after \
+         the workers of #3 and #5"
     );
     assert_eq!(locked["locks"], json!([7]));
     assert_eq!((&locked["held"], &locked["frontier_remaining"]), (&json!(3), &json!(0)));
@@ -436,7 +436,7 @@ fn a_red_gate_says_which_lock_stands_and_a_green_one_says_nothing_of_it() {
 }
 
 #[test]
-fn the_line_of_a_tick_shows_the_claims_a_lock_leaves_alone_apart_from_the_bound() {
+fn the_line_of_a_tick_shows_the_claims_a_lock_leaves_alone_apart() {
     let world = World::new();
     write(
         &world.clone,
@@ -453,7 +453,7 @@ fn the_line_of_a_tick_shows_the_claims_a_lock_leaves_alone_apart_from_the_bound(
     let line = lines.iter().find(|line| line.starts_with("tick 1: ")).expect("a tick's line");
     assert_eq!(
         line,
-        "tick 1: FLEET LOCK #7 stands: only it is worked · dispatched #7 · holding 1/3 · \
+        "tick 1: FLEET LOCK #7 stands: only it is worked · dispatched #7 · holding 1 · \
          2 left alone · frontier 0 · next in 90s"
     );
 }

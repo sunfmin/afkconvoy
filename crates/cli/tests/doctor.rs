@@ -246,42 +246,38 @@ fn a_config_with_no_gate_seconds_is_a_finding_and_one_that_sets_it_is_none() {
 }
 
 #[test]
-fn a_retired_concurrency_is_info_and_only_a_different_default_needs_a_run() {
-    for (named, own) in [(3, None), (4, None), (5, Some(5)), (4, Some(5))] {
+fn a_retired_concurrency_is_info_wherever_it_is_named() {
+    for (named, kept) in [(Some(4), None), (None, Some(5)), (Some(4), Some(5))] {
         let world = World::new();
-        world.set_gate_config(&format!(
-            "gate_command: ./gate.sh\ngate_seconds: 600\nconcurrency: {named}"
-        ));
-        if let Some(own) = own {
-            world.say_concurrency(&world.clone, own);
+        let more = named.map(|named| format!("\nconcurrency: {named}")).unwrap_or_default();
+        world.set_gate_config(&format!("gate_command: ./gate.sh\ngate_seconds: 900{more}"));
+        if let Some(kept) = kept {
+            world.say_concurrency(&world.clone, kept);
         }
         let answer = doctor(&world, "1100").json;
-        let findings = found(&answer, "which nothing reads any more");
-        assert_eq!(findings.len(), 1, "{answer}");
-        let finding = findings[0];
-        let in_force = own.unwrap_or(3);
-        let fix = if own.is_none() && named != in_force {
-            format!(
-                "afkconvoy run {} --concurrency {named}, then delete `concurrency` from \
-                 docs/agents/afkconvoy.md",
-                world.clone.display()
-            )
-        } else {
-            "docs/agents/afkconvoy.md: concurrency".to_owned()
-        };
-        assert_eq!(finding["fix"], fix, "config names {named}, checkout says {own:?}");
-        assert_eq!(finding["severity"], "info", "{finding}");
-        let what = finding["what"].as_str().unwrap();
-        assert!(what.contains(&format!("concurrency: {named}")), "{what}");
-        assert!(what.contains(&format!("up to {in_force} claims")), "{what}");
-        assert_eq!(finding["see"], "afkconvoy help troubleshooting");
+        let findings = found(&answer, "which is ignored");
+        let mut fixes: Vec<String> = vec![];
+        if kept.is_some() {
+            fixes.push(format!("afkconvoy run {} --concurrency default", world.clone.display()));
+        }
+        if named.is_some() {
+            fixes.push("docs/agents/afkconvoy.md: concurrency".to_owned());
+        }
+        let said: Vec<&str> = findings.iter().map(|f| f["fix"].as_str().unwrap()).collect();
+        assert_eq!(said, fixes, "config names {named:?}, checkout keeps {kept:?}: {answer}");
+        for finding in findings {
+            assert_eq!(finding["severity"], "info", "{finding}");
+            let what = finding["what"].as_str().unwrap();
+            assert!(what.contains("admission alone decides each start"), "{what}");
+            assert_eq!(finding["see"], "afkconvoy help troubleshooting");
+        }
     }
 }
 
 #[test]
 fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(3, &["ready-for-agent"]);
     world.issue(5, &["bug"]);
     run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
@@ -356,7 +352,7 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     assert_eq!(fleet["heartbeat_age"], 100);
     assert_eq!(fleet["heartbeats"], json!({"found": 1, "live": ["alpha"]}));
     assert_eq!(fleet["last_tick"]["count"], 1);
-    assert_eq!(fleet["last_tick"]["line"], "dispatched #3 · holding 1/2 · frontier 0");
+    assert_eq!(fleet["last_tick"]["line"], "dispatched #3 · holding 1 · frontier 0");
     assert_eq!(fleet["last_tick"]["did"][0]["do"], "dispatch");
     assert_eq!(fleet["failed_steps"], json!([]));
 
@@ -370,7 +366,6 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     let issues = &answer["issues"];
     assert_eq!(issues["frontier"], json!([]));
     assert_eq!(issues["excluded"][1]["reason"], "no ready-for-agent label");
-    assert_eq!(issues["free_slots"], 1);
 
     // the one finding is the one this world has: its `run` ended
     assert_eq!(answer["findings"].as_array().unwrap().len(), 1, "{answer}");
@@ -555,7 +550,7 @@ fn the_instance_is_found_from_the_claims_stamped_with_this_host_where_there_is_n
 #[test]
 fn run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.issue(3, &["ready-for-agent"]);
     world.with_orca(|orca| orca["create_fails"] = json!([3]));
     let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
@@ -584,7 +579,6 @@ fn run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each
         // what `run` printed, and what `tick` answers
         let line = tick["line"].as_str().unwrap();
         assert_eq!(*printed[at], format!("tick {count}: {line} · next in {}s", tick["sleep"]));
-        assert_eq!(tick["bound"], 2);
         for key in ["did", "errors", "held", "frontier_remaining", "locks"] {
             assert!(!tick["answer"][key].is_null(), "the tick's answer lost {key}: {tick}");
         }
@@ -1132,7 +1126,7 @@ fn logged_command(at: u64, issue: Option<u64>, command: &str, outcome: &str) -> 
 #[test]
 fn watching_combines_gate_progress_github_endings_and_adjacent_look_boundaries() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 3);
+    world.list_checkout(&world.clone);
     for n in [3, 5, 7, 8, 9] {
         world.issue(n, &[]);
     }
@@ -1239,7 +1233,7 @@ fn watching_combines_gate_progress_github_endings_and_adjacent_look_boundaries()
 #[test]
 fn watching_pages_prs_and_comments_and_withholds_until_when_a_source_fails() {
     let world = World::new();
-    world.say_concurrency(&world.clone, 3);
+    world.list_checkout(&world.clone);
     world.issue(3, &[]);
     world.with_gh(|gh| {
         // An intake beyond the comments returned in the issue query.
@@ -1280,7 +1274,6 @@ fn watching_pages_prs_and_comments_and_withholds_until_when_a_source_fails() {
 
 /// Names `harness` on `checkout` in this world's checkout list.
 fn name_harness(world: &World, checkout: &std::path::Path, harness: &str) {
-    world.say_concurrency(checkout, 1);
     let file = world.cache().join("afkconvoy/checkouts.json");
     let mut list: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     for entry in list["checkouts"].as_array_mut().unwrap() {

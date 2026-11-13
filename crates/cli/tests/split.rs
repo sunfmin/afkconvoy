@@ -36,9 +36,9 @@ stages:
 ";
 
 /// A world whose repo is bound to a team with the workflows `feature` and
-/// `fix`, runs `concurrency` workers at once, and may hold `limit` open
+/// `fix`, and may hold `limit` open
 /// issues taken in by workers.
-fn bound(concurrency: u64, limit: u64) -> World {
+fn bound(limit: u64) -> World {
     let world = World::new();
     let skills = [
         (".claude/skills/plan/SKILL.md", "---\nname: plan\ndescription: plan\n---\n"),
@@ -54,7 +54,7 @@ fn bound(concurrency: u64, limit: u64) -> World {
     write(&world.clone, "docs/agents/afkconvoy.md", &config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
-    world.say_concurrency(&world.clone, concurrency);
+    world.list_checkout(&world.clone);
     world
 }
 
@@ -151,7 +151,7 @@ fn split(world: &World, children: &[u64]) {
 
 #[test]
 fn split_inherits_delivery_and_parent_restart_and_harness_switch_retain_it() {
-    let world = bound(3, 50);
+    let world = bound(50);
     world.issue(7, &["flow:feature"]);
     let delivery = world
         .afk(&[
@@ -245,7 +245,7 @@ fn split_inherits_delivery_and_parent_restart_and_harness_switch_retain_it() {
 
 #[test]
 fn a_split_parks_the_parent_and_its_children_are_worked_in_the_order_their_blockers_close() {
-    let world = bound(3, 50);
+    let world = bound(50);
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
 
@@ -325,7 +325,7 @@ fn a_split_parks_the_parent_and_its_children_are_worked_in_the_order_their_block
 
 #[test]
 fn the_stage_that_split_may_end_the_parent_once_its_children_have_closed() {
-    let world = bound(2, 50);
+    let world = bound(50);
     split(&world, &[11]);
     declare(&world, 11, "mend", "already-satisfied", &["--text", "Nothing to do."]);
     assert_eq!(did(&tick(&world, 1180)), ["advance 11 done"]);
@@ -341,7 +341,7 @@ fn the_stage_that_split_may_end_the_parent_once_its_children_have_closed() {
 
 #[test]
 fn a_child_may_be_split_in_turn() {
-    let world = bound(2, 50);
+    let world = bound(50);
     split(&world, &[11]);
 
     // The child's own stage splits it: the parent waits on, a level up.
@@ -365,7 +365,7 @@ fn a_child_may_be_split_in_turn() {
 
 #[test]
 fn children_count_against_the_intake_limit() {
-    let world = bound(2, 2);
+    let world = bound(2);
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     assert_eq!(take_in(&world, 7, 11, "fix", "").ok()["open"], 1);
@@ -386,7 +386,7 @@ fn children_count_against_the_intake_limit() {
 
 #[test]
 fn a_child_is_never_on_the_frontier_ahead_of_what_it_waits_for() {
-    let world = bound(2, 50);
+    let world = bound(50);
     world.issue(11, &[]);
     world.issue(12, &[]);
     world.gh_calls();
