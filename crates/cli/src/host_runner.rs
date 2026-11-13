@@ -42,7 +42,7 @@ use std::io::Write;
 use std::num::NonZeroUsize;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -544,6 +544,15 @@ pub fn pid() -> Option<u32> {
     u32::try_from(pid).ok()
 }
 
+/// The pid of the keeper of this host's runner, as its lock says it; `None`
+/// where it says none: a host runner of an older release, or one held in
+/// the foreground.
+pub fn keeper() -> Option<u32> {
+    let text = std::fs::read_to_string(cache().ok()?.join(LOCK)).ok()?;
+    let keeper = serde_json::from_str::<Value>(&text).ok()?["keeper"].as_u64()?;
+    u32::try_from(keeper).ok()
+}
+
 /// The release of this host's runner, as its lock says the last one to hold
 /// it; `None` where none ever did, or it said none.
 pub fn version() -> Option<String> {
@@ -561,6 +570,165 @@ pub fn log_path() -> Result<PathBuf> {
 pub(crate) fn note(line: &str) -> Result<()> {
     writeln!(opened_log(&log_path()?)?, "{}", stamped(line))?;
     Ok(())
+}
+
+/// Test worlds put their test process in the login environment. A detached
+/// host runner, and its keeper, must not survive a timeout or SIGKILL that
+/// bypasses World::drop. Real login environments do not set this
+/// fixture-only lifeline.
+fn lifeline() {
+    if let Some(owner) = std::env::var("AFKCONVOY_TEST_OWNER")
+        .ok()
+        .and_then(|value| value.parse::<libc::pid_t>().ok())
+        .filter(|pid| *pid > 1)
+    {
+        std::thread::spawn(move || {
+            loop {
+                // SAFETY: signal zero only observes whether the test still exists.
+                if unsafe { libc::kill(owner, 0) } != 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    std::process::exit(0);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+    }
+}
+
+/// The pid of the keeper of this host runner, which it says in its lock.
+static KEEPER: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// How soon the keeper starts the host runner again after its first
+/// unexpected end in a row; twice as long at each more, `KEPT_AT_MOST` at
+/// the most.
+const KEPT_AGAIN_AFTER: Duration = Duration::from_secs(1);
+
+/// The longest the keeper waits to start the host runner again.
+const KEPT_AT_MOST: Duration = Duration::from_secs(32);
+
+/// How long a host runner runs for its next unexpected end to be the first
+/// in a row again.
+const KEPT_STEADY: Duration = Duration::from_secs(10 * 60);
+
+/// How often the keeper looks whether its host runner has ended.
+const KEPT_LOOKED_EVERY: Duration = Duration::from_millis(100);
+
+/// The keeper: the process `run` starts, and the one a host runner moving
+/// onto a newer afkconvoy starts, as `afkconvoy host-runner` alone. It holds
+/// nothing of the host: it starts the host runner proper —
+/// `afkconvoy host-runner --kept-by <its pid>`, from the same file, in a
+/// process group of its own — and waits for it to end. One that ended as
+/// it was told — `stop --all`, SIGTERM, a move onto a newer afkconvoy, or
+/// another holding the host — ends the keeper the same way; and so does one
+/// that ended in an error before it took the host, which is a start that
+/// failed and is `run`'s to say. One that ended otherwise — a signal ended
+/// it, SIGKILL among them, or it ended in an error once it held the host —
+/// ended unexpectedly: the keeper says so in the host runner's log and
+/// starts it again, which starts every checkout on the list, after a
+/// second, twice as long at each unexpected end in a row, half a minute or
+/// so at the most (sunfmin/control#820). SIGTERM or SIGINT to the keeper is
+/// passed on to the host runner, which stops as it would.
+fn keep() -> Result<Value> {
+    let program = std::env::current_exe().context("the keeper cannot find its afkconvoy")?;
+    // Not from `/`, where the host runner works: what ends every process
+    // working in one directory leaves the other to start it again
+    // (sunfmin/control#831). The cache directory outlives every worktree.
+    let dir = cache()?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
+    std::env::set_current_dir(&dir).context("the keeper cannot work from the cache directory")?;
+    let (keeper, stop) = (std::process::id(), Stop::listen());
+    let log = RunnerLog::default();
+    let lock = dir.join(LOCK);
+    let mut again = KEPT_AGAIN_AFTER;
+    loop {
+        followed_log();
+        let mut child = crate::process::spawn(
+            crate::process::inheriting_nothing(&mut Command::new(&program))
+                .args(["host-runner", "--kept-by", &keeper.to_string()])
+                .current_dir("/")
+                .stdin(Stdio::null())
+                .process_group(0),
+        )
+        .context("the keeper could not start the host runner")?;
+        let (pid, began) = (child.id(), Instant::now());
+        let passed_on = AtomicBool::new(false);
+        let reaped = Mutex::new(false);
+        let ended = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                loop {
+                    let reaped = reaped.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if *reaped {
+                        return;
+                    }
+                    if stop.told() && !passed_on.swap(true, Ordering::Relaxed) {
+                        // SAFETY: our own child, not reaped while `reaped` is
+                        // held unset: its pid is still its.
+                        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                    }
+                    drop(reaped);
+                    std::thread::sleep(KEPT_LOOKED_EVERY);
+                }
+            });
+            ended_unreaped(pid);
+            *reaped.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            // At once: one that ended is no process of the host's a moment on.
+            child.wait()
+        })?;
+        let passed_on = passed_on.into_inner();
+        // An error before it held the host for as long as a start takes is
+        // a start that failed, which the `run` waiting for it says.
+        let held_it = holder_of(&lock) == Some(u64::from(pid)) && began.elapsed() >= UP_WITHIN;
+        let expected = ended.success() || passed_on || (ended.signal().is_none() && !held_it);
+        if expected || stop.told() {
+            std::process::exit(ended.code().unwrap_or(1));
+        }
+        if began.elapsed() >= KEPT_STEADY {
+            again = KEPT_AGAIN_AFTER;
+        }
+        followed_log();
+        log.say(&format!(
+            "host runner restarted after an unexpected end: pid {pid} {}, after {}s; the \
+             keeper (pid {keeper}) starts it again in {}s, on the same list",
+            unexpectedly(ended),
+            began.elapsed().as_secs(),
+            again.as_secs()
+        ));
+        let until = Instant::now() + again;
+        while Instant::now() < until {
+            if stop.told() {
+                std::process::exit(0);
+            }
+            std::thread::sleep(KEPT_LOOKED_EVERY);
+        }
+        again = (again * 2).min(KEPT_AT_MOST);
+    }
+}
+
+/// Waits until the child `pid` has ended, leaving it to be reaped: until
+/// then its pid is its own, and a signal to it reaches nobody else.
+fn ended_unreaped(pid: u32) {
+    loop {
+        // SAFETY: a zeroed siginfo_t is a valid place for waitid to write.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waits on our own child, without reaping it (WNOWAIT).
+        let waited = unsafe {
+            libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT)
+        };
+        if waited == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+        {
+            return;
+        }
+    }
+}
+
+/// How a host runner that ended unexpectedly ended, in words.
+fn unexpectedly(ended: std::process::ExitStatus) -> String {
+    match (ended.code(), ended.signal()) {
+        (_, Some(signal)) => format!("was ended by signal {signal}"),
+        (Some(code), _) => format!("ended in an error (exit {code}) once it held the host"),
+        (None, None) => format!("ended ({ended})"),
+    }
 }
 
 /// The hidden `afkconvoy host-runner`, as `run` starts it: takes the host,
@@ -581,26 +749,12 @@ pub(crate) fn note(line: &str) -> Result<()> {
 /// the move and its two releases are a line of each checkout's tick log.
 /// One that does not answer leaves this one holding the host again, as it
 /// held it before, and trying that file no more until it changes.
-pub fn serve() -> Result<Value> {
-    // Test worlds put their test process in the login environment. A detached
-    // runner must not survive a timeout or SIGKILL that bypasses World::drop.
-    // Real login environments do not set this fixture-only lifeline.
-    if let Some(owner) = std::env::var("AFKCONVOY_TEST_OWNER")
-        .ok()
-        .and_then(|value| value.parse::<libc::pid_t>().ok())
-        .filter(|pid| *pid > 1)
-    {
-        std::thread::spawn(move || {
-            loop {
-                // SAFETY: signal zero only observes whether the test still exists.
-                if unsafe { libc::kill(owner, 0) } != 0
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                {
-                    std::process::exit(0);
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        });
+pub fn serve(kept_by: Option<u32>) -> Result<Value> {
+    lifeline();
+    let Some(keeper) = kept_by else { return keep() };
+    // 0: held as it is, with no keeper — a test's own fixture.
+    if keeper > 0 {
+        let _ = KEEPER.set(keeper);
     }
     // Before any thread starts: nothing moves it after, and nothing the
     // fleet does leans on it.
@@ -889,7 +1043,11 @@ fn took_host(file: &Path) -> Result<Option<(File, Value)>> {
     let before = std::fs::read_to_string(file).ok();
     let before = before.and_then(|text| serde_json::from_str::<Value>(&text).ok());
     let before = before.unwrap_or_default();
-    let holder = json!({"pid": std::process::id(), "version": VERSION, "started": crate::clock()});
+    let mut holder =
+        json!({"pid": std::process::id(), "version": VERSION, "started": crate::clock()});
+    if let Some(keeper) = KEEPER.get() {
+        holder["keeper"] = json!(keeper);
+    }
     lock.set_len(0)
         .and_then(|()| (&lock).write_all(holder.to_string().as_bytes()))
         .with_context(cannot)?;
@@ -900,6 +1058,14 @@ fn took_host(file: &Path) -> Result<Option<(File, Value)>> {
 fn holder_of(file: &Path) -> Option<u64> {
     let text = std::fs::read_to_string(file).ok()?;
     serde_json::from_str::<Value>(&text).ok()?["pid"].as_u64()
+}
+
+/// The pid the lock in `file` says holds it, where it says the keeper
+/// `keeper` started it.
+fn kept_by(file: &Path, keeper: u32) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let holder = serde_json::from_str::<Value>(&text).ok()?;
+    (holder["keeper"] == keeper).then(|| holder["pid"].as_u64().map(|pid| pid.to_string()))?
 }
 
 /// Which file this is, wherever it is reached from.
@@ -1091,6 +1257,11 @@ fn handed_over(path: &Path, lock: File) -> Result<Value> {
             bail!("it ended as it started ({ended}): {}", last_lines(&log, written, 5));
         }
         if Instant::now() >= until {
+            // Its keeper and the host runner it started, which is in a
+            // process group of its own.
+            if let Some(kept) = kept_by(&lock_file, child.id()) {
+                let _ = crate::process::status(Command::new("kill").args(["-KILL", &kept]));
+            }
             let _ = child.kill();
             let _ = child.wait();
             bail!("it did not answer within {}s, and was ended", MOVED_WITHIN.as_secs());
@@ -2675,7 +2846,7 @@ The checkout's tracker, with its entry, read at each tick as its concurrency is:
 
 The host settings, in the same file: what this host says for every fleet instance on it — the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`), the panel's port (`--panel`), the operator's directory a watch starts in and how often the host runner looks (`--watch-dir`, `--watch-every`; WATCH, below), and the command that prints the TypeSafe key Jev's worker-health judgments are asked with (`--jev-key-command`), and the shell command that sends human decisions (`--notify-command`; none by default), and the agent setup given to every harness the host kit holds: its instructions file, its skill list and its guard list (`--agent-instructions`, `--agent-skills`, `--agent-guards`; none by default; `afkconvoy kit --help`, The agent setup). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER, AFKCONVOY_WATCH_DIR, AFKCONVOY_WATCH_EVERY, AFKCONVOY_JEV_KEY_COMMAND, AFKCONVOY_NOTIFY_COMMAND, AFKCONVOY_AGENT_INSTRUCTIONS, AFKCONVOY_AGENT_SKILLS, AFKCONVOY_AGENT_GUARDS — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, the watch's before each look, the key command at each worker-health judgment — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `default` changes one back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
 
-The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on its socket in the cache directory (host-runner.sock) — the one socket of the host: `stop`, `wake`, `panel --open`, `exclusive` and `doctor` ask it there too, each naming its checkout, and no fleet instance or repo has one of its own; one nobody listens on, which a host runner killed with no goodbye left, is removed by whoever finds it — and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
+The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on its socket in the cache directory (host-runner.sock) — the one socket of the host: `stop`, `wake`, `panel --open`, `exclusive` and `doctor` ask it there too, each naming its checkout, and no fleet instance or repo has one of its own; one nobody listens on, which a host runner killed with no goodbye left, is removed by whoever finds it — and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. It is kept: `run` starts its keeper, a process of its own working in the cache directory, which starts the host runner and starts it again after an unexpected end — a signal ended it, SIGKILL among them, or an error once it held the host — within a second, twice as long at each such end in a row, half a minute or so at the most, the log saying `host runner restarted after an unexpected end`; the lock in the cache directory (host-runner.lock) says the keeper's pid as `keeper`. One that stops as told — `stop --all`, SIGTERM, a move onto a newer afkconvoy — ends its keeper with it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
 
 Before anything else, `run` asks the host runner for its version. One of an older release than this `run`'s — after `brew upgrade afkconvoy` — is stopped as SIGTERM stops it: each fleet instance finishes the step it is in, and the checkout list is kept. Once it has let the host go, `run` starts a host runner of its own version, which starts every checkout on the same list, and then adds its own — saying its checkout's tracker with its entry there first, where it names one (above). What the old one held for every fleet instance goes with it: a watch goes on in its terminal with its original time limit, and an `exclusive` command waiting in the old one's queue waits in the next one's, from when it first asked (`afkconvoy exclusive --help`). One of a newer release refuses this `run`, which changes nothing. A build past a release (`afkconvoy --version` says `0.6.0+11.g9f58035`) is of that release, and one of the same release as the host runner's is handed the checkout as ever.
 
@@ -2831,7 +3002,7 @@ Errors, before the first tick, as {"error": …} with a non-zero exit: the host 
 
 ## What trips you up
 
-- Stop the host runner with `afkconvoy stop --all`, or SIGTERM to its pid, `host_runner.pid` in any `run`'s answer: each fleet instance finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps — and the host runner exits once every one has, keeping the checkout list: the next `run` starts every checkout on it. No claim is released on the way out and no worker is stopped: the workers work on, and the next start on this host takes the claims back. Holding no claim, a fleet instance removes its heartbeat from the remote; holding one, it leaves it, and that next start removes it. A second signal ends the host runner at once, as SIGKILL does, with no goodbye: what that leaves, a later start on this host removes once it is past the lease. A patrol's run it takes back is ended by its first tick once its worker is gone or has stopped.
+- Stop the host runner with `afkconvoy stop --all`, or SIGTERM to its pid, `host_runner.pid` in any `run`'s answer: each fleet instance finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps — and the host runner exits once every one has, keeping the checkout list: the next `run` starts every checkout on it. No claim is released on the way out and no worker is stopped: the workers work on, and the next start on this host takes the claims back. Holding no claim, a fleet instance removes its heartbeat from the remote; holding one, it leaves it, and that next start removes it. A second signal ends the host runner at once, as SIGKILL does, with no goodbye: what that leaves, a later start on this host removes once it is past the lease. SIGTERM to the keeper is passed on to the host runner; one ended by SIGKILL is started again by its keeper, which only `kill -KILL` of the keeper itself first stops. A patrol's run it takes back is ended by its first tick once its worker is gone or has stopped.
 - Ctrl-C while `run` waits ends that `run` alone: the host runner is in a process group of its own, and goes on with the checkout.
 - Of a `run` whose checkout's fleet instance runs already, the flags that are that instance's own — `--instance`, `--host`, `--worker-no-proxy` — change nothing: `afkconvoy stop` it, and run again with those you want. `afkconvoy stop --help` says how to stop one checkout and how to stop them all. The host settings it names change all the same, for that instance and every other on the host, and so do its checkout's `--concurrency` and `--harness`, for that instance alone, from its next tick. The running instance is kept.
 - No number bounds a checkout's workers, on any host: how many a repo gets at once is what the host and the accounts can carry now — its load, its memory, its disk, the usage windows of its logins, its exclusive queue — which admission reads before each start. Neither the repo config nor the checkout says a number.

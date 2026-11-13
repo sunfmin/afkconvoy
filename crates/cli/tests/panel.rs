@@ -460,20 +460,17 @@ fn a_panel_port_that_is_taken_is_served_around_and_run_panel_sets_the_next_host_
 }
 
 #[test]
-fn with_no_port_said_the_panel_is_on_7070_or_any_free_port_where_that_is_taken() {
+fn with_no_port_said_the_panel_s_port_is_7070() {
+    // No host runner is started: 7070 is the panel's port of the host the
+    // tests run on, which a test leaves alone (sunfmin/control#820).
     let world = World::new();
-    let answer = world.afk(&RUN).ok();
-    let panel = answer["host_runner"]["panel"].as_str().unwrap().to_string();
-    let log = world.runner_log();
-    let said = log.iter().find(|line| line.starts_with("panel: ")).unwrap();
-    match panel.as_str() {
-        "http://127.0.0.1:7070/" => assert_eq!(said, "panel: http://127.0.0.1:7070/"),
-        // another host runner of this host, or something else, has it
-        _ => assert_eq!(*said, format!("panel: {panel}, port 7070 being taken")),
-    }
+    let mut list = world.checkout_list();
+    list["settings"].as_object_mut().unwrap().remove("panel");
+    std::fs::write(world.cache().join("afkconvoy/checkouts.json"), list.to_string()).unwrap();
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     assert_eq!(doctor["host"]["settings"]["in_force"]["panel"], 7070, "{doctor}");
     assert_eq!(doctor["host"]["settings"]["said"]["panel"], Value::Null, "{doctor}");
+    assert_eq!(world.host_runner(), None, "{doctor}");
 }
 
 #[test]

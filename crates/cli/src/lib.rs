@@ -689,7 +689,12 @@ enum Command {
     Queue,
     /// Hold every checkout on this host's checkout list, as `run` starts it in the background
     #[command(hide = true)]
-    HostRunner,
+    HostRunner {
+        /// The pid of the keeper that started this host runner, and starts it
+        /// again after an unexpected end, 0 for none; none: this process is the keeper
+        #[arg(long, hide = true)]
+        kept_by: Option<u32>,
+    },
     /// Print the panel — every fleet of this host as one web page — as one rebuild of each checkout shows it now, or say where the host runner serves it live
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = panel::HELP)]
     Panel {
@@ -2431,7 +2436,7 @@ fn run(
             stop_release::stop_release(&checkout?, instance, now)
         }
         Command::Stop { .. } => host_runner::stop(&checkout?),
-        Command::HostRunner => host_runner::serve(),
+        Command::HostRunner { kept_by } => host_runner::serve(kept_by),
         Command::Checkouts => checkouts::checkouts(),
         Command::Queue => queue::queue(fixed_now),
         Command::Panel { open: true, .. } => host_runner::panel(),
