@@ -546,3 +546,97 @@ fn a_waiter_killed_leaves_the_queue_and_a_holder_that_dies_frees_its_place() {
     assert_eq!(lines(&order), ["next-ran"]);
     assert_eq!(tickets(&world), 0, "what the killed left is gone");
 }
+
+/// `exclusive` of the fast gate (`AFKCONVOY_GATE=fast`) running `script`.
+fn fast_gate(world: &World, cache: &Path, issue: u64, script: &str) -> Child {
+    world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("XDG_CACHE_HOME", cache)
+        .env("CACHE", cache)
+        .env("AFKCONVOY_ISSUE", issue.to_string())
+        .env("AFKCONVOY_GATE", "fast")
+        .args(["exclusive", "--", "sh", "-c", script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+#[test]
+fn a_fast_gate_that_ended_frees_its_lane_though_a_server_it_started_holds_its_slot() {
+    // sunfmin/control#822: a gate's build starts sccache's server, which
+    // inherits the slot's descriptor, works in `/` for the whole host and
+    // outlives the gate. Its lock alone does not hold the lane.
+    let world = World::new();
+    world.say_host_settings(json!({"fast_lanes": 1}));
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    let server = cache.join("server");
+    let order = cache.join("order");
+    let started = fast_gate(
+        &world,
+        &cache,
+        1,
+        "(cd / && exec sleep 30 </dev/null >/dev/null 2>&1) & echo $! > \"$CACHE/server\"; \
+         echo first >> \"$CACHE/order\"",
+    );
+    let first = started.wait_with_output().unwrap();
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    let server = lines(&server)[0].clone();
+    until(|| {
+        let ppid = Command::new("ps").args(["-o", "ppid=", "-p", &server]).output().unwrap();
+        text(&ppid.stdout).trim() == "1"
+    });
+
+    let begun = Instant::now();
+    let next = fast_gate(&world, &cache, 2, "echo next >> \"$CACHE/order\"");
+    let next = next.wait_with_output().unwrap();
+    let waited = begun.elapsed();
+    let _ = Command::new("kill").arg(&server).status();
+    assert!(next.status.success(), "{}", text(&next.stderr));
+    assert!(waited < Duration::from_secs(10), "the next fast gate waited {waited:?}");
+    assert_eq!(lines(&order), ["first", "next"]);
+    assert_eq!(tickets(&world), 0, "no holder is left of the gate that ended");
+}
+
+#[test]
+fn a_fast_gate_s_wait_for_its_lane_uses_none_of_its_limit() {
+    let world = World::new();
+    let afk = afkconvoy_core::line::Line::new().program(env!("CARGO_BIN_EXE_afkconvoy")).own();
+    let alone = |part: &str| {
+        format!(
+            "  command: \"{afk} exclusive -- sh -c 'echo {part} >> ../ran'\"\n  seconds: 3\n  budget_seconds: 1"
+        )
+    };
+    let config = format!(
+        "```yaml\nbase_branch: main\ngate_command: \"{afk} exclusive -- true\"\ngate_seconds: 600\n```\n\n```yaml gates\nfast:\n{}\nslow:\n{}\n```\n",
+        alone("fast"),
+        alone("slow")
+    );
+    std::fs::write(world.clone.join("docs/agents/afkconvoy.md"), config).unwrap();
+    common::git(&world.clone, &["commit", "-q", "-am", "split the gate"]);
+    world.say_host_settings(json!({"fast_lanes": 1}));
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    // Another worker's fast gate holds the one fast lane past the limit.
+    let held = fast_gate(
+        &world,
+        &cache,
+        1,
+        "touch \"$CACHE/held\"; while test ! -f \"$CACHE/release\"; do sleep 0.02; done",
+    );
+    until(|| cache.join("held").exists());
+    let release = cache.join("release");
+    let letting_go = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(4));
+        std::fs::write(release, "").unwrap();
+    });
+
+    let answer = world.afk(&["gate", "--fast"]).ok();
+    letting_go.join().unwrap();
+    assert!(held.wait_with_output().unwrap().status.success());
+    assert_eq!(answer["status"], "green", "{answer}");
+    assert_eq!(answer["timed_out"], false);
+    assert!(answer["seconds"].as_u64().unwrap() < 3, "{answer}");
+    assert_eq!(lines(&world.root.join("ran")), ["fast"]);
+}

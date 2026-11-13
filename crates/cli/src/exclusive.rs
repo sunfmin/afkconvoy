@@ -180,11 +180,11 @@ pub struct Permit {
 
 impl Permit {
     pub fn take(repo: &Repo, command: &str, heavy: bool, is_turn: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, is_turn, false, false)
+        Self::acquire(repo, command, heavy, is_turn, false, None)
     }
 
     pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, true, true, false)
+        Self::acquire(repo, command, heavy, true, true, None)
     }
 
     /// A cut's gate of its own commit (docs/adr/0028), in a worker lane. Its
@@ -192,12 +192,20 @@ impl Permit {
     /// candidate's does: it shares its repo with candidates, and so holds no
     /// turn of that repo up. It is no turn and no candidate on any chain.
     pub(crate) fn cut_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, false, true, false)
+        Self::acquire(repo, command, heavy, false, true, None)
     }
 
     /// A round's slow gate, in the host's slow lanes, not its worker lanes.
     pub(crate) fn slow_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, true, true, true)
+        Self::acquire(repo, command, heavy, true, true, heavy.then_some(Gate::Slow))
+    }
+
+    /// One of the two gates a worker runs alone, `gate --fast` or `--slow`,
+    /// in its lane (docs/adr/0049): the fast lane, or the slow lanes. Taken
+    /// before the gate's command starts, so that the wait for it uses none
+    /// of the gate's limit, which times the command alone (sunfmin/control#822).
+    pub(crate) fn alone(repo: &Repo, command: &str, gate: Gate) -> Result<Self> {
+        Self::acquire(repo, command, true, false, false, Some(gate))
     }
 
     fn acquire(
@@ -206,7 +214,7 @@ impl Permit {
         heavy: bool,
         is_turn: bool,
         candidate: bool,
-        slow: bool,
+        gate: Option<Gate>,
     ) -> Result<Self> {
         if held() {
             bail!("this command already holds a turn");
@@ -225,7 +233,7 @@ impl Permit {
                 issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
                 validation: None,
             },
-            gate: (slow && heavy).then_some(afkconvoy_core::exclusive::Gate::Slow),
+            gate,
             asked: crate::clock(),
             ran: None,
         };
@@ -800,7 +808,7 @@ A worker, in its own worktree. Anyone else on the host may too: the queue is the
 
 ## What it reads and writes
 
-Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its worker lane while it builds and gates; a round's slow gate takes one of the host's slow lanes, 1 by default, which `run --slow-gate-lanes N` sets live. A gate alone in the queue keeps every core; one that starts while another command runs in a worker, fast or slow lane is given its share of the host's cores — its cores over those lanes together, at least 1 — as `NEXTEST_TEST_THREADS`, unless its environment already sets it, and its build every core (sunfmin/control#245, sunfmin/control#318). Inherited kernel leases keep a dead owner's still-running descendants from being replaced.
+Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its worker lane while it builds and gates; a round's slow gate takes one of the host's slow lanes, 1 by default, which `run --slow-gate-lanes N` sets live. A gate alone in the queue keeps every core; one that starts while another command runs in a worker, fast or slow lane is given its share of the host's cores — its cores over those lanes together, at least 1 — as `NEXTEST_TEST_THREADS`, unless its environment already sets it, and its build every core (sunfmin/control#245, sunfmin/control#318). Inherited kernel leases keep a dead owner's still-running descendants from being replaced. A server shared by the host that inherited one is no such descendant: one handed to pid 1 that works outside the worktree, as sccache's server, which a gate's build starts, works in `/` for every worktree of the host, or one under it. A lease that only such servers hold once its owner ended is free, also across a host runner restarted (sunfmin/control#822).
 
 A worker's fast gate, run by `afkconvoy gate --fast`, takes the fast lane instead: `gate --fast` tells its command's `exclusive` that it runs the fast gate, through `AFKCONVOY_GATE`, which `exclusive` does not pass on to its command. Fast gates contend only with each other, up to the host setting `fast_lanes`, {const:FAST_LANES} by default (`run --fast-lanes N`); no slow gate, turn or other command holds a place they need, and fast gates of one repo run side by side, each in its own worktree. A slow gate run alone, `gate --slow`, keeps the worker lanes.
 
@@ -810,7 +818,7 @@ The queue is the host runner's (`afkconvoy run --help`), held in its process: `e
 
 It writes a line to the tick log of this host for this repo as it starts to wait, when another command is ahead of it; as its command runs — in its turn, or at once in no queue, with why; as it waits again, in the next host runner's queue; and as it ends, with its exit status. Its lines name the worker or repo lane. `doctor` and the panel show each lane's running and waiting commands, with the counts in force. A turn logs the commit it merged, whether its gate was green and its landing.
 
-While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. Waiting for a turn uses none of the gate limit (`gate_seconds`); the limit times the gate command once the turn starts. A worker with confirmed live background work remains waiting even past the observation interval; silence alone does not authorize escalation or continuation.
+While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. Waiting for a turn or a lane uses none of a gate's limit (`gate_seconds`, or the `seconds` of the fast or slow gate `gate --fast` or `--slow` runs): the limit times the gate command once its turn or lane is held. A worker with confirmed live background work remains waiting even past the observation interval; silence alone does not authorize escalation or continuation.
 
 ## What it answers
 
