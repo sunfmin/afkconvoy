@@ -434,15 +434,13 @@ mod tests {
     #[test]
     fn a_cap_holds_a_start_that_would_take_afkconvoy_s_own_use_over_it() {
         let half = Cap { cores: Some(50), memory: Some(50) };
-        let under = Own { cpu: 499, resident: 8 * GIB - 1 };
+        let limit = share_of(16 * GIB, 50);
+        let under = Own { cpu: 499, resident: limit - 1 };
         assert_eq!(cap_holds(half, Some(under), 10, Some(16 * GIB)), []);
-        let at = Own { cpu: 500, resident: 8 * GIB };
+        let at = Own { cpu: 500, resident: limit };
         assert_eq!(
             cap_holds(half, Some(at), 10, Some(16 * GIB)),
-            [
-                Hold::OwnCores { used: 500, limit: 500 },
-                Hold::OwnMemory { resident: 8 * GIB, limit: 8 * GIB }
-            ]
+            [Hold::OwnCores { used: 500, limit: 500 }, Hold::OwnMemory { resident: limit, limit }]
         );
         let busy = Own { cpu: 900, resident: 15 * GIB };
         assert_eq!(cap_holds(Cap::default(), Some(busy), 10, Some(16 * GIB)), [], "no cap");
