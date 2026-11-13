@@ -61,9 +61,9 @@ Apple's shim, twelve tests at a time, it took 665 seconds there
 (sunfmin/control#234): still past it. The measurements are in
 [the gate baseline](../gate-baseline.md).
 
-How many claims are at work at once is no key here: each host that works this
-repo says its own, `afkconvoy run <checkout> --concurrency N`, and 3 until it
-does (`docs/adr/0025`).
+How many claims are at work at once is no key here, nor anywhere: admission
+alone decides each start, by what the host and its accounts can carry now
+(`docs/adr/0072`).
 
 This repo names no `team`, so it is unbound. A bound repo's three keys more —
 `team`, `patrols`, `intake_limit` — are in `afkconvoy config --help`.
@@ -142,9 +142,10 @@ no second lane. The recorded gate duration measures the gate command itself.
 A cut's overall limit still includes its queue waits; its commands go ahead
 of waiting workers so their gates cannot consume that limit (ADR-0028).
 
-Fewer workers at once (`--concurrency`) would also keep gates apart, but would
-slow every worker's editing as well, and still let two gates overlap. The queue
-bounds only the heavy step.
+Fewer workers at once would also keep gates apart, but would slow every
+worker's editing as well, and still let two gates overlap. The queue bounds
+only the heavy step, and admission starts no worker while it would take
+longer than its bound to drain.
 
 ## Cutting a version
 

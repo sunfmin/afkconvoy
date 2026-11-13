@@ -735,7 +735,7 @@ fn an_operator_removal_survives_relisting_daily_refresh_and_fallback() {
     world.kit_command("codex", "codex --yolo");
     world.pause("claude-code", 87_399, "test pause");
     world.issue(8, &["ready-for-agent"]);
-    world.say_concurrency(&world.clone, 2);
+    world.list_checkout(&world.clone);
     world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "87401"]).ok();
     let commands = started(&world);
     assert_eq!(commands.len(), 2, "{commands:?}");

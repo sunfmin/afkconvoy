@@ -529,9 +529,9 @@ enum Command {
         instance: Option<InstanceId>,
         #[arg(long)]
         host: Option<String>,
-        /// How many claims this checkout's fleet instance holds at work at once on this
-        /// host, from its next tick: the checkout's own, kept with it on the checkout list
-        /// and never pushed; `default` changes it back [default: {const:CONCURRENCY}]
+        /// Ignored, and accepted for one release: no number bounds a checkout's workers, and
+        /// admission alone decides each start. Kept with the checkout on the checkout list,
+        /// where `doctor` says it is ignored; `default` drops it
         #[arg(long, value_name = "CLAIMS", value_parser = concurrency::claims_or_default)]
         concurrency: Option<To<NonZeroUsize>>,
         /// The private repo this checkout's fleet reads and writes its issues in: required
@@ -1608,7 +1608,7 @@ pub fn manual() -> agent_help::Help {
         .constant("KIT_RESEARCH_STATES", kit_research::states_help())
         .constant("TEAM_FILE", afkconvoy_core::team::TEAM_FILE)
         .constant("ESCALATE_LABEL", afkconvoy_core::config::ESCALATE_LABEL)
-        .constant("CONCURRENCY", afkconvoy_core::config::CONCURRENCY)
+        .constant("QUEUE_BOUND", afkconvoy_core::admission::QUEUE_BOUND)
         .constant("GATE_SECONDS", afkconvoy_core::config::GATE_SECONDS)
         .constant("RECOVERY_SECONDS", crate::health::RECOVERY_SECONDS)
         .constant("CAPACITY_WAIT_SECONDS", health::CAPACITY_WAIT_SECONDS)
