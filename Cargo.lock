@@ -7,6 +7,7 @@ name = "afkconvoy"
 version = "0.5.64"
 dependencies = [
  "afkconvoy-core",
+ "afkconvoy-daybook",
  "afkconvoy-gate",
  "afkconvoy-host-kit",
  "afkconvoy-landing",
@@ -41,6 +42,16 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "toml",
+]
+
+[[package]]
+name = "afkconvoy-daybook"
+version = "0.5.64"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

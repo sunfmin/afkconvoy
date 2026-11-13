@@ -1,0 +1,13 @@
+[package]
+name = "afkconvoy-daybook"
+description = "The daybook written to a GitHub tracker's Discussions — the entry format and its lesson, one discussion a day, appending an entry, the lesson index — with GitHub behind an interface and no fleet concept in its API (docs/adr/0071)"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+# The host's local date, which titles the day's discussion (`localtime_r`).
+libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true
