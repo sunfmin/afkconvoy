@@ -105,6 +105,63 @@ pub enum Hold {
     /// The commands waiting in the host's exclusive queue would take `drain`
     /// seconds to run, by their recent run times: past `bound`.
     Queue { drain: u64, bound: u64 },
+    /// afkconvoy's own processes on the host take `used` hundredths of a
+    /// core, at or past `limit`, the share of the host's cores it may use
+    /// (`Cap`): a start would take it over.
+    OwnCores { used: u64, limit: u64 },
+    /// afkconvoy's own processes on the host hold `resident` bytes, at or
+    /// past `limit`, the share of the host's memory it may use (`Cap`).
+    OwnMemory { resident: u64, limit: u64 },
+}
+
+/// The share of the host afkconvoy may use itself, each in percent, so that
+/// a co-resident system keeps the rest; `None`: no cap (sunfmin/control#896).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Cap {
+    /// Of the host's cores.
+    pub cores: Option<u64>,
+    /// Of the host's memory.
+    pub memory: Option<u64>,
+}
+
+/// What afkconvoy's own processes on the host use now: its host runner, the
+/// fleets' workers and what runs in its exclusive queue.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Own {
+    /// The cores they take, in hundredths of a core.
+    pub cpu: u64,
+    /// The bytes they hold resident.
+    pub resident: u64,
+}
+
+/// The limits `cap` comes to on a host of `cores` cores and `memory` bytes:
+/// hundredths of a core, and bytes; `None` where it caps nothing, or the
+/// memory was not read.
+pub fn cap_limits(cap: Cap, cores: u64, memory: Option<u64>) -> (Option<u64>, Option<u64>) {
+    let cpu = cap.cores.map(|share| cores.saturating_mul(share));
+    let resident = cap.memory.zip(memory).map(|(share, memory)| share_of(memory, share));
+    (cpu, resident)
+}
+
+/// Whether afkconvoy's own use `own` on a host of `cores` cores and `memory`
+/// bytes leaves room for a start under `cap`: none, and it does. A start
+/// adds to its use, so a use at its limit already holds; what could not be
+/// read holds nothing back.
+pub fn cap_holds(cap: Cap, own: Option<Own>, cores: u64, memory: Option<u64>) -> Vec<Hold> {
+    let Some(own) = own else { return vec![] };
+    let (cpu, resident) = cap_limits(cap, cores, memory);
+    let mut holds = vec![];
+    if let Some(limit) = cpu
+        && own.cpu >= limit
+    {
+        holds.push(Hold::OwnCores { used: own.cpu, limit });
+    }
+    if let Some(limit) = resident
+        && own.resident >= limit
+    {
+        holds.push(Hold::OwnMemory { resident: own.resident, limit });
+    }
+    holds
 }
 
 /// The longest, in seconds, the host's exclusive queue may take to drain
@@ -372,6 +429,29 @@ mod tests {
         assert_eq!(drain(&commands), 900);
         assert_eq!(drain(&[]), 0);
         assert_eq!(drain(&[("fast".to_string(), 0, 300)]), 300, "a lane of no place runs one");
+    }
+
+    #[test]
+    fn a_cap_holds_a_start_that_would_take_afkconvoy_s_own_use_over_it() {
+        let half = Cap { cores: Some(50), memory: Some(50) };
+        let under = Own { cpu: 499, resident: 8 * GIB - 1 };
+        assert_eq!(cap_holds(half, Some(under), 10, Some(16 * GIB)), []);
+        let at = Own { cpu: 500, resident: 8 * GIB };
+        assert_eq!(
+            cap_holds(half, Some(at), 10, Some(16 * GIB)),
+            [
+                Hold::OwnCores { used: 500, limit: 500 },
+                Hold::OwnMemory { resident: 8 * GIB, limit: 8 * GIB }
+            ]
+        );
+        let busy = Own { cpu: 900, resident: 15 * GIB };
+        assert_eq!(cap_holds(Cap::default(), Some(busy), 10, Some(16 * GIB)), [], "no cap");
+        assert_eq!(cap_holds(half, None, 10, Some(16 * GIB)), [], "not read");
+        assert_eq!(
+            cap_holds(half, Some(busy), 10, None),
+            [Hold::OwnCores { used: 900, limit: 500 }],
+            "memory not read: only the cores"
+        );
     }
 
     #[test]
