@@ -1319,6 +1319,8 @@ fn a_look_reads_the_login_once_and_starts_no_harness_while_a_probe_stands() {
     let world = World::new();
     world.hold_every_harness();
     let second = world.second_repo();
+    world.list_checkout(&world.clone);
+    world.list_checkout(&second);
     name_harness(&world, &world.clone, "kimi");
     name_harness(&world, &second, "kimi");
     world.afk(&["plan", "--now", "1000"]).ok();

@@ -21,7 +21,7 @@ A host's one long-running process of the fleet, holding a fleet instance for eac
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Keeper**:
-The process `run` starts for the host runner, `afkconvoy host-runner` alone: it holds nothing of the host, starts the host runner as its child, in a process group of its own, and starts it again, on the same checkout list, after an unexpected end — a signal ended it, or an error once it held the host — saying so in the host runner's log. A host runner that stops as told, or moves onto a newer release, ends its keeper with it; the newer one's `run` start is a keeper of its own. It works in the cache directory, not in `/` as the host runner does, so what ends every process of one directory does not end both (ADR-0072).
+The process `run` starts for the host runner, `afkconvoy host-runner` alone: it holds nothing of the host, starts the host runner as its child, in a process group of its own, and starts it again, on the same checkout list, after an unexpected end — a signal ended it, or an error once it held the host — saying so in the host runner's log. A host runner that stops as told, or moves onto a newer release, ends its keeper with it; the newer one's `run` start is a keeper of its own. It works in the cache directory, not in `/` as the host runner does, so what ends every process of one directory does not end both (ADR-0074).
 _Avoid_: supervisor, watchdog (the watch is the host's operator), launch agent (launchd's)
 
 **Checkout list**:
