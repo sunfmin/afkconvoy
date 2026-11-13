@@ -60,6 +60,13 @@ impl Shell for Machine {
                     .collect();
                 (true, format!("npm notice\n{}", serde_json::Value::from(listed)))
             }
+            // pixi's download, its checksum and its unpacking, run as they are.
+            ["curl" | "shasum" | "tar", ..] => {
+                let out = std::process::Command::new("/bin/sh").args(["-c", line]).output()?;
+                let mut printed = String::from_utf8_lossy(&out.stdout).into_owned();
+                printed.push_str(&String::from_utf8_lossy(&out.stderr));
+                (out.status.success(), printed)
+            }
             [pixi, "global", "install", "tmux"] => {
                 let tmux = Path::new(pixi).with_file_name("tmux");
                 executable(&tmux);
@@ -150,6 +157,109 @@ fn a_guild_machine_with_no_tmux_is_given_one_and_said_to_lack_it_until_then() {
 
     assert_eq!(afkconvoy_host_kit::report(&machine, home, &nothing).1, None);
     assert_eq!(afkconvoy_host_kit::machine(&machine, home, &nothing, 8).tmux, None, "left alone");
+}
+
+/// Serves the files of `dir` over HTTP on this host, as GitHub serves a
+/// release's → its address. A file not there is a 404.
+fn serve(dir: &Path) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let dir = dir.to_path_buf();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            let _ = reader.read_line(&mut request);
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) <= 2 {
+                    break;
+                }
+            }
+            let path = request.split_whitespace().nth(1).unwrap_or("/").trim_start_matches('/');
+            let reply = match std::fs::read(dir.join(path)) {
+                Ok(body) => [
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into(),
+                    body,
+                ]
+                .concat(),
+                Err(_) => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            };
+            let _ = stream.write_all(&reply);
+        }
+    });
+    address
+}
+
+/// A release of pixi as GitHub publishes one, under `releases/`: the archive
+/// of a program `pixi` and, next to it, its checksum — or, where `wrong`, a
+/// checksum of something else.
+fn release(releases: &Path, wrong: bool) {
+    let target = match std::env::consts::OS {
+        "macos" => format!("{}-apple-darwin", std::env::consts::ARCH),
+        _ => format!("{}-unknown-linux-musl", std::env::consts::ARCH),
+    };
+    let version = releases.join(format!("v{}", afkconvoy_host_kit::tmux::PIXI_VERSION));
+    let program = releases.join("program");
+    executable(&program.join("pixi"));
+    std::fs::create_dir_all(&version).unwrap();
+    let name = format!("pixi-{target}.tar.gz");
+    let archive = version.join(&name);
+    let packed = std::process::Command::new("tar")
+        .arg("-czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&program)
+        .arg("pixi")
+        .status()
+        .unwrap();
+    assert!(packed.success());
+    let summed = std::process::Command::new("shasum").args(["-a", "256"]).arg(&archive).output();
+    let summed = String::from_utf8(summed.unwrap().stdout).unwrap();
+    let sum = summed.split_whitespace().next().unwrap();
+    let sum = if wrong { "0".repeat(64) } else { sum.to_string() };
+    std::fs::write(version.join(format!("{name}.sha256")), format!("{sum}  {name}\n")).unwrap();
+}
+
+#[test]
+fn a_guild_machine_with_neither_pixi_nor_a_bottled_homebrew_is_given_the_pinned_pixi_then_tmux() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    std::fs::create_dir_all(home.join(".guild")).unwrap();
+    let releases = tempfile::tempdir().unwrap();
+    release(releases.path(), false);
+    let machine = Machine::default();
+
+    let given = afkconvoy_host_kit::tmux::give_from(&machine, home, &serve(releases.path()));
+    let pixi = home.join(".pixi/bin/pixi");
+    let by = format!("'{}' global install tmux", pixi.display());
+    assert_eq!(given, Some(Tmux::Installed { installed: home.join(".pixi/bin/tmux"), by }));
+    assert!(!home.join(".pixi/download").exists(), "the download is not kept");
+    let pinned = format!("/v{}/pixi-", afkconvoy_host_kit::tmux::PIXI_VERSION);
+    let downloads: Vec<String> =
+        machine.asked().into_iter().filter(|line| line.starts_with("curl ")).collect();
+    assert_eq!(downloads.len(), 2, "the archive and its checksum: {downloads:?}");
+    assert!(downloads.iter().all(|line| line.contains(&pinned)), "{downloads:?}");
+}
+
+#[test]
+fn a_pixi_download_whose_checksum_differs_installs_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    std::fs::create_dir_all(home.join(".guild")).unwrap();
+    let releases = tempfile::tempdir().unwrap();
+    release(releases.path(), true);
+    let machine = Machine::default();
+
+    let given = afkconvoy_host_kit::tmux::give_from(&machine, home, &serve(releases.path()));
+    let Some(Tmux::Failed { error }) = given else { panic!("{given:?}") };
+    assert!(error.contains("checksum"), "{error}");
+    assert!(error.contains("nothing was installed"), "{error}");
+    assert!(!home.join(".pixi").exists(), "nothing of pixi is left");
+    assert!(machine.asked().iter().all(|line| !line.ends_with("install tmux")));
+    assert!(machine.asked().iter().all(|line| !line.starts_with("tar ")), "nothing unpacked");
 }
 
 /// What the crate depends on: the harness crate, anyhow and serde — never

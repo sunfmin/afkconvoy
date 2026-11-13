@@ -85,12 +85,17 @@ fn homebrew_installs_tmux_only_at_a_prefix_with_bottles() {
     let world = guild();
     std::fs::write(world.root.join("shell-brew"), "/Users/h/homebrew/bin/brew\n").unwrap();
     // ~/homebrew would build tmux's ncurses and openssl: it is not used,
-    // and the fix installs pixi first.
+    // and the host kit installs pixi first: here its download fails.
     let written = world.afk(&["kit"]).ok();
-    assert!(written["tmux"]["error"].as_str().unwrap().contains("pixi"), "{written}");
+    let error = written["tmux"]["error"].as_str().unwrap();
+    assert!(error.contains("pixi could not be installed"), "{written}");
+    let downloads = asked(&world).into_iter().filter(|line| line.starts_with("curl "));
+    let pinned = format!("/v{}/pixi-", afkconvoy_host_kit::tmux::PIXI_VERSION);
+    assert!(downloads.into_iter().any(|line| line.contains(&pinned)), "{:?}", asked(&world));
     assert!(installs(&world).is_empty());
+    assert!(!world.home().join(".pixi").exists(), "nothing of pixi is left");
     let found = missing(&world.afk(&["doctor", "--all"]).ok());
-    assert_eq!(found[0]["fix"], "curl -fsSL https://pixi.sh/install.sh | sh && afkconvoy kit");
+    assert_eq!(found[0]["fix"], "afkconvoy kit");
 
     std::fs::write(world.root.join("shell-brew"), "/opt/homebrew/bin/brew\n").unwrap();
     std::fs::write(world.root.join("brew-prefix"), "/opt/homebrew\n").unwrap();

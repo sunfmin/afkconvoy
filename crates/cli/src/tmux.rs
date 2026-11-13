@@ -6,19 +6,14 @@
 //! installs it, and `doctor` names a Guild machine that has none, with the
 //! line that installs it.
 
-use afkconvoy_host_kit::tmux::{self, PIXI_INSTALL, Tmux};
+use afkconvoy_host_kit::tmux::{self, Tmux};
 use serde_json::{Value, json};
 
 use crate::agent_setup::{WorkerShell, home};
 
-/// The line that installs tmux again: writing the host kit.
+/// The line that installs tmux again: writing the host kit, which installs
+/// pixi first where no line on this host can install tmux.
 pub const FIX: &str = "afkconvoy kit";
-
-/// The line that gives this host its tmux: writing the host kit where it
-/// can install one, else installing pixi first.
-fn fix(pixi_first: bool) -> String {
-    if pixi_first { format!("{PIXI_INSTALL} && {FIX}") } else { FIX.to_string() }
-}
 
 /// Installs tmux on this host where it is a Guild machine with none → what
 /// was done: null where nothing was to be done — not a Guild machine, or its
@@ -33,9 +28,9 @@ pub fn give() -> Value {
             eprintln!("installed tmux on this Guild machine: {by}");
             json!({"installed": installed, "by": by})
         }
-        Some(Tmux::Failed { error, pixi_first }) => {
+        Some(Tmux::Failed { error }) => {
             eprintln!("tmux was not installed on this Guild machine: {error}");
-            json!({"error": error, "fix": fix(pixi_first)})
+            json!({"error": error, "fix": FIX})
         }
     }
 }
@@ -44,12 +39,11 @@ pub fn give() -> Value {
 pub fn findings() -> Vec<crate::doctor::Finding> {
     let Ok(home) = home() else { return vec![] };
     let Some(evidence) = tmux::missing(&WorkerShell, &home) else { return vec![] };
-    let pixi_first = tmux::installer(&WorkerShell, &home).is_err();
     vec![crate::doctor::finding(
         crate::doctor::Kind::TmuxMissing,
         json!(["tmux-missing"]),
         "this Guild machine has no tmux".to_string(),
         evidence,
-        fix(pixi_first),
+        FIX.to_string(),
     )]
 }
