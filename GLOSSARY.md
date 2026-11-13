@@ -65,7 +65,7 @@ One of the two ways every ref the fleet writes is named: hidden refs (`refs/conv
 _Avoid_: namespace, fallback mode
 
 **Remote view**:
-A repository's one way to read and write the remote's refs. A read names how fresh it must be: as the view opened (the one listing a fleet's view is read from), current for this process (a ref already read is not asked again until this process writes it), or live, for a check another process may have moved or a write that must be certain. Every write — a push or a receive-pack publication — states the refs it writes, and the view drops exactly those. Nothing else pushes or lists the remote.
+A repository's one way to read and write the remote's refs. A read names how fresh it must be: as the view opened (the one listing a fleet's view is read from), current for this process (a ref already read is not asked again until this process writes it), or live, for a check another process may have moved or a write that must be certain. Every write — a push or a receive-pack publication — states the refs it writes, and the view drops exactly those; a read begun before a write landed never answers for a ref it wrote. Nothing else pushes or lists the remote.
 _Avoid_: remote cache, ref cache
 
 **Fleet state**:
