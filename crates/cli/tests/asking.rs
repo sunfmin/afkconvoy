@@ -539,8 +539,13 @@ struct Executor(std::process::Child);
 impl Executor {
     fn of(session: &str) -> Self {
         let marker = format!("afkconvoy-watch-session-{session}");
-        let child = std::process::Command::new("/bin/sh")
-            .args(["-c", "sleep 120; :", &marker])
+        // One process, its command line carrying the marker: killing it
+        // leaves no child behind.
+        let child = std::process::Command::new("perl")
+            .args(["-e", "sleep 120", &marker])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
         Executor(child)
@@ -621,7 +626,7 @@ fn an_asking_terminal_back_in_the_same_pty_under_a_new_incarnation_is_taken_back
 /// another tab, is not the asking session's, whatever it is named.
 #[test]
 fn a_same_name_terminal_in_another_pty_or_pane_is_still_refused() {
-    for (pty, tab) in [("another-pty", None), (None, Some("another-tab"))] {
+    for (pty, tab) in [(Some("another-pty"), None), (None, Some("another-tab"))] {
         let world = World::new();
         let (_dir, _runner) = two_conditions(&world);
         let (old, session) = first_delivered(&world);
