@@ -9,8 +9,11 @@
 //! account can: `pixi global install tmux` (conda-forge, into `~/.pixi/bin`),
 //! or `brew install tmux` where Homebrew is at a prefix it has bottles for. A
 //! Homebrew in `~/homebrew` has none for tmux's ncurses and openssl and would
-//! build them from source, so it is not used. A tmux already there is left
-//! alone.
+//! build them from source, so it is not used. Where neither is there, the
+//! host kit installs pixi itself first (sunfmin/control#816): the release of
+//! the version pinned here (`PIXI_VERSION`), checked against the `.sha256`
+//! published next to it, unpacked into `~/.pixi/bin`; no shell profile is
+//! touched. A tmux already there is left alone.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -32,8 +35,13 @@ const LOOK_TIMEOUT: Duration = Duration::from_secs(20);
 const BOTTLED: [&str; 2] = ["/opt/homebrew", "/usr/local"];
 /// Where pixi puts the programs it installs globally, under the home.
 pub const PIXI_BIN: &str = ".pixi/bin";
-/// The line that installs pixi itself, for an account that has none.
-pub const PIXI_INSTALL: &str = "curl -fsSL https://pixi.sh/install.sh | sh";
+/// The version of pixi the host kit installs where an account has none.
+pub const PIXI_VERSION: &str = "0.84.1";
+/// Where pixi's releases are: `<releases>/v<version>/pixi-<target>.tar.gz`,
+/// with its checksum at that name and `.sha256`.
+const PIXI_RELEASES: &str = "https://github.com/prefix-dev/pixi/releases/download";
+/// Where a download of pixi is kept until it is checked, under the home.
+const PIXI_DOWNLOAD: &str = ".pixi/download";
 
 /// Whether the host whose user's home is `home` is a Guild machine.
 pub fn is_guild_machine(home: &Path) -> bool {
@@ -73,36 +81,109 @@ pub fn installer(shell: &dyn Shell, home: &Path) -> Result<String, String> {
 pub enum Tmux {
     /// tmux was installed at `installed`, by the line `by`.
     Installed { installed: PathBuf, by: String },
-    /// It was not: `error` says why. `pixi_first` where no line on this host
-    /// can install it, so pixi is to be installed first (`PIXI_INSTALL`).
-    Failed {
-        error: String,
-        #[serde(skip)]
-        pixi_first: bool,
-    },
+    /// It was not: `error` says why.
+    Failed { error: String },
 }
 
 /// Installs tmux on the host whose user's home is `home` where it is a Guild
 /// machine with none → what was done; `None` where nothing was to be done —
-/// not a Guild machine, or its tmux already there and left alone.
+/// not a Guild machine, or its tmux already there and left alone. Where no
+/// line there can install it, pixi is installed first, from `PIXI_RELEASES`.
 pub fn give(shell: &dyn Shell, home: &Path) -> Option<Tmux> {
+    give_from(shell, home, PIXI_RELEASES)
+}
+
+/// `give`, with pixi's releases at `releases` (`PIXI_RELEASES`'s layout).
+pub fn give_from(shell: &dyn Shell, home: &Path, releases: &str) -> Option<Tmux> {
     if !is_guild_machine(home) || found(shell, home).is_some() {
         return None;
     }
     let line = match installer(shell, home) {
         Ok(line) => line,
-        Err(why) => return Some(Tmux::Failed { error: why, pixi_first: true }),
+        Err(why) => match install_pixi(shell, home, releases) {
+            Ok(_) => match installer(shell, home) {
+                Ok(line) => line,
+                Err(why) => return Some(Tmux::Failed { error: why }),
+            },
+            Err(error) => {
+                let error = format!("{why}; and pixi could not be installed: {error:#}");
+                return Some(Tmux::Failed { error });
+            }
+        },
     };
     let installed = ask(shell, &line, INSTALL_TIMEOUT).and_then(|_| {
         found(shell, home).with_context(|| format!("`{line}` ended and no tmux is found after it"))
     });
     Some(match installed {
         Ok(tmux) => Tmux::Installed { installed: tmux, by: line },
-        Err(error) => Tmux::Failed {
-            error: format!("{error:#}"),
-            pixi_first: installer(shell, home).is_err(),
-        },
+        Err(error) => Tmux::Failed { error: format!("{error:#}") },
     })
+}
+
+/// The release target of pixi for the machine this runs on.
+fn pixi_target() -> anyhow::Result<String> {
+    let arch = std::env::consts::ARCH;
+    match (std::env::consts::OS, arch) {
+        ("macos", "aarch64" | "x86_64") => Ok(format!("{arch}-apple-darwin")),
+        ("linux", "aarch64" | "x86_64") => Ok(format!("{arch}-unknown-linux-musl")),
+        (os, arch) => anyhow::bail!("pixi has no release for {arch} {os}"),
+    }
+}
+
+/// Installs pixi `PIXI_VERSION` from `releases` into `~/.pixi/bin` of the
+/// home `home` → where it is. The download is checked against the checksum
+/// published next to it first: where they differ, nothing is installed.
+pub fn install_pixi(shell: &dyn Shell, home: &Path, releases: &str) -> anyhow::Result<PathBuf> {
+    let name = format!("pixi-{}.tar.gz", pixi_target()?);
+    let url = format!("{}/v{PIXI_VERSION}/{name}", releases.trim_end_matches('/'));
+    let staging = home.join(PIXI_DOWNLOAD);
+    let _ = std::fs::remove_dir_all(&staging);
+    let unpacked = staging.join("unpacked");
+    std::fs::create_dir_all(&unpacked)
+        .with_context(|| format!("{} cannot be made", unpacked.display()))?;
+    let installed = (|| {
+        let archive = staging.join(&name);
+        let sum = staging.join(format!("{name}.sha256"));
+        for (to, from) in [(&archive, url.clone()), (&sum, format!("{url}.sha256"))] {
+            let to = word(&to.display().to_string());
+            ask(shell, &format!("curl -fsSL -o {to} {}", word(&from)), INSTALL_TIMEOUT)?;
+        }
+        let published = std::fs::read_to_string(&sum)
+            .with_context(|| format!("{} cannot be read", sum.display()))?;
+        let published = checksum(&published)
+            .with_context(|| format!("{url}.sha256 holds no SHA-256 checksum"))?;
+        let archive_word = word(&archive.display().to_string());
+        let computed = ask(shell, &format!("shasum -a 256 {archive_word}"), LOOK_TIMEOUT)?;
+        let computed = checksum(&computed)
+            .with_context(|| format!("`shasum` printed no checksum of {}", archive.display()))?;
+        anyhow::ensure!(
+            computed == published,
+            "the download {url} has checksum {computed}, not the {published} published next \
+             to it; nothing was installed"
+        );
+        let into = word(&unpacked.display().to_string());
+        ask(shell, &format!("tar -xzf {archive_word} -C {into}"), INSTALL_TIMEOUT)?;
+        let pixi = unpacked.join("pixi");
+        anyhow::ensure!(runnable(&pixi), "{url} holds no program `pixi`");
+        let bin = home.join(PIXI_BIN);
+        std::fs::create_dir_all(&bin)
+            .with_context(|| format!("{} cannot be made", bin.display()))?;
+        let to = bin.join("pixi");
+        std::fs::rename(&pixi, &to)
+            .with_context(|| format!("{} cannot be written", to.display()))?;
+        Ok(to)
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    // `~/.pixi` itself where nothing else is in it: a failed install leaves nothing.
+    let _ = staging.parent().map(std::fs::remove_dir);
+    installed
+}
+
+/// The SHA-256 checksum a line of `sha256sum` or `shasum` opens with, in
+/// lowercase.
+fn checksum(text: &str) -> Option<String> {
+    let first = text.split_whitespace().next()?.to_ascii_lowercase();
+    (first.len() == 64 && first.bytes().all(|b| b.is_ascii_hexdigit())).then_some(first)
 }
 
 /// How the host whose user's home is `home` differs from what a Guild machine
@@ -129,10 +210,28 @@ fn on_login_path(shell: &dyn Shell, program: &str) -> Option<PathBuf> {
 
 /// `program` where an install puts it under the home, where it may be run.
 fn in_home(home: &Path, program: &str) -> Option<PathBuf> {
-    [PIXI_BIN, "homebrew/bin", ".local/bin"].iter().map(|dir| home.join(dir).join(program)).find(
-        |file| {
-            std::fs::metadata(file)
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        },
-    )
+    [PIXI_BIN, "homebrew/bin", ".local/bin"]
+        .iter()
+        .map(|dir| home.join(dir).join(program))
+        .find(|file| runnable(file))
+}
+
+/// Whether `file` is a file that may be run.
+fn runnable(file: &Path) -> bool {
+    std::fs::metadata(file)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_checksum_is_the_first_word_of_a_line_and_hex_alone() {
+        let line = format!("{}  pixi-aarch64-apple-darwin.tar.gz\n", "3B".repeat(32));
+        assert_eq!(checksum(&line), Some("3b".repeat(32)));
+        assert_eq!(checksum("not a checksum"), None);
+        assert_eq!(checksum(""), None);
+        assert_eq!(checksum(&"g".repeat(64)), None);
+    }
 }
