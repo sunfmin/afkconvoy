@@ -430,7 +430,7 @@ The repo's build-and-test command. It is the only machine verification a change 
 _Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and the startup probe make), local CI
 
 **Stopped orphan**:
-A process stopped by a signal, handed to pid 1 because what stopped it is gone, and working in a worker's worktree: nothing is left to resume it, and it never leaves on its own. Settling ends it, and what it started, and the tick log names each (ADR-0074).
+A process stopped by a signal, handed to pid 1 because what stopped it is gone, and working in a worker's worktree: nothing is left to send it SIGCONT, and it never leaves on its own. Settling ends it, and what it started, and the tick log names each (ADR-0074).
 _Avoid_: zombie (a process ended but not reaped), paused gate (one whose pauser still runs), left-behind process (any process a test left, running or not)
 
 **Gate limit**:
