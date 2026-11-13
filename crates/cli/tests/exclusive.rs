@@ -640,3 +640,62 @@ fn a_fast_gate_s_wait_for_its_lane_uses_none_of_its_limit() {
     assert!(answer["seconds"].as_u64().unwrap() < 3, "{answer}");
     assert_eq!(lines(&world.root.join("ran")), ["fast"]);
 }
+
+#[test]
+fn an_ordinary_command_that_ended_frees_its_repo_though_a_server_it_started_holds_its_lease() {
+    // sunfmin/control#829: the repo lease is inherited as the lane's place
+    // is, and a server shared by the host that the command started keeps it
+    // locked. Its lock alone does not hold the repo.
+    let world = World::new();
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    let server = cache.join("server");
+    let order = cache.join("order");
+    let first = exclusive(
+        &world,
+        &cache,
+        1,
+        "(cd / && exec sleep 30 </dev/null >/dev/null 2>&1) & echo $! > \"$CACHE/server\"; \
+         echo first >> \"$CACHE/order\"",
+    );
+    let first = first.wait_with_output().unwrap();
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    let server = lines(&server)[0].clone();
+    until(|| {
+        let ppid = Command::new("ps").args(["-o", "ppid=", "-p", &server]).output().unwrap();
+        text(&ppid.stdout).trim() == "1"
+    });
+
+    let begun = Instant::now();
+    let next = exclusive(&world, &cache, 2, "echo next >> \"$CACHE/order\"");
+    let next = next.wait_with_output().unwrap();
+    let waited = begun.elapsed();
+    let _ = Command::new("kill").arg(&server).status();
+    assert!(next.status.success(), "{}", text(&next.stderr));
+    assert!(waited < Duration::from_secs(10), "the next command of the repo waited {waited:?}");
+    assert_eq!(lines(&order), ["first", "next"]);
+    assert_eq!(tickets(&world), 0, "no holder is left of the command that ended");
+}
+
+#[test]
+fn a_repo_lease_its_ended_owners_own_work_holds_keeps_its_repo_held() {
+    // ADR-0037: what the command started in its worktree is its own work,
+    // not a server shared by the host, though it outlived the command. With
+    // no host runner a command runs at once, but takes its repo lease first.
+    let world = World::new();
+    let cache = world.cache();
+    let order = cache.join("order");
+    let first = exclusive(
+        &world,
+        &cache,
+        1,
+        "(sleep 1; echo work-ended >> \"$CACHE/order\") </dev/null >/dev/null 2>&1 & \
+         echo first >> \"$CACHE/order\"",
+    );
+    let first = first.wait_with_output().unwrap();
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    let next = exclusive(&world, &cache, 2, "echo next >> \"$CACHE/order\"");
+    let next = next.wait_with_output().unwrap();
+    assert!(next.status.success(), "{}", text(&next.stderr));
+    assert_eq!(lines(&order), ["first", "work-ended", "next"]);
+}
