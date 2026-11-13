@@ -6,7 +6,7 @@ status: accepted
 
 Formerly the control repo's. How a cut runs is ADR-0028's; this is who cuts.
 
-A repo the fleet lands work in and whose versions are installed through Homebrew is cut by its fleet, and by no human's session. Only the fleet knows when it is idle or when its oldest landing past the newest version tag has waited past the repo's age bound, and at those times nobody is usually at the keyboard: on this repo #451–#454 had all landed by 2026-10-25 01:48Z and no version was cut for over an hour, because no session noticed. A repo turns cutting on in its config's cut block, which holds its own steps (`docs/agents/afkconvoy.md`, "Cutting a version"). A cut that fails opens one issue under the escalate label. This concept is called a **cut** because "release" already names a claim's last step.
+A repo the fleet lands work in and whose versions are installed through Homebrew is cut by its fleet, and by no human's session. Only the fleet knows when it is idle or when its oldest landing past the newest version tag has waited past the repo's age bound, and at those times nobody is usually at the keyboard: on this repo #451–#454 had all landed by 2026-10-25 01:48Z and no version was cut for over an hour, because no session noticed. A repo turns cutting on in its config's cut block, which holds its own steps (`docs/agents/afkconvoy.md`, "Cutting a version"). A cut that fails opens one issue, which holds no later cut back (ADR-0072). This concept is called a **cut** because "release" already names a claim's last step.
 
 Once a newer afkconvoy is installed, the host runner moves onto it by itself between ticks, without waiting for every fleet to go idle (ADR-0032).
 

@@ -212,7 +212,7 @@ kinds! {
     NearBreaker: Warning, "is one rework from a breaker";
     PatrolFailed: Warning, "does not run: its last run failed";
     PatrolFull: Warning, "have reached its `max_open`";
-    CutFailed: Warning, "cuts no version: its last cut failed";
+    CutFailed: Warning, "its last cut failed";
     CutNeed: Warning, "not cutting here";
     CutWaiting: Info, "wait on the next cut";
     NeedInstallFailed: Warning, "install failed on this host";
@@ -1282,22 +1282,28 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             "afkconvoy plan".to_string(),
         ));
     }
-    if let Some(cut) = set.cut.as_ref().filter(|cut| cut.standing == cut::Standing::Failed)
+    if let Some(cut) = set.cut.as_ref()
         && let Some(failure) = cut.failure
     {
-        // What its issue says, and how the cut starts again from here: the
-        // watch's to answer (sunfmin/control#801).
+        // What its issue says, and how the cut starts again: by itself, at
+        // the next due cut, or once more lands where the same failure
+        // repeated (docs/adr/0072). The watch looks for its cause
+        // (sunfmin/control#801).
+        let held = match cut.standing == cut::Standing::Failed {
+            true => "the fleet cuts no version until more lands: ",
+            false => "",
+        };
         let (what, evidence, fix) = match &cut.failed {
             Some(failed) => (
                 format!(
-                    "the fleet cuts no version: its last cut failed, of v{} at its step `{}`",
+                    "{held}its last cut failed, of v{} at its step `{}`",
                     failed.version, failed.step
                 ),
                 format!("#{failure}: the step `{}` failed: {}", failed.step, failed.why),
                 failed.restart.clone(),
             ),
             None => (
-                "the fleet cuts no version: its last cut failed".to_string(),
+                format!("{held}its last cut failed"),
                 format!(
                     "#{failure} says which step failed, why, and the line that goes on from \
                      there, and is still open"

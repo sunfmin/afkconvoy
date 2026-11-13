@@ -1651,7 +1651,8 @@ pub fn manual() -> agent_help::Help {
         .constant("DOCTOR_FAILED_SHOWN", doctor::FAILED_SHOWN)
         .constant("DOCTOR_EVENTS_SHOWN", run_log::EVENTS_SHOWN)
         .constant("CUT_MINOR_LABEL", afkconvoy_core::cut::MINOR_LABEL)
-        .constant("CUT_BUSY_AFTER_SECONDS", afkconvoy_core::cut::BUSY_AFTER_SECONDS);
+        .constant("CUT_BUSY_AFTER_SECONDS", afkconvoy_core::cut::BUSY_AFTER_SECONDS)
+        .constant("CUT_REPEATS", afkconvoy_core::cut::REPEATS);
     for (name, group) in [
         ("OPERATOR", OPERATOR),
         ("DESIGNER", DESIGNER),
