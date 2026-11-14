@@ -518,10 +518,7 @@ fn settling_ends_a_gate_its_killed_scheduler_left_stopped_and_removes_the_worktr
     let began = std::time::Instant::now();
     let ticked = tick(&world, "1090");
     assert_eq!(did(&ticked)[0], "settle 3 done", "{ticked}");
-    assert!(
-        began.elapsed() < std::time::Duration::from_secs(30),
-        "ended within a bound"
-    );
+    assert!(began.elapsed() < std::time::Duration::from_secs(30), "ended within a bound");
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while state(paused.gate).is_some() || state(paused.child).is_some() {
         assert!(std::time::Instant::now() < until, "the paused gate's processes still exist");
