@@ -202,14 +202,18 @@ fn a_pass_starts_the_next_stage_s_worker_in_the_same_worktree_and_done_ends_the_
     // A `pass` that leads to `done` ends the workflow: the claim is released,
     // and nobody is started on the issue again.
     declare(&world, 7, "review", "pass", &["--text", "It reads well."]);
+    // Nothing will use its worktree again: it goes, its worker with it. Its
+    // commit past the base branch outlives it on the remote's branch, so the
+    // local branch orca kept for it goes too (sunfmin/control#1044).
+    let head = git(&dir, &["rev-parse", "HEAD"]).trim().to_string();
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]).trim().to_string();
     assert_eq!(did(&tick(&world, 1450)), ["advance 7 done"]);
     assert_eq!(world.claims(), []);
-    // Nothing will use its worktree again: it goes, its worker with it. The
-    // branch holds a commit past the base branch, and outlives it.
     assert_eq!(world.worktrees(), Vec::<PathBuf>::new());
     assert_eq!(world.open_terminals(), Vec::<String>::new());
     assert!(!dir.exists());
-    assert!(git(&world.clone, &["branch", "--list", "tester/issue-7*"]).contains("issue-7"));
+    assert_eq!(git(&world.clone, &["branch", "--list", "tester/issue-7*"]).trim(), "");
+    assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), head);
     assert_eq!(did(&tick(&world, 1540)), [] as [&str; 0]);
     assert_eq!(excluded(&world, 7), "its workflow has ended");
     assert_eq!(world.state(7), "open");

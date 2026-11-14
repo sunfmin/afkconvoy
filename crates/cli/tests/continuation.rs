@@ -581,7 +581,6 @@ fn start_fresh_is_the_one_way_to_discard_an_attempt() {
     assert_eq!(discarded["closed_prs"], json!([70]));
     assert_eq!(discarded["deleted_branches"], json!([BRANCH]));
     assert_eq!(discarded["removed_worktree"], json!(old));
-    assert!(!old.exists());
     let heads = world.remote(&["for-each-ref", "--format=%(refname)", "refs/heads"]);
     assert!(!heads.lines().any(|head| head == format!("refs/heads/{BRANCH}")), "{heads}");
     assert!(heads.lines().any(|head| head == lookalike), "{heads}");
@@ -592,7 +591,10 @@ fn start_fresh_is_the_one_way_to_discard_an_attempt() {
     };
     assert_eq!((state(70), state(71)), (json!("closed"), json!("open")));
 
+    // The discarded branch is gone with its worktree, so orca may give the
+    // fresh one its name, and its path, again (sunfmin/control#1044).
     let new = PathBuf::from(started["worktree"].as_str().unwrap());
+    assert!(!old.exists() || old == new);
     assert_eq!(git(&new, &["rev-parse", "HEAD"]), world.remote(&["rev-parse", "refs/heads/main"]));
     assert!(!continues(&brief(&new)));
     assert_eq!(world.claims().len(), 1);

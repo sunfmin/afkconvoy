@@ -1599,10 +1599,17 @@ impl Worktree {
     /// there is discarded, and the list is read again so orca drops the
     /// failure. An orca error removes nothing further and puts the files
     /// back: the caller keeps the claim and a later tick tries again.
+    ///
+    /// A branch orca keeps — one holding a commit it cannot prove merged,
+    /// as a cut's is — is deleted once a tag or a remote branch holds its
+    /// tip and no worktree uses it (`Repo::delete_held_branch`): left, each
+    /// one takes a name orca numbers, and it gives up past a hundred
+    /// (sunfmin/control#1044).
     pub fn remove(&self) -> Result<()> {
         // One that cannot be turned costs a server the worker started its
         // directory, and no worktree is kept for that.
         let _ = worker_tmp::retire(&self.path);
+        let shared = self.shared_git_dir();
         let aside = self.set_files_aside();
         if aside.is_none() {
             crate::copies::removable(&self.path);
@@ -1626,7 +1633,29 @@ impl Worktree {
         // removal only when it is asked for the list again.
         worktree_list_again()?;
         let _ = worker_tmp::reclaim();
+        // Best effort: the worktree is gone, and a branch left here is
+        // cleared by the next cut's start where it is a cut's.
+        if let Some(shared) = shared
+            && !self.branch.is_empty()
+        {
+            let _ = Repo::new(shared).delete_held_branch(&self.branch);
+        }
         Ok(())
+    }
+
+    /// The git dir this worktree shares with its repo, read off its `.git`
+    /// pointer with no git started: what its `commondir` file names, or
+    /// `<common>/worktrees/<name>`'s. None where there is no pointer.
+    fn shared_git_dir(&self) -> Option<PathBuf> {
+        let pointer = std::fs::read_to_string(self.path.join(".git")).ok()?;
+        let own = self.path.join(pointer.strip_prefix("gitdir: ")?.trim_end_matches(['\r', '\n']));
+        let common = match std::fs::read_to_string(own.join("commondir")) {
+            Ok(named) => own.join(named.trim_end_matches(['\r', '\n'])),
+            Err(_) => own.parent()?.parent()?.to_path_buf(),
+        };
+        // Resolved now: the path runs through this worktree's own git dir,
+        // which the removal deletes.
+        common.canonicalize().ok()
     }
 
     /// Sets this worktree's files aside into the trash beside it, leaving
