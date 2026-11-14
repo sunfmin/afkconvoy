@@ -60,6 +60,9 @@ pub enum Outcome<R> {
     Gone,
     /// It is on the chain, valid, and not landed yet.
     Waiting,
+    /// It is ripe, and the push that would land it was refused: what git
+    /// said. Its candidate stands, green, for the next run to publish.
+    Unpublished(String),
 }
 
 /// A change assigned its candidate, by the candidate's id; or why not.
@@ -68,6 +71,14 @@ pub type Assigned<R> = Result<String, Outcome<R>>;
 pub type Told<E> = Vec<(u64, Result<(), E>)>;
 /// What became of each change, by its number.
 pub type Outcomes<R> = Vec<(u64, Outcome<R>)>;
+
+/// What a publication came to: the changes it landed, each with what its
+/// forge said when told; or the push that would land them refused, with
+/// the changes it would have landed and what git said.
+enum Published<E> {
+    Landed(Told<E>),
+    Refused(Vec<u64>, String),
+}
 
 /// One program's landing on one remote, by plain git.
 pub struct Lander<'a, F: Forge> {
@@ -525,9 +536,25 @@ where
         id: &str,
         changes: &[Change],
     ) -> Result<Told<F::Error>, Error<F::Error>> {
+        match self.published(target, id, changes)? {
+            Published::Landed(told) => Ok(told),
+            Published::Refused(..) => Ok(vec![]),
+        }
+    }
+
+    /// Lands the candidate `id` as `publish` does → what it came to: where
+    /// the push is refused, the changes it would have landed and what git
+    /// said; the chain stands as it was read.
+    fn published(
+        &self,
+        target: &str,
+        id: &str,
+        changes: &[Change],
+    ) -> Result<Published<F::Error>, Error<F::Error>> {
+        let none = || Ok(Published::Landed(vec![]));
         let read = self.read(target)?;
         if !read.chain.ripe(id, &read.base) {
-            return Ok(vec![]);
+            return none();
         }
         let members: Vec<&Candidate<F::Note>> = read.chain.members(id);
         let asked = |c: &Candidate<F::Note>| {
@@ -543,7 +570,7 @@ where
             if let Err(_refusal) = self.forge.may_land(&asked(m)).map_err(Error::Forge)? {
                 let m = m.id.clone();
                 self.change(target, |chain| chain.invalidate(&m, "refused"))?;
-                return Ok(vec![]);
+                return none();
             }
         }
         let last =
@@ -562,7 +589,7 @@ where
             read.chain.publication(id, &read.base, recorded, heads).filter(|_| ordered)
         else {
             self.change(target, |chain| chain.invalidate(id, "publication_evidence_changed"))?;
-            return Ok(vec![]);
+            return none();
         };
         let landed: Vec<Candidate<F::Note>> = members.iter().map(|c| (*c).clone()).collect();
         let mut next = read.chain.clone();
@@ -580,11 +607,12 @@ where
         }
         let mut args = vec!["push", "--quiet", "--atomic", self.git.remote.as_str()];
         args.extend(refspecs.iter().map(String::as_str));
-        if git(self.dir(), &args).is_err() {
-            return Ok(vec![]);
+        if let Err(said) = git(self.dir(), &args) {
+            return Ok(Published::Refused(landed.iter().map(|c| c.change).collect(), said));
         }
         let commit = last.commit.clone();
-        Ok(landed.iter().map(|c| (c.change, self.forge.landed(&asked(c), &commit))).collect())
+        let told = landed.iter().map(|c| (c.change, self.forge.landed(&asked(c), &commit)));
+        Ok(Published::Landed(told.collect()))
     }
 
     /// Removes the worktree of each candidate that has ended and stopped.
@@ -641,6 +669,7 @@ where
         let target = target.to_string();
         let mut outcomes: Outcomes<F::Refusal> = vec![];
         let mut ids: Vec<(u64, String)> = vec![];
+        let mut refused: Refusals = vec![];
         for change in changes {
             match self.assign(change)? {
                 Ok(id) => ids.push((change.number, id)),
@@ -672,12 +701,12 @@ where
                 .map(|c| c.id.as_str())
                 .find(|id| read.chain.ripe(id, &read.base));
             let Some(ripe) = ripe else { break };
-            let landed = self.publish(&target, ripe, changes)?;
+            let landed = self.publish_noting(&target, ripe, changes, &mut refused)?;
             if landed.is_empty() && read.chain.next(ripe) == Some(Next::Waiting) {
                 break;
             }
         }
-        self.outcomes(&target, ids, outcomes)
+        self.outcomes(&target, ids, outcomes, &refused)
     }
 
     /// Lands `changes` on `target` as a batch round (docs/adr/0068): assigns
@@ -695,6 +724,7 @@ where
         let mut outcomes: Outcomes<F::Refusal> = vec![];
         let mut ids: Vec<(u64, String)> = vec![];
         let mut asking: Vec<Change> = changes.to_vec();
+        let mut refused: Refusals = vec![];
         loop {
             let read = self.read(target)?;
             // An ended candidate leaves the record once its worktree is
@@ -729,15 +759,29 @@ where
                     }
                 }
                 BatchStep::Land(id) => {
-                    let landed = self.publish(target, &id, changes)?;
-                    let again = self.read(target)?.chain.batch_step();
+                    let landed = self.publish_noting(target, &id, changes, &mut refused)?;
+                    let chain = self.read(target)?.chain;
+                    // A change asked again whose candidate an earlier run
+                    // left has landed with it: it is not assigned again.
+                    for change in asking.iter().filter(|c| landed.contains(&c.number)) {
+                        let mine = chain
+                            .candidates
+                            .iter()
+                            .rev()
+                            .find(|c| c.change == change.number && c.phase == Phase::Landed);
+                        if let Some(c) = mine {
+                            ids.push((change.number, c.id.clone()));
+                        }
+                    }
+                    asking.retain(|c| !landed.contains(&c.number));
+                    let again = chain.batch_step();
                     if landed.is_empty() && again == Some(BatchStep::Land(id)) {
                         break;
                     }
                 }
             }
         }
-        let mut outcomes = self.outcomes(target, ids, outcomes)?;
+        let mut outcomes = self.outcomes(target, ids, outcomes, &refused)?;
         outcomes.sort_by_key(|(number, _)| {
             changes.iter().position(|c| c.number == *number).unwrap_or(usize::MAX)
         });
@@ -770,13 +814,34 @@ where
         Ok(again)
     }
 
+    /// Publishes the candidate `id` → the changes it landed; a refused push
+    /// is noted in `refused`, against each change it would have landed.
+    fn publish_noting(
+        &self,
+        target: &str,
+        id: &str,
+        changes: &[Change],
+        refused: &mut Refusals,
+    ) -> Result<Vec<u64>, Error<F::Error>> {
+        match self.published(target, id, changes)? {
+            Published::Landed(told) => Ok(told.into_iter().map(|(number, _)| number).collect()),
+            Published::Refused(numbers, said) => {
+                refused.retain(|(number, _)| !numbers.contains(number));
+                refused.extend(numbers.into_iter().map(|number| (number, said.clone())));
+                Ok(vec![])
+            }
+        }
+    }
+
     /// What became of each change of `ids`, by its candidate, after
-    /// `outcomes`, those that were assigned none.
+    /// `outcomes`, those that were assigned none; one still waiting whose
+    /// push was refused is `Unpublished`, with what git said (`refused`).
     fn outcomes(
         &self,
         target: &str,
         ids: Vec<(u64, String)>,
         mut outcomes: Outcomes<F::Refusal>,
+        refused: &Refusals,
     ) -> Result<Outcomes<F::Refusal>, Error<F::Error>> {
         let chain = self.change(target, |_| {})?;
         self.remove_ended(&chain);
@@ -787,11 +852,20 @@ where
                 Some(c) => c.decision().map_or(Outcome::Waiting, Outcome::Decided),
                 None => Outcome::Waiting,
             };
+            let said = refused.iter().find(|(n, _)| *n == number).map(|(_, said)| said);
+            let outcome = match (outcome, said) {
+                (Outcome::Waiting, Some(said)) => Outcome::Unpublished(said.clone()),
+                (outcome, _) => outcome,
+            };
             outcomes.push((number, outcome));
         }
         Ok(outcomes)
     }
 }
+
+/// The changes whose publication's push was refused, each with what git
+/// said.
+type Refusals = Vec<(u64, String)>;
 
 /// `ids` without the candidates `chain` has decided, each one's outcome put
 /// in `outcomes`; one cancelled `rebuilt` is to be assigned again, and is

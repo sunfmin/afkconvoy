@@ -781,3 +781,72 @@ fn a_change_whose_source_the_remote_has_not_is_gone_and_the_rest_lands() {
     assert_eq!(outcomes, [(2, Outcome::Gone), (3, Outcome::Landed(landed.commit.clone()))]);
     assert_eq!(landed_files(&work), ["file-2.txt"]);
 }
+
+/// Makes the remote refuse every push to its `main` with `reason`, or, where
+/// `None`, take them again: a pre-receive hook.
+fn refuse_main(work: &Path, reason: Option<&str>) {
+    let hooks = PathBuf::from(git(work, &["remote", "get-url", "origin"])).join("hooks");
+    let hook = hooks.join("pre-receive");
+    let Some(reason) = reason else {
+        std::fs::remove_file(hook).unwrap();
+        return;
+    };
+    let script = format!(
+        "#!/bin/sh\nwhile read old new name; do\n  if [ \"$name\" = refs/heads/main ]; then echo '{reason}' >&2; exit 1; fi\ndone\n"
+    );
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::write(&hook, script).unwrap();
+    let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&hook, executable).unwrap();
+}
+
+/// A run's push that would land a green round is refused by the remote
+/// (sunfmin/control#998): each change it would have landed is unpublished,
+/// with what git said, never waiting; its candidate stays green on the
+/// chain, and the next run whose push takes lands it, gating nothing again.
+#[test]
+fn a_publication_whose_push_is_refused_is_unpublished_with_git_s_error_and_lands_at_the_next_run() {
+    for landing in [Landing::PerCandidate, Landing::Batch] {
+        let root = tempfile::tempdir().unwrap();
+        let (work, ran) = scratch(root.path());
+        let asked = changes(&work, 2, &[]);
+        let base = git(&work, &["rev-parse", "main"]);
+        let forge = Fake::default();
+        let worktrees = root.path().join("candidates");
+        let lander = lander(&work, &worktrees, &forge);
+        refuse_main(&work, Some("main is not yours to push"));
+
+        let outcomes = lander.land_with(&asked, Some(landing)).unwrap();
+
+        assert_eq!(outcomes.len(), 2, "{landing:?}: {outcomes:?}");
+        for (_, outcome) in &outcomes {
+            let Outcome::Unpublished(said) = outcome else { panic!("{landing:?}: {outcomes:?}") };
+            assert!(said.contains("main is not yours to push"), "{landing:?}: {said}");
+        }
+        let chain = recorded(&work);
+        assert!(chain.candidates.iter().all(|c| c.valid()), "{chain:?}");
+        let tip = chain.candidates.last().unwrap().clone();
+        assert!(chain.ripe(&tip.id, &base), "still ripe: {chain:?}");
+        git(&work, &["fetch", "--quiet", "origin"]);
+        assert_eq!(git(&work, &["rev-parse", "origin/main"]), base, "nothing landed");
+        assert!(forge.landed.borrow().is_empty());
+        let gated = runs(&ran);
+
+        refuse_main(&work, None);
+        let outcomes = lander.land_with(&asked, Some(landing)).unwrap();
+
+        let chain = recorded(&work);
+        let commits: Vec<String> = chain.candidates.iter().map(|c| c.commit.clone()).collect();
+        assert_eq!(chain.candidates.len(), 2, "no second candidate: {chain:?}");
+        assert_eq!(
+            outcomes,
+            [(1, Outcome::Landed(commits[0].clone())), (2, Outcome::Landed(commits[1].clone()))],
+            "{landing:?}"
+        );
+        assert_eq!(runs(&ran), gated, "{landing:?}: nothing gated again");
+        git(&work, &["fetch", "--quiet", "origin"]);
+        assert_eq!(git(&work, &["rev-parse", "origin/main"]), tip.commit);
+        let told: Vec<u64> = forge.landed.borrow().iter().map(|(n, _)| *n).collect();
+        assert_eq!(told, [1, 2]);
+    }
+}
