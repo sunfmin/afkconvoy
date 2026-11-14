@@ -437,6 +437,23 @@ impl<N> Default for Chain<N> {
 }
 
 impl<N: Clone> Chain<N> {
+    /// `id` as a candidate's id no candidate of the chain holds: itself, or
+    /// with the first `-<n>` from 2 that is free. A run that takes over what
+    /// an ended run left, in the same second and on the same predecessor,
+    /// merges the same commit again and would name its candidate as the one
+    /// it cancelled (sunfmin/control#945).
+    pub fn unused_id(&self, id: String) -> String {
+        let taken = |id: &str| self.candidates.iter().any(|c| c.id == id);
+        if !taken(&id) {
+            return id;
+        }
+        let mut n = 2;
+        while taken(&format!("{id}-{n}")) {
+            n += 1;
+        }
+        format!("{id}-{n}")
+    }
+
     /// The window has no bound of its own: the worker lanes bound how many
     /// gates run at once, and a round takes every PR that is ready
     /// (sunfmin/control#244). Unconfirmed cancellation still holds it, and a
@@ -1100,6 +1117,17 @@ mod tests {
 
     /// What the chain leaves a candidate in decides it
     /// (sunfmin/control#620): each state to its decision.
+    #[test]
+    fn a_candidate_id_the_chain_holds_is_given_the_first_free_suffix() {
+        let chain = Chain { candidates: (0..2).map(candidate).collect(), ..Chain::default() };
+        assert_eq!(chain.unused_id("c9".into()), "c9");
+        assert_eq!(chain.unused_id("c0".into()), "c0-2");
+        let mut held = candidate(0);
+        held.id = "c0-2".into();
+        let chain = Chain { candidates: vec![candidate(0), held], ..Chain::default() };
+        assert_eq!(chain.unused_id("c0".into()), "c0-3");
+    }
+
     #[test]
     fn the_chain_decides_each_candidate_it_leaves() {
         let decisions = |chain: &Chain| -> Vec<Option<Decision>> {

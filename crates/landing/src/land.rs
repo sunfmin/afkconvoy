@@ -313,12 +313,12 @@ where
                 &["commit-tree", &tree, "-p", &predecessor, "-p", &original, "-m", &message],
             )?;
             let own = (self.declared)(self.dir(), &commit)?.own();
-            let id = format!(
+            let id = read.chain.unused_id(format!(
                 "{}-{}-{}",
                 change.number,
                 (self.now)(),
                 commit.get(..12).unwrap_or(&commit)
-            );
+            ));
             let worktree = self.worktrees.join(&id);
             read.chain.assign(Candidate {
                 id: id.clone(),
