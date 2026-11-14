@@ -275,7 +275,10 @@ pub fn tick(
     }
     // A busy host, an account that would run out or a long exclusive queue
     // starts no new worker this tick (docs/adr/0019, docs/adr/0072).
-    let mut admission = admission_of(&fleet, &set, 0)?;
+    // The landing train is read once a tick: its answers come from turns
+    // that take longer than a pass (docs/adr/0076).
+    let landing = crate::admission::landing_of(&fleet.repo.dir, fleet.now);
+    let mut admission = admission_of(&fleet, &set, 0, landing)?;
     set.held_back = admission.holds();
     let me_said = me.instance.as_str();
     let lost = before.map(|before| before.lost(&fleet.scan.claims, me_said)).unwrap_or_default();
@@ -301,7 +304,7 @@ pub fn tick(
     let (mut started, mut read_again) = (0, None);
     let pass = run_pass(&set, bound, set.held(), |step| {
         if step == TickStep::Admit {
-            return match admission_of(&fleet, read.set, started) {
+            return match admission_of(&fleet, read.set, started, landing) {
                 Ok(again) => {
                     let held = !again.holds().is_empty();
                     read_again = Some(again);
@@ -547,11 +550,16 @@ fn carry_out(
 
 /// Admission for a start of the fleet `fleet` now: the host as read now,
 /// the account its next worker starts on (`usage_of`), with `started` more
-/// workers on it than `set` holds, and the exclusive queue.
-fn admission_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Result<Admission> {
-    Ok(Admission::read(&fleet.repo.dir)?
-        .with_usage(usage_of(fleet, set, started))
-        .with_landing(&fleet.repo.dir, fleet.now))
+/// workers on it than `set` holds, the exclusive queue, and the checkout's
+/// landing train as the tick read it, `landing`.
+fn admission_of(
+    fleet: &Fleet,
+    set: &WorkingSet,
+    started: usize,
+    landing: Option<afkconvoy_core::admission::Landing>,
+) -> Result<Admission> {
+    let admission = Admission::read(&fleet.repo.dir)?.with_usage(usage_of(fleet, set, started));
+    Ok(Admission { landing, ..admission })
 }
 
 /// How long ago a worker's record of its account's windows may have been
