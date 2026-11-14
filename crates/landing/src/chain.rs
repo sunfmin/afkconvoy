@@ -447,9 +447,9 @@ impl<N: Clone> Chain<N> {
         if !taken(&id) {
             return id;
         }
-        let mut n = 2;
+        let mut n: u64 = 2;
         while taken(&format!("{id}-{n}")) {
-            n += 1;
+            n = n.saturating_add(1);
         }
         format!("{id}-{n}")
     }
