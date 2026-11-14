@@ -49,6 +49,10 @@ pub struct Process {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plain {}
 
+/// How many fast-green candidates at the head of a chain start a round
+/// without waiting for the turns still pending or gating (`round_tip`).
+pub const ROUND_FULL: usize = 4;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Candidate<N = Plain> {
     pub id: String,
@@ -610,11 +614,25 @@ impl<N: Clone> Chain<N> {
     /// slow-gating, and no pending turn may still join it, where its commit
     /// declares a slow gate not yet passed. A candidate assigned during the
     /// round joins the next one.
+    ///
+    /// A round no longer waits once `ROUND_FULL` candidates at the head of
+    /// the chain are fast-green: it starts at the last of that fast-green
+    /// head, and the pending turns and the candidates still gating behind it
+    /// join the next round. Otherwise a steady stream of turns starves it:
+    /// guild's ten fast-green candidates of 2026-11-14 waited over an hour,
+    /// each turn that asked again pending for the round they waited on.
     pub fn round_tip(&self) -> Option<&Candidate<N>> {
         let valid: Vec<&Candidate<N>> = self.candidates.iter().filter(|c| c.valid()).collect();
-        let tip = valid.last()?;
-        let ready = !self.joinable() && valid.iter().all(|c| c.phase == Phase::Green);
-        (ready && tip.slow.is_some() && !tip.slowed).then_some(*tip)
+        let head: Vec<&Candidate<N>> =
+            valid.iter().copied().take_while(|c| c.phase == Phase::Green).collect();
+        let tip = if head.len() == valid.len() && !self.joinable() {
+            valid.last()?
+        } else if head.len() >= ROUND_FULL && head.iter().all(|c| !c.slowed) {
+            head.last()?
+        } else {
+            return None;
+        };
+        (tip.slow.is_some() && !tip.slowed).then_some(*tip)
     }
 
     /// Whether a pending turn may still join the round: one is pending, and
@@ -1403,6 +1421,24 @@ mod tests {
         chain.candidates[0].stopped = true;
         assert!(chain.can_assign(true));
         assert!(!chain.can_assign(false));
+    }
+
+    #[test]
+    fn a_full_fast_green_head_starts_its_round_while_turns_still_pend_or_gate() {
+        let mut chain = Chain { candidates: (0..ROUND_FULL + 1).map(split).collect(), ..Chain::default() };
+        let owner = chain.candidates[0].owner.clone();
+        chain.pending.push(Barrier { id: "waiting".into(), owner });
+        for n in 0..ROUND_FULL - 1 {
+            chain.finish(&format!("c{n}"), ran(true));
+        }
+        assert!(chain.round_tip().is_none(), "a short head still waits for the round to fill");
+        chain.finish(&format!("c{}", ROUND_FULL - 1), ran(true));
+        let tip = format!("c{}", ROUND_FULL - 1);
+        assert_eq!(chain.round_tip().map(|c| c.id.clone()), Some(tip.clone()), "the last still gates");
+        assert!(chain.start_round(&tip));
+        assert_eq!(chain.round_of("c0").map(|c| c.id.clone()), Some(tip.clone()));
+        assert!(chain.round_of(&format!("c{ROUND_FULL}")).is_none(), "it joins the next round");
+        assert!(chain.round_tip().is_none(), "one round at a time");
     }
 
     #[test]
