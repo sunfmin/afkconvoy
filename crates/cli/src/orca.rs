@@ -774,8 +774,7 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
         }
         let _ = worker_tmp::retire(&path);
         retired = true;
-        crate::copies::removable(&path);
-        if std::fs::remove_dir_all(&path).is_err() || path.exists() {
+        if discarded(&path).is_err() || path.exists() {
             eprintln!(
                 "warning: {} is still there and will be removed on a later tick",
                 path.display()
@@ -791,6 +790,18 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
         worktree_list_again()?;
     }
     Ok(())
+}
+
+/// Removes the directory at `path`: moved into the trash beside it for a
+/// detached child to delete (`trash::discard`), so its files are not deleted
+/// on this thread. Only one that cannot be moved — a trash on another
+/// filesystem — is deleted here, as it always was.
+fn discarded(path: &Path) -> Result<()> {
+    if crate::trash::discard(path).is_ok() {
+        return Ok(());
+    }
+    crate::copies::removable(path);
+    std::fs::remove_dir_all(path).with_context(|| format!("cannot remove {}", path.display()))
 }
 
 /// Keeps the stock watch's own directory known to orca, so its terminal can
@@ -1579,21 +1590,34 @@ impl Worktree {
     /// its worker's `TMPDIR` with it (`worker_tmp`): turned away first, for a
     /// server the worker started, and reclaimed once nothing runs with it.
     ///
-    /// Directories the owner cannot write are opened first (`copies::removable`):
-    /// git deletes the gitdir and then stops on one, and orca records that and
-    /// still answers success. A directory still there is removed, and the list
-    /// is read again so orca drops the failure. An orca error removes nothing
-    /// further: the caller keeps the claim and a later tick tries again.
+    /// Its files are set aside into the trash beside it first, and a
+    /// detached child deletes them: none is deleted on this thread, and the
+    /// path is free at once (sunfmin/control#987). Where they cannot be set
+    /// aside, directories the owner cannot write are opened first
+    /// (`copies::removable`): git deletes the gitdir and then stops on one,
+    /// and orca records that and still answers success. A directory still
+    /// there is discarded, and the list is read again so orca drops the
+    /// failure. An orca error removes nothing further and puts the files
+    /// back: the caller keeps the claim and a later tick tries again.
     pub fn remove(&self) -> Result<()> {
         // One that cannot be turned costs a server the worker started its
         // directory, and no worktree is kept for that.
         let _ = worker_tmp::retire(&self.path);
-        crate::copies::removable(&self.path);
-        orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
-        if self.path.exists() {
+        let aside = self.set_files_aside();
+        if aside.is_none() {
             crate::copies::removable(&self.path);
-            std::fs::remove_dir_all(&self.path)
-                .with_context(|| format!("cannot remove {}", self.path.display()))?;
+        }
+        if let Err(error) = orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"]) {
+            if let Some(entry) = &aside {
+                self.put_files_back(entry);
+            }
+            return Err(error);
+        }
+        if let Some(entry) = &aside {
+            crate::trash::delete_detached(entry);
+        }
+        if self.path.exists() {
+            discarded(&self.path)?;
         }
         if self.path.exists() {
             bail!("{} is still there", self.path.display());
@@ -1603,6 +1627,37 @@ impl Worktree {
         worktree_list_again()?;
         let _ = worker_tmp::reclaim();
         Ok(())
+    }
+
+    /// Sets this worktree's files aside into the trash beside it, leaving
+    /// only its `.git` pointer for orca and git to remove → where they went
+    /// (sunfmin/control#987). A worktree's `target/` is gigabytes: git
+    /// deleting it holds the tick for seconds, and deleting it here costs the
+    /// host runner its own CPU. Its files are deleted once orca has removed
+    /// the worktree (`trash::delete_detached`), and put back if orca refuses.
+    /// None where they cannot be set aside: no `.git` pointer, or a trash on
+    /// another filesystem; the worktree is then removed as it is.
+    fn set_files_aside(&self) -> Option<PathBuf> {
+        let pointer = std::fs::read(self.path.join(".git")).ok()?;
+        let entry = crate::trash::set_aside(&self.path).ok()?;
+        let made = std::fs::create_dir(&self.path)
+            .and_then(|()| std::fs::write(self.path.join(".git"), &pointer));
+        if made.is_err() {
+            self.put_files_back(&entry);
+            return None;
+        }
+        Some(entry)
+    }
+
+    /// Puts files `set_files_aside` moved back, in place of the bare pointer
+    /// left for orca. Best effort: one that cannot go back is deleted with
+    /// the trash, and the worktree's commits are on its branch.
+    fn put_files_back(&self, entry: &Path) {
+        let _ = std::fs::remove_file(self.path.join(".git"));
+        let _ = std::fs::remove_dir(&self.path);
+        if self.path.exists() || crate::trash::put_back(entry, &self.path).is_err() {
+            crate::trash::delete_detached(entry);
+        }
     }
 
     fn selector(&self) -> String {

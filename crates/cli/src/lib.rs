@@ -140,6 +140,7 @@ pub mod tools;
 pub mod topic;
 pub mod tracker;
 mod transient;
+pub mod trash;
 mod turn;
 mod turn_answer;
 mod unbound_issue;
