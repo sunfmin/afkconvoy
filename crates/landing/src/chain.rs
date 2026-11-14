@@ -745,7 +745,7 @@ impl<N: Clone> Chain<N> {
     /// A round no longer waits once `ROUND_FULL` candidates at the head of
     /// the chain are fast-green: it starts at the last of that fast-green
     /// head, and the pending turns and the candidates still gating behind it
-    /// join the next round. Otherwise a steady stream of turns starves it:
+    /// wait for the next round. Otherwise a steady stream of turns starves it:
     /// guild's ten fast-green candidates of 2026-11-14 waited over an hour,
     /// each turn that asked again pending for the round they waited on.
     pub fn round_tip(&self) -> Option<&Candidate<N>> {
