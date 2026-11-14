@@ -223,6 +223,7 @@ kinds! {
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
+    LandingContention: Warning, "its candidate chain cannot keep up";
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which is ignored";
     KeptWorktree: Info, "is kept with no claim";
@@ -280,6 +281,7 @@ impl Kind {
                 | Kind::DaybookUnwritten
                 | Kind::PathStale
                 | Kind::NotUpgraded
+                | Kind::LandingContention
         )
     }
 }
@@ -2327,7 +2329,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
 
     let log = Log::of(repo).ok();
     let entries = log.as_ref().and_then(Log::read);
-    let bounded = exclusive_findings(entries.as_deref().unwrap_or_default(), now);
+    let mut bounded = exclusive_findings(entries.as_deref().unwrap_or_default(), now);
+    bounded.extend(landing_finding(entries.as_deref().unwrap_or_default(), now));
     let lines = entries.as_deref().unwrap_or_default();
     let (instance, _started_with, ticks) = run_log::run(lines, host);
     let mut run = Run {
@@ -2479,6 +2482,33 @@ fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
             ))
         })
         .collect()
+}
+
+/// A repo whose candidate chain had more conflicts than landings in the last
+/// hour, at the fewest that hold its starts (docs/adr/0076): admission
+/// starts no new worker of it until the chain drains. Nothing of the host
+/// is to mend, and the watch is not called for it.
+fn landing_finding(entries: &[Entry], now: u64) -> Option<Finding> {
+    let landing = crate::admission::landing_in(entries, now);
+    if !landing.contended() {
+        return None;
+    }
+    let window = afkconvoy_core::admission::LANDING_WINDOW;
+    Some(finding(
+        Kind::LandingContention,
+        json!(["landing-contention"]),
+        format!(
+            "its candidate chain cannot keep up: {} conflicts against {} landing(s) in the last \
+             hour, and admission starts no new worker of this repo until it drains",
+            landing.conflicts, landing.landed
+        ),
+        format!(
+            "this host's tick log has {} `land` turns answer `conflict` or \
+             `speculative_conflict` and {} answer `merged` in the last {window} seconds",
+            landing.conflicts, landing.landed
+        ),
+        "afkconvoy plan".to_string(),
+    ))
 }
 
 /// Watch log lines are the host's. `doctor --all` says each once.

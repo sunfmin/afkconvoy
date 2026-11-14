@@ -471,6 +471,10 @@ pub struct Observed<'a> {
     /// The open issues of a bound repo that have a stage record: a worker
     /// was started on each before. Empty in an unbound repo.
     pub begun: &'a [u64],
+    /// The open issues whose named files overlap those the claimed issues
+    /// name (`apart::overlapping`): a pass starts them after the rest, so
+    /// that parallel work rarely conflicts (docs/adr/0076).
+    pub overlapping: &'a [u64],
     /// The patrols the repo names (`patrol::Seen`), in its order. Empty in
     /// an unbound repo.
     pub patrols: &'a [patrol::Seen],
@@ -668,8 +672,11 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         };
         set.excluded.push(Excluded { number, title, reason });
     }
-    // Stable: lowest number first on either side.
-    set.frontier.sort_by_key(|issue| !seen.begun.contains(&issue.number));
+    // Stable: what was begun first, then what is apart from the work in
+    // flight; lowest number first within each.
+    set.frontier.sort_by_key(|issue| {
+        (!seen.begun.contains(&issue.number), seen.overlapping.contains(&issue.number))
+    });
     for claim in claims {
         let gone = seen.gone.contains(&claim.number);
         let closed = gone || seen.closed.contains(&claim.number);
@@ -778,6 +785,39 @@ mod tests {
     const READY: &[&str] = &["ready-for-agent"];
 
     #[test]
+    fn the_issues_apart_from_the_work_in_flight_go_first() {
+        let issues = [issue(1, READY), issue(2, READY), issue(3, READY), issue(4, READY)];
+        let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
+            issues: &issues,
+            prs: &[],
+            claims: &[claim(4, "peer")],
+            heartbeats: &[("peer".into(), 1000)],
+            closed: &[],
+            gone: &[],
+            kept: &[],
+            landed: &[],
+            declared: &[],
+            idle: &[],
+            due: &[],
+            flows: &FlowLabels::default(),
+            landing: &[],
+            begun: &[],
+            overlapping: &[1, 3],
+            patrols: &[],
+            waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
+            tracker: &Tracker::Own,
+            cut: None,
+        };
+        let set = assemble(&seen, Some(&me()), 1000, &config());
+        let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
+        assert_eq!(frontier, [2, 1, 3], "what overlaps waits behind, still in number order");
+    }
+
+    #[test]
     fn the_frontier_is_every_issue_nothing_bars() {
         let mut blocked = issue(6, READY);
         blocked.open_blockers = vec![41, 42];
@@ -808,6 +848,7 @@ mod tests {
             flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -862,6 +903,7 @@ mod tests {
             flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -914,6 +956,7 @@ mod tests {
             flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -952,6 +995,7 @@ mod tests {
             flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[
                 (4, Waits::Escalated(back()), Some(900)),
@@ -1014,6 +1058,7 @@ mod tests {
             flows: &no_flows,
             landing: &[],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -1096,6 +1141,7 @@ mod tests {
             flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -1212,6 +1258,7 @@ mod tests {
             flows: &FlowLabels::default(),
             landing: &[],
             begun: &[5, 6, 7, 8, 9, 10, 11, 12],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -1296,6 +1343,7 @@ mod tests {
             // #10's PR is gone: its landing worker has nothing to join.
             landing: &[8, 9, 10],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -1355,6 +1403,7 @@ mod tests {
             flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -1405,6 +1454,7 @@ mod tests {
             flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -1439,6 +1489,7 @@ mod tests {
             flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
+            overlapping: &[],
             patrols: &[],
             waiting: &[],
             landings: &[],
@@ -1475,6 +1526,7 @@ mod tests {
                     flows: &FlowLabels::default(),
                     landing: &[],
                     begun: &[],
+                    overlapping: &[],
                     patrols: &[],
                     waiting: &[],
                     landings: &[],

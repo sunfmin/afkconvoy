@@ -25,6 +25,9 @@ pub enum Reason {
     Queue,
     /// The share of the host's cores or memory afkconvoy may use itself.
     Share,
+    /// The repo's candidate chain, which cannot keep up (docs/adr/0076). It
+    /// drains as the running workers land, and calls for no watch.
+    Landing,
 }
 
 impl Reason {
@@ -37,6 +40,7 @@ impl Reason {
             Hold::Window { .. } => Reason::Window,
             Hold::Queue { .. } => Reason::Queue,
             Hold::OwnCores { .. } | Hold::OwnMemory { .. } => Reason::Share,
+            Hold::Landing { .. } => Reason::Landing,
         }
     }
 
@@ -49,13 +53,22 @@ impl Reason {
             Reason::Window => "window",
             Reason::Queue => "queue",
             Reason::Share => "share",
+            Reason::Landing => "landing",
         }
     }
 
     pub fn read(word: &str) -> Option<Reason> {
-        [Reason::Load, Reason::Memory, Reason::Disk, Reason::Window, Reason::Queue, Reason::Share]
-            .into_iter()
-            .find(|reason| reason.word() == word)
+        [
+            Reason::Load,
+            Reason::Memory,
+            Reason::Disk,
+            Reason::Window,
+            Reason::Queue,
+            Reason::Share,
+            Reason::Landing,
+        ]
+        .into_iter()
+        .find(|reason| reason.word() == word)
     }
 }
 

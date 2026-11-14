@@ -2,7 +2,9 @@
 //! share of its load, below its share of available memory, or low on free disk
 //! (docs/adr/0019) — while a usage window of the account it would start on
 //! would run out before it resets, or while the host's exclusive queue would
-//! take longer than its bound to drain (docs/adr/0072). It alone decides each
+//! take longer than its bound to drain (docs/adr/0072), or — for one repo —
+//! while its candidate chain has had more conflicts than landings in the last
+//! hour (docs/adr/0076). It alone decides each
 //! start: no number of workers bounds a fleet. Whether admission holds is decided here, from what the
 //! effect layer read of the host and the shares it is held to; reading the
 //! host is the effect layer's.
@@ -112,6 +114,75 @@ pub enum Hold {
     /// afkconvoy's own processes on the host hold `resident` bytes, at or
     /// past `limit`, the share of the host's memory it may use (`Cap`).
     OwnMemory { resident: u64, limit: u64 },
+    /// The repo's candidate chain cannot keep up: in the last `window`
+    /// seconds its `land` turns answered `conflicts` conflicts —
+    /// `conflict` or `speculative_conflict`, each a merge again and a
+    /// gate again — and only `landed` landings (sunfmin/control#914).
+    Landing { conflicts: u64, landed: u64, window: u64 },
+}
+
+/// How far back admission reads a repo's candidate chain, in seconds: an hour.
+pub const LANDING_WINDOW: u64 = 3600;
+
+/// The fewest conflicts in `LANDING_WINDOW` that hold a repo's starts: one
+/// or two are the ordinary cost of parallel work, not a chain that cannot
+/// keep up.
+pub const LANDING_LEAST: u64 = 3;
+
+/// What a repo's candidate chain answered in a window: its turns that
+/// conflicted and its turns that landed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Landing {
+    pub conflicts: u64,
+    pub landed: u64,
+}
+
+impl Landing {
+    /// The answers `outcomes` — each a `land` turn's `outcome` word with when
+    /// it was said — of the `window` seconds up to `now`: `conflict` and
+    /// `speculative_conflict` are conflicts, `merged` a landing, and any
+    /// other word neither.
+    pub fn tally<'a>(
+        outcomes: impl IntoIterator<Item = (u64, &'a str)>,
+        now: u64,
+        window: u64,
+    ) -> Landing {
+        let since = now.saturating_sub(window);
+        let mut landing = Landing::default();
+        for (at, outcome) in outcomes {
+            if at < since || at > now {
+                continue;
+            }
+            match outcome {
+                "conflict" | "speculative_conflict" => {
+                    landing.conflicts = landing.conflicts.saturating_add(1)
+                }
+                "merged" => landing.landed = landing.landed.saturating_add(1),
+                _ => {}
+            }
+        }
+        landing
+    }
+
+    /// Whether its conflicts outnumber its landings, at `LANDING_LEAST` or
+    /// more: each landing then costs more merges and gates than it lands,
+    /// and another worker would only add to them.
+    pub fn contended(self) -> bool {
+        self.conflicts >= LANDING_LEAST && self.conflicts > self.landed
+    }
+}
+
+/// Whether a repo whose candidate chain answered `landing` in the last
+/// `window` seconds starts no new worker: its chain cannot keep up, and a
+/// worker more makes each landing slower, not faster. It holds until the
+/// conflicts age out of the window or the landings catch up with them — the
+/// chain drains. What could not be read holds nothing back.
+pub fn landing_hold(landing: Option<Landing>, window: u64) -> Option<Hold> {
+    landing.filter(|landing| landing.contended()).map(|landing| Hold::Landing {
+        conflicts: landing.conflicts,
+        landed: landing.landed,
+        window,
+    })
 }
 
 /// The share of the host afkconvoy may use itself, each in percent, so that
@@ -450,6 +521,30 @@ mod tests {
             [Hold::OwnCores { used: 900, limit: 500 }],
             "memory not read: only the cores"
         );
+    }
+
+    #[test]
+    fn a_chain_holds_once_its_conflicts_outnumber_its_landings() {
+        let now = 10_000;
+        let said = [
+            (now - 4000, "conflict"),
+            (now - 3000, "speculative_conflict"),
+            (now - 2000, "conflict"),
+            (now - 1000, "merged"),
+            (now - 500, "gate_red"),
+            (now - 10, "speculative_conflict"),
+        ];
+        let landing = Landing::tally(said, now, LANDING_WINDOW);
+        assert_eq!(landing, Landing { conflicts: 3, landed: 1 }, "the first is past the hour");
+        assert_eq!(
+            landing_hold(Some(landing), LANDING_WINDOW),
+            Some(Hold::Landing { conflicts: 3, landed: 1, window: LANDING_WINDOW })
+        );
+        let kept_up = Landing { conflicts: 3, landed: 3 };
+        assert_eq!(landing_hold(Some(kept_up), LANDING_WINDOW), None, "as many landed");
+        let few = Landing { conflicts: LANDING_LEAST - 1, landed: 0 };
+        assert_eq!(landing_hold(Some(few), LANDING_WINDOW), None, "the ordinary cost");
+        assert_eq!(landing_hold(None, LANDING_WINDOW), None, "not read");
     }
 
     #[test]

@@ -91,8 +91,8 @@ impl FleetReport {
     ) -> FleetReport {
         // The account its next worker starts on, as its workers at work say it.
         let usage = crate::tick::usage_of(fleet, set, 0);
-        let admission =
-            Admission::read_from(&fleet.repo.dir, readings).map(|read| read.with_usage(usage));
+        let admission = Admission::read_from(&fleet.repo.dir, readings)
+            .map(|read| read.with_usage(usage).with_landing(&fleet.repo.dir, fleet.now));
         FleetReport::admitted(fleet, flows, set, admission.map_err(|e| format!("{e:#}")))
     }
 
@@ -134,7 +134,9 @@ impl FleetReport {
             harness: crate::named_harness::json_of(repo),
             tracker,
             deliveries: None,
-            admission: Admission::read_from(&repo.dir, readings).map_err(|e| format!("{e:#}")),
+            admission: Admission::read_from(&repo.dir, readings)
+                .map(|read| read.with_landing(&repo.dir, crate::clock()))
+                .map_err(|e| format!("{e:#}")),
             launches: vec![],
         }
     }
@@ -302,6 +304,7 @@ mod tests {
             cap: Default::default(),
             own: None,
             memory: None,
+            landing: None,
         }
     }
 
