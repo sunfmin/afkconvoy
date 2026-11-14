@@ -291,6 +291,41 @@ impl Repo {
         Ok(())
     }
 
+    /// Deletes the local branch `name` where nothing is lost with it: no
+    /// worktree has it checked out, and a tag or a remote branch holds its
+    /// tip → whether it was deleted. Orca keeps a removed worktree's branch
+    /// that holds a commit it cannot prove merged, as a cut's own commit is,
+    /// and gives up on a name taken a hundred times (sunfmin/control#1044).
+    pub fn delete_held_branch(&self, name: &str) -> Result<bool> {
+        let full = format!("refs/heads/{name}");
+        if !self.try_git(&["show-ref", "--verify", "--quiet", &full])?.ok {
+            return Ok(false);
+        }
+        let listed = self.git(&["worktree", "list", "--porcelain"])?;
+        if listed.lines().any(|line| line.strip_prefix("branch ") == Some(full.as_str())) {
+            return Ok(false);
+        }
+        let holders = self.git(&[
+            "for-each-ref",
+            "--count=1",
+            "--format=%(refname)",
+            "--contains",
+            &full,
+            "refs/tags",
+            "refs/remotes",
+        ])?;
+        if holders.trim().is_empty() {
+            return Ok(false);
+        }
+        Ok(self.try_git(&["branch", "-D", name])?.ok)
+    }
+
+    /// Every local branch, by its short name.
+    pub fn local_branches(&self) -> Result<Vec<String>> {
+        let listed = self.git(&["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
+        Ok(listed.lines().map(str::to_string).filter(|name| !name.is_empty()).collect())
+    }
+
     /// One fetch whose failure the caller reads. At `FETCH_LIMIT` its process
     /// group is ended and the call is a failure.
     pub fn try_fetch(&self, args: &[&str]) -> Result<Ran> {

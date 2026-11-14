@@ -1120,6 +1120,54 @@ fn a_cut_tags_its_commit_and_publishes_with_the_tag_checked_out() {
     assert_eq!(standing(&world, "alpha", 10_200), "tagged");
 }
 
+/// Every local branch orca made for a cut's checkout, in the fleet's checkout.
+fn local_cut_branches(world: &World) -> Vec<String> {
+    let listed = git(&world.clone, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+    listed
+        .lines()
+        .filter(|branch| is_worktree_named(branch.rsplit('/').next().unwrap(), CHECKOUT))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn two_cuts_leave_no_local_branch_of_the_first_cut_s_checkout() {
+    let world = cutting();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let first = checkout(&world);
+    let first_branch = git(&first, &["symbolic-ref", "--short", "HEAD"]).trim().to_string();
+    its_commit_is_made(&first);
+    world.afk_in(&first, &["cut", "--from", "tag", "--host", "h1"]).ok();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    assert!(!first.exists());
+    // Its tag holds the cut's commit: orca kept the branch, the removal did not.
+    assert_eq!(local_cut_branches(&world), Vec::<String>::new());
+
+    // Leftovers of cuts before: one a tag holds goes as the next cut starts,
+    // one holding a commit nothing else has stays.
+    git(&world.clone, &["branch", "tester/afkconvoy-cut-7", "v0.1.0"]);
+    let tree = git(&world.clone, &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+    let lone = git(&world.clone, &["commit-tree", &tree, "-p", "HEAD", "-m", "lone"]);
+    git(&world.clone, &["branch", "tester/afkconvoy-cut-8", lone.trim()]);
+
+    git(&world.clone, &["fetch", "-q", "origin"]);
+    git(&world.clone, &["merge", "-q", "--ff-only", "origin/main"]);
+    land(&world, "Add a gadget (#9)");
+    world.with_gh(|gh| {
+        gh["prs"].as_array_mut().unwrap().push(json!({
+            "number": 9, "title": "Add a gadget", "headRefName": "nine", "headRefOid": "",
+            "body": "", "state": "merged", "labels": []
+        }))
+    });
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_300)), ["cut done"]);
+    let second = checkout(&world);
+    let second_branch = git(&second, &["symbolic-ref", "--short", "HEAD"]).trim().to_string();
+    assert_eq!(record(&second)["version"], "0.1.2");
+    // The first cut's name was free again: orca numbers none.
+    assert_eq!(second_branch, first_branch);
+    assert_eq!(local_cut_branches(&world), [second_branch, "tester/afkconvoy-cut-8".to_string()]);
+}
+
 #[test]
 fn an_end_of_a_cut_that_fails_after_it_said_the_cut_ended_still_says_so() {
     let world = cutting();
