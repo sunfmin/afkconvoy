@@ -304,6 +304,7 @@ mod tests {
             cap: Default::default(),
             own: None,
             memory: None,
+            landing: None,
         }
     }
 

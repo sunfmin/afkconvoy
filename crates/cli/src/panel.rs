@@ -1819,6 +1819,7 @@ mod tests {
                 cap: Default::default(),
                 own: None,
                 memory: None,
+                landing: None,
             }),
             exclusive: Ok(Some((vec![], Some(false)))),
             lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },

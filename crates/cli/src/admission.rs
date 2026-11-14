@@ -644,6 +644,7 @@ mod tests {
             cap: Cap::default(),
             own: None,
             memory: None,
+            landing: None,
         };
         let said: Vec<String> = admission.holds().iter().map(|hold| admission.said(hold)).collect();
         assert_eq!(
