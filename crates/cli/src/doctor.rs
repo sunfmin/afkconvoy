@@ -187,6 +187,7 @@ kinds! {
     DaybookUnwritten: Warning, "a watch round's daybook entry is not written";
     NotMoved: Warning, "the host runner did not move onto";
     NotUpgraded: Warning, "is published, newer than the host runner's";
+    RunnerBusy: Warning, "the host runner's own process uses";
     PathStale: Warning, "is first on PATH";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
@@ -258,6 +259,7 @@ impl Kind {
                 | Kind::DaybookUnwritten
                 | Kind::NotMoved
                 | Kind::NotUpgraded
+                | Kind::RunnerBusy
                 | Kind::PathStale
                 | Kind::OtherAccount
                 | Kind::RepoUnworked

@@ -96,6 +96,7 @@ pub mod machine;
 pub mod measure;
 pub mod named_harness;
 pub mod orca;
+pub mod own_cpu;
 pub mod panel;
 pub mod park;
 pub mod patrol;
@@ -1663,6 +1664,8 @@ pub fn manual() -> agent_help::Help {
         .constant("MOVED_WITHIN_SECONDS", host_runner::MOVED_WITHIN.as_secs())
         .constant("MOVE_WAIT_SECONDS", host_runner::MOVE_WAIT_WITHIN.as_secs())
         .constant("PUBLISHED_LOOKED_MINUTES", published::LOOKED_EVERY.as_secs() / 60)
+        .constant("RUNNER_BUDGET_PERCENT", own_cpu::BUDGET_PERMILLE / 10)
+        .constant("RUNNER_SETTLED_MINUTES", own_cpu::SETTLED.as_secs() / 60)
         .constant("OUTGROWN_TIMES", afkconvoy_core::landing::OUTGROWN_TIMES)
         .constant("OUTGROWN_GIB", afkconvoy_core::landing::OUTGROWN_FLOOR >> 30)
         .constant("TIMED_OUT_CODE", gate::TIMED_OUT_CODE)

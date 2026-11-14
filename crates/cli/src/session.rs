@@ -281,8 +281,9 @@ type Stamp = (u64, u128);
 /// last look costs a `stat`, not a parse (sunfmin/control#938). A host
 /// watch's directory holds every session of its checkout, tens of
 /// megabytes read every two seconds.
-static READ: std::sync::Mutex<Option<std::collections::HashMap<Asked, (Stamp, Option<Turn>)>>> =
-    std::sync::Mutex::new(None);
+static READ: std::sync::Mutex<Option<Answers>> = std::sync::Mutex::new(None);
+
+type Answers = std::collections::HashMap<Asked, (Stamp, Option<Turn>)>;
 
 /// More answers than this are forgotten together: each start proof asks
 /// with its own bound.
@@ -297,7 +298,7 @@ fn remembered(
     turn_of: impl FnOnce(&str) -> Option<Turn>,
 ) -> Result<Option<Turn>> {
     let Some(stamp) = stamp(&key.path)? else { return Ok(None) };
-    let memo = |read: &Option<std::collections::HashMap<_, _>>| -> Option<Option<Turn>> {
+    let memo = |read: &Option<Answers>| -> Option<Option<Turn>> {
         let (known, turn) = read.as_ref()?.get(&key)?;
         (*known == stamp).then_some(*turn)
     };
