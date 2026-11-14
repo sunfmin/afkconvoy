@@ -792,6 +792,8 @@ pub fn serve(kept_by: Option<u32>) -> Result<Value> {
     std::env::set_current_dir("/").context("the host runner cannot work from /")?;
     let dir = cache()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
+    // What a host that stopped mid-delete left of a settled worktree.
+    crate::trash::sweep();
     let log = Arc::new(RunnerLog::default());
     {
         // A panic is a line of the log, as any thing that happened: the

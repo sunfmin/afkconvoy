@@ -283,6 +283,50 @@ fn a_settling_that_failed_keeps_the_claim_and_the_pass_goes_on() {
 }
 
 #[test]
+fn a_removal_orca_refuses_leaves_the_worktree_s_files_where_they_were() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    std::fs::create_dir_all(worktree.join("target/debug")).unwrap();
+    std::fs::write(worktree.join("target/debug/built"), "x").unwrap();
+    world.close_issue(3);
+    world.with_orca(|orca| orca["rm_fails"] = json!(true));
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked)[0], "settle 3 failed", "{ticked}");
+    assert!(worktree.join("target/debug/built").is_file(), "its files are put back");
+    let changed = git(&worktree, &["status", "--porcelain", "--untracked-files=no"]);
+    assert_eq!(changed, "", "no tracked file is missing");
+}
+
+#[test]
+fn a_settled_worktree_s_files_are_deleted_by_a_child_and_its_path_is_free_at_once() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    let target = worktree.join("target/debug/deps");
+    std::fs::create_dir_all(&target).unwrap();
+    for n in 0..2000 {
+        std::fs::write(target.join(format!("lib{n}.rlib")), "x").unwrap();
+    }
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert!(!worktree.exists(), "the path is free once settling answers");
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!common::worktree_listed(&listed, &worktree), "{listed}");
+    // The files went into the trash beside it, where a child deletes them.
+    let trash = worktree.parent().unwrap().join(".afkconvoy-trash");
+    assert!(trash.is_dir(), "{}", trash.display());
+    let since = std::time::Instant::now();
+    while std::fs::read_dir(&trash).unwrap().next().is_some() {
+        assert!(since.elapsed() < std::time::Duration::from_secs(30), "the trash is never emptied");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn a_settled_worktree_goes_when_the_gate_left_a_directory_the_owner_cannot_write() {
     let world = backlog(&[3]);
     tick(&world, "1000");
@@ -474,7 +518,10 @@ fn settling_ends_a_gate_its_killed_scheduler_left_stopped_and_removes_the_worktr
     let began = std::time::Instant::now();
     let ticked = tick(&world, "1090");
     assert_eq!(did(&ticked)[0], "settle 3 done", "{ticked}");
-    assert!(began.elapsed() < std::time::Duration::from_secs(30), "ended within a bound");
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(30),
+        "ended within a bound"
+    );
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while state(paused.gate).is_some() || state(paused.child).is_some() {
         assert!(std::time::Instant::now() < until, "the paused gate's processes still exist");
