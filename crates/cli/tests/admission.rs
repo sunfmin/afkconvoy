@@ -198,13 +198,13 @@ fn a_share_said_wrong_is_refused_and_one_kept_wrong_is_an_error_not_a_default() 
     assert!(error.contains("checkouts.json cannot be read"), "{error}");
 }
 
-/// A train that had more conflicts than landings in the last hour holds new
+/// A candidate chain that had more conflicts than landings in the last hour holds new
 /// starts of its repo, and says why, while another repo on the host still
 /// starts (docs/adr/0076, sunfmin/control#914).
 #[test]
-fn a_train_that_cannot_keep_up_holds_its_repo_while_another_repo_starts() {
+fn a_chain_that_cannot_keep_up_holds_its_repo_while_another_repo_starts() {
     let world = backlog(&[]);
-    // A tick writes this repo's tick log; the train's answers go beside it.
+    // A tick writes this repo's tick log; the chain's answers go beside it.
     tick(&world, "10000");
     let clone2 = world.second_repo();
     let runs = world.cache().join("afkconvoy").join("runs");
@@ -243,9 +243,9 @@ fn a_train_that_cannot_keep_up_holds_its_repo_while_another_repo_starts() {
     assert_eq!(plan["admission"]["landing"]["conflicts"], 3, "{plan}");
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "10090"]).json;
     let said = doctor["findings"].to_string();
-    assert!(said.contains("its landing train cannot keep up: 3 conflicts against 1"), "{said}");
+    assert!(said.contains("its candidate chain cannot keep up: 3 conflicts against 1"), "{said}");
 
-    // The other repo's train is clear: its work starts.
+    // The other repo's candidate chain is clear: its work starts.
     let gh2 = world.root.join("gh2.json");
     let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&gh2).unwrap()).unwrap();
     state["issues"].as_array_mut().unwrap().push(
@@ -256,7 +256,7 @@ fn a_train_that_cannot_keep_up_holds_its_repo_while_another_repo_starts() {
     let other = world.afk_in(&clone2, &args).ok();
     assert_eq!(dispatched(&other), [4], "{other}");
 
-    // An hour on, the conflicts have aged out: the train drained.
+    // An hour on, the conflicts have aged out: the chain drained.
     let drained = tick(&world, "15000");
     assert_eq!(dispatched(&drained), [3], "{drained}");
 }

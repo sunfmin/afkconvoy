@@ -223,7 +223,7 @@ kinds! {
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
-    LandingContention: Warning, "its landing train cannot keep up";
+    LandingContention: Warning, "its candidate chain cannot keep up";
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which is ignored";
     KeptWorktree: Info, "is kept with no claim";
@@ -2484,9 +2484,9 @@ fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
         .collect()
 }
 
-/// A repo whose landing train had more conflicts than landings in the last
+/// A repo whose candidate chain had more conflicts than landings in the last
 /// hour, at the fewest that hold its starts (docs/adr/0076): admission
-/// starts no new worker of it until the train drains. Nothing of the host
+/// starts no new worker of it until the chain drains. Nothing of the host
 /// is to mend, and the watch is not called for it.
 fn landing_finding(entries: &[Entry], now: u64) -> Option<Finding> {
     let landing = crate::admission::landing_in(entries, now);
@@ -2498,7 +2498,7 @@ fn landing_finding(entries: &[Entry], now: u64) -> Option<Finding> {
         Kind::LandingContention,
         json!(["landing-contention"]),
         format!(
-            "its landing train cannot keep up: {} conflicts against {} landing(s) in the last \
+            "its candidate chain cannot keep up: {} conflicts against {} landing(s) in the last \
              hour, and admission starts no new worker of this repo until it drains",
             landing.conflicts, landing.landed
         ),

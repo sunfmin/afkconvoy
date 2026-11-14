@@ -275,7 +275,7 @@ pub fn tick(
     }
     // A busy host, an account that would run out or a long exclusive queue
     // starts no new worker this tick (docs/adr/0019, docs/adr/0072).
-    // The landing train is read once a tick: its answers come from turns
+    // The candidate chain is read once a tick: its answers come from turns
     // that take longer than a pass (docs/adr/0076).
     let landing = crate::admission::landing_of(&fleet.repo.dir, fleet.now);
     let mut admission = admission_of(&fleet, &set, 0, landing)?;
@@ -551,7 +551,7 @@ fn carry_out(
 /// Admission for a start of the fleet `fleet` now: the host as read now,
 /// the account its next worker starts on (`usage_of`), with `started` more
 /// workers on it than `set` holds, the exclusive queue, and the checkout's
-/// landing train as the tick read it, `landing`.
+/// candidate chain as the tick read it, `landing`.
 fn admission_of(
     fleet: &Fleet,
     set: &WorkingSet,
@@ -1659,7 +1659,7 @@ Settling a claim removes that worker's worktree. Directories the gate left under
 - `frontier_remaining`: the frontier issues it left undispatched
 - `idle`: whether the fleet instance is idle after the pass: it holds nothing, nothing of its is on the base branch, its frontier is empty, and no cut it started is going. `afkconvoy checkouts` answers it of each checkout's last tick
 - `locks`: the fleet locks that stood as it ran: the open issues carrying the lock label — none: []. `run` opens its line with them: "FLEET LOCK #7 stands: only it is worked"
-- `held_back_by`: each reading for which admission started no new worker — a threshold of the host, a usage window of the account, the exclusive queue, the repo's landing train — as the line says it: "the load 31.20 is past 28.00, 200% of its 14 cores". Something waited to start; it stays on the frontier. A reading taken before a later start that held is said the same way, and its `did` holds `{"do": "admit", "outcome": "held"}` (`afkconvoy run --help`, ADMISSION)
+- `held_back_by`: each reading for which admission started no new worker — a threshold of the host, a usage window of the account, the exclusive queue, the repo's candidate chain — as the line says it: "the load 31.20 is past 28.00, 200% of its 14 cores". Something waited to start; it stays on the frontier. A reading taken before a later start that held is said the same way, and its `did` holds `{"do": "admit", "outcome": "held"}` (`afkconvoy run --help`, ADMISSION)
 
 Errors: a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe — its tracker is public, say; the config, GitHub or the remote cannot be read; the host kit cannot be read or lacks a required harness; the worker launch command of a harness the fleet could be asked for resolves to nothing, or does not take the flags the fleet adds for its role or worktree trust; `--instance` is not an instance id ([a-z0-9][a-z0-9-]{0,39}).
 

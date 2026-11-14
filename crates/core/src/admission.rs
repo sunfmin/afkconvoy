@@ -3,7 +3,7 @@
 //! (docs/adr/0019) — while a usage window of the account it would start on
 //! would run out before it resets, or while the host's exclusive queue would
 //! take longer than its bound to drain (docs/adr/0072), or — for one repo —
-//! while its landing train has had more conflicts than landings in the last
+//! while its candidate chain has had more conflicts than landings in the last
 //! hour (docs/adr/0076). It alone decides each
 //! start: no number of workers bounds a fleet. Whether admission holds is decided here, from what the
 //! effect layer read of the host and the shares it is held to; reading the
@@ -114,22 +114,22 @@ pub enum Hold {
     /// afkconvoy's own processes on the host hold `resident` bytes, at or
     /// past `limit`, the share of the host's memory it may use (`Cap`).
     OwnMemory { resident: u64, limit: u64 },
-    /// The repo's landing train cannot keep up: in the last `window`
+    /// The repo's candidate chain cannot keep up: in the last `window`
     /// seconds its `land` turns answered `conflicts` conflicts —
     /// `conflict` or `speculative_conflict`, each a merge again and a
     /// gate again — and only `landed` landings (sunfmin/control#914).
     Landing { conflicts: u64, landed: u64, window: u64 },
 }
 
-/// How far back admission reads a repo's landing train, in seconds: an hour.
+/// How far back admission reads a repo's candidate chain, in seconds: an hour.
 pub const LANDING_WINDOW: u64 = 3600;
 
 /// The fewest conflicts in `LANDING_WINDOW` that hold a repo's starts: one
-/// or two are the ordinary cost of parallel work, not a train that cannot
+/// or two are the ordinary cost of parallel work, not a chain that cannot
 /// keep up.
 pub const LANDING_LEAST: u64 = 3;
 
-/// What a repo's landing train answered in a window: its turns that
+/// What a repo's candidate chain answered in a window: its turns that
 /// conflicted and its turns that landed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct Landing {
@@ -172,11 +172,11 @@ impl Landing {
     }
 }
 
-/// Whether a repo whose landing train answered `landing` in the last
-/// `window` seconds starts no new worker: its train cannot keep up, and a
+/// Whether a repo whose candidate chain answered `landing` in the last
+/// `window` seconds starts no new worker: its chain cannot keep up, and a
 /// worker more makes each landing slower, not faster. It holds until the
 /// conflicts age out of the window or the landings catch up with them — the
-/// train drains. What could not be read holds nothing back.
+/// chain drains. What could not be read holds nothing back.
 pub fn landing_hold(landing: Option<Landing>, window: u64) -> Option<Hold> {
     landing.filter(|landing| landing.contended()).map(|landing| Hold::Landing {
         conflicts: landing.conflicts,
@@ -524,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn a_train_holds_once_its_conflicts_outnumber_its_landings() {
+    fn a_chain_holds_once_its_conflicts_outnumber_its_landings() {
         let now = 10_000;
         let said = [
             (now - 4000, "conflict"),

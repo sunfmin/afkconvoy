@@ -148,7 +148,7 @@ pub struct Admission {
     pub cap: Cap,
     pub own: Option<Own>,
     pub memory: Option<u64>,
-    /// What the checkout's landing train answered in the last
+    /// What the checkout's candidate chain answered in the last
     /// `LANDING_WINDOW`, as this host's tick log of it says; `None`: it
     /// could not be read (docs/adr/0076).
     pub landing: Option<Landing>,
@@ -217,7 +217,7 @@ impl Admission {
         }
     }
 
-    /// This admission, judging the landing train of the checkout at `dir`
+    /// This admission, judging the candidate chain of the checkout at `dir`
     /// too, as its tick log has it up to `now` (docs/adr/0076).
     pub fn with_landing(self, dir: &Path, now: u64) -> Admission {
         Admission { landing: landing_of(dir, now), ..self }
@@ -230,7 +230,7 @@ impl Admission {
 
     /// The thresholds the host is past, then the account's windows that
     /// would run out before they reset, then the queue, then the share of
-    /// the host afkconvoy may use itself, then the checkout's landing train:
+    /// the host afkconvoy may use itself, then the checkout's candidate chain:
     /// none, and new workers start.
     pub fn holds(&self) -> Vec<Hold> {
         let mut held = holds(self.shares, &self.reading);
@@ -244,8 +244,8 @@ impl Admission {
     }
 
     /// The reasons admission holds back for now that call for the host's
-    /// watch once held past its span: none, and none calls. The landing
-    /// train is none of them: it drains as the workers already running land,
+    /// watch once held past its span: none, and none calls. The candidate
+    /// chain is none of them: it drains as the workers already running land,
     /// and nothing of the host is the watch's to mend for it
     /// (docs/adr/0076).
     pub fn reasons(&self) -> Vec<Reason> {
@@ -301,7 +301,7 @@ impl Admission {
             ),
             Hold::Landing { conflicts, landed, window } => format!(
                 "landing contention, {conflicts} conflicts in the last {} against {landed} \
-                 landing(s): its landing train cannot keep up, and starts no new worker of \
+                 landing(s): its candidate chain cannot keep up, and starts no new worker of \
                  this repo until it drains",
                 window_said(*window)
             ),
@@ -394,7 +394,7 @@ impl Admission {
     }
 }
 
-/// What the landing train of the checkout at `dir` answered in the
+/// What the candidate chain of the checkout at `dir` answered in the
 /// `LANDING_WINDOW` up to `now`, as this host's tick log of its repo has the
 /// `land` turns' outcomes; `None`: there is no log to read.
 pub(crate) fn landing_of(dir: &Path, now: u64) -> Option<Landing> {
