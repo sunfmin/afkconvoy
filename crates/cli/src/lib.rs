@@ -1626,6 +1626,8 @@ pub fn manual() -> agent_help::Help {
         .constant("TEAM_FILE", afkconvoy_core::team::TEAM_FILE)
         .constant("ESCALATE_LABEL", afkconvoy_core::config::ESCALATE_LABEL)
         .constant("QUEUE_BOUND", afkconvoy_core::admission::QUEUE_BOUND)
+        .constant("LANDING_WINDOW", afkconvoy_core::admission::LANDING_WINDOW)
+        .constant("LANDING_LEAST", afkconvoy_core::admission::LANDING_LEAST)
         .constant("GATE_SECONDS", afkconvoy_core::config::GATE_SECONDS)
         .constant("RECOVERY_SECONDS", crate::health::RECOVERY_SECONDS)
         .constant("CAPACITY_WAIT_SECONDS", health::CAPACITY_WAIT_SECONDS)
