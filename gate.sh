@@ -159,7 +159,7 @@ run_tests() {
     test_log=$(mktemp -d "$PWD/.afkconvoy-tmp/nextest.XXXXXX")
     # Keep nextest's output live and retain its own exit status through tee.
     # shellcheck disable=SC2046
-    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" $(test_threads) -E "$2"; then
+    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet $(test_threads) --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
         echo 0 >"$test_log/status"
     else
         echo "$?" >"$test_log/status"
