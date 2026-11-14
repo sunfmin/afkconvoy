@@ -667,12 +667,16 @@ pub(super) fn recorded_turn(
     // Each line is read once, into only what a turn needs: a long session
     // is tens of megabytes of tool output nobody looks at here
     // (sunfmin/control#938).
-    let entries: Vec<Entry> = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
+    let mut entries: Vec<Entry> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str(line) {
+            entries.push(entry);
+        }
+    }
     let here = entries.iter().any(|entry| {
         !entry.sidechain() && entry.cwd().is_some_and(|recorded| session::same_cwd(recorded, cwd))
     });
