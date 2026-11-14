@@ -30,7 +30,7 @@ use crate::watch_terminal::{self, LaunchState, TITLE};
 
 const STATE: &str = "watch/state.json";
 /// How often a running watch's terminal and transcript are read.
-const CHECK_EVERY: Duration = Duration::from_secs(2);
+pub(crate) const CHECK_EVERY: Duration = Duration::from_secs(2);
 /// How long a look may take before it is given up, and taken again later.
 const LOOK_SECONDS: u64 = 300;
 /// How many ended watches are kept, for what earlier watches on the same

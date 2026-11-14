@@ -160,6 +160,8 @@ pub struct Shared {
     pub published: Arc<Mutex<Option<Published>>>,
     pub blockers: wake::Blockers,
     pub watch: crate::host_watch::Shared,
+    /// The host runner's own CPU time, read once a minute.
+    pub own_cpu: crate::own_cpu::Shared,
 }
 
 impl Shared {
@@ -178,6 +180,7 @@ impl Shared {
             installed: self.installed().clone(),
             published: self.published.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             watch: self.watch.running(),
+            own_cpu: self.own_cpu.average(),
         })
     }
 
@@ -220,6 +223,10 @@ pub struct SharedNow {
     /// The watch running on the host; `None`: none.
     #[serde(default)]
     pub watch: Option<crate::host_watch::Watch>,
+    /// What the host runner's own process averaged of a core over the last
+    /// hour (`own_cpu`); `None`: too soon to say, or an older host runner.
+    #[serde(default)]
+    pub own_cpu: Option<crate::own_cpu::Average>,
 }
 
 /// The afkconvoy installed where the host runner was started from, once that
@@ -282,7 +289,31 @@ pub fn shared() -> Result<Option<SharedNow>> {
 pub fn findings() -> Vec<Finding> {
     let Some(shared) = shared().ok().flatten() else { return vec![] };
     let moved = shared.installed.as_ref().and_then(not_moved);
-    moved.into_iter().chain(shared.published.as_ref().map(not_upgraded)).collect()
+    let busy = shared.own_cpu.filter(crate::own_cpu::Average::over_budget).map(over_budget);
+    moved.into_iter().chain(shared.published.as_ref().map(not_upgraded)).chain(busy).collect()
+}
+
+/// The finding of the host runner's own process averaging more of a core
+/// than its budget (sunfmin/control#938).
+fn over_budget(average: crate::own_cpu::Average) -> Finding {
+    let percent = |permille: u64| format!("{}.{}%", permille / 10, permille % 10);
+    let what = format!(
+        "the host runner's own process uses {} of a core, past its budget of {}",
+        percent(average.permille),
+        percent(crate::own_cpu::BUDGET_PERMILLE)
+    );
+    let evidence = format!(
+        "averaged over the last {} minutes, its own threads only: the watch's checks, the \
+         asking session's and the ticks it holds",
+        average.over_seconds / 60
+    );
+    finding(
+        Kind::RunnerBusy,
+        json!(["runner-busy"]),
+        what,
+        evidence,
+        format!("sample {} 10", average.pid),
+    )
 }
 
 /// The finding of `published`, a release newer than the host runner's that
@@ -971,6 +1002,7 @@ fn held_host(
     let mut left = None;
     while !stop.told() && left.is_none() {
         std::thread::sleep(WATCHED_EVERY);
+        runner.shared.own_cpu.note();
         if !stop.told() && !still_ours() {
             runner.log.say(
                 "host runner stopping: its lock file is gone, so another host runner may start",

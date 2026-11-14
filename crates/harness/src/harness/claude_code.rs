@@ -664,15 +664,107 @@ pub(super) fn recorded_turn(
     brief: Option<&str>,
 ) -> Option<Turn> {
     let named = brief.is_some_and(|brief| names_brief(text, brief));
-    let here = json_lines(text).any(|value| {
-        value["isSidechain"] != true
-            && value["cwd"].as_str().is_some_and(|recorded| session::same_cwd(recorded, cwd))
+    // Each line is read once, into only what a turn needs: a long session
+    // is tens of megabytes of tool output nobody looks at here
+    // (sunfmin/control#938).
+    let mut entries: Vec<Entry> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str(line) {
+            entries.push(entry);
+        }
+    }
+    let here = entries.iter().any(|entry| {
+        !entry.sidechain() && entry.cwd().is_some_and(|recorded| session::same_cwd(recorded, cwd))
     });
     if !here && !named {
         return None;
     }
-    let notes: Vec<Note> = json_lines(text).filter_map(|value| note(cwd, &value, named)).collect();
+    let notes: Vec<Note> = entries.iter().filter_map(|entry| note(cwd, entry, named)).collect();
     session::turn_of(&notes, not_before)
+}
+
+/// What a turn reads of one session line. Every other field is skipped
+/// unparsed; a field of another shape reads as absent, as a JSON value's
+/// lookup would.
+#[derive(Deserialize)]
+struct Entry {
+    #[serde(rename = "isSidechain", default)]
+    sidechain: Option<serde_json::Value>,
+    #[serde(default)]
+    cwd: Option<serde_json::Value>,
+    #[serde(default)]
+    timestamp: Option<serde_json::Value>,
+    #[serde(rename = "type", default)]
+    kind: Option<serde_json::Value>,
+    #[serde(rename = "isCompactSummary", default)]
+    compact: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "stop_reason")]
+    message: Option<String>,
+}
+
+impl Entry {
+    fn sidechain(&self) -> bool {
+        self.sidechain == Some(serde_json::Value::Bool(true))
+    }
+
+    fn cwd(&self) -> Option<&str> {
+        self.cwd.as_ref()?.as_str()
+    }
+}
+
+/// A message's `stop_reason` when it is a string; anything else is skipped.
+fn stop_reason<'de, D: Deserializer<'de>>(message: D) -> Result<Option<String>, D::Error> {
+    struct Reason;
+    impl<'de> serde::de::Visitor<'de> for Reason {
+        type Value = Option<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a message")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut reason = None;
+            while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+                if key == "stop_reason" {
+                    reason = map.next_value::<serde_json::Value>()?.as_str().map(str::to_owned);
+                } else {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(reason)
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(None)
+        }
+        fn visit_str<E: Error>(self, _: &str) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_bool<E: Error>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_i64<E: Error>(self, _: i64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_u64<E: Error>(self, _: u64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_f64<E: Error>(self, _: f64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+    message.deserialize_any(Reason)
 }
 
 /// The first primary user message must be this worker's brief pointer.
@@ -692,18 +784,18 @@ pub(super) fn names_brief(text: &str, brief: &str) -> bool {
     false
 }
 
-fn note(cwd: &str, value: &serde_json::Value, named: bool) -> Option<Note> {
-    if !named && value["cwd"].as_str().is_some_and(|recorded| !session::same_cwd(recorded, cwd)) {
+fn note(cwd: &str, entry: &Entry, named: bool) -> Option<Note> {
+    if !named && entry.cwd().is_some_and(|recorded| !session::same_cwd(recorded, cwd)) {
         return None;
     }
-    let child = value["isSidechain"] == true;
-    let at = session::parse_iso(value["timestamp"].as_str()?)?;
-    match value["type"].as_str()? {
+    let child = entry.sidechain();
+    let at = session::parse_iso(entry.timestamp.as_ref()?.as_str()?)?;
+    match entry.kind.as_ref()?.as_str()? {
         // A compaction's summary is written as the user's, but nobody asked
         // anything: compacted while idle, the session stays at its prompt.
-        "user" if value["isCompactSummary"] == true => None,
+        "user" if entry.compact == Some(serde_json::Value::Bool(true)) => None,
         "user" => Some(Note { marker: Marker::Start, at, child }),
-        "assistant" if value["message"]["stop_reason"] == "end_turn" => {
+        "assistant" if entry.message.as_deref() == Some("end_turn") => {
             Some(Note { marker: Marker::End, at, child })
         }
         _ => None,

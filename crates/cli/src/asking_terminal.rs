@@ -12,7 +12,7 @@ use crate::host_asking::{Queued, Session};
 use crate::{copies::cache, orca::Worktree};
 
 pub(crate) const TITLE: &str = "afkconvoy asks";
-const FILE: &str = "asking/terminal.json";
+pub(crate) const FILE: &str = "asking/terminal.json";
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
