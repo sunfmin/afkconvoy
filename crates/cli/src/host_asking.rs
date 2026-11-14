@@ -111,17 +111,22 @@ pub(crate) fn current() -> Result<Option<Queued>> {
 /// session itself survives this thread and is recovered from durable state.
 pub fn run(ended: &AtomicBool, say: impl Fn(String)) {
     let mut failing = None;
-    let mut next = std::time::Instant::now();
+    let (mut next, mut seen) = (std::time::Instant::now(), None);
     while !ended.load(Ordering::Relaxed) {
         // A step asks Orca for the session's terminal and screen and reads
         // its session: as often as the watch is checked, not four times a
-        // second (sunfmin/control#938). The end is still seen at once.
-        if std::time::Instant::now() < next {
+        // second (sunfmin/control#938). What it reads of its own files is
+        // looked at four times a second: a question, a report or a step that
+        // moved them is stepped on at once. The end is still seen at once.
+        let read = inputs();
+        if std::time::Instant::now() < next && seen == Some(read) {
             std::thread::sleep(Duration::from_millis(250));
             continue;
         }
-        next = std::time::Instant::now() + crate::host_watch::CHECK_EVERY;
         let result = step();
+        let after = inputs();
+        let wait = if after == read { crate::host_watch::CHECK_EVERY } else { Duration::ZERO };
+        (next, seen) = (std::time::Instant::now() + wait, Some(after));
         let failed = result.as_ref().err().map(|error| format!("{error:#}"));
         if let Some(error) = &failed
             && failing.as_ref() != Some(error)
@@ -133,6 +138,27 @@ pub fn run(ended: &AtomicBool, say: impl Fn(String)) {
         }
         failing = failed;
     }
+}
+
+/// What a step reads of the asking session's own files, the watch's
+/// outbox of questions and the reports written: a step on the same reads
+/// and the same terminal does the same.
+fn inputs() -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    let Ok(cache) = crate::copies::cache() else { return 0 };
+    for file in [STATE, asking_terminal::FILE, "watch/notify.json"] {
+        std::fs::read(cache.join(file)).ok().hash(&mut hash);
+    }
+    if let Ok(reports) = std::fs::read_dir(cache.join("asking/reports")) {
+        let mut reported: Vec<_> = reports
+            .flatten()
+            .map(|report| (report.file_name(), report.path().join("reported.json").exists()))
+            .collect();
+        reported.sort();
+        reported.hash(&mut hash);
+    }
+    hash.finish()
 }
 
 fn note_failure(why: &str) -> Result<()> {
