@@ -257,6 +257,7 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Opti
     if let Some(left) = Worktree::named(&source, CHECKOUT)? {
         left.remove()?;
     }
+    clear_local_branches(&fleet.repo)?;
     clear_branches(fleet, &record.version, &base)?;
     let checkout = Worktree::cut(&source, CHECKOUT, &base, None)?;
     checkout.record_cut(&record)?;
@@ -265,6 +266,20 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Opti
     let title = format!("afkconvoy cut v{}", record.version);
     agent.start(&checkout, &fleet.gh.tracker, first, &command, Some(&title), me.now)?;
     Ok(Some(record))
+}
+
+/// Deletes every local branch orca made for an earlier cut's checkout
+/// (`<prefix>/afkconvoy-cut`, `-1`…): orca numbers a taken name and gives up
+/// past a hundred (sunfmin/control#1044). Only one no worktree uses, and
+/// whose tip a tag or a remote branch holds, goes (`Repo::delete_held_branch`).
+fn clear_local_branches(repo: &Repo) -> Result<()> {
+    for branch in repo.local_branches()? {
+        let name = branch.rsplit('/').next().unwrap_or(&branch);
+        if afkconvoy_core::worker::is_worktree_named(name, CHECKOUT) {
+            repo.delete_held_branch(&branch)?;
+        }
+    }
+    Ok(())
 }
 
 /// Deletes, on the remote, every branch an earlier cut pushed but the one a
@@ -1140,7 +1155,7 @@ A cut that failed, ran out of time, was ended from outside, whose checkout is go
 
 The issue holds no cut back: the next due cut — an idle tick, or a busy tick past the age bound — cuts again from the start, on the base tip as it stands, whether it is open or not, and whether its label is `convoy-cut-failed` or the escalate label a watch swaps it for (`afkconvoy help humans`). Where {const:CUT_REPEATS} cuts in a row fail at the same step the same way — the same step and, for a gate that ran red, the same failing tests — the issue takes the ready label, with the repo label it carries: an ordinary ticket for the fleet to fix, not a human's. Then the next cut waits for a landing past the base the last of them was cut from, and `plan` says the cut `failed`; it is attempted again after each landing.
 
-The next cut, as it starts, removes the checkout a failed cut kept on its host, and deletes every branch an earlier cut pushed but the one it takes up — a branch of its own version on the base tip as it stands. A version tag keeps the commit of a branch that was tagged.
+The next cut, as it starts, removes the checkout a failed cut kept on its host, and deletes every branch an earlier cut pushed but the one it takes up — a branch of its own version on the base tip as it stands. A version tag keeps the commit of a branch that was tagged. A checkout's removal also deletes the local branch orca made for it, which orca keeps for the cut's own commit, and the next cut deletes any local `afkconvoy-cut` branch an earlier one left; each goes only once no worktree uses it and a tag or a remote branch holds its tip. Left, they pile up, and orca refuses a checkout once it has numbered its name a hundred times.
 
 `doctor`'s finding for it (`its last cut failed`, `afkconvoy help troubleshooting`) says, from the host it runs on, that the next cut starts by itself, or that it waits for a landing; where the failed cut's checkout is kept, and its `--from` line; and the fate of the branch it pushed. `plan` says the same as `cut.failed`.
 
