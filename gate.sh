@@ -157,9 +157,12 @@ run_tests() {
         return
     fi
     test_log=$(mktemp -d "$PWD/.afkconvoy-tmp/nextest.XXXXXX")
+    threads=$(test_threads)
+    [ -z "$threads" ] ||
+        echo "gate: the $1 tests run ${threads#--test-threads } at a time, two to each of the $NEXTEST_TEST_THREADS cores this gate was given" >&2
     # Keep nextest's output live and retain its own exit status through tee.
-    # shellcheck disable=SC2046
-    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet $(test_threads) --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
+    # shellcheck disable=SC2086
+    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet $threads --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
         echo 0 >"$test_log/status"
     else
         echo "$?" >"$test_log/status"
