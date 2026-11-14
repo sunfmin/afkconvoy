@@ -159,7 +159,7 @@ pub fn json(
         if !on_list(repo) {
             continue;
         }
-        let admission = Admission::read_from(repo, readings)?;
+        let admission = Admission::read_from(repo, readings)?.with_landing(repo, now);
         let mut holding = observed.holding.clone();
         let reasons = if observed.waiting.is_empty() { vec![] } else { admission.reasons() };
         holding.ticked(now, &reasons);
@@ -310,7 +310,7 @@ pub fn evidence(look: &mut Value, items: &[afkconvoy_core::host_watch::Item]) ->
                 .map(|entry| entry.checkout.clone())
         });
         let Some(repo) = repo else { continue };
-        let admission = Admission::read(&repo)?;
+        let admission = Admission::read(&repo)?.with_landing(&repo, crate::clock());
         let reason = resource["reason"].as_str().and_then(Reason::read).unwrap_or(Reason::Memory);
         let stages: Vec<(u64, String)> =
             serde_json::from_value(resource["stages"].clone()).unwrap_or_default();

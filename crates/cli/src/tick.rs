@@ -549,7 +549,9 @@ fn carry_out(
 /// the account its next worker starts on (`usage_of`), with `started` more
 /// workers on it than `set` holds, and the exclusive queue.
 fn admission_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Result<Admission> {
-    Ok(Admission::read(&fleet.repo.dir)?.with_usage(usage_of(fleet, set, started)))
+    Ok(Admission::read(&fleet.repo.dir)?
+        .with_usage(usage_of(fleet, set, started))
+        .with_landing(&fleet.repo.dir, fleet.now))
 }
 
 /// How long ago a worker's record of its account's windows may have been

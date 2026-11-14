@@ -197,3 +197,66 @@ fn a_share_said_wrong_is_refused_and_one_kept_wrong_is_an_error_not_a_default() 
     let error = world.afk(&["plan", "--now", "1000"]).error();
     assert!(error.contains("checkouts.json cannot be read"), "{error}");
 }
+
+/// A train that had more conflicts than landings in the last hour holds new
+/// starts of its repo, and says why, while another repo on the host still
+/// starts (docs/adr/0076, sunfmin/control#914).
+#[test]
+fn a_train_that_cannot_keep_up_holds_its_repo_while_another_repo_starts() {
+    let world = backlog(&[]);
+    // A tick writes this repo's tick log; the train's answers go beside it.
+    tick(&world, "10000");
+    let clone2 = world.second_repo();
+    let runs = world.cache().join("afkconvoy").join("runs");
+    let log = std::fs::read_dir(&runs)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+        .expect("the first repo's tick log");
+    let land = |at: u64, outcome: &str| {
+        json!({"at": at, "instance": "alpha", "host": "h1", "command": {"command": "land",
+            "on": "#1", "by": "worker", "outcome": outcome}})
+        .to_string()
+    };
+    let lines = [
+        land(5000, "conflict"),
+        land(8000, "speculative_conflict"),
+        land(9000, "conflict"),
+        land(9500, "merged"),
+        land(9900, "speculative_conflict"),
+    ];
+    let mut text = std::fs::read_to_string(&log).unwrap();
+    for line in lines {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    std::fs::write(&log, text).unwrap();
+
+    world.issue(3, &["ready-for-agent"]);
+    let held = tick(&world, "10090");
+    assert!(dispatched(&held).is_empty(), "{held}");
+    let by = held["held_back_by"][0].as_str().unwrap_or_default();
+    assert!(by.starts_with("landing contention, 3 conflicts in the last hour"), "{held}");
+    assert!(world.claims().is_empty());
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "10090"]).ok();
+    assert_eq!(plan["held_back"][0]["by"], "landing", "{plan}");
+    assert_eq!(plan["admission"]["landing"]["conflicts"], 3, "{plan}");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "10090"]).json;
+    let said = doctor["findings"].to_string();
+    assert!(said.contains("its landing train cannot keep up: 3 conflicts against 1"), "{said}");
+
+    // The other repo's train is clear: its work starts.
+    let gh2 = world.root.join("gh2.json");
+    let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&gh2).unwrap()).unwrap();
+    state["issues"].as_array_mut().unwrap().push(
+        json!({"number": 4, "title": "issue 4", "labels": ["ready-for-agent"], "state": "open"}),
+    );
+    std::fs::write(&gh2, state.to_string()).unwrap();
+    let args = ["tick", "--instance", "beta", "--host", "h1", "--now", "10090"];
+    let other = world.afk_in(&clone2, &args).ok();
+    assert_eq!(dispatched(&other), [4], "{other}");
+
+    // An hour on, the conflicts have aged out: the train drained.
+    let drained = tick(&world, "15000");
+    assert_eq!(dispatched(&drained), [3], "{drained}");
+}

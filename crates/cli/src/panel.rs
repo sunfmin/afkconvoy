@@ -303,7 +303,9 @@ impl Host {
         Host {
             name: crate::this_host(),
             now,
-            admission: Admission::read_from(dir, readings).map_err(|error| format!("{error:#}")),
+            admission: Admission::read_from(dir, readings)
+                .map(|read| read.with_landing(dir, now))
+                .map_err(|error| format!("{error:#}")),
             exclusive,
             lanes: settings.lanes(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
