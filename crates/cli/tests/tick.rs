@@ -348,6 +348,63 @@ fn a_worktree_a_process_is_in_waits_until_that_process_is_gone() {
     assert_eq!(world.claims(), []);
 }
 
+#[test]
+fn a_settled_worktree_whose_directory_is_already_gone_has_its_registration_removed() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    std::fs::remove_dir_all(&worktree).unwrap();
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(common::worktree_listed(&listed, &worktree), "git still lists it: {listed}");
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!common::worktree_listed(&listed, &worktree), "{listed}");
+    assert!(
+        world.orca()["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["path"] != worktree.to_str().unwrap())
+    );
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_settled_worktree_whose_directory_is_gone_with_a_head_not_on_the_remote_is_kept() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    common::commit(&worktree, "three.txt", "3\n");
+    let head = git(&worktree, &["rev-parse", "HEAD"]);
+    // orca lists the head it read while the directory was there
+    world.with_orca(|orca| {
+        for row in orca["worktrees"].as_array_mut().unwrap() {
+            if row["path"] == worktree.to_str().unwrap() {
+                row["head"] = json!(head);
+            }
+        }
+    });
+    std::fs::remove_dir_all(&worktree).unwrap();
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(
+        world.orca()["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["path"] == worktree.to_str().unwrap()),
+        "a head the remote does not have keeps its registration"
+    );
+    assert_eq!(world.claims(), []);
+}
+
 /// A gate a scheduler paused, with what it started, both stopped, and the
 /// scheduler itself killed: nothing is left to resume them. Dropped, it
 /// resumes and kills both, so a failing test leaves neither stopped.

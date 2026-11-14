@@ -128,16 +128,24 @@ fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Opti
         return Ok(None);
     }
     crate::account::refresh_stopped(&fleet.repo, &fleet.gh, issue)?;
+    let gone = !worktree.path.exists();
     worktree.remove()?;
+    // Orca removes a worktree whose directory is already gone from its list
+    // alone: git's registration of it is removed here (sunfmin/control#982).
+    if gone {
+        fleet.repo.remove_worktree(&worktree.path)?;
+    }
     Ok(None)
 }
 
 /// Whether settling keeps `worktree`. A worktree git can still read is kept
 /// by `settle_keeps`. One git can no longer read — its registration already
-/// gone — is kept unless the head orca lists is on the remote.
+/// gone, or its directory (sunfmin/control#982), where git cannot even be
+/// started — is kept unless the head orca lists is on the remote.
 fn settled_keeps(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<bool> {
-    let head = Repo::new(worktree.path.clone()).try_git(&["rev-parse", "HEAD"])?;
-    if head.ok {
+    let readable = worktree.path.is_dir()
+        && Repo::new(worktree.path.clone()).try_git(&["rev-parse", "HEAD"])?.ok;
+    if readable {
         let leaving = crate::judge::leaving(fleet, issue, worktree)?;
         return Ok(afkconvoy_core::left::settle_keeps(&leaving.left));
     }
