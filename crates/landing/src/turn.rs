@@ -165,7 +165,7 @@ pub struct Update {
 }
 
 /// What one publication of `members` updates, all or none: every member's
-/// source branch kept at its original head, the chain's record from
+/// source ref kept at its original head, the chain's record from
 /// `record.1` to `record.2`, and the target from the first member's
 /// predecessor to the last member's commit.
 pub fn updates<N>(
@@ -176,7 +176,7 @@ pub fn updates<N>(
     let mut updates: Vec<Update> = members
         .iter()
         .map(|m| Update {
-            name: format!("refs/heads/{}", m.branch),
+            name: crate::forge::source_ref(&m.branch),
             old: m.original_head.clone(),
             new: m.original_head.clone(),
         })
