@@ -10,6 +10,7 @@ extern crate flux_core;
 pub mod account;
 pub mod accounts;
 pub mod admission;
+pub mod apart;
 pub mod before;
 pub mod blocked;
 pub mod board;

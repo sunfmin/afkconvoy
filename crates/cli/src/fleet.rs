@@ -669,6 +669,7 @@ impl Fleet {
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing().records, &base)?;
         let cut = crate::cut::seen(self, &stages, issues, &open.issues, &base)?;
+        let overlapping = self.overlapping(&open.issues);
         let seen = Observed {
             unworked_blockers: &unworked_blockers,
             handoffs: &handoffs,
@@ -686,6 +687,7 @@ impl Fleet {
             flows: &stages.flow_labels(),
             landing: &stages.landing(&self.scan.claims),
             begun: &stages.begun(),
+            overlapping: &overlapping,
             patrols: &patrol::seen(self, &stages, &open.issues)?,
             waiting: &stages.waiting(self, open),
             landings: &landings,
@@ -857,4 +859,30 @@ pub fn due_role<'t>(
 fn labels_of(open: &OpenIssues, number: u64) -> Vec<String> {
     let issue = open.rows.iter().find(|issue| issue.number == number);
     issue.map(|issue| issue.labels.clone()).unwrap_or_default()
+}
+
+impl Fleet {
+    /// The open issues no claim holds whose named files overlap the files
+    /// the claimed issues name: the work in flight (`apart::overlapping`,
+    /// docs/adr/0076). Of an issue whose body was not read, nothing is known.
+    fn overlapping(&self, open: &crate::gh::OpenIssues) -> Vec<u64> {
+        use afkconvoy_core::apart::{named_files, overlapping};
+        let named =
+            |number: u64| open.body(number).map(|body| named_files(&body.body)).unwrap_or_default();
+        let claimed: Vec<u64> = self.scan.claims.iter().map(|claim| claim.number).collect();
+        let mut in_flight = std::collections::BTreeSet::new();
+        for number in &claimed {
+            in_flight.extend(named(*number));
+        }
+        if in_flight.is_empty() {
+            return vec![];
+        }
+        let waiting: Vec<(u64, std::collections::BTreeSet<String>)> = open
+            .rows
+            .iter()
+            .filter(|issue| !claimed.contains(&issue.number))
+            .map(|issue| (issue.number, named(issue.number)))
+            .collect();
+        overlapping(&waiting, &in_flight)
+    }
 }

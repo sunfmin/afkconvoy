@@ -10,8 +10,8 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use afkconvoy_core::admission::{
-    Cap, Disk, Hold, Own, QUEUE_BOUND, Reading, SHARES, Shares, Window, cap_holds, cap_limits,
-    holds, queue_hold, thresholds, window_holds,
+    Cap, Disk, Hold, LANDING_WINDOW, Landing, Own, QUEUE_BOUND, Reading, SHARES, Shares, Window,
+    cap_holds, cap_limits, holds, landing_hold, queue_hold, thresholds, window_holds,
 };
 use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::harness::Harness;
@@ -148,6 +148,10 @@ pub struct Admission {
     pub cap: Cap,
     pub own: Option<Own>,
     pub memory: Option<u64>,
+    /// What the checkout's landing train answered in the last
+    /// `LANDING_WINDOW`, as this host's tick log of it says; `None`: it
+    /// could not be read (docs/adr/0076).
+    pub landing: Option<Landing>,
 }
 
 /// What admission reads of the account a checkout's next worker starts on:
@@ -209,7 +213,14 @@ impl Admission {
             cap: settings.cap(),
             own: None,
             memory: None,
+            landing: None,
         }
+    }
+
+    /// This admission, judging the landing train of the checkout at `dir`
+    /// too, as its tick log has it up to `now` (docs/adr/0076).
+    pub fn with_landing(self, dir: &Path, now: u64) -> Admission {
+        Admission { landing: landing_of(dir, now), ..self }
     }
 
     /// This admission, judging the account `usage` too.
@@ -219,7 +230,8 @@ impl Admission {
 
     /// The thresholds the host is past, then the account's windows that
     /// would run out before they reset, then the queue, then the share of
-    /// the host afkconvoy may use itself: none, and new workers start.
+    /// the host afkconvoy may use itself, then the checkout's landing train:
+    /// none, and new workers start.
     pub fn holds(&self) -> Vec<Hold> {
         let mut held = holds(self.shares, &self.reading);
         if let Some(usage) = &self.usage {
@@ -227,12 +239,18 @@ impl Admission {
         }
         held.extend(queue_hold(self.queue_drain, self.queue_bound));
         held.extend(cap_holds(self.cap, self.own, self.reading.cores, self.memory));
+        held.extend(landing_hold(self.landing, LANDING_WINDOW));
         held
     }
 
-    /// The reasons admission holds back for now: none, and it admits.
+    /// The reasons admission holds back for now that call for the host's
+    /// watch once held past its span: none, and none calls. The landing
+    /// train is none of them: it drains as the workers already running land,
+    /// and nothing of the host is the watch's to mend for it
+    /// (docs/adr/0076).
     pub fn reasons(&self) -> Vec<Reason> {
-        self.holds().iter().map(Reason::of).collect()
+        let reasons = self.holds().iter().map(Reason::of).collect::<Vec<_>>();
+        reasons.into_iter().filter(|reason| *reason != Reason::Landing).collect()
     }
 
     /// `hold` as a tick's line and `plan` say it.
@@ -280,6 +298,12 @@ impl Admission {
                 measure::said(*resident),
                 measure::said(*limit),
                 self.cap.memory.unwrap_or(100)
+            ),
+            Hold::Landing { conflicts, landed, window } => format!(
+                "landing contention, {conflicts} conflicts in the last {} against {landed} \
+                 landing(s): its landing train cannot keep up, and starts no new worker of \
+                 this repo until it drains",
+                window_said(*window)
             ),
         }
     }
@@ -337,6 +361,11 @@ impl Admission {
             },
             "queue": {"drain_seconds": self.queue_drain, "bound_seconds": self.queue_bound},
             "share": self.share_json(),
+            "landing": self.landing.map(|landing| json!({
+                "conflicts": landing.conflicts,
+                "landed": landing.landed,
+                "window_seconds": LANDING_WINDOW,
+            })),
             "usage": self.usage.as_ref().map(|usage| json!({
                 "account": usage.account.key(),
                 "running": usage.running,
@@ -362,6 +391,35 @@ impl Admission {
             "own_cores": self.own.map(|own| own.cpu as f64 / 100.0),
             "own_resident_bytes": self.own.map(|own| own.resident),
         })
+    }
+}
+
+/// What the landing train of the checkout at `dir` answered in the
+/// `LANDING_WINDOW` up to `now`, as this host's tick log of its repo has the
+/// `land` turns' outcomes; `None`: there is no log to read.
+pub(crate) fn landing_of(dir: &Path, now: u64) -> Option<Landing> {
+    let log = crate::log::Log::of(&crate::git::Repo::new(dir.to_path_buf())).ok()?;
+    Some(landing_in(&log.read()?, now))
+}
+
+/// What the `land` lines of `entries` say of the `LANDING_WINDOW` up to
+/// `now`: each turn's end, its outcome word, and never a step it said on
+/// its way, nor one that failed.
+pub(crate) fn landing_in(entries: &[crate::log::Entry], now: u64) -> Landing {
+    let outcomes = entries.iter().filter_map(|entry| match &entry.what {
+        crate::log::What::Command { command, outcome, failed: false, .. } if command == "land" => {
+            Some((entry.at, outcome.as_str()))
+        }
+        _ => None,
+    });
+    Landing::tally(outcomes, now, LANDING_WINDOW)
+}
+
+/// A window of `seconds`, in words: `hour` for an hour.
+fn window_said(seconds: u64) -> String {
+    match seconds {
+        3600 => "hour".to_string(),
+        _ => minutes(seconds),
     }
 }
 
@@ -586,6 +644,7 @@ mod tests {
             cap: Cap::default(),
             own: None,
             memory: None,
+            landing: None,
         };
         let said: Vec<String> = admission.holds().iter().map(|hold| admission.said(hold)).collect();
         assert_eq!(
