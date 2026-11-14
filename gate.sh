@@ -128,6 +128,22 @@ left_behind() {
     kill -KILL $pids 2>/dev/null || true
     return 1
 }
+# The cores the gate is given are not its tests' threads. `afkconvoy
+# exclusive` says a gate's share of the host as NEXTEST_TEST_THREADS, in
+# cores: those afkconvoy may use where the host caps its share (ADR-0075),
+# fewer beside another lane (ADR-0049). nextest would run one test to a core,
+# and a test of the CLI waits on the processes it starts: on Studio64, 154
+# slow tests took 199, 98 and 55 seconds at 4, 8 and 16 at a time, in about
+# the same CPU, 16 at a time keeping 5.9 cores busy (sunfmin/control#965,
+# docs/gate-baseline.md). So the gate runs two tests to each core it is given,
+# still within them. Given none, each profile's own count holds
+# (.config/nextest.toml).
+test_threads() {
+    case "${NEXTEST_TEST_THREADS:-}" in
+    "" | *[!0-9]* | 0) ;;
+    *) echo "--test-threads $((NEXTEST_TEST_THREADS * 2))" ;;
+    esac
+}
 # Runs the tests nextest's filter `$2` picks under its profile `$1`, with
 # the deep TMPDIR. Without nextest no test is told from another, and only the
 # whole gate runs its tests, all of them, with cargo test.
@@ -141,8 +157,12 @@ run_tests() {
         return
     fi
     test_log=$(mktemp -d "$PWD/.afkconvoy-tmp/nextest.XXXXXX")
+    threads=$(test_threads)
+    [ -z "$threads" ] ||
+        echo "gate: the $1 tests run ${threads#--test-threads } at a time, two to each of the $NEXTEST_TEST_THREADS cores this gate was given" >&2
     # Keep nextest's output live and retain its own exit status through tee.
-    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
+    # shellcheck disable=SC2086
+    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet $threads --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
         echo 0 >"$test_log/status"
     else
         echo "$?" >"$test_log/status"

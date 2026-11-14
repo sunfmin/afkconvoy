@@ -550,3 +550,56 @@ pushes), a claim and its heartbeat pushed apart, `remote get-url origin`
 asked again in one process (333 of 632; a unit test of `repo_of` changes a
 checkout's remote within one process), and an issue's comments read again in
 one process (523 of 903, cheap with the stand-in `gh`).
+
+## The gate ran a test to each core it was given (sunfmin/control#965)
+
+`Studio64` (16 cores, 64 GiB; its host settings cap afkconvoy at 50% of its
+cores, 8, from 2026-11-14, ADR-0075) recorded five landings past the 600 s
+budget: 803, 756, 678, 729 and 693 seconds. The last, `c46574b2`, left its
+output: fast gate fmt 1, Flux 54–59, Clippy 14–26, build 25–32, fast tests
+73–74; slow gate 635 s. Its slow gates' records took 548 to 671 s; the slow
+gate of a landing before the cap, 442 s.
+
+`afkconvoy exclusive` gives a gate its share of the host as
+`NEXTEST_TEST_THREADS`, in cores: the 8 the cap allows when it runs alone, 4
+(16 cores over 4 lanes) beside another lane. nextest takes that over each
+profile's own count, so the slow gate ran 8 or 4 tests at a time, not 12.
+
+### Tests at a time
+
+Through the exclusive queue on 2026-11-14, at load averages 6–12 at each
+start, every sixth slow test (154), twice each way, with `/usr/bin/time`:
+
+| Tests at a time | Wall seconds | User + system CPU seconds | Cores busy |
+| ---: | ---: | ---: | ---: |
+| 4 | 199.1, 188.6 | 296, 277 | 1.5 |
+| 8 | 98.0, 96.1 | 291, 289 | 3.0 |
+| 16 | 55.1, 54.4 | 325, 323 | 5.9 |
+
+The CPU is about the same at every count: a test waits on the processes it starts, about a
+third of a core busy. The fast gate's tests (1,494) under its own profile, at
+load 7–9 at the start of each:
+
+| Tests at a time | Wall seconds | User + system CPU seconds | Slowest test |
+| ---: | ---: | ---: | ---: |
+| 4 | 78.7 | 159 | 4.95 s |
+| 8 | 36.4 | 155 | 4.96 s |
+| 16 | 22.0 | 173 | 5.16 s |
+
+From this change `./gate.sh` runs two tests to each core it is given
+(ADR-0077), and says how many as its tests start.
+
+### After
+
+`26a13a43`, this change, through the exclusive queue on 2026-11-14:
+
+| Gate | Steps | Seconds |
+| --- | --- | ---: |
+| fast (`afkconvoy gate --fast`, beside another lane, load 24 at its start) | fmt 2, Flux 65, Clippy 16, build 6, fast tests 49 | 138 |
+| slow (load 13 at its start): 923 passed, 23 past 20 s | slow tests 323 | 323 |
+
+The slow gate's 323 seconds kept 6.6 cores busy (2,135 CPU seconds), under
+the 8 the cap allows. Its slowest test took 66.9 s
+(`host_watch::a_hung_human_notification_times_out_and_retries_without_holding_back_looks_or_rounds`).
+A landing's gate on Studio64 now comes to about 460 seconds, against 678 to
+803.

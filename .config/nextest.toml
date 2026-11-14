@@ -44,6 +44,11 @@ slow-timeout = { period = "2s", terminate-after = 1 }
 # slow gate takes twenty minutes, and the worker who fixes a red round
 # (docs/adr/0048) is told every test it broke at once, not the first of them.
 # On 2026-10-30 a round's slow gate stopped at its 274th test of 811.
+#
+# Each profile's count holds only where the gate is given no share of the
+# host: `afkconvoy exclusive` says one as NEXTEST_TEST_THREADS, in cores, and
+# ./gate.sh then runs two tests to each of those cores, in either gate
+# (docs/adr/0077).
 [profile.slow]
 test-threads = 12
 fail-fast = false
