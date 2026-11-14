@@ -344,13 +344,29 @@ fn read() -> Result<State> {
     }
 }
 
-fn write(state: &State) -> Result<()> {
+/// Writes the state compact, and not at all when it is what the file holds
+/// already: the host runner's steady state costs what changed, not the size
+/// of its record. Only the running round keeps its look; the resident
+/// session, the last round and the history keep what later rounds read from
+/// them, and a round's look is in its brief already.
+fn write(state: &mut State) -> Result<()> {
+    for watch in state.resident.iter_mut().chain(state.last.iter_mut()).chain(&mut state.history) {
+        watch.look = Value::Null;
+    }
     let file = cache()?.join(STATE);
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)?;
+    let bytes = serde_json::to_vec(state)?;
+    match std::fs::read(&file) {
+        Ok(held) if held == bytes => return Ok(()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(dir) = file.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+        }
+        Err(error) => return Err(error.into()),
     }
     let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(state)?)?;
+    std::fs::write(&temporary, bytes)?;
     std::fs::rename(temporary, &file)?;
     Ok(())
 }
@@ -361,7 +377,7 @@ pub fn ask_distillation(now: u64) -> Result<Value> {
     let _lock = state_lock()?;
     let mut state = read()?;
     state.distilling.asked = Some(now);
-    write(&state)?;
+    write(&mut state)?;
     Ok(json!({"asked": true, "at": now}))
 }
 
@@ -540,7 +556,7 @@ impl Watcher {
         }
     }
 
-    fn save(&self, state: &State) -> Result<()> {
+    fn save(&self, state: &mut State) -> Result<()> {
         write(state)?;
         self.shared.set(state.running.clone());
         Ok(())
@@ -575,7 +591,7 @@ impl Watcher {
         self.say_state(&state);
         // Commit the observation interval and queue before any launch or
         // delivery. A restart cannot consume a look without retaining work.
-        self.save(&state)?;
+        self.save(&mut state)?;
         crate::watch_notify::looked(&state.observed)?;
         if state.running.is_none() && !state.pending.is_empty() {
             let pending: Vec<Item> = state.pending.iter().map(|q| q.item.clone()).collect();
@@ -609,7 +625,7 @@ impl Watcher {
                 self.start(&mut state, &directory, settings.watch_dir.is_none(), look, items)?;
             }
         }
-        self.save(&state)
+        self.save(&mut state)
     }
 
     /// Starts a watch on `items` on the first harness that can start it.
@@ -852,7 +868,7 @@ impl Watcher {
                 }
             }
             self.shared.set(None);
-            return self.save(&state);
+            return self.save(&mut state);
         };
         for item in &watch.items {
             if !state.watched.contains(&item.id) {
@@ -944,13 +960,13 @@ impl Watcher {
                             "time_limit",
                             "the active round expired while delivery recovery was paused",
                         )?;
-                        return self.save(&state);
+                        return self.save(&mut state);
                     }
                     let why = watch_terminal::recovery(&format!("{error:#}"));
                     watch_terminal::problem(&why)?;
                     state.unavailable = Some(why);
                     state.running = Some(watch);
-                    return self.save(&state);
+                    return self.save(&mut state);
                 }
             };
             state.unavailable = None;
@@ -1014,7 +1030,7 @@ impl Watcher {
                 }
             }
         }
-        self.save(&state)
+        self.save(&mut state)
     }
 
     /// Continues `watch`, whose harness gave out, on the next harness that
@@ -1929,6 +1945,54 @@ mod tests {
 
     const HUMAN_SINCE: u64 = 1_793_036_772;
 
+    #[test]
+    fn the_state_keeps_one_look_and_an_unchanged_state_is_not_written_again() {
+        // A look the size of a busy host's `doctor --all`, about 180 KB.
+        let big = json!({"until": 1, "checkouts": [{"checkout": "/r", "doctor": {
+            "findings": [], "padding": "x".repeat(180_000)}}]});
+        let round = |id: usize| -> Watch {
+            serde_json::from_value(json!({"id": format!("round-{id}"), "directory": "/w",
+                "look": big, "items": [{"id": "host:x", "reason": "x"}], "started": id,
+                "harness": "codex", "model": null, "terminal": "t", "transcript": "",
+                "report": null, "outcome": "ended"}))
+            .unwrap()
+        };
+        let mut state = State {
+            history: (0..HISTORY).map(round).collect(),
+            last: Some(round(HISTORY)),
+            resident: Some(round(HISTORY + 1)),
+            running: Some(round(HISTORY + 1)),
+            ..State::default()
+        };
+        let digest =
+            |state: &State| -> Vec<Value> { state.history.iter().map(watch_json).collect() };
+        let before = digest(&state);
+        write(&mut state).unwrap();
+        let file = cache().unwrap().join(STATE);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(size < 1 << 20, "{size} bytes with {HISTORY} rounds in history");
+        let read = read().unwrap();
+        assert_eq!(read.running.as_ref().unwrap().look, big, "the running round keeps its look");
+        assert!(read.resident.as_ref().unwrap().look.is_null());
+        assert!(read.last.as_ref().unwrap().look.is_null());
+        assert!(read.history.iter().all(|watch| watch.look.is_null()));
+        assert_eq!(digest(&read), before, "doctor's rounds read the same");
+        // Unchanged: the file is not written again.
+        let marked = std::fs::read(&file).unwrap();
+        std::fs::write(&file, &marked).unwrap();
+        let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let inode = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&file).unwrap());
+        let mut again = read;
+        write(&mut again).unwrap();
+        let after = std::fs::metadata(&file).unwrap();
+        assert_eq!(std::os::unix::fs::MetadataExt::ino(&after), inode, "not replaced");
+        assert_eq!(after.modified().unwrap(), modified, "not written");
+        // Changed: it is.
+        again.looked = Some(7);
+        write(&mut again).unwrap();
+        assert_eq!(super::read().unwrap().looked, Some(7));
+    }
+
     fn human_look(now: u64) -> Value {
         use afkconvoy_core::tracker::Tracker;
         use afkconvoy_core::waiting::{Back, Said, Waiting, Waits};
@@ -2116,7 +2180,7 @@ mod tests {
             watch_terminal::save(&record).unwrap();
             let mut state = read().unwrap();
             state.running = Some(round.clone());
-            watcher.save(&state).unwrap();
+            watcher.save(&mut state).unwrap();
             let until = Instant::now() + Duration::from_secs(90);
             loop {
                 match resume_delivery(round) {
@@ -2130,7 +2194,7 @@ mod tests {
             }
             let mut state = read().unwrap();
             state.running = Some(round.clone());
-            watcher.save(&state).unwrap();
+            watcher.save(&mut state).unwrap();
         };
         let wait_report = |round: &Watch| {
             let deadline = Instant::now() + Duration::from_secs(180);
