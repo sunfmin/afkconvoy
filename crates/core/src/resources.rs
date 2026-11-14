@@ -23,6 +23,8 @@ pub enum Reason {
     Window,
     /// The host's exclusive queue.
     Queue,
+    /// The share of the host's cores or memory afkconvoy may use itself.
+    Share,
 }
 
 impl Reason {
@@ -34,6 +36,7 @@ impl Reason {
             Hold::Disk { .. } => Reason::Disk,
             Hold::Window { .. } => Reason::Window,
             Hold::Queue { .. } => Reason::Queue,
+            Hold::OwnCores { .. } | Hold::OwnMemory { .. } => Reason::Share,
         }
     }
 
@@ -45,11 +48,12 @@ impl Reason {
             Reason::Disk => "disk",
             Reason::Window => "window",
             Reason::Queue => "queue",
+            Reason::Share => "share",
         }
     }
 
     pub fn read(word: &str) -> Option<Reason> {
-        [Reason::Load, Reason::Memory, Reason::Disk, Reason::Window, Reason::Queue]
+        [Reason::Load, Reason::Memory, Reason::Disk, Reason::Window, Reason::Queue, Reason::Share]
             .into_iter()
             .find(|reason| reason.word() == word)
     }

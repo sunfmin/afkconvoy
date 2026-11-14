@@ -10,8 +10,8 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use afkconvoy_core::admission::{
-    Disk, Hold, QUEUE_BOUND, Reading, SHARES, Shares, Window, holds, queue_hold, thresholds,
-    window_holds,
+    Cap, Disk, Hold, Own, QUEUE_BOUND, Reading, SHARES, Shares, Window, cap_holds, cap_limits,
+    holds, queue_hold, thresholds, window_holds,
 };
 use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::harness::Harness;
@@ -44,6 +44,9 @@ pub struct Readings {
     /// How long the exclusive queue takes to drain, in seconds; `None`: it
     /// could not be read.
     queue_drain: Option<u64>,
+    /// What afkconvoy's own processes use now; `None`: the host caps none
+    /// of it, or the process table could not be read.
+    own: Option<Own>,
     disks: Mutex<BTreeMap<u64, Option<Disk>>>,
 }
 
@@ -55,19 +58,25 @@ impl Readings {
                 let shared = shared.unwrap_or_default();
                 Self::with_queue(&shared.exclusive, &shared.exclusive_ran)
             }
-            Err(_) => Self::read(|_| None, None),
+            Err(_) => Self::read(|_| None, None, None),
         }
     }
 
     /// Reads against the runner's existing queue snapshot. Inside the runner
     /// an RPC to itself can wait for a server that has not started yet.
     pub(crate) fn with_queue(queue: &[Ticket], ran: &crate::exclusive::Ran) -> Readings {
-        let lanes = host_settings::of_host().unwrap_or_default().lanes();
-        let drain = drain_of(queue, ran, lanes, crate::clock());
-        Self::read(|load| queue_load(load, queue).ok(), Some(drain))
+        let settings = host_settings::of_host().unwrap_or_default();
+        let drain = drain_of(queue, ran, settings.lanes(), crate::clock());
+        let cap = settings.cap();
+        let own = (cap != Cap::default()).then(|| own_use(queue).ok()).flatten();
+        Self::read(|load| queue_load(load, queue).ok(), Some(drain), own)
     }
 
-    fn read(estimate_queue: impl FnOnce(u64) -> Option<u64>, queue_drain: Option<u64>) -> Readings {
+    fn read(
+        estimate_queue: impl FnOnce(u64) -> Option<u64>,
+        queue_drain: Option<u64>,
+        own: Option<Own>,
+    ) -> Readings {
         let total_load = load().ok();
         let queue_load = total_load.and_then(estimate_queue);
         Readings {
@@ -78,6 +87,7 @@ impl Readings {
             memory_free: memory_free().ok(),
             memory: crate::hot::memory(),
             queue_drain,
+            own,
             disks: Mutex::new(BTreeMap::new()),
         }
     }
@@ -132,6 +142,12 @@ pub struct Admission {
     /// The account the checkout's workers start on, as its windows say;
     /// `None`: none was read — its harness reports none, or nothing asked.
     pub usage: Option<Usage>,
+    /// The share of the host afkconvoy may use itself, what its own
+    /// processes use now — `None`: not read — and the host's memory, in
+    /// bytes, where it was read.
+    pub cap: Cap,
+    pub own: Option<Own>,
+    pub memory: Option<u64>,
 }
 
 /// What admission reads of the account a checkout's next worker starts on:
@@ -159,6 +175,8 @@ impl Admission {
         admission.total_load = readings.total_load;
         admission.queue_load = readings.queue_load;
         admission.queue_drain = readings.queue_drain;
+        admission.own = readings.own;
+        admission.memory = readings.memory;
         Ok(admission)
     }
 
@@ -188,6 +206,9 @@ impl Admission {
             queue_drain: None,
             queue_bound: QUEUE_BOUND,
             usage: None,
+            cap: settings.cap(),
+            own: None,
+            memory: None,
         }
     }
 
@@ -197,14 +218,15 @@ impl Admission {
     }
 
     /// The thresholds the host is past, then the account's windows that
-    /// would run out before they reset, then the queue: none, and new
-    /// workers start.
+    /// would run out before they reset, then the queue, then the share of
+    /// the host afkconvoy may use itself: none, and new workers start.
     pub fn holds(&self) -> Vec<Hold> {
         let mut held = holds(self.shares, &self.reading);
         if let Some(usage) = &self.usage {
             held.extend(window_holds(&usage.windows, |_| usage.running));
         }
         held.extend(queue_hold(self.queue_drain, self.queue_bound));
+        held.extend(cap_holds(self.cap, self.own, self.reading.cores, self.memory));
         held
     }
 
@@ -243,6 +265,21 @@ impl Admission {
                  past {}",
                 minutes(*drain),
                 minutes(*bound)
+            ),
+            Hold::OwnCores { used, limit } => format!(
+                "afkconvoy's own processes take {} cores, at or past {}, the {}% of its {} cores \
+                 it may use",
+                hundredths(*used),
+                hundredths(*limit),
+                self.cap.cores.unwrap_or(100),
+                self.reading.cores
+            ),
+            Hold::OwnMemory { resident, limit } => format!(
+                "afkconvoy's own processes hold {} resident, at or past {}, the {}% of its memory \
+                 it may use",
+                measure::said(*resident),
+                measure::said(*limit),
+                self.cap.memory.unwrap_or(100)
             ),
         }
     }
@@ -299,6 +336,7 @@ impl Admission {
                 "disk_size_bytes": reading.disk.map(|disk| disk.size),
             },
             "queue": {"drain_seconds": self.queue_drain, "bound_seconds": self.queue_bound},
+            "share": self.share_json(),
             "usage": self.usage.as_ref().map(|usage| json!({
                 "account": usage.account.key(),
                 "running": usage.running,
@@ -306,6 +344,68 @@ impl Admission {
             })),
         })
     }
+}
+
+impl Admission {
+    /// The share of the host afkconvoy may use itself, what it comes to and
+    /// what its own processes use now: {max_share_of_cores,
+    /// max_share_of_memory, cores_limit, memory_limit_bytes, own_cores,
+    /// own_resident_bytes}, each null where the host caps none or it was not
+    /// read.
+    fn share_json(&self) -> Value {
+        let (cpu, resident) = cap_limits(self.cap, self.reading.cores, self.memory);
+        json!({
+            "max_share_of_cores": self.cap.cores,
+            "max_share_of_memory": self.cap.memory,
+            "cores_limit": cpu.map(|cpu| cpu as f64 / 100.0),
+            "memory_limit_bytes": resident,
+            "own_cores": self.own.map(|own| own.cpu as f64 / 100.0),
+            "own_resident_bytes": self.own.map(|own| own.resident),
+        })
+    }
+}
+
+/// What afkconvoy's own processes on this host use now, in one reading of
+/// the process table: its host runner and keeper and all under them, the
+/// processes its fleets started (`hot::fleets`), and the running work of
+/// its exclusive queue, `queue` — a cut's build among it.
+fn own_use(queue: &[Ticket]) -> Result<Own> {
+    let procs = crate::hot::listed_checked()?;
+    let ours = |worktree: &Path| {
+        crate::orca::Worktree::at(worktree.to_path_buf(), String::new()).holds_a_worker()
+    };
+    let mut pids = crate::hot::fleets(&procs, ours);
+    pids.extend(crate::exclusive::running_work(queue, &procs).pids);
+    let runner = [crate::host_runner::pid(), crate::host_runner::keeper()];
+    pids.extend(under(&procs, runner.into_iter().flatten()));
+    Ok(own_of(&procs, &pids))
+}
+
+/// The pids of `roots` and of every process of `procs` under one of them.
+fn under(procs: &[crate::hot::Proc], roots: impl IntoIterator<Item = u32>) -> BTreeSet<u32> {
+    let mut found: BTreeSet<u32> = roots.into_iter().collect();
+    loop {
+        let more: Vec<u32> = procs
+            .iter()
+            .filter(|proc| found.contains(&proc.ppid) && !found.contains(&proc.pid))
+            .map(|proc| proc.pid)
+            .collect();
+        if more.is_empty() {
+            return found;
+        }
+        found.extend(more);
+    }
+}
+
+/// What the processes `of` of `procs` use: the share of a core each takes
+/// now — `ps` says it in hundredths of a percent, a ten-thousandth of a core
+/// — in hundredths of a core, and what each holds resident.
+fn own_of(procs: &[crate::hot::Proc], of: &std::collections::HashSet<u32>) -> Own {
+    let ours = procs.iter().filter(|proc| of.contains(&proc.pid));
+    let (share, resident) = ours.fold((0u64, 0u64), |(share, resident), proc| {
+        (share.saturating_add(proc.cpu_share), resident.saturating_add(proc.resident))
+    });
+    Own { cpu: share / 100, resident }
 }
 
 /// Attribute the one-minute load in proportion to CPU currently used by the
@@ -483,6 +583,9 @@ mod tests {
             queue_drain: None,
             queue_bound: afkconvoy_core::admission::QUEUE_BOUND,
             usage: None,
+            cap: Cap::default(),
+            own: None,
+            memory: None,
         };
         let said: Vec<String> = admission.holds().iter().map(|hold| admission.said(hold)).collect();
         assert_eq!(
@@ -575,6 +678,74 @@ mod readings_tests {
         assert_eq!(held.reasons(), [Reason::Window]);
         assert_eq!(held.json()["usage"]["running"], 2);
         assert!(at_ease().with_usage(None).holds().is_empty(), "no window: the host alone");
+    }
+
+    /// A process of `pid` under `ppid`, taking `percent` of a core and
+    /// holding `gib` GiB resident.
+    fn proc(pid: u32, ppid: u32, percent: u64, gib: u64) -> crate::hot::Proc {
+        crate::hot::Proc {
+            pid,
+            ppid,
+            resident: gib << 30,
+            cpu_ms: 0,
+            cpu_share: percent * 100,
+            written: 0,
+            line: String::new(),
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn with_the_share_set_admission_refuses_a_start_that_would_take_afkconvoy_over_it() {
+        // A 14-core, 48-GiB Hub: the host runner at 65% of a core, a gate's
+        // build under a worker at 600%, and a co-resident system's own work.
+        let procs = [
+            proc(100, 1, 65, 1),
+            proc(101, 100, 10, 1),
+            proc(200, 1, 50, 2),
+            proc(201, 200, 600, 6),
+            proc(300, 1, 400, 20),
+        ];
+        let runner = under(&procs, [100]);
+        assert_eq!(runner, BTreeSet::from([100, 101]), "the runner and all under it");
+        let ours: std::collections::HashSet<u32> =
+            runner.into_iter().chain(under(&procs, [200])).collect();
+        let own = own_of(&procs, &ours);
+        assert_eq!(own, Own { cpu: 725, resident: 10 << 30 }, "not the other system's");
+
+        let settings = |cores: Option<u64>, memory: Option<u64>| {
+            host_settings::Settings::default().with(&host_settings::Named {
+                max_share_of_cores: cores.map(host_settings::To::Value),
+                max_share_of_memory: memory.map(host_settings::To::Value),
+                ..host_settings::Named::default()
+            })
+        };
+        let at = |settings: &host_settings::Settings| Admission {
+            own: Some(own),
+            memory: Some(48 << 30),
+            ..Admission::of(settings, at_ease().reading)
+        };
+        // Half the cores is 7: afkconvoy's 7.25 leaves no room for a start,
+        // where the host's load alone (1.00 of 14) would admit one.
+        let half = at(&settings(Some(50), None));
+        let holds = half.holds();
+        assert_eq!(holds, [Hold::OwnCores { used: 725, limit: 700 }]);
+        assert_eq!(
+            half.said(&holds[0]),
+            "afkconvoy's own processes take 7.25 cores, at or past 7.00, the 50% of its 14 \
+             cores it may use"
+        );
+        assert_eq!(half.reasons(), [Reason::Share]);
+        assert_eq!(half.json()["admits"], false);
+        assert_eq!(half.json()["share"]["max_share_of_cores"], 50);
+        assert_eq!(half.json()["share"]["own_cores"], 7.25);
+        // More room, and it admits; no cap, and its own use is never asked.
+        assert!(at(&settings(Some(60), None)).holds().is_empty(), "8.40 cores of room");
+        assert!(at(&settings(None, None)).holds().is_empty());
+        // A fifth of 48 GiB is under its 10 GiB resident.
+        let memory = at(&settings(None, Some(20)));
+        assert_eq!(memory.reasons(), [Reason::Share]);
+        assert!(memory.said(&memory.holds()[0]).contains("the 20% of its memory it may use"));
     }
 
     #[test]
