@@ -130,6 +130,23 @@ fn now() -> u64 {
 }
 
 fn lander<'a>(work: &Path, worktrees: &Path, forge: &'a Fake) -> Lander<'a, Fake> {
+    lander_as(work, worktrees, forge, "s")
+}
+
+/// A process of this host is running where it is this test's own, under
+/// the start time it is named with here: a run named otherwise has ended.
+fn running(p: &Process) -> bool {
+    p.pid == std::process::id() && p.started == "s"
+}
+
+/// A lander run as the process this test's pid names under `started`: one
+/// of a run that has ended, unless `started` is this test's own.
+fn lander_as<'a>(
+    work: &Path,
+    worktrees: &Path,
+    forge: &'a Fake,
+    started: &str,
+) -> Lander<'a, Fake> {
     Lander {
         git: Git { worktree: work.into(), remote: "origin".into(), layout: Layout::Hidden },
         forge,
@@ -138,8 +155,9 @@ fn lander<'a>(work: &Path, worktrees: &Path, forge: &'a Fake) -> Lander<'a, Fake
         owner: Process {
             host: "scratch-host".into(),
             pid: std::process::id(),
-            started: "s".into(),
+            started: started.into(),
         },
+        running,
         worktrees: worktrees.into(),
         declared,
         now,
@@ -151,6 +169,33 @@ fn recorded(work: &Path) -> Chain {
     let name = turn::record_ref(Layout::Hidden, "main");
     git(work, &["fetch", "--quiet", "origin", &format!("+{name}:{name}")]);
     serde_json::from_str(&git(work, &["show", "-s", "--format=%B", &name])).unwrap()
+}
+
+/// Rewrites the chain of `main` on the remote by `edit`: as a run that
+/// ended mid-way left it.
+fn rewrite(work: &Path, edit: impl FnOnce(&mut Chain)) {
+    let name = turn::record_ref(Layout::Hidden, "main");
+    let mut chain = recorded(work);
+    edit(&mut chain);
+    let tree = git(work, &["hash-object", "-t", "tree", "/dev/null"]);
+    let message = serde_json::to_string(&chain).unwrap();
+    let mut args = vec!["commit-tree", &tree, "-m", &message, "-p", &name];
+    let commits: Vec<String> = chain.candidates.iter().map(|c| c.commit.clone()).collect();
+    for commit in &commits {
+        args.extend(["-p", commit]);
+    }
+    let next = git(work, &args);
+    git(work, &["push", "--quiet", "origin", &format!("{next}:{name}")]);
+}
+
+/// The chain holds no two valid candidates of one change.
+fn one_each(chain: &Chain) {
+    let mut valid: Vec<u64> =
+        chain.candidates.iter().filter(|c| c.valid()).map(|c| c.change).collect();
+    let all = valid.len();
+    valid.sort_unstable();
+    valid.dedup();
+    assert_eq!(valid.len(), all, "two valid candidates of one change: {chain:?}");
 }
 
 /// Which gate ran on which commit, in the order they ran.
@@ -501,4 +546,134 @@ fn its_public_api_names_no_fleet_concept() {
             }
         }
     }
+}
+
+/// A run assigns a candidate, gates it green — its fast gate and the round
+/// at it — and ends before it publishes (sunfmin/control#900). A reader of
+/// the chain names it wedged once it stood past its whole gate's seconds;
+/// the next run lands it, gates nothing again, and assigns no second
+/// candidate of the change.
+#[test]
+fn a_green_candidate_a_run_left_unpublished_lands_at_the_next_run() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    let a = change(&work, 1, "a", "file-1.txt");
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    let ended = lander_as(&work, &worktrees, &forge, "an ended run");
+    let Ok(id) = ended.assign(&a).unwrap() else { panic!("assigned") };
+    ended.gate("main", &id).unwrap();
+    assert!(ended.round("main", &id).unwrap());
+
+    let chain = recorded(&work);
+    let [left] = &chain.candidates[..] else { panic!("{chain:?}") };
+    assert!(left.whole() && left.stopped, "{left:?}");
+    let assigned = left.assigned.expect("it says when it was assigned");
+    assert!(chain.wedged(assigned + left.limit()).is_empty(), "within its gate's seconds");
+    let wedged: Vec<&str> =
+        chain.wedged(assigned + left.limit() + 1).iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(wedged, [id.as_str()], "past them, unpublished: wedged");
+
+    let outcomes = lander(&work, &worktrees, &forge).land(&[a]).unwrap();
+
+    let chain = recorded(&work);
+    let [landed] = &chain.candidates[..] else { panic!("one candidate: {chain:?}") };
+    assert_eq!(landed.id, id, "the candidate it left, not a second");
+    assert_eq!(outcomes, [(1, Outcome::Landed(landed.commit.clone()))]);
+    assert_eq!(landed.phase, Phase::Landed);
+    let gates: Vec<String> = runs(&ran).into_iter().map(|(gate, _)| gate).collect();
+    assert_eq!(gates, ["fast", "slow"], "nothing gated again");
+    git(&work, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(&work, &["rev-parse", "origin/main"]), landed.commit);
+    assert_eq!(*forge.landed.borrow(), [(1, landed.commit.clone())]);
+    assert!(chain.wedged(u64::MAX / 2).is_empty(), "a landed candidate is not wedged");
+}
+
+/// A run ends while its candidate is gating, on this host, which lives on:
+/// the next run takes it over — `owner_died`, with what stands on it — and
+/// the changes land on candidates of its own (sunfmin/control#900).
+#[test]
+fn a_candidate_left_gating_by_a_run_that_ended_is_taken_over_and_the_changes_land() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, _) = scratch(root.path());
+    let a = change(&work, 1, "a", "file-1.txt");
+    let b = change(&work, 2, "b", "file-2.txt");
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    let ended = lander_as(&work, &worktrees, &forge, "an ended run");
+    let Ok(left) = ended.assign(&a).unwrap() else { panic!("assigned") };
+    let Ok(behind) = ended.assign(&b).unwrap() else { panic!("assigned") };
+    rewrite(&work, |chain| chain.candidates[0].phase = Phase::Validating);
+
+    let outcomes = lander(&work, &worktrees, &forge).land(&[a, b]).unwrap();
+
+    let chain = recorded(&work);
+    one_each(&chain);
+    let by = |id: &str| chain.candidates.iter().find(|c| c.id == id).unwrap();
+    let (left, behind) = (by(&left), by(&behind));
+    assert_eq!(
+        (left.phase, left.cause.as_deref(), left.abandoned),
+        (Phase::Cancelled, Some("owner_died"), true)
+    );
+    assert_eq!(behind.cancelled_by.as_deref(), Some(left.id.as_str()));
+    let landed: Vec<&str> = chain
+        .candidates
+        .iter()
+        .filter(|c| c.phase == Phase::Landed)
+        .map(|c| c.id.as_str())
+        .collect();
+    assert_eq!(landed.len(), 2, "{chain:?}");
+    assert!(outcomes.iter().all(|(_, o)| matches!(o, Outcome::Landed(_))), "{outcomes:?}");
+    assert_eq!(landed_files(&work), ["file-1.txt", "file-2.txt"]);
+}
+
+/// Whatever runs come and go, the chain holds no two valid candidates of
+/// one change (sunfmin/control#900): a run asking again takes up the
+/// candidate the change has; a head that moved invalidates it first.
+#[test]
+fn the_chain_never_holds_two_valid_candidates_of_one_change() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, _) = scratch(root.path());
+    let a = change(&work, 1, "a", "file-1.txt");
+    let b = change(&work, 2, "b", "file-2.txt");
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    let first = lander_as(&work, &worktrees, &forge, "a first run");
+    let assigned = |lander: &Lander<Fake>, change: &Change| {
+        let Ok(id) = lander.assign(change).unwrap() else { panic!("assigned") };
+        one_each(&recorded(&work));
+        id
+    };
+    let (a1, b1) = (assigned(&first, &a), assigned(&first, &b));
+    assert_eq!(assigned(&first, &a), a1, "asked again, the same candidate");
+    // The first run gates both fast-green and ends.
+    first.gate("main", &a1).unwrap();
+    first.gate("main", &b1).unwrap();
+    let second = lander_as(&work, &worktrees, &forge, "a second run");
+    assert_eq!(assigned(&second, &b), b1, "another run takes up the one it has");
+    assert_eq!(assigned(&second, &a), a1);
+    let live = lander(&work, &worktrees, &forge);
+
+    // The change's head moves: its candidate goes, with what stands on it.
+    git(&work, &["checkout", "--quiet", "a"]);
+    std::fs::write(work.join("file-1.txt"), "moved").unwrap();
+    git(&work, &["commit", "--quiet", "-am", "move a"]);
+    git(&work, &["push", "--quiet", "origin", "a"]);
+    git(&work, &["checkout", "--quiet", "main"]);
+    let a2 = assigned(&live, &a);
+    assert_ne!(a2, a1);
+    let chain = recorded(&work);
+    let old = chain.candidates.iter().find(|c| c.id == a1).unwrap();
+    assert_eq!(old.cause.as_deref(), Some("head_changed"));
+    assert!(!chain.candidates.iter().find(|c| c.id == b1).unwrap().valid());
+    let b2 = assigned(&live, &b);
+    assert_ne!(b2, b1);
+
+    let outcomes = live.land(&[a, b]).unwrap();
+
+    let chain = recorded(&work);
+    one_each(&chain);
+    let landed = |id: &str| chain.candidates.iter().find(|c| c.id == id).unwrap().commit.clone();
+    assert_eq!(outcomes, [(1, Outcome::Landed(landed(&a2))), (2, Outcome::Landed(landed(&b2)))]);
+    assert_eq!(landed_files(&work), ["file-1.txt", "file-2.txt"]);
 }
