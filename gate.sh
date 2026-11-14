@@ -133,8 +133,8 @@ left_behind() {
 # cores: those afkconvoy may use where the host caps its share (ADR-0075),
 # fewer beside another lane (ADR-0049). nextest would run one test to a core,
 # and a test of the CLI waits on the processes it starts: on Studio64, 154
-# slow tests took the same 290 CPU seconds at 4, 8 and 16 at a time, and 199,
-# 98 and 55 seconds, 16 at a time keeping 5.9 cores busy (sunfmin/control#965,
+# slow tests took 199, 98 and 55 seconds at 4, 8 and 16 at a time, in about
+# the same CPU, 16 at a time keeping 5.9 cores busy (sunfmin/control#965,
 # docs/gate-baseline.md). So the gate runs two tests to each core it is given,
 # still within them. Given none, each profile's own count holds
 # (.config/nextest.toml).

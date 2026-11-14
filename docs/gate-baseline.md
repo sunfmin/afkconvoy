@@ -572,12 +572,11 @@ start, every sixth slow test (154), twice each way, with `/usr/bin/time`:
 
 | Tests at a time | Wall seconds | User + system CPU seconds | Cores busy |
 | ---: | ---: | ---: | ---: |
-| 4 | 199.1, — | 296, 287 | 1.5 |
+| 4 | 199.1, 188.6 | 296, 277 | 1.5 |
 | 8 | 98.0, 96.1 | 291, 289 | 3.0 |
 | 16 | 55.1, 54.4 | 325, 323 | 5.9 |
 
-(The second 4-at-a-time run's wall time was not kept; its CPU was.) The CPU
-is the same at every count: a test waits on the processes it starts, about a
+The CPU is about the same at every count: a test waits on the processes it starts, about a
 third of a core busy. The fast gate's tests (1,494) under its own profile, at
 load 7–9 at the start of each:
 

@@ -114,8 +114,9 @@ checks:
 
 One gate fills the host by itself: its Flux, clippy and test builds run one
 rustc job per core, and its tests run as many at a time as
-`.config/nextest.toml` says, each starting the CLI and the `git`, `gh` and
-`orca` it runs. Two gates side by side already reach the
+`.config/nextest.toml` says, or two to each core `afkconvoy exclusive` gives
+the gate as its share (ADR-0077), each starting the CLI and the `git`, `gh`
+and `orca` it runs. Two gates side by side already reach the
 load at which admission holds new workers back, twice the host's cores (#426).
 So the gate runs through the host's exclusive queue (ADR-0019), in every
 checkout — a worker's standalone gate or landing turn, and a gate in a

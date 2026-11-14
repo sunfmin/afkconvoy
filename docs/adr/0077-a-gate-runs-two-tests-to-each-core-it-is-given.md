@@ -17,10 +17,11 @@ On Studio64 (16 cores, afkconvoy capped at 50%: 8 cores), from 2026-11-14,
 every landing's gate took longer than the 600-second budget: 678 to 803
 seconds. Its slow gate ran its tests 8 at a time, 4 beside another lane, where
 the slow profile says 12. Run through the exclusive queue, 154 of the slow
-tests took 290 CPU seconds at 4, 8 and 16 at a time alike, and 199, 98 and
-55 seconds: 16 at a time kept 5.9 cores busy, still under the 8 the cap
-allows. The fast gate's 1,494 tests took 71, 36 and 22 seconds at 4, 8 and 16,
-in about the same CPU, the slowest of them 4.4 to 5.2 seconds at each count,
+tests took 199, 98 and 55 seconds at 4, 8 and 16 at a time, in 277 to 296
+CPU seconds at 4 and 8 and 324 at 16: 16 at a time kept 5.9 cores busy,
+still under the 8 the cap allows. The fast gate's 1,494 tests took 79, 36
+and 22 seconds at 4, 8 and 16, in 155 to 173 CPU seconds, the slowest of
+them 5.0 to 5.2 seconds at each count,
 under the fast gate's 6-second end (docs/gate-baseline.md).
 
 ## Decision
@@ -50,8 +51,8 @@ before.
 
 ## Consequences
 
-- On Studio64 the slow gate takes about 330 seconds in place of 550 to 635,
-  and the fast gate's tests about 22 in place of 73.
+- On Studio64 the slow gate took 323 seconds in place of 550 to 635, and the
+  fast gate's tests 49 beside another lane in place of 73.
 - A host that caps nothing and runs the gate alone gives no share, and the
   gate runs as before.
 - A test that waits on a process's timing sees about twice the tests beside
