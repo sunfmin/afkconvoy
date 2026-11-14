@@ -11,13 +11,23 @@ use crate::chain::Evidence;
 pub struct Change {
     /// Its number on the forge, which the chain records its candidate by.
     pub number: u64,
-    /// The branch its head is on: the original head a candidate merges is
-    /// this branch's, and landing never moves it.
+    /// Where its head is on the remote, which landing never moves: a bare
+    /// name is the branch of that name (`refs/heads/<source>`); a full ref,
+    /// one that starts with `refs/` (`refs/pull/2/head`, a change that has
+    /// no branch of its own), is that ref as it is (`source_ref`). The
+    /// original head a candidate merges is this ref's.
     pub source: String,
     /// The branch it asks to land on.
     pub target: String,
     /// Its title, which its program's merge message may carry.
     pub title: String,
+}
+
+/// The ref the remote holds a change's `source` at (`Change::source`): a
+/// full ref, one that starts with `refs/`, as it is; a bare name, the branch
+/// of that name.
+pub fn source_ref(source: &str) -> String {
+    if source.starts_with("refs/") { source.to_string() } else { format!("refs/heads/{source}") }
 }
 
 /// The forge a program's changes are asked on, as a landing asks it.

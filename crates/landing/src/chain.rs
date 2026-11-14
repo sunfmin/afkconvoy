@@ -64,7 +64,8 @@ pub struct Candidate<N = Plain> {
     /// written and read (afkconvoy's: the issue the change completes).
     #[serde(flatten)]
     pub note: N,
-    /// The branch the change's head is on, which landing never moves.
+    /// The change's source (`forge::Change::source`): the branch its head
+    /// is on, or a full ref, which landing never moves.
     pub branch: String,
     pub original_head: String,
     pub predecessor: String,

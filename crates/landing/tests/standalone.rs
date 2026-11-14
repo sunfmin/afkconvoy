@@ -677,3 +677,107 @@ fn the_chain_never_holds_two_valid_candidates_of_one_change() {
     assert_eq!(outcomes, [(1, Outcome::Landed(landed(&a2))), (2, Outcome::Landed(landed(&b2)))]);
     assert_eq!(landed_files(&work), ["file-1.txt", "file-2.txt"]);
 }
+
+/// A change with no branch of its own, its head at the full ref `name`
+/// (`refs/pull/7/head`, as a forge gives a pull pushed by AGit flow), adding
+/// `file`, pushed there: one that asks to land on `main`.
+fn change_at_ref(work: &Path, number: u64, name: &str, file: &str) -> Change {
+    git(work, &["checkout", "--quiet", "--detach", "main"]);
+    std::fs::write(work.join(file), name).unwrap();
+    git(work, &["add", file]);
+    git(work, &["commit", "--quiet", "-m", &format!("add {file}")]);
+    git(work, &["push", "--quiet", "origin", &format!("HEAD:{name}")]);
+    git(work, &["checkout", "--quiet", "main"]);
+    Change { number, source: name.into(), target: "main".into(), title: format!("Add {file}") }
+}
+
+/// Moves the head at the full ref `name` on by one commit, pushed.
+fn move_ref(work: &Path, name: &str) {
+    git(work, &["fetch", "--quiet", "origin", name]);
+    git(work, &["checkout", "--quiet", "--detach", "FETCH_HEAD"]);
+    std::fs::write(work.join("moved.txt"), "moved").unwrap();
+    git(work, &["add", "moved.txt"]);
+    git(work, &["commit", "--quiet", "-m", "move"]);
+    git(work, &["push", "--quiet", "--force", "origin", &format!("HEAD:{name}")]);
+    git(work, &["checkout", "--quiet", "main"]);
+}
+
+/// A change whose source is a full ref, not under `refs/heads/`, lands as a
+/// branch's does beside one whose source is a bare branch name
+/// (sunfmin/control#955); its ref is not moved.
+#[test]
+fn a_change_whose_source_is_a_full_ref_lands_as_a_branch_s_does() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    let a = change_at_ref(&work, 7, "refs/pull/7/head", "file-1.txt");
+    let b = change(&work, 8, "b", "file-2.txt");
+    let head = git(&work, &["ls-remote", "origin", "refs/pull/7/head"]);
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+
+    let outcomes = lander(&work, &worktrees, &forge).land(&[a, b]).unwrap();
+
+    let chain = recorded(&work);
+    let [first, second] = &chain.candidates[..] else { panic!("{chain:?}") };
+    assert_eq!(first.branch, "refs/pull/7/head");
+    assert_eq!(second.branch, "b", "a bare source is still a branch");
+    assert_eq!(
+        outcomes,
+        [(7, Outcome::Landed(first.commit.clone())), (8, Outcome::Landed(second.commit.clone()))]
+    );
+    assert_eq!(runs(&ran).len(), 3, "both fast-gated, one slow gate at the tip");
+    assert_eq!(landed_files(&work), ["file-1.txt", "file-2.txt"]);
+    assert_eq!(git(&work, &["ls-remote", "origin", "refs/pull/7/head"]), head);
+    assert!(
+        git(&work, &["ls-remote", "origin", "refs/heads/refs/pull/7/head"]).is_empty(),
+        "no branch made of the ref"
+    );
+}
+
+/// The full ref a candidate merged moves before it lands: the publication's
+/// evidence changed, and it is invalidated, as a branch's candidate is.
+#[test]
+fn a_candidate_of_a_full_ref_is_invalidated_when_that_ref_moves() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, _) = scratch(root.path());
+    let a = change_at_ref(&work, 7, "refs/pull/7/head", "file-1.txt");
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    let lander = lander(&work, &worktrees, &forge);
+    let Ok(id) = lander.assign(&a).unwrap() else { panic!("assigned") };
+    lander.gate("main", &id).unwrap();
+    assert!(lander.round("main", &id).unwrap());
+
+    move_ref(&work, "refs/pull/7/head");
+    let landed = lander.publish("main", &id, std::slice::from_ref(&a)).unwrap();
+
+    assert!(landed.is_empty(), "{landed:?}");
+    let chain = recorded(&work);
+    let c = chain.candidates.iter().find(|c| c.id == id).unwrap();
+    assert_eq!(c.cause.as_deref(), Some("publication_evidence_changed"), "{c:?}");
+    assert!(forge.landed.borrow().is_empty());
+}
+
+/// A change whose source the remote has no ref at is that change's outcome
+/// alone, `Gone`: the round lands the others (sunfmin/control#955).
+#[test]
+fn a_change_whose_source_the_remote_has_not_is_gone_and_the_rest_lands() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, _) = scratch(root.path());
+    let missing = Change {
+        number: 2,
+        source: "refs/pull/2/head".into(),
+        target: "main".into(),
+        title: "Gone".into(),
+    };
+    let b = change(&work, 3, "b", "file-2.txt");
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+
+    let outcomes = lander(&work, &worktrees, &forge).land(&[missing, b]).unwrap();
+
+    let chain = recorded(&work);
+    let [landed] = &chain.candidates[..] else { panic!("{chain:?}") };
+    assert_eq!(outcomes, [(2, Outcome::Gone), (3, Outcome::Landed(landed.commit.clone()))]);
+    assert_eq!(landed_files(&work), ["file-2.txt"]);
+}

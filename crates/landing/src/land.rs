@@ -25,7 +25,7 @@ use serde::de::DeserializeOwned;
 use crate::chain::{
     BatchStep, Candidate, Chain, Decision, Evidence, Observed, Phase, Process, Reused,
 };
-use crate::forge::{Change, Forge};
+use crate::forge::{Change, Forge, source_ref};
 use crate::turn::{self, Declared, Landing, Next};
 
 /// How many of a run's last lines its evidence keeps.
@@ -55,7 +55,8 @@ pub enum Outcome<R> {
     Conflict,
     /// Its forge says it may not land now.
     Refused(R),
-    /// Its forge no longer has it asking to land.
+    /// Its forge no longer has it asking to land, or the remote has no ref
+    /// at its source (`Change::source`).
     Gone,
     /// It is on the chain, valid, and not landed yet.
     Waiting,
@@ -276,10 +277,11 @@ where
         if let Err(refusal) = self.forge.may_land(&change).map_err(Error::Forge)? {
             return Ok(Err(Outcome::Refused(refusal)));
         }
-        let source = format!("refs/heads/{}", change.source);
-        let original = self
-            .fetched(&source)?
-            .ok_or_else(|| format!("the remote has no branch {:?}", change.source))?;
+        // A source the remote has not is this change's outcome alone: the
+        // round goes on with the others.
+        let Some(original) = self.fetched(&source_ref(&change.source))? else {
+            return Ok(Err(Outcome::Gone));
+        };
         loop {
             let mut read = self.read(&change.target)?;
             let before = read.chain.clone();
@@ -551,8 +553,8 @@ where
             run::recorded(&self.git, &Tree::named(&last.tree), &whole, (self.now)())?.is_some();
         let mut heads = true;
         for m in &members {
-            heads &= self.fetched(&format!("refs/heads/{}", m.branch))?.as_deref()
-                == Some(m.original_head.as_str());
+            heads &=
+                self.fetched(&source_ref(&m.branch))?.as_deref() == Some(m.original_head.as_str());
         }
         let parent = |commit: &str| git(self.dir(), &["rev-parse", &format!("{commit}^1")]);
         let ordered = turn::fast_forwards(&members, &read.base, parent)?;
