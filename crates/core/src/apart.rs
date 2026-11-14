@@ -16,15 +16,22 @@ use std::collections::BTreeSet;
 /// a link, an issue reference (`owner/repo#7`) or a version is no file.
 pub fn named_files(body: &str) -> BTreeSet<String> {
     let mut named = BTreeSet::new();
-    let parts: Vec<&str> = body.split('`').collect();
-    // Every other part is inside backticks, the first outside; the last is
-    // never closed.
-    let mut at = 1;
-    while at + 1 < parts.len() {
-        if let Some(file) = file_of(parts[at]) {
+    // Every other part is inside backticks, the first outside; a part is
+    // quoted only once a backtick closes it, so the last never is.
+    let mut parts = body.split('`');
+    parts.next();
+    let mut inside = true;
+    let mut quoted: Option<&str> = None;
+    for part in parts {
+        if let Some(closed) = quoted.take()
+            && let Some(file) = file_of(closed)
+        {
             named.insert(file);
         }
-        at += 2;
+        if inside {
+            quoted = Some(part);
+        }
+        inside = !inside;
     }
     named
 }
@@ -65,7 +72,7 @@ fn overlap(a: &str, b: &str) -> bool {
 
 /// Whether `file` is under the directory `dir`.
 fn within(file: &str, dir: &str) -> bool {
-    file.len() > dir.len() && file.starts_with(dir) && file.as_bytes()[dir.len()] == b'/'
+    file.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// Whether any of `files` overlaps any of `in_flight`.
