@@ -84,7 +84,8 @@ fn notes_match(
                         .is_some();
                 (belongs && matches(text)).then_some(())
             };
-            let held = read_layout(root, harness, &cwd_text, layout.clone(), Some(since), holds)?;
+            let held =
+                read_layout(root, harness, &cwd_text, layout.clone(), Some(since), whole(holds))?;
             if !held.is_empty() {
                 return Ok(true);
             }
@@ -247,10 +248,101 @@ fn read_root(
     let brief = brief(cwd);
     let cwd = cwd_str(cwd);
     let layout = harness.session_place(&cwd).layout;
-    let turns = read_layout(root, harness, &cwd, layout, since, |text| {
-        harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
+    let turns = read_layout(root, harness, &cwd, layout, since, |path, load| {
+        let key = Asked {
+            path: path.to_path_buf(),
+            harness: harness.key(),
+            cwd: cwd.clone(),
+            not_before,
+            brief: brief.clone(),
+        };
+        remembered(key, load, |text| {
+            harness.recorded_turn(&cwd, text, not_before, brief.as_deref())
+        })
     })?;
     Ok(prefer(&turns))
+}
+
+/// What one turn question asks of one session file.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Asked {
+    path: PathBuf,
+    harness: &'static str,
+    cwd: String,
+    not_before: Option<u64>,
+    brief: Option<String>,
+}
+
+/// A session file is known by its size and modification time: a harness
+/// only appends to or rewrites it, and either changes one of them.
+type Stamp = (u64, u128);
+
+/// The answers the host runner already read, so a file unchanged since the
+/// last look costs a `stat`, not a parse (sunfmin/control#938). A host
+/// watch's directory holds every session of its checkout, tens of
+/// megabytes read every two seconds.
+static READ: std::sync::Mutex<Option<std::collections::HashMap<Asked, (Stamp, Option<Turn>)>>> =
+    std::sync::Mutex::new(None);
+
+/// More answers than this are forgotten together: each start proof asks
+/// with its own bound.
+const REMEMBERED: usize = 1024;
+
+/// `turn_of` of the file `key` names, read only when its stamp changed
+/// since it was last answered. The stamp is taken before the read, so a
+/// write during it is read again next time.
+fn remembered(
+    key: Asked,
+    load: &mut dyn FnMut() -> Result<Option<String>>,
+    turn_of: impl FnOnce(&str) -> Option<Turn>,
+) -> Result<Option<Turn>> {
+    let Some(stamp) = stamp(&key.path)? else { return Ok(None) };
+    let memo = |read: &Option<std::collections::HashMap<_, _>>| -> Option<Option<Turn>> {
+        let (known, turn) = read.as_ref()?.get(&key)?;
+        (*known == stamp).then_some(*turn)
+    };
+    if let Some(turn) = memo(&READ.lock().unwrap_or_else(|e| e.into_inner())) {
+        return Ok(turn);
+    }
+    #[cfg(test)]
+    LOADS.with(|loads| loads.set(loads.get() + 1));
+    let Some(text) = load()? else { return Ok(None) };
+    let turn = turn_of(&text);
+    let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
+    let read = read.get_or_insert_with(Default::default);
+    if read.len() >= REMEMBERED {
+        read.clear();
+    }
+    read.insert(key, (stamp, turn));
+    Ok(turn)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many session files this thread read for a turn.
+    static LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn stamp(path: &Path) -> Result<Option<Stamp>> {
+    match path.metadata() {
+        Ok(meta) => {
+            let at = meta
+                .modified()
+                .ok()
+                .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |at| at.as_nanos());
+            Ok(Some((meta.len(), at)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
+    }
+}
+
+/// A reader of whole texts, for a question that is not remembered.
+fn whole<T>(
+    mut read: impl FnMut(&str) -> Option<T>,
+) -> impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>> {
+    move |_, load| Ok(load()?.and_then(|text| read(&text)))
 }
 
 /// What `read` makes of each session file `layout` names under `root`.
@@ -260,7 +352,7 @@ fn read_layout<T>(
     cwd: &str,
     layout: SessionLayout,
     since: Option<u64>,
-    read: impl FnMut(&str) -> Option<T>,
+    read: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     match layout {
         SessionLayout::Files { dir, extension } => {
@@ -280,7 +372,7 @@ fn read_files<T>(
     dir: &Path,
     extension: &str,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&str) -> Option<T>,
+    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     let Some(entries) = list_dir(dir)? else { return Ok(Vec::new()) };
     let mut turns = Vec::new();
@@ -291,9 +383,7 @@ fn read_files<T>(
         if !fresh(&path, since)? {
             continue;
         }
-        if let Some(text) = read_text(&path)?
-            && let Some(turn) = turn_of(&text)
-        {
+        if let Some(turn) = turn_of(&path, &mut || read_text(&path))? {
             turns.push(turn);
         }
     }
@@ -304,15 +394,13 @@ fn read_tree<T>(
     dir: &Path,
     extension: &str,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&str) -> Option<T>,
+    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     let mut files = Vec::new();
     collect(dir, extension, tree_floor(since), &mut files)?;
     let mut turns = Vec::new();
     for path in files {
-        if let Some(text) = read_text(&path)?
-            && let Some(turn) = turn_of(&text)
-        {
+        if let Some(turn) = turn_of(&path, &mut || read_text(&path))? {
             turns.push(turn);
         }
     }
@@ -324,7 +412,7 @@ fn read_named<T>(
     name: &str,
     compressed: bool,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&str) -> Option<T>,
+    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     let Some(entries) = list_dir(dir)? else { return Ok(Vec::new()) };
     let mut turns = Vec::new();
@@ -333,10 +421,8 @@ fn read_named<T>(
         if !path.is_file() || !fresh(&path, since)? {
             continue;
         }
-        let text = if compressed { read_zstd(&path)? } else { read_text(&path)? };
-        if let Some(text) = text
-            && let Some(turn) = turn_of(&text)
-        {
+        let mut load = || if compressed { read_zstd(&path) } else { read_text(&path) };
+        if let Some(turn) = turn_of(&path, &mut load)? {
             turns.push(turn);
         }
     }
@@ -349,7 +435,7 @@ fn read_index<T>(
     harness: Harness,
     cwd: &str,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&str) -> Option<T>,
+    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     let Some(text) = read_text(&root.join(file))? else { return Ok(Vec::new()) };
     let brief = brief(Path::new(cwd));
@@ -369,11 +455,11 @@ fn read_index<T>(
         if !fresh(&path, floor)? {
             continue;
         }
-        let Some(body) = read_text(&path)? else { continue };
-        if brief.is_some_and(|brief| !harness.names_brief(&body, brief)) {
-            continue;
-        }
-        if let Some(turn) = turn_of(&body) {
+        let mut load = || {
+            let body = read_text(&path)?;
+            Ok(body.filter(|body| brief.is_none_or(|brief| harness.names_brief(body, brief))))
+        };
+        if let Some(turn) = turn_of(&path, &mut load)? {
             turns.push(turn);
         }
     }
@@ -1164,12 +1250,20 @@ pub(crate) fn windows(
     let tree = matches!(layout, SessionLayout::Tree { .. });
     let mut newest: Option<(u64, Vec<_>)> = None;
     for home in worker_homes(cwd, harness)? {
-        let found = read_layout(&home, harness, &cwd_text, layout.clone(), Some(since), |text| {
-            if tree && harness.recorded_turn(&cwd_text, text, None, brief.as_deref()).is_none() {
-                return None;
-            }
-            last_windows(harness, text)
-        })?;
+        let found = read_layout(
+            &home,
+            harness,
+            &cwd_text,
+            layout.clone(),
+            Some(since),
+            whole(|text| {
+                if tree && harness.recorded_turn(&cwd_text, text, None, brief.as_deref()).is_none()
+                {
+                    return None;
+                }
+                last_windows(harness, text)
+            }),
+        )?;
         for (at, windows) in found {
             if newest.as_ref().is_none_or(|(newer, _)| at > *newer) {
                 newest = Some((at, windows));
@@ -1240,9 +1334,14 @@ fn usage(
                 }
             }
         } else {
-            texts = read_layout(root, harness, cwd, layout.clone(), Some(since), |text| {
-                accepts(text).then(|| text.to_owned())
-            })?;
+            texts = read_layout(
+                root,
+                harness,
+                cwd,
+                layout.clone(),
+                Some(since),
+                whole(|text| accepts(text).then(|| text.to_owned())),
+            )?;
         }
         for text in texts {
             if let Some(tokens) = harness.tokens(&text, window) {
@@ -1278,6 +1377,34 @@ fn session_first_at(text: &str) -> Option<u64> {
 mod token_tests {
     use super::*;
     use serde_json::json;
+
+    /// The host runner asks for the watch's turn every two seconds: a
+    /// session file unchanged since it was answered is not read again, and
+    /// one written since is (sunfmin/control#938).
+    #[test]
+    fn an_unchanged_session_file_is_answered_without_reading_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("home");
+        let cwd = dir.path().join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let harness = Harness::ClaudeCode;
+        let at = 1_793_106_373;
+        let loads = || LOADS.with(std::cell::Cell::get);
+        write_session(&root, harness, &cwd_str(&cwd), true, at).unwrap();
+        let open = read_root(&root, harness, &cwd, None, None).unwrap();
+        assert!(matches!(open, Some(Turn::Open { .. })), "{open:?}");
+        let read = loads();
+        for _ in 0..20 {
+            assert_eq!(read_root(&root, harness, &cwd, None, None).unwrap(), open);
+        }
+        assert_eq!(loads(), read, "an unchanged file costs a stat");
+        write_session(&root, harness, &cwd_str(&cwd), false, at + 5).unwrap();
+        let closed = read_root(&root, harness, &cwd, None, None).unwrap();
+        assert!(matches!(closed, Some(Turn::Closed { .. })), "{closed:?}");
+        assert!(loads() > read, "a written file is read again");
+        let other = read_root(&root, harness, &cwd, None, Some(at + 60)).unwrap();
+        assert_eq!(other, None, "another bound is its own question");
+    }
 
     #[test]
     fn session_usage_is_unknown_when_missing_or_unreadable() {

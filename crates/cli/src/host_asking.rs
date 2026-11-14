@@ -111,7 +111,16 @@ pub(crate) fn current() -> Result<Option<Queued>> {
 /// session itself survives this thread and is recovered from durable state.
 pub fn run(ended: &AtomicBool, say: impl Fn(String)) {
     let mut failing = None;
+    let mut next = std::time::Instant::now();
     while !ended.load(Ordering::Relaxed) {
+        // A step asks Orca for the session's terminal and screen and reads
+        // its session: as often as the watch is checked, not four times a
+        // second (sunfmin/control#938). The end is still seen at once.
+        if std::time::Instant::now() < next {
+            std::thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        next = std::time::Instant::now() + crate::host_watch::CHECK_EVERY;
         let result = step();
         let failed = result.as_ref().err().map(|error| format!("{error:#}"));
         if let Some(error) = &failed
@@ -123,7 +132,6 @@ pub fn run(ended: &AtomicBool, say: impl Fn(String)) {
             let _ = note_failure(&format!("{error:#}"));
         }
         failing = failed;
-        std::thread::sleep(Duration::from_millis(250));
     }
 }
 
