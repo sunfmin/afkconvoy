@@ -87,6 +87,9 @@ pub enum Request {
 /// on macOS and 108 on Linux, the last of them a NUL.
 pub(crate) const ADDRESS_HOLDS: usize = 100;
 
+/// How many taken link names `reached` passes over before it gives up.
+const LINK_TRIES: u32 = 16;
+
 /// Runs `with` on a path that reaches the socket `name` in `dir` and fits in
 /// a socket's address (some hundred bytes; a cache directory may be any
 /// length): the whole path where it fits, else one through a link to `dir`
@@ -105,13 +108,30 @@ pub(crate) fn reached<T>(
     // A link is read from where it is: it names the directory whole.
     let dir =
         std::path::absolute(dir).with_context(|| format!("cannot reach {}", dir.display()))?;
-    let linked = format!("convoy-{}", crate::unique());
-    let mut link = std::env::temp_dir().join(&linked);
-    if link.join(name).as_os_str().len() > ADDRESS_HOLDS {
-        link = Path::new("/tmp").join(&linked);
-    }
-    std::os::unix::fs::symlink(&dir, &link)
-        .with_context(|| format!("cannot link {} to {}", link.display(), dir.display()))?;
+    // A name taken already — a link a process left as it was killed, whose
+    // pid is this one's now (sunfmin/control#967) — is passed over for the
+    // next.
+    let mut tries: u32 = 0;
+    let link = loop {
+        let linked = format!("convoy-{}", crate::unique());
+        let mut link = std::env::temp_dir().join(&linked);
+        if link.join(name).as_os_str().len() > ADDRESS_HOLDS {
+            link = Path::new("/tmp").join(&linked);
+        }
+        match std::os::unix::fs::symlink(&dir, &link) {
+            Ok(()) => break link,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists && tries < LINK_TRIES =>
+            {
+                tries = tries.saturating_add(1);
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("cannot link {} to {}", link.display(), dir.display())
+                });
+            }
+        }
+    };
     // A bind or a connect follows the link once: a socket bound through it is
     // in `dir`, and outlives it.
     let made = with(&link.join(name));
@@ -469,6 +489,32 @@ mod tests {
             assert!(dir.join("alpha.sock").exists(), "{}", dir.display());
             assert!(reached(&dir, "alpha.sock", |path| UnixStream::connect(path)).is_ok());
         }
+    }
+
+    /// A link name a killed process left, whose pid is this one's now, is
+    /// passed over: the socket is reached through the next (#967).
+    #[test]
+    fn a_link_name_left_taken_is_passed_over_for_the_next() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("d".repeat(120));
+        std::fs::create_dir_all(&dir).unwrap();
+        let next: u64 = crate::unique().rsplit('-').next().unwrap().parse().unwrap();
+        let mut left = vec![];
+        for n in next + 1..next + 4 {
+            let name = format!("convoy-{}-{n}", std::process::id());
+            for tmp in [std::env::temp_dir(), PathBuf::from("/tmp")] {
+                let link = tmp.join(&name);
+                if std::os::unix::fs::symlink(root.path(), &link).is_ok() {
+                    left.push(link);
+                }
+            }
+        }
+        let made = reached(&dir, "alpha.sock", |path| UnixListener::bind(path));
+        for link in left {
+            std::fs::remove_file(link).unwrap();
+        }
+        made.unwrap();
+        assert!(dir.join("alpha.sock").exists(), "{}", dir.display());
     }
 
     #[test]
