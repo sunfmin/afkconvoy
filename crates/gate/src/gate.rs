@@ -582,8 +582,110 @@ pub fn failed_test(line: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
+/// The test a line of libtest's output — a plain `cargo test` run's — names
+/// as failing, as libtest names it, without its binary: `test a_test ...
+/// FAILED` or, opening what it printed, `---- a_test stdout ----`. `None` of
+/// every other line.
+pub fn libtest_failed(line: &str) -> Option<&str> {
+    let line = line.trim();
+    let name = match line.strip_prefix("test ") {
+        Some(rest) => rest.strip_suffix(" ... FAILED")?,
+        None => line.strip_prefix("---- ")?.strip_suffix(" stdout ----")?,
+    };
+    let name = name.trim();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The test binary cargo's line after a failed one names, as nextest names
+/// a binary — the crate, then its target: `guildd::interface` of `error:
+/// test failed, to rerun pass `-p guildd --test interface``, `guildd` of
+/// `-p guildd --lib`. In a one-crate repo, which cargo names no `-p` of, it
+/// is the target alone. `None` of every other line.
+fn rerun_binary(line: &str) -> Option<String> {
+    let (_, args) = line.split_once("to rerun pass `")?;
+    let args = args.split('`').next()?;
+    binary_of(args)
+}
+
+/// The test binary `args`, cargo's way to run it again — `-p guildd --test
+/// interface` — names, as `rerun_binary` names it.
+fn binary_of(args: &str) -> Option<String> {
+    let words: Vec<&str> = args.split_whitespace().collect();
+    let after = |flag: &str| {
+        words.iter().position(|word| *word == flag).and_then(|at| words.get(at + 1)).copied()
+    };
+    let krate = after("-p").or_else(|| after("--package"));
+    let target =
+        [("--test", ""), ("--bin", "bin/"), ("--example", "example/"), ("--bench", "bench/")]
+            .iter()
+            .find_map(|(flag, kind)| after(flag).map(|name| format!("{kind}{name}")));
+    match (krate, target) {
+        (Some(krate), Some(target)) => Some(format!("{krate}::{target}")),
+        (Some(krate), None) => Some(krate.to_string()),
+        (None, Some(target)) => Some(target),
+        (None, None) => None,
+    }
+}
+
+/// The tests a plain `cargo test` run's output `lines` names as failing
+/// (`libtest_failed`), each once, in the order it first names them, and
+/// each named as its binary, then the test, where cargo named the binary:
+/// after it, by the way to run it again (`rerun_binary`), or, with
+/// `--no-fail-fast`, in its list of the targets that failed at the end.
+fn libtest_failing(lines: &[String]) -> Vec<String> {
+    // The tests of each binary that failed, in the order it ran, and
+    // whether cargo named that binary yet.
+    let mut binaries: Vec<(Vec<String>, bool)> = vec![(vec![], false)];
+    let mut listed: Vec<String> = vec![];
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Running ") {
+            if !binaries.last().is_some_and(|(tests, _)| tests.is_empty()) {
+                binaries.push((vec![], false));
+            }
+        } else if let Some(name) = libtest_failed(line) {
+            let (tests, _) = binaries.last_mut().expect("a binary");
+            if !tests.iter().any(|named| named == name) {
+                tests.push(name.to_string());
+            }
+        } else if let Some(binary) = rerun_binary(line) {
+            if let Some((tests, named)) =
+                binaries.iter_mut().rev().find(|(tests, named)| !named && !tests.is_empty())
+            {
+                for test in tests.iter_mut() {
+                    *test = format!("{binary} {test}");
+                }
+                *named = true;
+            }
+        } else if let Some(args) = trimmed.strip_prefix('`').and_then(|rest| rest.strip_suffix('`'))
+            && let Some(binary) = binary_of(args)
+        {
+            listed.push(binary);
+        }
+    }
+    let mut listed = listed.into_iter();
+    let mut failing: Vec<String> = vec![];
+    for (tests, named) in binaries.into_iter().filter(|(tests, _)| !tests.is_empty()) {
+        let binary = if named { None } else { listed.next() };
+        for test in tests {
+            let test = match &binary {
+                Some(binary) => format!("{binary} {test}"),
+                None => test,
+            };
+            if !failing.contains(&test) {
+                failing.push(test);
+            }
+        }
+    }
+    failing
+}
+
 /// The tests a red gate's output `lines` names as failing, each once, in the
-/// order it first names them. A test a later retry passed is not among them.
+/// order it first names them: nextest's (`failed_test`) — a test a later
+/// retry passed is not among them — or, where nextest names none, those of
+/// a plain `cargo test` run (`libtest_failing`). nextest prints what a
+/// failing test printed, libtest's lines among it, so these are read only
+/// where it names none.
 pub fn failing_tests(lines: &[String]) -> Vec<String> {
     let mut failing: Vec<String> = vec![];
     for line in lines {
@@ -597,6 +699,9 @@ pub fn failing_tests(lines: &[String]) -> Vec<String> {
         {
             failing.retain(|named| !passed.ends_with(named.as_str()));
         }
+    }
+    if failing.is_empty() && !lines.iter().any(|line| failed_test(line).is_some()) {
+        return libtest_failing(lines);
     }
     failing
 }
@@ -642,7 +747,8 @@ pub fn overloaded_timeouts(lines: &[String]) -> bool {
             Some(name) if name == test => failed_status_of(line) == Some("TIMEOUT"),
             _ => true,
         });
-        timed_out && lines.iter().any(|line| cannot_classify(line, test))
+        let named = lines.iter().any(|line| failed_test(line) == Some(test.as_str()));
+        timed_out && named && lines.iter().any(|line| cannot_classify(line, test))
     })
 }
 
@@ -662,9 +768,14 @@ fn classifies_not(line: &str) -> Option<&str> {
 
 /// What a red gate's output `lines` is quoted by: `QUOTE_LINES` from the
 /// line that names its first failing test — nextest prints what the test
-/// printed after it — or, where no line names one, its last `QUOTE_LINES`.
+/// printed after it — or, where nextest names none, from the first line of
+/// a plain `cargo test` run's that does (`libtest_failed`), or, where no
+/// line names one, its last `QUOTE_LINES`.
 pub fn quoted(lines: &[String]) -> Vec<String> {
-    let first = lines.iter().position(|line| failed_test(line).is_some());
+    let first = lines
+        .iter()
+        .position(|line| failed_test(line).is_some())
+        .or_else(|| lines.iter().position(|line| libtest_failed(line).is_some()));
     let from = first.unwrap_or(lines.len().saturating_sub(QUOTE_LINES));
     lines.iter().skip(from).take(QUOTE_LINES).cloned().collect()
 }
@@ -950,6 +1061,68 @@ mod tests {
         assert!(failing_tests(&built).is_empty());
         let quote = quoted(&built);
         assert_eq!((quote.len(), quote[0].as_str()), (QUOTE_LINES, "line 40"));
+    }
+
+    /// A gate that runs plain `cargo test` names its failing tests as
+    /// nextest would — the crate's test binary, then the test — and is
+    /// quoted from the first (sunfmin/control#1028).
+    #[test]
+    fn a_red_plain_cargo_test_run_names_its_failing_tests_and_is_quoted_from_the_first() {
+        let test =
+            "an_instance_started_from_the_hub_is_kept_within_its_machines_limits_by_its_own_guildd";
+        let lines = said(&[
+            "     Running tests/interface.rs (target/debug/deps/interface-0a1b2c3d)",
+            "running 14 tests",
+            &format!("test {test} has been running for over 60 seconds"),
+            &format!("test {test} ... FAILED"),
+            "failures:",
+            &format!("---- {test} stdout ----"),
+            "thread '…' panicked at crates/guildd/tests/interface.rs:515:5:",
+            "failures:",
+            &format!("    {test}"),
+            "test result: FAILED. 13 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+            "error: test failed, to rerun pass `-p guildd --test interface`",
+        ]);
+        let named = format!("guildd::interface {test}");
+        assert_eq!(failing_tests(&lines), [named.as_str()]);
+        let quote = quoted(&lines);
+        assert_eq!(quote[0], lines[3]);
+        assert!(quote.iter().any(|line| line.contains("panicked at")), "{quote:?}");
+        let Judged::Red(red) = judge(101, false, 600, None, &lines) else {
+            panic!("a FAILED test is red");
+        };
+        assert_eq!(red.how(), format!("it exited 101; failing: {named}"));
+        // An overloaded host's line does not make a plain FAILED unsettled.
+        let overloaded = "gate: host overloaded or load unavailable (load 603, CPUs 16); cannot \
+                          classify TIMEOUT tests.";
+        let mut also = lines.clone();
+        also.push(overloaded.to_string());
+        assert!(!overloaded_timeouts(&also));
+
+        // With --no-fail-fast cargo lists the failed targets at the end, in
+        // the order they ran; a one-crate repo's binaries have no crate.
+        let lines = said(&[
+            "     Running unittests src/lib.rs (target/debug/deps/nx-1)",
+            "test tests::fails_here ... FAILED",
+            "     Running tests/cli.rs (target/debug/deps/cli-2)",
+            "test ok_test ... ok",
+            "     Running tests/more.rs (target/debug/deps/more-3)",
+            "test a ... FAILED",
+            "test b ... FAILED",
+            "error: 2 targets failed:",
+            "    `-p nx --lib`",
+            "    `-p nx --test more`",
+        ]);
+        assert_eq!(failing_tests(&lines), ["nx tests::fails_here", "nx::more a", "nx::more b"]);
+        let one = said(&["test it ... FAILED", "error: test failed, to rerun pass `--bin tool`"]);
+        assert_eq!(failing_tests(&one), ["bin/tool it"]);
+        // Where nextest names a failing test, libtest's lines it printed are not read again.
+        let nextest = said(&[
+            "        FAIL [   0.012s] (2/3) nx tests::fails_here",
+            "test tests::fails_here ... FAILED",
+        ]);
+        assert_eq!(failing_tests(&nextest), ["nx tests::fails_here"]);
+        assert_eq!(libtest_failed("test a ... ok"), None);
     }
 
     fn said(lines: &[&str]) -> Vec<String> {
