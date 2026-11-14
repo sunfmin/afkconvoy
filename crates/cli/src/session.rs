@@ -15,6 +15,10 @@ use afkconvoy_core::harness::{Harness, SessionLayout};
 use afkconvoy_core::turn::{Turn, prefer};
 use anyhow::{Context, Result};
 
+mod transcripts;
+
+use transcripts::Text;
+
 /// The turn `harness` has recorded for `cwd`.
 ///
 /// `since` drops session files last written before the worker started, so a
@@ -77,11 +81,9 @@ fn notes_match(
         }
         for layout in std::iter::once(&place.layout).chain(&place.also) {
             let tree = matches!(layout, SessionLayout::Tree { .. });
-            let holds = |text: &str| {
+            let holds = |path: &Path, text: &Text| {
                 let belongs = !tree
-                    || harness
-                        .recorded_turn(&cwd_text, text, Some(since), brief.as_deref())
-                        .is_some();
+                    || records_turn(harness, &cwd_text, path, text, Some(since), brief.as_deref());
                 (belongs && matches(text)).then_some(())
             };
             let held =
@@ -294,7 +296,7 @@ const REMEMBERED: usize = 1024;
 /// write during it is read again next time.
 fn remembered(
     key: Asked,
-    load: &mut dyn FnMut() -> Result<Option<String>>,
+    load: &mut dyn FnMut() -> Result<Option<Text>>,
     turn_of: impl FnOnce(&str) -> Option<Turn>,
 ) -> Result<Option<Turn>> {
     let Some(stamp) = stamp(&key.path)? else { return Ok(None) };
@@ -341,9 +343,37 @@ fn stamp(path: &Path) -> Result<Option<Stamp>> {
 
 /// A reader of whole texts, for a question that is not remembered.
 fn whole<T>(
-    mut read: impl FnMut(&str) -> Option<T>,
-) -> impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>> {
-    move |_, load| Ok(load()?.and_then(|text| read(&text)))
+    mut read: impl FnMut(&Path, &Text) -> Option<T>,
+) -> impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<Text>>) -> Result<Option<T>> {
+    move |path, load| Ok(load()?.and_then(|text| read(path, &text)))
+}
+
+/// Whether `text`, the session file at `path`, records a turn of `cwd`
+/// (`Harness::recorded_turn`). Once it does, it does while the file only
+/// grows, so a resident session tens of megabytes long is not parsed again
+/// for it at every look (sunfmin/control#993).
+fn records_turn(
+    harness: Harness,
+    cwd: &str,
+    path: &Path,
+    text: &Text,
+    not_before: Option<u64>,
+    brief: Option<&str>,
+) -> bool {
+    let fact = format!(
+        "turn\0{}\0{cwd}\0{}\0{}",
+        harness.key(),
+        not_before.map_or(String::new(), |at| at.to_string()),
+        brief.unwrap_or_default()
+    );
+    if transcripts::known(path, &fact) {
+        return true;
+    }
+    let held = harness.recorded_turn(cwd, text, not_before, brief).is_some();
+    if held {
+        transcripts::know(path, text, &fact);
+    }
+    held
 }
 
 /// What `read` makes of each session file `layout` names under `root`.
@@ -353,7 +383,7 @@ fn read_layout<T>(
     cwd: &str,
     layout: SessionLayout,
     since: Option<u64>,
-    read: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
+    read: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<Text>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     match layout {
         SessionLayout::Files { dir, extension } => {
@@ -373,7 +403,7 @@ fn read_files<T>(
     dir: &Path,
     extension: &str,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
+    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<Text>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     let Some(entries) = list_dir(dir)? else { return Ok(Vec::new()) };
     let mut turns = Vec::new();
@@ -384,7 +414,7 @@ fn read_files<T>(
         if !fresh(&path, since)? {
             continue;
         }
-        if let Some(turn) = turn_of(&path, &mut || read_text(&path))? {
+        if let Some(turn) = turn_of(&path, &mut || transcripts::text(&path))? {
             turns.push(turn);
         }
     }
@@ -395,13 +425,13 @@ fn read_tree<T>(
     dir: &Path,
     extension: &str,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
+    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<Text>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     let mut files = Vec::new();
     collect(dir, extension, tree_floor(since), &mut files)?;
     let mut turns = Vec::new();
     for path in files {
-        if let Some(turn) = turn_of(&path, &mut || read_text(&path))? {
+        if let Some(turn) = turn_of(&path, &mut || transcripts::text(&path))? {
             turns.push(turn);
         }
     }
@@ -413,7 +443,7 @@ fn read_named<T>(
     name: &str,
     compressed: bool,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
+    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<Text>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     let Some(entries) = list_dir(dir)? else { return Ok(Vec::new()) };
     let mut turns = Vec::new();
@@ -422,7 +452,9 @@ fn read_named<T>(
         if !path.is_file() || !fresh(&path, since)? {
             continue;
         }
-        let mut load = || if compressed { read_zstd(&path) } else { read_text(&path) };
+        let mut load = || {
+            if compressed { Ok(read_zstd(&path)?.map(Text::new)) } else { transcripts::text(&path) }
+        };
         if let Some(turn) = turn_of(&path, &mut load)? {
             turns.push(turn);
         }
@@ -436,7 +468,7 @@ fn read_index<T>(
     harness: Harness,
     cwd: &str,
     since: Option<u64>,
-    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<String>>) -> Result<Option<T>>,
+    mut turn_of: impl FnMut(&Path, &mut dyn FnMut() -> Result<Option<Text>>) -> Result<Option<T>>,
 ) -> Result<Vec<T>> {
     let Some(text) = read_text(&root.join(file))? else { return Ok(Vec::new()) };
     let brief = brief(Path::new(cwd));
@@ -457,7 +489,7 @@ fn read_index<T>(
             continue;
         }
         let mut load = || {
-            let body = read_text(&path)?;
+            let body = transcripts::text(&path)?;
             Ok(body.filter(|body| brief.is_none_or(|brief| harness.names_brief(body, brief))))
         };
         if let Some(turn) = turn_of(&path, &mut load)? {
@@ -537,33 +569,25 @@ fn modified(path: &Path) -> Result<Option<u64>> {
     }
 }
 
+/// The entries of the directory at `path`, as the host runner last listed
+/// it while it is unchanged (`transcripts::listing`).
 fn list_dir(path: &Path) -> Result<Option<Vec<PathBuf>>> {
-    let read = match std::fs::read_dir(path) {
-        Ok(read) => read,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error).with_context(|| format!("cannot read {}", path.display()));
-        }
-    };
-    let mut out = Vec::new();
-    for entry in read {
-        out.push(entry.with_context(|| format!("cannot read {}", path.display()))?.path());
-    }
-    Ok(Some(out))
+    let listing = transcripts::listing(path)?;
+    Ok(listing.map(|entries| entries.iter().map(|(entry, _)| entry.clone()).collect()))
 }
 
 fn collect(dir: &Path, extension: &str, floor: u64, out: &mut Vec<PathBuf>) -> Result<()> {
-    let Some(entries) = list_dir(dir)? else { return Ok(()) };
-    for entry in entries {
-        if entry.is_dir() {
-            collect(&entry, extension, floor, out)?;
+    let Some(entries) = transcripts::listing(dir)? else { return Ok(()) };
+    for (entry, is_dir) in entries.iter() {
+        if *is_dir {
+            collect(entry, extension, floor, out)?;
             continue;
         }
         if entry.extension().and_then(|ext| ext.to_str()) != Some(extension) {
             continue;
         }
-        if modified(&entry)?.is_some_and(|at| at + 2 >= floor) {
-            out.push(entry);
+        if modified(entry)?.is_some_and(|at| at + 2 >= floor) {
+            out.push(entry.clone());
         }
     }
     Ok(())
@@ -1192,19 +1216,19 @@ pub(crate) fn goal_session(
     let SessionLayout::Tree { dir, extension } = harness.session_place(&cwd_text).layout else {
         return Ok(None);
     };
-    let mut found: Option<(u64, PathBuf, PathBuf, String)> = None;
+    let mut found: Option<(u64, PathBuf, PathBuf, Text)> = None;
     for home in worker_homes(cwd, harness)? {
         let mut files = Vec::new();
         collect(&home.join(&dir), extension, start.saturating_sub(60), &mut files)?;
         for file in files {
-            let Some(text) = read_text(&file)? else { continue };
+            let Some(text) = transcripts::text(&file)? else { continue };
             let Some(at) = session_first_at(&text) else { continue };
             if at < start.saturating_sub(60)
                 || before.is_some_and(|end| at >= end.saturating_sub(2))
             {
                 continue;
             }
-            if harness.recorded_turn(&cwd_text, &text, None, brief.as_deref()).is_none() {
+            if !records_turn(harness, &cwd_text, &file, &text, None, brief.as_deref()) {
                 continue;
             }
             if found.as_ref().is_none_or(|(last, ..)| at >= *last) {
@@ -1225,11 +1249,11 @@ pub(crate) fn tokens(
 ) -> Result<Option<afkconvoy_core::account::Tokens>> {
     let cwd_text = cwd_str(cwd);
     let brief = brief(cwd);
-    usage(&worker_homes(cwd, harness)?, harness, &cwd_text, start, None, |text| {
+    usage(&worker_homes(cwd, harness)?, harness, &cwd_text, start, None, |path, text| {
         let Some(at) = session_first_at(text) else { return false };
         at >= start.saturating_sub(60)
             && !before.is_some_and(|end| at >= end.saturating_sub(2))
-            && harness.recorded_turn(&cwd_text, text, None, brief.as_deref()).is_some()
+            && records_turn(harness, &cwd_text, path, text, None, brief.as_deref())
     })
 }
 
@@ -1257,9 +1281,8 @@ pub(crate) fn windows(
             &cwd_text,
             layout.clone(),
             Some(since),
-            whole(|text| {
-                if tree && harness.recorded_turn(&cwd_text, text, None, brief.as_deref()).is_none()
-                {
+            whole(|path, text| {
+                if tree && !records_turn(harness, &cwd_text, path, text, None, brief.as_deref()) {
                     return None;
                 }
                 last_windows(harness, text)
@@ -1302,8 +1325,8 @@ pub(crate) fn tokens_between(
 ) -> Result<Option<afkconvoy_core::account::Tokens>> {
     let cwd_text = cwd_str(cwd);
     let brief_root = cwd_str(brief_root);
-    usage(&roots(cwd, harness)?, harness, &cwd_text, start, Some((start, end)), |text| {
-        text.contains(&brief_root) && harness.recorded_turn(&cwd_text, text, None, None).is_some()
+    usage(&roots(cwd, harness)?, harness, &cwd_text, start, Some((start, end)), |path, text| {
+        text.contains(&brief_root) && records_turn(harness, &cwd_text, path, text, None, None)
     })
 }
 
@@ -1317,7 +1340,7 @@ fn usage(
     cwd: &str,
     since: u64,
     window: Option<(u64, u64)>,
-    accepts: impl Fn(&str) -> bool,
+    accepts: impl Fn(&Path, &Text) -> bool,
 ) -> Result<Option<afkconvoy_core::account::Tokens>> {
     let mut total = afkconvoy_core::account::Tokens::new();
     let mut found = false;
@@ -1327,9 +1350,13 @@ fn usage(
         if let SessionLayout::Named { dir, name, compressed, usage: Some(beside) } = &layout {
             for entry in list_dir(&root.join(dir))?.unwrap_or_default() {
                 let path = entry.join(name);
-                let text = if *compressed { read_zstd(&path)? } else { read_text(&path)? };
-                if text.is_some_and(|text| accepts(&text))
-                    && let Some(usage) = read_text(&entry.join(beside))?
+                let text = if *compressed {
+                    read_zstd(&path)?.map(Text::new)
+                } else {
+                    transcripts::text(&path)?
+                };
+                if text.is_some_and(|text| accepts(&path, &text))
+                    && let Some(usage) = transcripts::text(&entry.join(beside))?
                 {
                     texts.push(usage);
                 }
@@ -1341,7 +1368,7 @@ fn usage(
                 cwd,
                 layout.clone(),
                 Some(since),
-                whole(|text| accepts(text).then(|| text.to_owned())),
+                whole(|path, text| accepts(path, text).then(|| Text::clone(text))),
             )?;
         }
         for text in texts {
