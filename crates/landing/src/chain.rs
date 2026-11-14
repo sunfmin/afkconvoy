@@ -1425,7 +1425,8 @@ mod tests {
 
     #[test]
     fn a_full_fast_green_head_starts_its_round_while_turns_still_pend_or_gate() {
-        let mut chain = Chain { candidates: (0..ROUND_FULL + 1).map(split).collect(), ..Chain::default() };
+        let mut chain =
+            Chain { candidates: (0..ROUND_FULL + 1).map(split).collect(), ..Chain::default() };
         let owner = chain.candidates[0].owner.clone();
         chain.pending.push(Barrier { id: "waiting".into(), owner });
         for n in 0..ROUND_FULL - 1 {
@@ -1434,7 +1435,11 @@ mod tests {
         assert!(chain.round_tip().is_none(), "a short head still waits for the round to fill");
         chain.finish(&format!("c{}", ROUND_FULL - 1), ran(true));
         let tip = format!("c{}", ROUND_FULL - 1);
-        assert_eq!(chain.round_tip().map(|c| c.id.clone()), Some(tip.clone()), "the last still gates");
+        assert_eq!(
+            chain.round_tip().map(|c| c.id.clone()),
+            Some(tip.clone()),
+            "the last still gates"
+        );
         assert!(chain.start_round(&tip));
         assert_eq!(chain.round_of("c0").map(|c| c.id.clone()), Some(tip.clone()));
         assert!(chain.round_of(&format!("c{ROUND_FULL}")).is_none(), "it joins the next round");
