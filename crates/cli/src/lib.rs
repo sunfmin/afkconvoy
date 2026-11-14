@@ -161,8 +161,9 @@ use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV, AGENT_GUARDS_ENV,
     AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOT_CORES_ENV,
-    HOT_MEMORY_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV,
-    WATCH_EVERY_ENV, jev_key_command_or_default, notify_command_or_default, port_or_default,
+    HOT_MEMORY_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, MAX_SHARE_OF_CORES_ENV,
+    MAX_SHARE_OF_MEMORY_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
+    jev_key_command_or_default, notify_command_or_default, percent_or_default, port_or_default,
     thousandths_or_default, watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
@@ -597,6 +598,17 @@ enum Command {
             value_parser = whole_or_default
         )]
         admit_inspect_after: Option<To<u64>>,
+        /// afkconvoy's own share of this host's cores, the most it may use, a whole percent (`50%`),
+        /// so that a co-resident system keeps the rest: no tick starts a new worker while its
+        /// own processes take that many cores, and each exclusive command builds and tests
+        /// with no more. A host setting; `default` removes it [default: none]
+        #[arg(long, env = MAX_SHARE_OF_CORES_ENV, value_name = "PERCENT", value_parser = percent_or_default)]
+        max_share_of_cores: Option<To<u64>>,
+        /// afkconvoy's own share of this host's memory, the most it may hold resident, a whole percent:
+        /// no tick starts a new worker while its own processes hold that much. A host setting;
+        /// `default` removes it [default: none]
+        #[arg(long, env = MAX_SHARE_OF_MEMORY_ENV, value_name = "PERCENT", value_parser = percent_or_default)]
+        max_share_of_memory: Option<To<u64>>,
         /// Seconds a running exclusive command may hold others up, counting only while
         /// another waits: a host setting; `default` changes it back
         /// [default: {const:EXCLUSIVE_SECONDS}]
@@ -1935,6 +1947,8 @@ fn start_of(
         admit_memory,
         admit_disk,
         admit_inspect_after,
+        max_share_of_cores,
+        max_share_of_memory,
         exclusive_seconds,
         jev_key_command,
         notify_command,
@@ -1967,6 +1981,8 @@ fn start_of(
         admit_memory,
         admit_disk,
         admit_inspect_after,
+        max_share_of_cores,
+        max_share_of_memory,
         exclusive_seconds,
         gate_lanes,
         slow_gate_lanes: slow_gate_lanes.map(|lanes| *lanes),
@@ -2869,6 +2885,10 @@ mod tests {
         assert_eq!(named.admit_disk, Some(To::Value(0)), "0 never holds for disk");
         assert_eq!(named.admit_load, Some(To::Default));
         assert_eq!(named.panel, Some(To::Value(7070)));
+        let capped = asked(&["--max-share-of-cores", "50%", "--max-share-of-memory", "40"]).1;
+        assert_eq!(capped.max_share_of_cores, Some(To::Value(50)));
+        assert_eq!(capped.max_share_of_memory, Some(To::Value(40)));
+        assert!(Cli::try_parse_from(["afkconvoy", "run", "--max-share-of-cores", "0"]).is_err());
         // a host setting alone: nothing of the checkout's own start
         assert_eq!(start, asked(&line).0);
         assert_eq!(asked(&["--panel", "default"]).1.panel, Some(To::Default));
