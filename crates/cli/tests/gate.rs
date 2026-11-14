@@ -27,6 +27,14 @@ fn fast_gate_checks_timeouts_before_calling_tests_slow() {
 }
 
 #[test]
+fn a_gate_runs_two_tests_to_each_core_it_is_given() {
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/gate-threads.sh");
+    let output = std::process::Command::new("sh").arg(script).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn verify_installs_the_newest_toolchain_of_the_tap_and_leaves_the_newest_alone() {
     let script =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/verify-install.sh");
