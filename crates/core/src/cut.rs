@@ -122,6 +122,11 @@ pub struct Steps {
     /// Left out, an untagged repo is not cut; after a tag, this is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial: Option<String>,
+    /// The paths whose change makes a cut minor: a PR landed past the newest
+    /// tag that adds or changes a file under one of them, `docs/adr/`, raises
+    /// the minor version, as `MINOR_LABEL` does. Left out, only that label does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub minor_paths: Vec<String>,
     /// Run on the base branch as it stood, the cut's snapshot: what it changes
     /// is the version's commit, on the cut's own branch, never the base's.
     pub set: String,
@@ -135,6 +140,9 @@ impl Steps {
     pub fn checked(self) -> Result<Steps, &'static str> {
         if self.initial.is_some() && self.initial_version().is_none() {
             return Err("initial");
+        }
+        if self.minor_paths.iter().any(|path| path.trim().trim_matches('/').is_empty()) {
+            return Err("minor_paths");
         }
         if self.set.trim().is_empty() {
             return Err("set");
@@ -241,6 +249,60 @@ pub fn prs_of<'a>(subjects: impl IntoIterator<Item = &'a str>) -> Vec<u64> {
 /// patch.
 pub fn pick(newest: Version, prs: &[u64], minor: &[u64]) -> Option<Version> {
     newest.next(prs.iter().any(|pr| minor.contains(pr)))
+}
+
+/// A PR landed past a tag that adds or changes files under a repo's
+/// `minor_paths`: why its cut is minor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Changed {
+    pub pr: u64,
+    /// The files under `minor_paths` it adds or changes, in the order its
+    /// landing lists them.
+    pub paths: Vec<String>,
+}
+
+/// Whether `file` is under `path`: the path itself, or a file below it, the
+/// trailing `/` optional (`docs/adr/` and `docs/adr` are the same).
+pub fn under(file: &str, path: &str) -> bool {
+    let path = path.trim().trim_matches('/');
+    file == path || file.strip_prefix(path).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// The PRs whose landings, as `git log --format=%x00%s --name-only` lists
+/// them — each a NUL, its subject `<title> (#<pr>)`, and the files it adds or
+/// changes — add or change a file under one of `paths`, each with those
+/// files, lowest PR first. A landing that names no PR is none of them.
+pub fn changed(log: &str, paths: &[String]) -> Vec<Changed> {
+    let mut changed: Vec<Changed> = vec![];
+    if paths.is_empty() {
+        return changed;
+    }
+    for landing in log.split('\0').skip(1) {
+        let mut lines = landing.lines();
+        let Some(pr) = lines.next().and_then(|subject| prs_of([subject]).first().copied()) else {
+            continue;
+        };
+        let files = lines.map(str::trim).filter(|file| !file.is_empty());
+        let files: Vec<String> = files
+            .filter(|file| paths.iter().any(|path| under(file, path)))
+            .map(str::to_string)
+            .collect();
+        if files.is_empty() {
+            continue;
+        }
+        match changed.iter_mut().find(|known| known.pr == pr) {
+            Some(known) => {
+                for file in files {
+                    if !known.paths.contains(&file) {
+                        known.paths.push(file);
+                    }
+                }
+            }
+            None => changed.push(Changed { pr, paths: files }),
+        }
+    }
+    changed.sort_by_key(|changed| changed.pr);
+    changed
 }
 
 /// What the effect layer read of a repo's cut.
@@ -569,9 +631,14 @@ pub struct Record {
     /// for an initial cut, lowest first.
     #[serde(default)]
     pub prs: Vec<u64>,
-    /// Whether it raises the minor version, for a PR carrying `MINOR_LABEL`.
+    /// Whether it raises the minor version, for a PR carrying `MINOR_LABEL`
+    /// or one in `changed`.
     #[serde(default)]
     pub minor: bool,
+    /// The PRs it holds that add or change files under the repo's
+    /// `minor_paths`, with those files: why it is minor, where they are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed: Vec<Changed>,
     /// When the fleet started it, in epoch seconds.
     pub started: u64,
     /// The base tip it was cut from, its snapshot: what a failure records, so
@@ -630,8 +697,11 @@ impl Record {
             None => "the initial version".to_string(),
         };
         let mut said = format!("v{} ({origin}", self.version);
-        if self.minor {
+        if self.minor && self.changed.is_empty() {
             said.push_str(&format!(", the next minor for a PR labelled {MINOR_LABEL}"));
+        }
+        if self.minor && !self.changed.is_empty() {
+            said.push_str(&format!(", the next minor for {}", changing(&self.changed)));
         }
         if !self.prs.is_empty() {
             said.push_str(&format!(", holding {}", numbered(&self.prs)));
@@ -653,6 +723,13 @@ impl Record {
         }
         said
     }
+}
+
+/// The PRs of `changed` and their files, as a sentence names them:
+/// `#12 changing docs/adr/0027-x.md; #14 changing docs/adr/0028-y.md`.
+pub fn changing(changed: &[Changed]) -> String {
+    let each = changed.iter().map(|c| format!("#{} changing {}", c.pr, c.paths.join(", ")));
+    each.collect::<Vec<_>>().join("; ")
 }
 
 /// `numbers` as a sentence names them: `#451`, or `#451, #452`.
@@ -1304,6 +1381,7 @@ mod tests {
             from: Some("v0.5.16".into()),
             prs: vec![451, 452],
             minor: false,
+            changed: vec![],
             started: 1000,
             base: Some("s".into()),
             branch: None,
@@ -1380,6 +1458,40 @@ mod tests {
             minor.line(),
             "v0.5.17 (past v0.5.16, the next minor for a PR labelled release:minor)"
         );
+        let changed = vec![
+            Changed { pr: 451, paths: vec!["docs/adr/0027-x.md".into()] },
+            Changed {
+                pr: 452,
+                paths: vec!["docs/adr/0028-y.md".into(), "docs/adr/0029-z.md".into()],
+            },
+        ];
+        let by_paths = Record { minor: true, changed, ..record() };
+        assert_eq!(
+            by_paths.line(),
+            "v0.5.17 (past v0.5.16, the next minor for #451 changing docs/adr/0027-x.md; #452 \
+             changing docs/adr/0028-y.md, docs/adr/0029-z.md, holding #451, #452)"
+        );
+    }
+
+    #[test]
+    fn a_landing_that_adds_or_changes_a_file_under_a_minor_path_is_why_a_cut_is_minor() {
+        let log = "\0Add an ADR (#12)\n\ndocs/adr/0027-x.md\nsrc/a.rs\n\
+                   \0Fix a bug (#13)\n\nsrc/b.rs\n\
+                   \0Amend it (#12)\n\ndocs/adr/0027-x.md\ndocs/adr2/no.md\n\
+                   \0A direct commit\n\ndocs/adr/0001-y.md\n\
+                   \0Add a file (#11)\n\ndocs/adr\n";
+        let paths = vec!["docs/adr/".to_string()];
+        assert_eq!(
+            changed(log, &paths),
+            [
+                Changed { pr: 11, paths: vec!["docs/adr".into()] },
+                Changed { pr: 12, paths: vec!["docs/adr/0027-x.md".into()] },
+            ]
+        );
+        assert_eq!(changed(log, &["docs/adr".to_string()]), changed(log, &paths));
+        assert!(changed(log, &[]).is_empty(), "without the key, no path makes a cut minor");
+        assert!(changed(log, &["src/c.rs".to_string()]).is_empty());
+        assert!(!under("docs/adr2/no.md", "docs/adr/"));
     }
 
     #[test]
@@ -1587,10 +1699,17 @@ mod tests {
         let steps = |set: &str, publish: &str| Steps {
             busy_after_seconds: BUSY_AFTER_SECONDS,
             initial: None,
+            minor_paths: vec![],
             set: set.into(),
             publish: publish.into(),
         };
         assert!(steps("bump", "ship").checked().is_ok());
+        let paths = |paths: &[&str]| Steps {
+            minor_paths: paths.iter().map(|path| path.to_string()).collect(),
+            ..steps("bump", "ship")
+        };
+        assert!(paths(&["docs/adr/"]).checked().is_ok());
+        assert_eq!(paths(&["docs/adr/", " / "]).checked(), Err("minor_paths"));
         assert_eq!(steps(" ", "ship").checked(), Err("set"));
         assert_eq!(steps("bump", "").checked(), Err("publish"));
     }

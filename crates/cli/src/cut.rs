@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use afkconvoy_core::blocked::CutWait;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::cut::{
-    self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, RedGate, Row, Seen, Standing, Step,
-    Tag, Took,
+    self, CHECKOUT, CLAIM_KEY, Changed, Failure, MINOR_LABEL, Record, RedGate, Row, Seen, Standing,
+    Step, Tag, Took,
 };
 use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::harness::Harness;
@@ -144,6 +144,31 @@ fn prs_past(repo: &Repo, from: Option<&str>, to: &str) -> Result<Vec<u64>> {
     Ok(cut::prs_of(subjects.lines()))
 }
 
+/// The PRs whose landings past `from` up to `to` add or change files under
+/// the repo's `minor_paths`, with those files (`cut::changed`); none where it
+/// declares none. Each landing is read against its first parent: what it
+/// brought to the base branch.
+fn changed_past(paths: &[String], repo: &Repo, from: &str, to: &str) -> Result<Vec<Changed>> {
+    if paths.is_empty() {
+        return Ok(vec![]);
+    }
+    let log = repo.git(&[
+        "log",
+        "--first-parent",
+        "--diff-merges=first-parent",
+        "--diff-filter=ACMR",
+        "--name-only",
+        "--format=%x00%s",
+        &history(Some(from), to),
+    ])?;
+    Ok(cut::changed(&log, paths))
+}
+
+/// The repo's `minor_paths`, as its cut blocks declare them.
+fn minor_paths(fleet: &Fleet) -> &[String] {
+    fleet.config.cut.as_ref().map(|steps| steps.minor_paths.as_slice()).unwrap_or_default()
+}
+
 /// The label an issue that hands work to a human carries: a bound repo's
 /// team names it, an unbound repo's config.
 fn escalate_label(fleet: &Fleet, read: &Flows) -> String {
@@ -159,26 +184,29 @@ fn escalate_label(fleet: &Fleet, read: &Flows) -> String {
 /// initial version; `None` without that declaration, or with no work past a tag.
 fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
     let newest = cut::newest(&fleet.remote.tags(Fresh::Process)?);
-    let (version, from, prs, minor) = match newest {
+    let (version, from, prs, minor, changed) = match newest {
         Some(newest) => {
             if past(&fleet.repo, &newest, base)? == 0 {
                 return Ok(None);
             }
             let prs = prs_past(&fleet.repo, Some(&newest.commit), base)?;
-            let labelled = match prs.is_empty() {
+            let mut labelled = match prs.is_empty() {
                 true => vec![],
                 false => fleet.gh.merged_prs_labelled(MINOR_LABEL)?,
             };
+            let changed = changed_past(minor_paths(fleet), &fleet.repo, &newest.commit, base)?;
+            labelled.extend(changed.iter().map(|changed| changed.pr));
             let version = cut::pick(newest.version, &prs, &labelled)
                 .ok_or_else(|| anyhow!("no version follows {}", newest.version.tag()))?;
-            (version, Some(newest.version.tag()), prs, version.minor != newest.version.minor)
+            let minor = version.minor != newest.version.minor;
+            (version, Some(newest.version.tag()), prs, minor, changed)
         }
         None => {
             let Some(version) = fleet.config.cut.as_ref().and_then(cut::Steps::initial_version)
             else {
                 return Ok(None);
             };
-            (version, None, prs_past(&fleet.repo, None, base)?, false)
+            (version, None, prs_past(&fleet.repo, None, base)?, false, vec![])
         }
     };
     Ok(Some(Record {
@@ -186,6 +214,7 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
         from,
         prs,
         minor,
+        changed,
         started: now,
         base: Some(base.to_string()),
         branch: None,
@@ -348,6 +377,7 @@ pub fn end(fleet: &mut Fleet, found: &mut Found, me: &Me, row: &Row) -> Result<O
             from: Some("?".to_string()),
             prs: vec![],
             minor: false,
+            changed: vec![],
             started,
             base: None,
             branch: None,
@@ -932,8 +962,9 @@ impl Cutting<'_> {
 
     /// Tags the version's commit `v<version>` and pushes the tag; the PRs it
     /// holds are read again, up to that commit. A patch that holds a PR
-    /// labelled `MINOR_LABEL` — one that landed while it ran — is tagged
-    /// nothing: cut again, the version is the next minor.
+    /// labelled `MINOR_LABEL`, or one that changes a file under the repo's
+    /// `minor_paths` — one that landed while it ran — is tagged nothing: cut
+    /// again, the version is the next minor.
     fn tag(&self, record: &mut Record) -> Result<()> {
         let commit = self.commit(record)?;
         let tag = format!("v{}", record.version);
@@ -948,6 +979,18 @@ impl Cutting<'_> {
                      patch: the next tick cuts the next minor"
                 ));
                 return Ok(());
+            }
+            if let Some(from) = from.as_deref() {
+                let changed =
+                    changed_past(&self.steps.minor_paths, self.repo, from, &self.base()?)?;
+                if !changed.is_empty() {
+                    record.superseded = Some(format!(
+                        "{}, under `minor_paths`, landed while the cut ran, and {tag} is a \
+                         patch: the next tick cuts the next minor",
+                        cut::changing(&changed)
+                    ));
+                    return Ok(());
+                }
             }
         }
         let here =
@@ -1123,20 +1166,28 @@ busy_after_seconds: {const:CUT_BUSY_AFTER_SECONDS}
 
 A repo may declare host checks in a `yaml cut-needs` block (`afkconvoy config --help`). A host whose check fails does not claim a due cut; the tick, plan and doctor name it. Stdout is discarded and failed stderr is private to the host.
 
+Optional `minor_paths`, a list of paths such as `["docs/adr/"]`, says where a design change is recorded: a cut is minor, its patch 0, where a PR landed since the newest tag adds or changes a file under one of them, each landing read against its first parent — what it brought to the base branch. A path is itself or a directory, its trailing `/` optional; an empty one is refused. `{const:CUT_MINOR_LABEL}` on a PR still makes a cut minor beside it. Leaving it out, only that label does. Put it in a second cut block, as `busy_after_seconds` above, so that an older version, which refuses a key it does not know in the first one, still reads the config:
+
+~~~markdown
+```yaml cut
+minor_paths: ["docs/adr/"]
+```
+~~~
+
 Optional `busy_after_seconds` bounds how long the oldest landing past the newest tag waits for an idle fleet. Leaving it out means {const:CUT_BUSY_AFTER_SECONDS}s; zero permits a busy cut at the next tick. Its clock uses the landing commit's time on the base branch, rather than the age of commits on a side branch. Put this key in a second cut block as above: older versions that know cut steps read only the first cut block and skip the addition. All cut blocks form one mapping, and a key declared twice is refused. `plan`'s `cut` row gives `oldest_landing_age_seconds` and `busy_in_seconds`: zero means a busy cut may start now; null means no landing past a version tag.
 
 Each step is run by `sh -e` in the cut's checkout with the version, `0.5.17`, in `$VERSION`; what it prints goes to the terminal and the cut's log, in the checkout's git dir (`convoy-cut.log`). Its lines run in order, and the first that fails fails the step: the lines after it are not run. Above, a publish that fails is not followed by the upgrade, which would find nothing newer and succeed. A line `set -e` changes nothing of that, and `set -ex` adds each line to the log as it runs. A repo whose file has no such block turns cutting off: nothing is cut. `afkconvoy config` answers the steps as `cut`, and `afkconvoy plan` says where the cut stands, including `initial` while there is no version tag.
 
 ## What it does
 
-The version: the next patch past the newest version tag — a tag `v` and three numbers, `v0.5.16` — or the next minor, its patch 0, where a PR that landed since carries the label `{const:CUT_MINOR_LABEL}`. The tick that starts the cut picks it, from the tags as they are then, and keeps it in the checkout with the PRs the cut holds: those the base branch's landings past the tag name.
+The version: the next patch past the newest version tag — a tag `v` and three numbers, `v0.5.16` — or the next minor, its patch 0, where a PR that landed since carries the label `{const:CUT_MINOR_LABEL}`, or adds or changes a file under one of the paths the repo declares in `minor_paths`. The cut's line names why it is minor: `v0.2.0 (past v0.1.111, the next minor for #9 changing docs/adr/0027-x.md, holding #8, #9)`. The tick that starts the cut picks it, from the tags as they are then, and keeps it in the checkout with the PRs the cut holds: those the base branch's landings past the tag name.
 
 Its steps, in order, each timed:
 
 1. `set` — on the snapshot, the base tip the checkout was cut at, runs the `set` lines and commits what they changed, titled `<repo> <version>`: the version's commit, whose one parent is the snapshot. Lines that change nothing still make that commit, empty. Where the remote has the tag `v<version>` already, or a branch a cut of this version pushed, the cut takes up that commit instead, and makes no second.
 2. `push` — pushes that commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`. It opens no PR.
 3. `gate` — gates that commit in the checkout: the whole gate, the fast gate and the slow gate, in a worker lane as any heavy command is (`afkconvoy exclusive --help`); a green run on record for its tree answers. It takes no landing turn, is no candidate and reserves no barrier: turns land on the base branch while it runs, whether it passes, fails or hangs. A run red only on TIMEOUTs the gate says it cannot classify because the host is overloaded — every failing test a `TIMEOUT`, each covered by a gate line that says `host overloaded` and `cannot classify TIMEOUT tests` or `cannot classify <binary> <test>` — says nothing of the commit: the step gives its lane back, waits five minutes, and gates again in its place, while that wait and a whole gate run fit in the cut's time limit. A FAIL, a TIMEOUT the gate does not say it cannot classify on an overloaded host, a run that reached the gate limit, or such a red with no time left for another run fails the step and opens its issue.
-4. `tag` — tags that commit `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit. A patch also checks landings up to the current base branch: where one landed while it ran and carries `{const:CUT_MINOR_LABEL}`, it stops at `tag` without tagging or publishing, and opens no failure issue. The next tick releases its claim and starts the minor cut, unless a fleet lock stands. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
+4. `tag` — tags that commit `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit. A patch also checks landings up to the current base branch: where one landed while it ran and carries `{const:CUT_MINOR_LABEL}`, or adds or changes a file under `minor_paths`, it stops at `tag` without tagging or publishing, and opens no failure issue. The next tick releases its claim and starts the minor cut, unless a fleet lock stands. An initial cut holds every PR the base branch's landings name, and keeps its declared version.
 5. `publish` — with the tag checked out, runs the `publish` lines.
 
 The tick that finds a cut took every step takes the label `convoy-waits-on-cut` off every open issue carrying it: those whose stages declared `blocked` on the next cut (`afkconvoy verdict --help`) return to the frontier at the stage they left. A cut that failed, or a patch a minor landing overtook, takes it off nothing.
