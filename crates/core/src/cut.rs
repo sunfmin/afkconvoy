@@ -282,11 +282,13 @@ pub fn changed(log: &str, paths: &[String]) -> Vec<Changed> {
         let Some(pr) = lines.next().and_then(|subject| prs_of([subject]).first().copied()) else {
             continue;
         };
-        let files = lines.map(str::trim).filter(|file| !file.is_empty());
-        let files: Vec<String> = files
-            .filter(|file| paths.iter().any(|path| under(file, path)))
-            .map(str::to_string)
-            .collect();
+        let mut files: Vec<String> = vec![];
+        for file in lines {
+            let file = file.trim();
+            if !file.is_empty() && paths.iter().any(|path| under(file, path)) {
+                files.push(file.to_string());
+            }
+        }
         if files.is_empty() {
             continue;
         }
