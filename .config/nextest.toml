@@ -21,8 +21,10 @@ test-threads = 6
 # The fast gate's tests (./gate.sh fast, docs/adr/0047): every test but those
 # .config/slow-tests names, each of which took 2 seconds or more on the host
 # the line was drawn on. A test still running after 6 seconds, three times the
-# line, is ended and fails as TIMEOUT. The gate checks timeouts on a quiet
-# host before recommending that a test be named slow.
+# line, is ended and fails as TIMEOUT; one that passed past the line, 2
+# seconds, is named SLOW as the run ends. The gate checks each alone on a
+# quiet host, and one still past the line there fails the fast gate: it is to
+# be named slow or made fast (sunfmin/control#1157).
 [profile.fast]
 slow-timeout = { period = "2s", terminate-after = 3 }
 fail-fast = true

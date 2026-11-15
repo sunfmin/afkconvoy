@@ -212,6 +212,26 @@ fn current<T>(f: impl FnOnce(&Look) -> T) -> T {
     f(&PROCESS)
 }
 
+/// The look current on this thread, to be entered on another: work fanned
+/// out over threads reads as the one look it was asked in.
+#[derive(Clone)]
+pub struct Here(Option<Arc<Look>>);
+
+/// The look current on this thread (`Here`).
+pub fn here() -> Here {
+    Here(ENTERED.with(|entered| entered.borrow().clone()))
+}
+
+impl Here {
+    /// Runs `f` on this thread in that look.
+    pub fn enter<T>(&self, f: impl FnOnce() -> T) -> T {
+        match &self.0 {
+            Some(look) => look.enter(f),
+            None => f(),
+        }
+    }
+}
+
 /// Begins a look. The next read of each reading a look reads once observes
 /// again.
 pub fn begin() {

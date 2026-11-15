@@ -214,6 +214,9 @@ pub struct World {
     orca_file: PathBuf,
     repository_templates: std::sync::atomic::AtomicBool,
     termination_clock: std::sync::atomic::AtomicBool,
+    /// The milliseconds one second of afkconvoy's production bounds takes in
+    /// this world (`waits`), 0 while they are whole: `scale_waits`.
+    second_ms: std::sync::atomic::AtomicU64,
 }
 
 /// One answer of the CLI: the JSON object it printed, and its exit code.
@@ -277,6 +280,7 @@ impl World {
         let world = World {
             repository_templates: std::sync::atomic::AtomicBool::new(false),
             termination_clock: std::sync::atomic::AtomicBool::new(false),
+            second_ms: std::sync::atomic::AtomicU64::new(0),
             tmp_links: tempfile::tempdir_in("/tmp").unwrap(),
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
@@ -295,18 +299,33 @@ impl World {
         // Claims in this world normally call its local host h1. Commands
         // without a --host flag must read that same identity from settings.
         world.say_host_settings(json!({"host_name": "h1"}));
-        // What a fresh login shell of its host user starts with: its
-        // commands' environment, a name only it sets, and a line its rc
-        // files print first.
-        let exported: String = world
+        world.write_profile();
+        fixture_timing("world setup", began);
+        world
+    }
+
+    /// What a fresh login shell of this world's host user starts with: its
+    /// commands' environment, a name only it sets, and a line its rc files
+    /// print first.
+    fn write_profile(&self) {
+        let exported: String = self
             .login_env()
             .iter()
             .map(|(name, value)| format!("export {name}='{}'\n", value.replace('\'', "'\\''")))
             .collect();
         let profile = "export AFKCONVOY_TEST_LOGIN=1\necho 'a line an rc file printed'\n";
-        write(&world.home(), ".profile", &format!("{exported}{profile}"));
-        fixture_timing("world setup", began);
-        world
+        write(&self.home(), ".profile", &format!("{exported}{profile}"));
+    }
+
+    /// Has one second of every production bound afkconvoy waits out — a
+    /// command's timeout, a grace, a retry's pause — take `ms` milliseconds in
+    /// every command of this world from now on, its host runner's among them
+    /// (`afkconvoy::waits`): a test of what happens once one has passed waits
+    /// milliseconds, not the production bound. Say it before the world's
+    /// host runner starts.
+    pub fn scale_waits(&self, ms: u64) {
+        self.second_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
+        self.write_profile();
     }
 
     /// Has the host kit hold every harness after Claude Code, each on its stock
@@ -487,6 +506,10 @@ impl World {
         // A cut's gate red only on TIMEOUTs it cannot classify under
         // overload runs again at once.
         env.push(("AFKCONVOY_CUT_GATE_RETRY_SECONDS".to_string(), "0".to_string()));
+        let second_ms = self.second_ms.load(std::sync::atomic::Ordering::Relaxed);
+        if second_ms > 0 {
+            env.push((afkconvoy::waits::TEST_SECOND_MS.to_string(), second_ms.to_string()));
+        }
         env
     }
 
@@ -644,7 +667,9 @@ impl World {
 
     /// `afk_in`, as the afkconvoy at `program`: one installed elsewhere.
     pub fn afk_as(&self, program: &Path, cwd: &Path, args: &[&str]) -> Answer {
+        let began = Instant::now();
         let out = self.command(program, cwd).args(self.settled_args(cwd, args)).output().unwrap();
+        fixture_timing(&format!("afk {}", args.join(" ")), began);
         let stdout = String::from_utf8_lossy(&out.stdout);
         let json = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
             panic!(

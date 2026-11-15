@@ -689,11 +689,12 @@ fn run_login_shell(
     let reader = std::thread::spawn(move || {
         crate::process::read_bounded(printed, &flag).unwrap_or_default()
     });
+    let bound = crate::waits::bound(timeout);
     let started = Instant::now();
     let ended = loop {
         match child.try_wait() {
             Ok(Some(_)) => break true,
-            Ok(None) if started.elapsed() >= timeout => {
+            Ok(None) if started.elapsed() >= bound => {
                 stop_group(&mut child);
                 break false;
             }
@@ -754,11 +755,12 @@ fn ask_shell(
     let reader = std::thread::spawn(move || {
         crate::process::read_bounded(printed, &flag).unwrap_or_default()
     });
+    let bound = crate::waits::bound(timeout);
     let started = Instant::now();
     let status = loop {
         match child.try_wait().ok()? {
             Some(status) => break status,
-            None if started.elapsed() >= timeout => {
+            None if started.elapsed() >= bound => {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = finish_reader(&exited, reader);

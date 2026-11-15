@@ -150,7 +150,7 @@ fn output_bounded(
     input: Option<&[u8]>,
     limit: impl Into<Option<Duration>>,
 ) -> io::Result<(Output, bool)> {
-    let limit = limit.into();
+    let limit = limit.into().map(crate::waits::bound);
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
     let command = closing_inherited(command);
     let mut child =

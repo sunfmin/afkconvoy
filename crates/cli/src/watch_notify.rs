@@ -167,7 +167,7 @@ pub fn looked(observed: &BTreeMap<String, String>) -> Result<()> {
 
 pub fn run(ended: &AtomicBool, panel: Option<&str>, say: impl Fn(String)) {
     while !ended.load(Ordering::Relaxed) {
-        if let Err(error) = step(ended, panel, Duration::from_secs(SECONDS)) {
+        if let Err(error) = step(ended, panel, crate::waits::bound(Duration::from_secs(SECONDS))) {
             say(format!("human decision sending failed: {error:#}"));
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -278,10 +278,7 @@ fn send(command: &str, payload: &Value, ended: &AtomicBool, bound: Duration) -> 
             break Err(anyhow::anyhow!("sending interrupted"));
         }
         if started.elapsed() >= bound {
-            break Err(anyhow::anyhow!(
-                "the notify command timed out after {} seconds",
-                bound.as_secs()
-            ));
+            break Err(anyhow::anyhow!("the notify command timed out after {SECONDS} seconds"));
         }
         std::thread::sleep(Duration::from_millis(25));
     };

@@ -164,7 +164,7 @@ fn plan_with_list_stalls(stalls: usize) -> (World, common::Answer) {
     world.stall_git_lists(stalls);
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .env("AFKCONVOY_LS_REMOTE_SECONDS", "1")
+        .env("AFKCONVOY_TEST_SECOND_MS", "20")
         .arg("plan")
         .output()
         .unwrap();
@@ -189,7 +189,7 @@ fn a_remote_read_that_never_ends_fails_after_three_attempts() {
     let (world, answer) = plan_with_list_stalls(3);
     let error = answer.error();
     assert!(error.contains("3 attempts"), "{error}");
-    assert!(error.contains("did not end within 1s"), "{error}");
+    assert!(error.contains("did not end within 60s"), "{error}");
     assert!(error.contains("its process group was ended"), "{error}");
     let listings = world.git_calls().iter().filter(|call| call.starts_with("ls-remote")).count();
     assert_eq!(listings, 3);
