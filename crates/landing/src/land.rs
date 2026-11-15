@@ -771,11 +771,13 @@ where
             outcomes.push((held.change.number, Outcome::Carried(by.change.number)));
         }
         let gone: Vec<usize> = carried.iter().map(|&(_, b)| b).collect();
-        let mut at = 0;
-        places.retain(|_| {
-            at += 1;
-            !gone.contains(&(at - 1))
-        });
+        let mut kept = vec![];
+        for (at, place) in std::mem::take(places).into_iter().enumerate() {
+            if !gone.contains(&at) {
+                kept.push(place);
+            }
+        }
+        *places = kept;
         Ok(())
     }
 

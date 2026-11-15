@@ -523,7 +523,7 @@ fn a_red_pair_has_its_later_change_carry_its_partner_and_the_rest_of_the_round_l
     assert_eq!(landed_files(&work), ["file-3.txt", "file-4.txt"]);
     let chain = recorded(&work);
     let red = paired(&chain).into_iter().find(|p| p.change == 2).unwrap();
-    assert_eq!(merge, &[red.commit.clone()], "handed the pair's merge");
+    assert_eq!(merge, std::slice::from_ref(&red.commit), "handed the pair's merge");
     assert!(forge.closed.borrow().is_empty(), "nothing is closed before it holds the partner");
 
     // Its author merges the pair in and fixes it.

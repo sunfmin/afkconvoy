@@ -114,10 +114,7 @@ fn carries_marker(change: u64) -> String {
 /// took them.
 pub fn carried_in(description: &str) -> Vec<u64> {
     let mut found = vec![];
-    for (_, rest) in description
-        .match_indices("<!--carries change=")
-        .map(|(at, m)| description.split_at(at + m.len()))
-    {
+    for rest in description.split("<!--carries change=").skip(1) {
         let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
         if let Ok(number) = digits.parse() {
             found.push(number);
