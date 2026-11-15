@@ -133,10 +133,48 @@ fn observation_json(snapshot: &Snapshot) -> Value {
                 request.entry("slow").or_insert(json!(false));
                 request.entry("validation").or_insert(Value::Null);
                 request.entry("gate").or_insert(Value::Null);
+                request.entry("retained").or_insert(Value::Null);
             }
         }
     }
     answer
+}
+
+/// How long a lane may stay retained for an unconfirmed cleanup before
+/// doctor says so: the runner tries its cleanup again each minute, so one
+/// held this long keeps failing.
+pub const RETAINED_SECONDS: u64 = 600;
+
+/// Doctor's finding of each request of `observation` — `observation`'s
+/// answer — whose lane has stayed retained `RETAINED_SECONDS` or longer at
+/// `now`, naming its ticket and its cleanup's last error.
+pub(crate) fn retained_findings(observation: &Value, now: u64) -> Vec<crate::doctor::Finding> {
+    use crate::doctor::Kind;
+    let mut found = vec![];
+    for request in observation["running"].as_array().into_iter().flatten() {
+        let Some(since) = request["retained"]["since"].as_u64() else { continue };
+        let minutes = now.saturating_sub(since) / 60;
+        if now.saturating_sub(since) < RETAINED_SECONDS {
+            continue;
+        }
+        let error = request["retained"]["error"].as_str().unwrap_or("");
+        found.push(crate::doctor::finding(
+            Kind::LaneRetained,
+            json!(["lane-retained", request["number"], request["pid"]]),
+            format!(
+                "request {} ({}, pid {}) has had {} for {minutes} min, keeping the {} lane \
+                 occupied",
+                request["number"],
+                request["command"].as_str().unwrap_or(""),
+                request["pid"],
+                Kind::LaneRetained.symptom(),
+                request["lane"].as_str().unwrap_or("worker"),
+            ),
+            format!("its cleanup's last error: {error}"),
+            "afkconvoy queue".into(),
+        ));
+    }
+    found
 }
 
 /// What `afkconvoy queue --help` says after its one line, which
@@ -167,7 +205,8 @@ Exactly one JSON object, exit 0:
 - `fast`: `{capacity, used, free}` of the fast lane, which only a worker's fast gate takes (`afkconvoy gate --fast`). Capacity is the host setting `fast_lanes`, {const:FAST_LANES} by default; used counts running fast gates. It is independent of worker capacity: no slow gate, turn or other command holds a place in it.
 - `repos`: each repo lane with a running or waiting request, sorted by its whole identity, as `{repo, capacity, used, free}`. Each has capacity 1, independent of worker capacity. `repo` is the shared git directory supplied by the ticket, never inferred from a worktree's name.
 - `running`, `waiting`: requests in scheduler order within each array: cuts first, then ordinary commands; within each group ascending `asked`, then `number` to break ties. Cut priority never interrupts running commands. There is no priority by lane or repo. A request identifies `number` (runner-local ticket), `pid` (asking process), `command` (one line: the program and the arguments that say what is running; `afkconvoy exclusive -- ./gate.sh` stays as given; a script is named by the program it runs, its `cargo nextest` line or its `afkconvoy exclusive` invocation, and is not shown as the script; no `NAME=value`), `dir` (whole worktree or outside directory), `issue` (number or null; no lookup), `repo` (shared git directory or null for older/outside tickets), `repo_lane` (repo lane identity or null for worker), `is_turn` (whether this is a landing turn), `cut` (whether it has cut priority, false for older tickets), `asked` (request epoch seconds), `ran` (start epoch seconds or null), `gate` (`fast` or `slow` for a gate a worker runs alone, `gate --fast` or `--slow`; null otherwise), `kind` (`fast_gate`, `slow_gate`, `turn` or `command`: a landing turn is a `turn`, whichever gate it runs) and `lane` (`worker`, `fast` or `repo <identity>`).
-- Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `eligible`, or `waiting`; reasons is empty for running or eligible requests.
+- Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `retained`, `eligible`, or `waiting`; reasons is empty for running, retained or eligible requests.
+- `retained`, null otherwise, is `{since, error}` of a request in `running` whose command ended and whose asker left, but whose cleanup the runner could not confirm (a candidate's, say, on a full disk): its state is `retained`, not `running`, its pid is gone, and it keeps its place, counted in `used`, until the runner confirms the cleanup. `since` is when its cleanup first failed, `error` what the last try said. The runner tries again each minute, and frees the place once it passes; `afkconvoy doctor` warns of one retained {const:RETAINED_SECONDS}s or longer.
 - `candidate` is true for independent candidate validation. `validation`, null for ordinary or unreported requests, is the turn's display copy of its remote candidate: {id, predecessor, commit, phase, waiting, cancelled_by, cause}. Phase follows building, validating, green, slow, landed, red, cancelling or cancelled. Waiting distinguishes constructing_worktree, validating, waiting_for_round, slow_gating, waiting_for_predecessor and confirming_process_exit; a waiting queue request without a candidate awaits capacity. Cancellation names its invalidating predecessor and cause. These copies explain current work and authorize no publication; reading queue makes no remote lookup.
 - Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity`, `fast_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. `disk` means the disk the host builds on is under its floor: no request is granted until space returns, whatever lane is free, and `explanation` says the bytes free and the floor. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause or the disk. `explanation` states the constraint in words.
 
@@ -178,3 +217,34 @@ Errors: unreadable host settings, an inaccessible socket, a runner holding the h
 ## What trips you up
 
 `afkconvoy doctor` shows this same observation as `host.exclusive`, and the panel's command lanes are its lanes: the worker lane, the fast lane and each repo lane, with the same running and waiting requests, each named by its kind. It reports current queued commands only. For historical gate outcomes, use `afkconvoy doctor --all --since <time>`; `afkconvoy doctor --help` explains its interval boundaries. Commands that bypass the exclusive queue are absent. Request numbers belong to this runner and may change after it is replaced."#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Doctor names a lane retained past the bound, with its cleanup's
+    /// error, and is silent of one retained a shorter time.
+    #[test]
+    fn doctor_warns_of_a_lane_retained_past_its_bound_with_its_error() {
+        let request = |number: u64, since: u64| {
+            json!({"number": number, "pid": 40284, "command": "afkconvoy land", "lane": "worker",
+                   "retained": {"since": since, "error": "git commit-tree: No space left on device"}})
+        };
+        let observation = json!({"running": [
+            request(61, 1_000),
+            request(62, 1_000 + RETAINED_SECONDS - 1),
+            {"number": 63, "pid": 1, "command": "x", "lane": "worker", "retained": null},
+        ]});
+        let found = retained_findings(&observation, 1_000 + RETAINED_SECONDS);
+        assert_eq!(found.len(), 1, "{:?}", found.iter().map(|f| &f.what).collect::<Vec<_>>());
+        let finding = &found[0];
+        assert_eq!(finding.kind, crate::doctor::Kind::LaneRetained);
+        assert_eq!(finding.severity, crate::doctor::Severity::Warning);
+        assert!(
+            finding.what.starts_with("request 61 (afkconvoy land, pid 40284)"),
+            "{}",
+            finding.what
+        );
+        assert!(finding.evidence.contains("No space left on device"), "{}", finding.evidence);
+    }
+}

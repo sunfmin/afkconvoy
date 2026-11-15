@@ -217,6 +217,14 @@ impl Permit {
         Self::acquire_until(repo, command, heavy, true, true, None, Some(until))
     }
 
+    /// A worker lane for the turn of a candidate already on the chain: a
+    /// batch round's gate at it, or its gate once it was rebuilt from a batch
+    /// round (docs/adr/0068). It holds no pending place, and the round waits
+    /// on this gate whatever it waits for, so the wait has no bound.
+    pub(crate) fn assigned(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, true, true, None)
+    }
+
     /// A cut's gate of its own commit (docs/adr/0028), in a worker lane. Its
     /// worktree holds one commit nothing moves while it runs, as a
     /// candidate's does: it shares its repo with candidates, and so holds no
@@ -282,6 +290,7 @@ impl Permit {
             gate,
             asked: crate::clock(),
             ran: None,
+            retained: None,
         };
         let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -458,9 +467,9 @@ impl Host<Note> for Hosted {
             .and_then(|seen| seen.low())
     }
 
-    fn leaving(&self, ticket: &Ticket) -> bool {
+    fn leaving(&self, ticket: &Ticket) -> std::result::Result<(), String> {
         if !ticket.candidate {
-            return true;
+            return Ok(());
         }
         let checkout = ticket
             .repo
@@ -469,10 +478,11 @@ impl Host<Note> for Hosted {
             .and_then(Path::to_str)
             .unwrap_or(&ticket.dir);
         match crate::candidates::abandoned(checkout) {
-            Ok(_) => true,
+            Ok(_) => Ok(()),
             Err(error) => {
+                let error = format!("{error:#}");
                 eprintln!("[afkconvoy] candidate cleanup unconfirmed; lane retained: {error}");
-                false
+                Err(error)
             }
         }
     }
@@ -509,6 +519,12 @@ impl Queue {
     /// Waiting commands rejoin the replacement with their original ask time.
     pub fn pause(&self) -> usize {
         self.holder.pause()
+    }
+
+    /// Tries again to free each lane retained for a cleanup it could not
+    /// confirm, on the holder's bound: the host runner calls it each check.
+    pub fn retry(&self) {
+        self.holder.retry();
     }
 
     /// Lets commands start again if the installed release changed before
@@ -688,6 +704,7 @@ pub(crate) fn whole_repo<T>(
         gate: None,
         asked: crate::clock(),
         ran: None,
+        retained: None,
     };
     let asked = Request::WholeRepo { ticket };
     match runner_socket::keep_asking_in(cache, &asked, PLACED_WITHIN)? {
@@ -895,6 +912,7 @@ pub fn exclusive(
         gate: told_gate(),
         asked: now(),
         ran: None,
+        retained: None,
     };
     let acting = Acting::new("exclusive").on_own_issue().in_checkout(checkout);
     let place = match turn(&ticket, &acting, &now, None) {
@@ -1118,6 +1136,7 @@ mod tests {
             gate: None,
             asked,
             ran: None,
+            retained: None,
         }
     }
 

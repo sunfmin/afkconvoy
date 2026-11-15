@@ -475,6 +475,7 @@ mod tests {
             gate: None,
             asked: 0,
             ran: Some(0),
+            retained: None,
             note: Default::default(),
         }
     }

@@ -1036,6 +1036,7 @@ mod tests {
             gate: None,
             asked: 0,
             ran,
+            retained: None,
         };
         let queue = [ticket(1, 12, Some(0)), ticket(2, 20, None)];
         let under = crate::exclusive::running_work(&queue, &procs).pids;

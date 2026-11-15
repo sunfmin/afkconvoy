@@ -614,6 +614,7 @@ mod tests {
             command: "cargo test".into(),
             asked: 1000,
             ran: None,
+            retained: None,
         };
         let exclusive = serde_json::to_string(&Request::Exclusive { ticket }).unwrap();
         assert_eq!(

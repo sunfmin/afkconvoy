@@ -53,6 +53,30 @@ pub fn built(repo: &Repo) -> Result<u64> {
     Ok(ignored(repo)?.iter().map(|path| bytes_under(&repo.dir.join(path))).sum())
 }
 
+/// Drops the worktree's build output while its claim waits for a turn
+/// (sunfmin/control#1112): each directory git ignores at its top that is not
+/// hidden — `target/`, `node_modules/`, `dist/` — which a build makes again
+/// when its worker builds. A file git ignores (`.env`), a hidden directory
+/// (a harness's `.claude/`) and the worker's `TMPDIR` stay. → the bytes
+/// dropped.
+pub fn drop_built(repo: &Repo) -> Result<u64> {
+    let mut dropped = 0u64;
+    for path in ignored(repo)? {
+        let Some(dir) = path.strip_suffix('/') else { continue };
+        if dir.contains('/') || dir.starts_with('.') {
+            continue;
+        }
+        let full = repo.dir.join(dir);
+        if std::fs::symlink_metadata(&full).is_ok_and(|meta| meta.is_dir()) {
+            let bytes = bytes_under(&full);
+            std::fs::remove_dir_all(&full)
+                .with_context(|| format!("cannot drop {}", full.display()))?;
+            dropped = dropped.saturating_add(bytes);
+        }
+    }
+    Ok(dropped)
+}
+
 /// The bytes of the files git tracks in the worktree's commit.
 pub fn source(repo: &Repo) -> Result<u64> {
     let listed = repo.git_raw(&["ls-tree", "-r", "-l", "-z", "HEAD"])?;
@@ -113,4 +137,41 @@ pub fn said(bytes: u64) -> String {
         unit += 1;
     }
     format!("{size:.1} {}", UNITS[unit])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_waiting_worktree_drops_its_build_directories_and_keeps_what_else_git_ignores() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(root).output();
+            assert!(out.unwrap().status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(
+            root.join(".gitignore"),
+            "target/\nnode_modules/\n.env\n.claude/\n.afkconvoy-tmp/\n",
+        )
+        .unwrap();
+        for made in ["target/debug", "node_modules/x", ".claude", ".afkconvoy-tmp/t", "src"] {
+            std::fs::create_dir_all(root.join(made)).unwrap();
+        }
+        std::fs::write(root.join("target/debug/big"), vec![0u8; 4096]).unwrap();
+        std::fs::write(root.join("node_modules/x/m.js"), "x").unwrap();
+        std::fs::write(root.join(".env"), "A=1").unwrap();
+        std::fs::write(root.join(".claude/settings.local.json"), "{}").unwrap();
+        std::fs::write(root.join(".afkconvoy-tmp/t/f"), "t").unwrap();
+        std::fs::write(root.join("src/lib.rs"), "").unwrap();
+        let repo = Repo::new(root.to_path_buf());
+        assert_eq!(drop_built(&repo).unwrap(), 4097);
+        assert!(!root.join("target").exists() && !root.join("node_modules").exists());
+        for kept in [".env", ".claude/settings.local.json", ".afkconvoy-tmp/t/f", "src/lib.rs"] {
+            assert!(root.join(kept).exists(), "{kept} stays");
+        }
+        assert_eq!(drop_built(&repo).unwrap(), 0, "nothing more to drop");
+    }
 }

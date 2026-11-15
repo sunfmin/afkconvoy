@@ -910,7 +910,10 @@ impl GitHub {
         if let Err(error) = &made
             && let Some(reset) = crate::gh_quota::secondary(&error.to_string(), now)
         {
-            scope.save("secondary", &crate::gh_quota::Observation { remaining: Some(0), reset })?;
+            scope.save(
+                "secondary",
+                &crate::gh_quota::Observation { remaining: Some(0), reset, limit: None },
+            )?;
             bail!(
                 "GitHub secondary rate limit: both APIs wait until {reset} (Unix seconds); {error}"
             );
@@ -933,7 +936,7 @@ impl GitHub {
                 let reset = if known.reset > now { known.reset } else { now.saturating_add(60) };
                 scope.save(
                     api.name(),
-                    &crate::gh_quota::Observation { remaining: Some(0), reset },
+                    &crate::gh_quota::Observation { remaining: Some(0), reset, limit: None },
                 )?;
                 // High-level gh writes can contain several HTTP operations;
                 // their error cannot prove that earlier writes did not happen.
@@ -1410,6 +1413,23 @@ impl GitHub {
     /// number first. Lock checks need only this REST listing, not a rebuild
     /// with every comment and blocker, and remain available without GraphQL.
     pub fn open_with(&self, label: &str) -> Result<Vec<u64>> {
+        self.open_with_read(label, |args| self.read(args))
+    }
+
+    /// `open_with`, as the processes of the host waiting on it share one
+    /// read of it an interval (`crate::shared_reading`): a `land` waiting for its
+    /// turn asks this of the fleet lock again and again.
+    pub fn open_with_shared(&self, label: &str) -> Result<Vec<u64>> {
+        let tracker = self.tracker.named().map(ToString::to_string).unwrap_or_default();
+        let what = format!("open {tracker} {label} {:?}", self.tracker.repo_label());
+        self.open_with_read(label, |args| crate::shared_reading::rest(self, &what, args))
+    }
+
+    fn open_with_read(
+        &self,
+        label: &str,
+        read: impl FnOnce(&[&str]) -> Result<String>,
+    ) -> Result<Vec<u64>> {
         #[derive(Deserialize)]
         struct Row {
             number: u64,
@@ -1418,7 +1438,7 @@ impl GitHub {
         let labels = carrying_labels(&self.tracker, label);
         let endpoint =
             endpoint(&self.tracker, &format!("issues?state=open&labels={labels}&per_page=100"));
-        let out = self.read(&["api", "--paginate", &endpoint, "--jq", OPEN_LABELLED_JQ])?;
+        let out = read(&["api", "--paginate", &endpoint, "--jq", OPEN_LABELLED_JQ])?;
         let mut numbers = vec![];
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let row: Row =
