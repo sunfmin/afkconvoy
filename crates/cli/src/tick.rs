@@ -212,6 +212,11 @@ pub fn tick(
     {
         eprintln!("warning: a worktree a removal left will be removed on a later tick: {error:#}");
     }
+    // A worktree a settle kept goes once nothing in it is held only there,
+    // its carrier or its batch landed (sunfmin/control#1161).
+    if let Err(error) = crate::settle::remove_kept(&fleet) {
+        eprintln!("warning: a worktree a settle kept will be looked at on a later tick: {error:#}");
+    }
     // A watch's checkout a watch left, everything in it pushed, goes past its
     // grace (sunfmin/control#1063).
     if let Err(error) =
@@ -1677,7 +1682,7 @@ What one tick of `run` does: the startup probe, the rebuild, then every transiti
 
 A stopped candidate's worktree is removed on this pass when no process still has it as its working directory. A worktree a process is still in stays for a later tick. The candidate chain is not rewritten. `afkconvoy land --help`.
 
-Settling a claim removes that worker's worktree. Directories the gate left under it that the owner cannot write do not stop the removal: removal gives the owner write on the directories it has to delete, and clears no other mode bit. A removal that leaves the directory is not finished. A later tick removes it, including one git has already unregistered, and orca drops that failed removal once the directory is gone. A worktree a process is still working in stays until a later tick sees that process gone. A worktree that holds a commit the remote does not stays.
+Settling a claim removes that worker's worktree. Directories the gate left under it that the owner cannot write do not stop the removal: removal gives the owner write on the directories it has to delete, and clears no other mode bit. A removal that leaves the directory is not finished. A later tick removes it, including one git has already unregistered, and orca drops that failed removal once the directory is gone. A worktree a process is still working in stays until a later tick sees that process gone. A worktree that holds a commit the remote does not stays — on none of the base branch, its own branch or the branch of the PR that carries its PR, and its change not already on the base branch — and each later tick looks at it again while no claim holds its issue: it goes once a carrier or a batch has landed its change. `doctor` names it under `kept_at_settle`.
 
 ## What it answers
 
