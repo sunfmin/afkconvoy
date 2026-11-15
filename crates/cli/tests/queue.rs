@@ -513,3 +513,35 @@ fn queue_is_discoverable_in_operator_help_and_its_contract_is_complete() {
         assert!(doctor.contains(required), "doctor help omits {required}");
     }
 }
+
+/// A ticket whose asker left but whose cleanup the runner could not confirm
+/// holds its lane as `retained`, with its error: not as a running command
+/// of a live pid (sunfmin/control#1122).
+#[test]
+fn a_retained_ticket_shows_retained_with_its_cleanup_error_not_running() {
+    let local = Local::new();
+    local.settings(1);
+    let mut kept = ticket(1, "/repos/a/.git", 700, Some(800), false);
+    kept["retained"] = json!({"since": 900, "error": "git commit-tree: No space left on device"});
+    let _received =
+        local.answer(response(vec![kept, ticket(2, "/repos/b/.git", 850, None, false)]));
+    let (code, answer) = local.query();
+    assert_eq!(code, 0, "{answer}");
+    let kept = request(&answer, 1);
+    assert_eq!(kept["scheduling"]["state"], "retained");
+    assert_eq!(
+        kept["retained"],
+        json!({"since": 900, "error": "git commit-tree: No space left on device"})
+    );
+    assert_eq!(
+        answer["worker"],
+        json!({"capacity": 1, "used": 1, "free": 0}),
+        "it keeps its place"
+    );
+    let waiter = request(&answer, 2);
+    assert_eq!(
+        waiter["scheduling"]["reasons"][0]["requests"],
+        json!([{"number": 1, "state": "retained"}])
+    );
+    assert_eq!(waiter["retained"], Value::Null);
+}

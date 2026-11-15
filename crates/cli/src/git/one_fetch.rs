@@ -626,6 +626,7 @@ mod tests {
             gate: Some(Gate::Fast),
             asked: 0,
             ran: None,
+            retained: None,
         };
         let asked = Request::Exclusive { ticket: gate };
         let (_, running) =

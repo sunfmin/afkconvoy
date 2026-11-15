@@ -109,7 +109,7 @@ impl Ending {
                 "the candidate ahead of this PR changes the gate to one that runs in a worker lane, which this turn did not take; nothing ran: ask for a turn again after that predecessor lands; no gate failure or rework occurred"
             }
             Ending::WaitingForCapacity => {
-                "the bounded candidate window was full; nothing ran: ask for a turn again; no gate failure or rework occurred"
+                "the bounded candidate window was full, or the candidate chain is piled and a candidate is ahead of this PR (`detail` says which); nothing ran: ask for a turn again; no gate failure or rework occurred"
             }
             Ending::WaitedPastBound => {
                 "this turn waited on the candidate chain past its bound (`detail` says which): a pending turn that holds no candidate, past a fixed bound, or a green candidate waiting for the candidates ahead or its round, past its gate limit; it ended and freed its pending place, and a green candidate stays on the chain for the next turn to take over without gating it again; nothing landed: ask for a turn again"
