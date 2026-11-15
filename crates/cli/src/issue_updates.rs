@@ -228,6 +228,12 @@ pub fn closed(fleet: &Fleet, host: &str, closed: &[(u64, Option<&str>)]) -> Vec<
     let mut steps = vec![];
     for &(number, by) in closed {
         let made = (|| -> Result<Option<Value>> {
+            // A closing its own landing made is the worker's own end: it is
+            // not told, and its worktree, which need not stay usable, is not
+            // read.
+            if crate::settle::landed(fleet, number)? {
+                return Ok(None);
+            }
             let Ok((worktree, terminal)) = crate::tell::worker(fleet, host, number)? else {
                 return Ok(None);
             };
@@ -248,8 +254,6 @@ pub fn closed(fleet: &Fleet, host: &str, closed: &[(u64, Option<&str>)]) -> Vec<
             let update = match kept.filter(|kept| kept.started == started) {
                 Some(Closing { untold: None, .. }) => return Ok(None),
                 Some(Closing { untold: Some(update), .. }) => update,
-                // A closing its own landing made is the worker's own end.
-                None if crate::settle::landed(fleet, number)? => return Ok(None),
                 None => closed_update(number, by, started),
             };
             let (step, told) = deliver(fleet, number, (&worktree, &terminal), started, update);

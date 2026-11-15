@@ -697,6 +697,9 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
     }
     let branch = &config.base_branch;
     let mut warnings = installed;
+    // git's own housekeeping would repack the store the workers' fetches
+    // read (sunfmin/control#1102): the fleet repacks it itself (`tick`).
+    repo.maintenance_off()?;
 
     if repo.remote().sha(&format!("refs/heads/{branch}"), Fresh::Process)?.is_none() {
         return Err(See::Troubleshooting.refusal(no_base_branch(branch)));

@@ -10,6 +10,9 @@ use anyhow::{Context, Result, bail};
 
 use crate::remote::{Remote, RemoteRecord, Seen, Wire};
 
+mod one_fetch;
+pub(crate) use one_fetch::Failing;
+
 /// The remote every ref and branch is pushed to and fetched from.
 pub const REMOTE: &str = "origin";
 
@@ -71,13 +74,6 @@ pub(crate) struct RemoteReads {
     empty_tree: OnceLock<String>,
     /// Shas `bring` has already found present. Objects live in the common store.
     present: Mutex<HashSet<String>>,
-    /// Set once the repository's config holds its automatic gc off
-    /// (`Repo::hold_auto_gc`), which every worktree of it shares.
-    auto_gc_held: OnceLock<()>,
-    /// One lock for each fetch this process has made of the repository, by
-    /// its arguments: a fetch due while the same one runs waits for it, and
-    /// never runs beside it (sunfmin/control#1106).
-    fetching: Mutex<HashMap<Vec<String>, Arc<Mutex<()>>>>,
 }
 
 impl RemoteReads {
@@ -89,8 +85,6 @@ impl RemoteReads {
             messages: Mutex::default(),
             empty_tree: OnceLock::new(),
             present: Mutex::default(),
-            auto_gc_held: OnceLock::new(),
-            fetching: Mutex::default(),
         }
     }
 }
@@ -335,134 +329,28 @@ impl Repo {
         Ok(listed.lines().map(str::to_string).filter(|name| !name.is_empty()).collect())
     }
 
-    /// One fetch whose failure the caller reads. At `FETCH_LIMIT` its process
-    /// group is ended and the call is a failure. The same fetch runs once at
-    /// a time in this process: one due while it runs waits for it first.
-    ///
-    /// A fetch that fails because this repository lost objects its
-    /// commit-graph or refs still name (sunfmin/control#1090) repairs it from
-    /// the remote and runs again: the commit-graph and multi-pack-index,
-    /// which only speed up reads, are dropped, and if the fetch still finds
-    /// objects missing it fetches again with `--refetch`, which sends every
-    /// object anew and so never builds on a base that is not here. Every
-    /// worktree of the repository shares its object store, so one lost
-    /// object would otherwise stop every gate and land on the host.
-    ///
-    /// No fetch starts git's automatic gc or maintenance, and the repository
-    /// is set to start neither (`hold_auto_gc`): a repack consolidating packs
-    /// while the fleet's other fetches write new ones into the same store
-    /// loses objects.
+    /// One fetch whose failure the caller reads, under the fetch lock of
+    /// this repository's object store (`one_fetch`). At `FETCH_LIMIT` its
+    /// process group is ended and the call is a failure.
     pub fn try_fetch(&self, args: &[&str]) -> Result<Ran> {
         let ran = self.fetch_unless(args, || Ok(false))?;
         Ok(ran.expect("a fetch that is never done is run"))
     }
 
-    /// Runs the fetch `args` once no fetch of the same arguments runs in this
-    /// process. A fetch that had to wait asks `done` first, and runs only
-    /// when the fetch it waited for did not bring what it is for → `None`
-    /// when it was not run (sunfmin/control#1106).
+    /// Runs the fetch `args` under the fetch lock: no other fetch into this
+    /// object store runs beside it, of this process or another. A fetch that
+    /// had to wait asks `done` first, and runs only when the fetch it waited
+    /// for did not bring what it is for → `None` when it was not run
+    /// (sunfmin/control#1106, sunfmin/control#1102).
     fn fetch_unless(&self, args: &[&str], done: impl Fn() -> Result<bool>) -> Result<Option<Ran>> {
         if args.first() != Some(&"fetch") {
             bail!("Repo::try_fetch takes a git fetch command");
         }
-        let key = args.iter().map(|arg| arg.to_string()).collect();
-        let one = Arc::clone(lock(&self.reads().fetching).entry(key).or_default());
-        let _running = match one.try_lock() {
-            Ok(running) => running,
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                let running = lock(&one);
-                if done()? {
-                    return Ok(None);
-                }
-                running
-            }
-        };
-        self.repaired_fetch(args).map(Some)
-    }
-
-    /// The fetch `args`, repairing a repository that lost objects and
-    /// fetching again (`try_fetch`).
-    fn repaired_fetch(&self, args: &[&str]) -> Result<Ran> {
-        self.hold_auto_gc();
-        let held = [&NO_AUTO_GC[..], args].concat();
-        let args = &held[..];
-        let ran = run_within(&self.dir, args, &[], FETCH_LIMIT)?;
-        if ran.ok || !lost_objects(&ran.stderr) {
-            return Ok(ran);
+        let (_lock, waited) = one_fetch::take_after(self.common_dir()?)?;
+        if waited && done()? {
+            return Ok(None);
         }
-        self.drop_object_indexes()?;
-        let ran = run_within(&self.dir, args, &[], FETCH_LIMIT)?;
-        if ran.ok || !lost_objects(&ran.stderr) {
-            return Ok(ran);
-        }
-        let at = NO_AUTO_GC.len();
-        let refetch = [&args[..=at], &["--refetch"], &args[at + 1..]].concat();
-        let ran = run_within(&self.dir, &refetch, &[], FETCH_LIMIT)?;
-        if ran.ok || !lost_objects(&ran.stderr) {
-            return Ok(ran);
-        }
-        let mut stderr = ran.stderr;
-        stderr.push_str(&format!(
-            "\n{} lost objects its refs name, and refetching them from {REMOTE} did not \
-             restore them: repair it with `git fsck`, deleting the refs it names broken, \
-             then `git fetch --refetch {REMOTE}`",
-            self.dir.display()
-        ));
-        Ok(Ran { stderr, ..ran })
-    }
-
-    /// Sets this repository's config, once a process, so that no git command
-    /// in it or any of its worktrees — a worker's commit, a merge — starts an
-    /// automatic gc or maintenance: those repack the object store the fleet's
-    /// fetches write into at the same time (sunfmin/control#1090). A value
-    /// already there is not written again; a write that fails is tried by the
-    /// next process, and every fetch holds gc off by itself meanwhile.
-    fn hold_auto_gc(&self) {
-        let reads = self.reads();
-        if reads.auto_gc_held.get().is_some() {
-            return;
-        }
-        let mut held = true;
-        for (key, value) in AUTO_GC_HELD {
-            let now = self.try_git(&["config", "--get", key]).map(|ran| ran.stdout);
-            if now.as_deref().is_ok_and(|now| now == value) {
-                continue;
-            }
-            held &= self.try_git(&["config", key, value]).is_ok_and(|ran| ran.ok);
-        }
-        if held {
-            let _ = reads.auto_gc_held.set(());
-        }
-    }
-
-    /// Removes this repository's commit-graph, which names commits its object
-    /// store lost, and its multi-pack-index, which an interrupted repack
-    /// leaves naming a pack that is gone (`could not load pack`) and so breaks
-    /// every read. Both only speed up reads: git reads each pack's own `.idx`
-    /// without them, and writes them again from what is there on a later `gc`.
-    fn drop_object_indexes(&self) -> Result<()> {
-        let objects = self.common_dir()?.join("objects");
-        let (info, pack) = (objects.join("info"), objects.join("pack"));
-        for graph in [
-            info.join("commit-graph"),
-            info.join("commit-graphs"),
-            pack.join("multi-pack-index"),
-            pack.join("multi-pack-index.d"),
-        ] {
-            let gone = if graph.is_dir() {
-                std::fs::remove_dir_all(&graph)
-            } else {
-                std::fs::remove_file(&graph)
-            };
-            match gone {
-                Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
-                    return Err(err).with_context(|| format!("removing {}", graph.display()));
-                }
-                _ => {}
-            }
-        }
-        Ok(())
+        run_within(&self.dir, args, &[], FETCH_LIMIT).map(Some)
     }
 
     /// One fetch that must succeed → its stdout, trimmed.
@@ -494,15 +382,27 @@ impl Repo {
 
     /// Brings into this repo the commit `sha` the remote was seen to have at
     /// `refname`, when it is not here yet. An error when the remote no longer
-    /// has it there.
+    /// has it there. Lands that want the same commit at once make one fetch
+    /// of it: each waits for the fetch lock, and finds there what the one
+    /// before it fetched (`one_fetch::guarded`). A corrupt pack is fetched
+    /// again with `--refetch`, and one that stays corrupt backs off.
     pub fn bring(&self, sha: &str, refname: &str) -> Result<()> {
         if !self.object_here(sha)? {
-            let args = ["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE, refname];
-            // The fetch waited for may have brought it.
-            let ran = self.fetch_unless(&args, || self.object_here(sha))?;
-            if let Some(ran) = ran.filter(|ran| !ran.ok) {
-                bail!("git {} failed: {}", args.join(" "), ran.stderr.trim());
-            }
+            let now = crate::gh_quota::now();
+            one_fetch::guarded(
+                self.common_dir()?,
+                refname,
+                now,
+                || self.object_here(sha),
+                |refetch| {
+                    let mut fetch = vec!["fetch", "--quiet", "--no-write-fetch-head", "--no-tags"];
+                    if refetch {
+                        fetch.push("--refetch");
+                    }
+                    fetch.extend([REMOTE, refname]);
+                    run_within(&self.dir, &fetch, &[], FETCH_LIMIT)
+                },
+            )?;
             if !self.object_here(sha)? {
                 bail!("{refname} moved on the remote while it was read — run this again");
             }
@@ -704,25 +604,6 @@ impl Repo {
     }
 }
 
-/// Whether a failed fetch says this repository lost objects that its
-/// commit-graph or refs name, which the remote can send again.
-fn lost_objects(stderr: &str) -> bool {
-    [
-        "in the commit graph file but not in the object database",
-        "did not send all necessary objects",
-        "fatal: bad object",
-        "is corrupt",
-        "missing blob",
-        "missing tree",
-        "missing commit",
-        "could not load pack",
-        "unresolved deltas",
-        "invalid index-pack output",
-    ]
-    .iter()
-    .any(|said| stderr.contains(said))
-}
-
 /// The ref a failed fetch says the remote does not have, if that is why
 /// it failed.
 fn vanished(stderr: &str) -> Option<&str> {
@@ -741,12 +622,6 @@ fn subjects_of(
     }
     out
 }
-
-/// The config that keeps git's automatic gc and maintenance from starting.
-const AUTO_GC_HELD: [(&str, &str); 2] = [("gc.auto", "0"), ("maintenance.auto", "false")];
-
-/// `AUTO_GC_HELD` for one git call, before its command.
-const NO_AUTO_GC: [&str; 4] = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
 
 const RECORD_IDENTITY: [(&str, &str); 4] = [
     ("GIT_AUTHOR_NAME", "afkconvoy"),
@@ -890,8 +765,8 @@ mod tests {
     }
 
     /// sunfmin/control#1090: a checkout whose commit-graph names a commit its
-    /// object store lost fails every fetch of that commit. The fetch drops the
-    /// commit-graph, fetches again and brings the commit back.
+    /// object store lost fails every fetch of that commit. The bring drops the
+    /// commit-graph, fetches again with `--refetch` and has the commit back.
     #[test]
     fn a_fetch_repairs_a_commit_graph_naming_a_lost_object() {
         let root = tempfile::tempdir().unwrap();
@@ -923,37 +798,11 @@ mod tests {
         std::fs::remove_file(local.join(".git/objects").join(&tip[..2]).join(&tip[2..])).unwrap();
         assert!(!repo.try_git(&["cat-file", "-e", &tip]).unwrap().ok);
 
-        repo.fetch(&[
-            "fetch",
-            "--quiet",
-            "--no-write-fetch-head",
-            "--no-tags",
-            REMOTE,
-            "refs/convoy/candidates/main",
-        ])
-        .unwrap();
+        repo.bring(&tip, "refs/convoy/candidates/main").unwrap();
 
         assert!(repo.try_git(&["cat-file", "-e", &tip]).unwrap().ok);
         assert!(!local.join(".git/objects/info/commit-graph").exists());
-        // The fetch left the repository holding its automatic gc off, which
-        // every worktree of it reads from the one config.
-        assert_eq!(repo.git(&["config", "--get", "gc.auto"]).unwrap(), "0");
-        assert_eq!(repo.git(&["config", "--get", "maintenance.auto"]).unwrap(), "false");
-    }
-
-    #[test]
-    fn lost_objects_are_told_from_other_fetch_failures() {
-        assert!(lost_objects(
-            "fatal: You are attempting to fetch c0e6d135, which is in the commit graph file \
-             but not in the object database."
-        ));
-        assert!(lost_objects("error: remote did not send all necessary objects"));
-        assert!(lost_objects("error: could not load pack 0"));
-        assert!(lost_objects(
-            "fatal: pack has 4 unresolved deltas\nfatal: fetch-pack: invalid index-pack output"
-        ));
-        assert!(!lost_objects("fatal: couldn't find remote ref refs/heads/gone"));
-        assert!(!lost_objects("fatal: unable to access 'https://github.com/': timed out"));
+        assert!(repo.failing_fetch().is_none());
     }
 
     /// A checkout whose remote has a commit at `refs/convoy/candidates/main`
@@ -1001,7 +850,8 @@ mod tests {
     }
 
     /// The host-runner's threads each find the same fetch due, one well
-    /// before the last one ends (sunfmin/control#1106): each runs in turn,
+    /// before the last one ends (sunfmin/control#1106): each runs in turn
+    /// under the fetch lock,
     /// never beside another.
     #[test]
     fn a_fetch_due_while_the_same_one_runs_waits_for_it() {
