@@ -217,6 +217,14 @@ impl Permit {
         Self::acquire_until(repo, command, heavy, true, true, None, Some(until))
     }
 
+    /// A worker lane for the turn of a candidate already on the chain: a
+    /// batch round's gate at it, or its gate once it was rebuilt from a batch
+    /// round (docs/adr/0068). It holds no pending place, and the round waits
+    /// on this gate whatever it waits for, so the wait has no bound.
+    pub(crate) fn assigned(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, true, true, None)
+    }
+
     /// A cut's gate of its own commit (docs/adr/0028), in a worker lane. Its
     /// worktree holds one commit nothing moves while it runs, as a
     /// candidate's does: it shares its repo with candidates, and so holds no

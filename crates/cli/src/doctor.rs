@@ -170,6 +170,7 @@ kinds! {
     PublicTracker: Critical, "is public: its fleet instance works nothing";
     RepoUnworked: Warning, "no fleet has taken";
     RepoUnreadable: Warning, "remote could not be read";
+    GithubQuota: Warning, "GitHub quota is spent";
     StepFailed: Critical, "failed in each of the last";
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
@@ -270,6 +271,7 @@ impl Kind {
                 | Kind::OtherAccount
                 | Kind::RepoUnworked
                 | Kind::RepoUnreadable
+                | Kind::GithubQuota
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
                 | Kind::ExitWaiting
@@ -292,6 +294,7 @@ impl Kind {
                 | Kind::PathStale
                 | Kind::NotUpgraded
                 | Kind::LandingContention
+                | Kind::GithubQuota
         )
     }
 }
@@ -2921,16 +2924,19 @@ pub fn all_since_rounds(
         watch.insert("events".to_string(), Value::Array(watch_events));
     }
     of_host.extend(overdue_findings(&paces, now));
-    let unworked = match crate::unworked::read(now) {
-        Ok(read) => read,
-        Err(error) => crate::error_json(&error),
-    };
+    // A spent quota is one finding of the host's, not one per repo it
+    // could not read (sunfmin/control#1111).
+    let (unworked, quota) = crate::unworked::read_unless_spent(now);
     once.insert("unworked_repos".into(), unworked);
     of_host.extend(crate::unworked::findings(
         &once["unworked_repos"],
         host.unwrap_or(&crate::this_host()),
         now,
     ));
+    if let Some(quota) = quota {
+        of_host.push(crate::unworked::quota_finding(&quota));
+        once.insert("github_quota".into(), quota);
+    }
     // Said once, named for the first checkout on the list: the lines are
     // equal while they are gathered, and each runs from any directory.
     if let Some(checkout) = listed.first() {
@@ -2976,7 +2982,7 @@ It reads this host (the commands the fleet needs, in a login shell; orca), the l
 A harness whose first login answer reads logged out is asked once more in that same login shell setting before `tools` reports `logged_out`; ready on the second answer is ready. A ready harness is still started at most once per doctor. A tool finding's evidence carries the last answer's exit status and the first 500 characters it printed, with credential-shaped text redacted.
 
 With `--all` it reads the checkout list (checkouts.json in the cache directory) and the same of each checkout on it, all at once.
-It also reads every tracker that list names once for repo-labelled work, including repos absent from this host. A repo nobody works has an open ready issue with no open blocker or claim, ready for more than an hour since the later of its dispatch label being applied and its last blocker closing, and no remote heartbeat within the 1800-second lease. Ready means the repo's ready label, or its team's flow labels. Only an old enough unblocked issue, or an existing report, asks that repo's heartbeat remote. `host.unworked_repos` holds the waiting issues and their seconds, newest heartbeat's host and time (or null), report and opening host, recovery host, and read error. An unreadable remote proves nothing about whether a fleet works it. Doctor opens and closes nothing; the host runner reconciles these reports at its look.
+It also reads every tracker that list names once for repo-labelled work, including repos absent from this host. A repo nobody works has an open ready issue with no open blocker or claim, ready for more than an hour since the later of its dispatch label being applied and its last blocker closing, and no remote heartbeat within the 1800-second lease. Ready means the repo's ready label, or its team's flow labels. Only an old enough unblocked issue, or an existing report, asks that repo's heartbeat remote. `host.unworked_repos` holds the waiting issues and their seconds, newest heartbeat's host and time (or null), report and opening host, recovery host, and read error. An unreadable remote proves nothing about whether a fleet works it. Where the login's REST core quota is spent, no tracker is read before its reset, and no repo is said unread for want of it: `host.github_quota` holds {host, login, api, reset} and one finding says it, which calls no watch. Doctor opens and closes nothing; the host runner reconciles these reports at its look.
 
 ## What it answers
 
@@ -3020,7 +3026,7 @@ It also reads every tracker that list names once for repo-labelled work, includi
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; a session that says busy while orca reports the agent done says disputed instead, with session: "busy", and raises a finding once orca has said so for the grace period. A claim left alone by a fleet lock instead says {state: "waiting_on_lock", locks: [issue numbers]} and raises no stopped or missing worker finding; the lock's own worker keeps its findings. gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
-- `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round, assigned}. `assigned` is when it was assigned, in epoch seconds, or null on a record older than that. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
+- `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round, assigned}. `assigned` is when it was assigned, in epoch seconds, or null on a record older than that. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. A candidate of a batch round (`landing: batch`, `afkconvoy config --help`) carries `batch: true`, its phase is `batched` until a gate runs at it, and its `round` names the candidate its batch round gates now, or else the one its round's next step is at: the gate whose run decides it. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_batch_gate` (batched, until its round's gate runs at it or a candidate behind it), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
 - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`) unless a model label is followed (`model_label`; a stored `casting` is read as that), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
 - `findings`: what is wrong, most severe first — none: []. Each is {kind, severity, what, evidence, fix, see, watch_id}:

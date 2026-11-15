@@ -1486,6 +1486,145 @@ fn a_round_slow_gates_its_tip_once_and_lands_every_fast_green_candidate_together
     assert!(!started(&world, "whole", "b"), "the round's tip needed no certification run");
 }
 
+/// A split world whose config says `landing: batch` (docs/adr/0068): its
+/// turns land in batch rounds.
+fn batch_world(lanes: u64) -> World {
+    let world = split_world(lanes);
+    let file = world.clone.join("docs/agents/afkconvoy.md");
+    let config = std::fs::read_to_string(&file).unwrap();
+    let config = config.replacen("gate_seconds: 600\n", "gate_seconds: 600\nlanding: batch\n", 1);
+    std::fs::write(&file, config).unwrap();
+    git(&world.clone, &["commit", "-q", "-am", "land in batch rounds"]);
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    assert_eq!(world.afk(&["config"]).ok()["landing"], "batch");
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    world
+}
+
+/// The valid candidates of the chain, each as its PR and phase.
+fn valid(world: &World) -> Vec<(u64, String)> {
+    let chain = chain(world);
+    let valid = chain["candidates"].as_array().unwrap().iter().filter(|c| {
+        c["cancelled_by"].is_null()
+            && !["landed", "red", "cancelled"].contains(&c["phase"].as_str().unwrap())
+    });
+    valid.map(|c| (c["pr"].as_u64().unwrap(), c["phase"].as_str().unwrap().to_string())).collect()
+}
+
+/// Four turns of a batch repo: the first is gated alone, as nothing is
+/// merged onto it yet; the three that join while it gates are batched
+/// behind it, and once it lands the chain's tip runs the whole gate, fast
+/// then slow, once, and lands all three as one fast-forward, each turn
+/// answering `merged` (sunfmin/control#1120).
+#[test]
+fn a_batch_round_gates_its_tip_once_and_lands_every_turn_behind_it() {
+    let world = batch_world(3);
+    let workers: Vec<_> =
+        [(1, "a"), (2, "b"), (3, "c"), (4, "d")].map(|(n, name)| worker(&world, n, name)).to_vec();
+    let _runner = world.host_held();
+    let aa = start(&world, &workers[0].0, &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    // Each joins once the one before it is on the chain: the chain's order is theirs.
+    let rest: Vec<Child> = (1..4)
+        .map(|i| {
+            let turn = start(&world, &workers[i].0, &world.cache(), i as u64 + 1);
+            until(|| valid(&world).len() == i + 1);
+            turn
+        })
+        .collect();
+    let phases: Vec<String> = valid(&world).into_iter().map(|(_, phase)| phase).collect();
+    assert_eq!(phases, ["validating", "batched", "batched", "batched"]);
+    let doctor = world.afk(&["doctor"]).json["candidates"].clone();
+    let at_a = doctor[0]["id"].clone();
+    assert_eq!(doctor[3]["batch"], true, "{doctor}");
+    assert_eq!(doctor[3]["phase"], "batched", "{doctor}");
+    assert_eq!(doctor[3]["waiting"], "waiting_for_batch_gate", "{doctor}");
+    assert_eq!(doctor[3]["round"], at_a, "it waits on the gate at a: {doctor}");
+    let_go(&world, "fast", "a", false);
+    until(|| started(&world, "slow", "a"));
+    let_go(&world, "slow", "a", false);
+    let landed_a = finish(aa);
+    assert_eq!(landed_a["outcome"], "merged", "{landed_a}");
+    until(|| started(&world, "fast", "d"));
+    let_go(&world, "fast", "d", false);
+    until(|| started(&world, "slow", "d"));
+    let_go(&world, "slow", "d", false);
+    let answers: Vec<Value> = rest.into_iter().map(finish).collect();
+    for answer in &answers {
+        assert_eq!(answer["outcome"], "merged", "{answer}");
+    }
+    let tip = answers.iter().find(|a| a["landed"].as_array().is_some_and(|l| l.len() == 3));
+    let mut landed: Vec<u64> =
+        tip.map_or(vec![], |a| serde_json::from_value(a["landed"].clone()).unwrap());
+    landed.sort();
+    assert_eq!(landed, [20, 30, 40], "one fast-forward: {answers:?}; {}", chain(&world));
+    for name in ["b", "c"] {
+        for part in ["fast", "slow"] {
+            assert!(!started(&world, part, name), "{part} gate ran at {name}, which is batched");
+        }
+    }
+    assert!(!started(&world, "slow", "b"));
+    assert_eq!(
+        world.remote(&["rev-parse", "refs/heads/main"]),
+        tip.unwrap()["commit"].as_str().unwrap()
+    );
+    for (i, (_, head)) in workers.iter().enumerate() {
+        assert_eq!(&world.remote(&["rev-parse", &format!("refs/heads/issue-{}", i + 1)]), head);
+    }
+}
+
+/// A batch round red at its tip is bisected through the fleet's turns: the
+/// gate at the middle candidate is red too, so it is the round's first red
+/// one, and its turn answers `gate_red` with that run; the turn behind it
+/// merges again without it and lands (sunfmin/control#1120).
+#[test]
+fn a_red_batch_round_sends_back_its_first_red_turn_and_lands_the_rest() {
+    let world = batch_world(3);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, bh) = worker(&world, 2, "b");
+    let (c, _) = worker(&world, 3, "c");
+    let _runner = world.host_held();
+    let aa = start(&world, &a, &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    let bb = start(&world, &b, &world.cache(), 2);
+    until(|| valid(&world).len() == 2);
+    let cc = start(&world, &c, &world.cache(), 3);
+    until(|| valid(&world).len() == 3);
+    let_go(&world, "fast", "a", false);
+    until(|| started(&world, "slow", "a"));
+    let_go(&world, "slow", "a", false);
+    assert_eq!(finish(aa)["outcome"], "merged");
+    // The tip's gate holds b and c: red.
+    until(|| started(&world, "fast", "c"));
+    let_go(&world, "fast", "c", true);
+    // Bisected: the gate at b, which holds b alone above the landed a.
+    until(|| started(&world, "fast", "b"));
+    assert!(!started(&world, "slow", "c"), "a red fast gate skips the slow one");
+    let_go(&world, "fast", "c", false);
+    let_go(&world, "fast", "b", true);
+    let failed = finish(bb);
+    assert_eq!(failed["outcome"], "gate_red", "{failed}");
+    assert!(failed["detail"].as_str().unwrap().contains("first red one"), "{failed}");
+    // c, rebuilt without b, passes the whole gate at its new candidate.
+    until(|| started(&world, "slow", "c"));
+    let_go(&world, "slow", "c", false);
+    let rebuilt = finish(cc);
+    assert_eq!(rebuilt["outcome"], "merged", "{rebuilt}");
+    assert_eq!(rebuilt["landed"], json!([30]), "{rebuilt}");
+    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+    assert!(files.lines().any(|f| f == "a.txt"));
+    assert!(files.lines().any(|f| f == "c.txt"));
+    assert!(!files.lines().any(|f| f == "b.txt"));
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-2"]), bh);
+    let causes: Vec<Value> = chain(&world)["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["cause"].clone())
+        .collect();
+    assert!(causes.contains(&json!("rebuilt")), "{causes:?}");
+}
+
 #[test]
 fn a_red_round_is_fixed_whole_by_its_tip_and_its_other_candidates_stop() {
     let world = split_world(3);
@@ -1910,6 +2049,34 @@ fn an_unsettled_round_fails_no_round_and_the_candidate_before_it_lands() {
     assert_eq!(landed["outcome"], "merged", "{landed}");
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
     assert!(files.lines().any(|f| f == "a.txt") && !files.lines().any(|f| f == "b.txt"));
+}
+
+/// A batch round's gate that reaches its limit is ended: its candidate
+/// stays valid while the round reads what its red says, so its gate is
+/// stopped by its own turn, which drops it and answers `gate_red`
+/// (sunfmin/control#1120).
+#[test]
+fn a_batch_gate_at_its_limit_is_ended_and_its_turn_answers_gate_red() {
+    let world = batch_world(2);
+    let file = world.clone.join("docs/agents/afkconvoy.md");
+    let config = std::fs::read_to_string(&file).unwrap();
+    let config = config.replacen(
+        "seconds: 300\n  budget_seconds: 200",
+        "seconds: 3\n  budget_seconds: 2",
+        1,
+    );
+    std::fs::write(&file, config).unwrap();
+    git(&world.clone, &["commit", "-q", "-am", "a fast gate of 3 seconds"]);
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (a, _) = worker(&world, 1, "a");
+    let _runner = world.host_held();
+    let began = Instant::now();
+    let failed = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(failed["outcome"], "gate_red", "{failed}");
+    assert_eq!(failed["timed_out"], true, "{failed}");
+    assert!(began.elapsed() < Duration::from_secs(25), "{:?}", began.elapsed());
+    assert!(!started(&world, "slow", "a"));
 }
 
 /// The Studio64 case (sunfmin/control#1117): with the one lane taken by a

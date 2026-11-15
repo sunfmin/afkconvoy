@@ -1540,8 +1540,16 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
                 esc(text("cause")),
                 esc(text("cancelled_by"))
             );
-            if let Some(tip) = candidate["round"].as_str() {
-                let _ = write!(out, " · in the round slow-gating at <code>{}</code>", esc(tip));
+            match candidate["round"].as_str() {
+                Some(tip) if candidate["batch"] == true => {
+                    let _ =
+                        write!(out, " · batched in the round gating at <code>{}</code>", esc(tip));
+                }
+                Some(tip) => {
+                    let _ = write!(out, " · in the round slow-gating at <code>{}</code>", esc(tip));
+                }
+                None if candidate["batch"] == true => out.push_str(" · batched"),
+                None => {}
             }
             out.push_str("</li>");
         }
@@ -1918,6 +1926,21 @@ mod tests {
         assert!(
             html.contains(
                 "<code>c3</code> · predecessor <code>m0</code> · waiting_for_round ·  </li>"
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_batch_candidate_says_it_is_batched_and_the_round_it_waits_on() {
+        let mut acme = part_of("acme", 1000);
+        acme.candidates = vec![serde_json::json!({"pr": 7, "target_branch": "main", "id": "c1",
+            "predecessor": "m0", "waiting": "waiting_for_batch_gate", "cause": null,
+            "cancelled_by": null, "round": "c3", "batch": true})];
+        let html = render(&page_of(host_of(1000), vec![acme]));
+        assert!(
+            html.contains(
+                "waiting_for_batch_gate ·   · batched in the round gating at <code>c3</code></li>"
             ),
             "{html}"
         );
