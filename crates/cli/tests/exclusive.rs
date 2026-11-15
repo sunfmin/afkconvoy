@@ -99,7 +99,9 @@ fn a_gate_timeout_still_ends_a_nested_exclusive_command_and_its_descendants() {
         .fixed(" exclusive -- sh -c ")
         .word("sleep 30 & echo $! > descendant; wait")
         .own();
-    world.set_gate_config(&format!("gate_command: {line}\ngate_seconds: 1"));
+    // Limit enough for the shell to start and say its descendant on a
+    // loaded host: one second was not, at a load of 166.
+    world.set_gate_config(&format!("gate_command: {line}\ngate_seconds: 5"));
     let _host_runner = world.host_held();
     let answer = world.afk(&["gate"]).ok();
     assert_eq!(answer["timed_out"], true, "{answer}");

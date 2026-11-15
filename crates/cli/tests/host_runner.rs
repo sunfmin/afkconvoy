@@ -1620,7 +1620,11 @@ fn a_running_fleet_uses_commands_and_codex_preferences_changed_after_it_started(
         loop {
             if world.orca()["terminals"].as_array().unwrap().iter().any(|terminal| {
                 terminal["command"].as_str().is_some_and(|line| {
-                    if !line.contains(&format!(" && {command} ")) {
+                    // A watch round an overloaded host calls for starts the
+                    // same harness command; it is no worker's terminal.
+                    if !line.contains(&format!(" && {command} "))
+                        || line.contains("/afkconvoy/watch/")
+                    {
                         return false;
                     }
                     assert!(line.contains(&format!("--model '{model}'")), "{line}");
