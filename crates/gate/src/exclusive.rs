@@ -653,12 +653,7 @@ const SETUP: [&str; 15] = [
 /// and waiting arrays each put cuts first, then follow ask time and request number. Repo lanes
 /// are separate from worker capacity and sorted by their whole identity.
 /// Each request's `command` is [`status_command`].
-pub fn snapshot<N: Clone>(
-    queue: &[Ticket<N>],
-    lanes: Lanes,
-    halt: Halt,
-    now: u64,
-) -> Snapshot<N> {
+pub fn snapshot<N: Clone>(queue: &[Ticket<N>], lanes: Lanes, halt: Halt, now: u64) -> Snapshot<N> {
     let ordered = in_order(queue.to_vec());
     let decisions = scheduling(&ordered, lanes, halt);
     let mut repos: Vec<String> = ordered.iter().filter_map(|t| t.repo_lane.clone()).collect();

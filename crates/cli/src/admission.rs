@@ -47,6 +47,8 @@ pub struct Readings {
     /// What afkconvoy's own processes use now; `None`: the host caps none
     /// of it, or the process table could not be read.
     own: Option<Own>,
+    /// The bytes the builds that may run at once take (`disk::reserve_of`).
+    reserve: Option<u64>,
     disks: Mutex<BTreeMap<u64, Option<Disk>>>,
 }
 
@@ -93,6 +95,10 @@ impl Readings {
             memory: crate::hot::memory(),
             queue_drain,
             own,
+            reserve: crate::disk::reserve_of(
+                &host_settings::of_host().unwrap_or_default(),
+                &crate::disk::listed(),
+            ),
             disks: Mutex::new(BTreeMap::new()),
         }
     }
@@ -104,7 +110,13 @@ impl Readings {
         let volume = std::fs::metadata(dir).map(|meta| meta.dev()).unwrap_or(0);
         let mut disks = self.disks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let disk = *disks.entry(volume).or_insert_with(|| disk(dir).ok());
-        Reading { cores: self.cores, load: self.load, memory_free: self.memory_free, disk }
+        Reading {
+            cores: self.cores,
+            load: self.load,
+            memory_free: self.memory_free,
+            disk,
+            reserve: self.reserve,
+        }
     }
 
     /// Hot-worker limits derived from this same host reading.
@@ -616,7 +628,7 @@ fn meminfo(said: &str) -> Option<u64> {
 }
 
 /// The disk of the volume `dir` is on, as `df -Pk` says it.
-fn disk(dir: &Path) -> Result<Disk> {
+pub(crate) fn disk(dir: &Path) -> Result<Disk> {
     let said = output("df", &["-Pk", &dir.display().to_string()])?;
     df(&said).with_context(|| format!("`df -Pk` said {said:?}"))
 }
@@ -652,7 +664,13 @@ mod tests {
         let admission = Admission {
             shares: SHARES,
             said: vec![],
-            reading: Reading { cores: 14, load: Some(10543), memory_free: Some(4), disk: None },
+            reading: Reading {
+                cores: 14,
+                load: Some(10543),
+                memory_free: Some(4),
+                disk: None,
+                reserve: None,
+            },
             total_load: Some(10543),
             queue_load: Some(0),
             span: SPAN,
@@ -679,7 +697,13 @@ mod tests {
 
     #[test]
     fn the_shares_are_those_the_host_settings_say_and_the_defaults_else() {
-        let reading = Reading { cores: 14, load: Some(5000), memory_free: Some(4), disk: None };
+        let reading = Reading {
+            cores: 14,
+            load: Some(5000),
+            memory_free: Some(4),
+            disk: None,
+            reserve: None,
+        };
         let unsaid = Admission::of(&host_settings::Settings::default(), reading);
         assert_eq!((unsaid.shares, unsaid.span), (SHARES, SPAN));
         assert!(unsaid.said.is_empty());
@@ -703,7 +727,13 @@ mod readings_tests {
     use afkconvoy_core::harness::window::Window as Said;
 
     fn at_ease() -> Admission {
-        let reading = Reading { cores: 14, load: Some(100), memory_free: Some(60), disk: None };
+        let reading = Reading {
+            cores: 14,
+            load: Some(100),
+            memory_free: Some(60),
+            disk: None,
+            reserve: None,
+        };
         Admission::of(&host_settings::Settings::default(), reading)
     }
 

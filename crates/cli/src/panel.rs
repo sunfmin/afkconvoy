@@ -294,9 +294,14 @@ impl Host {
     ) -> Host {
         let settings = host_settings::of_host().unwrap_or_default();
         let (exclusive, watch) = match shared {
-            Ok(Some(shared)) => {
-                (Ok(Some((shared.exclusive, shared.exclusive_paused))), shared.watch)
-            }
+            Ok(Some(shared)) => (
+                Ok(Some((
+                    shared.exclusive,
+                    shared.exclusive_paused,
+                    shared.disk.and_then(|seen| seen.low()),
+                ))),
+                shared.watch,
+            ),
             Ok(None) => (Ok(None), None),
             Err(error) => (Err(error), None),
         };
@@ -1218,11 +1223,19 @@ fn exclusive(out: &mut String, host: &Host) {
     );
     match said {
         None => out.push_str("<p>No host runner holds the queue.</p>"),
-        Some((_, None)) => {
+        Some((_, None, _)) => {
             out.push_str("<p>The host runner does not say whether it paused new grants.</p>")
         }
-        Some((_, Some(true))) => out.push_str("<p>The host runner has paused new grants.</p>"),
-        Some((_, Some(false))) => {}
+        Some((_, Some(true), _)) => out.push_str("<p>The host runner has paused new grants.</p>"),
+        Some((_, Some(false), _)) => {}
+    }
+    if let Some(low) = observation.disk {
+        let _ = write!(
+            out,
+            "<p>The disk has {} free, under its floor of {}: no new command is granted until space returns.</p>",
+            crate::measure::said(low.free),
+            crate::measure::said(low.floor)
+        );
     }
     // The worker lane, as `lane` names a ticket of no repo lane, and the
     // fast lane, each shown where a request is in it.
@@ -1802,6 +1815,7 @@ mod tests {
             load: Some(150),
             memory_free: Some(40),
             disk: Some(Disk { free: 5 << 30, size: 100 << 30 }),
+            reserve: None,
         };
         Host {
             name: "h1".into(),
@@ -1821,7 +1835,7 @@ mod tests {
                 memory: None,
                 landing: None,
             }),
-            exclusive: Ok(Some((vec![], Some(false)))),
+            exclusive: Ok(Some((vec![], Some(false), None))),
             lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
             kit: Ok(Kit::default()),
             worker_health: Ok(crate::health::Health::default()),
@@ -1958,6 +1972,7 @@ mod tests {
                 ticket(2, None, None),
                 ticket(3, Some("/a/.git"), Some(960)),
             ],
+            None,
             None,
         ));
         let mut host = host_of(1000);

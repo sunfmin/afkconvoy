@@ -15,6 +15,8 @@
 
 use serde::Serialize;
 
+use crate::disk::share_of;
+
 /// The shares of the host past which admission holds, each in percent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Shares {
@@ -46,6 +48,11 @@ pub struct Reading {
     pub memory_free: Option<u64>,
     /// The disk of the checkout's volume.
     pub disk: Option<Disk>,
+    /// The bytes the builds that may run at once on the host take, by
+    /// measurement (`disk::reserve`): the disk is held to it where it is more
+    /// than its share (`disk::floor`). `None`: none was measured, or the host
+    /// said its own disk share, which then stands alone.
+    pub reserve: Option<u64>,
 }
 
 /// A volume's free space and size, in bytes.
@@ -73,13 +80,10 @@ pub fn thresholds(shares: Shares, reading: &Reading) -> Thresholds {
         // Cores times a share in percent is the load in hundredths.
         load: reading.cores.saturating_mul(shares.load),
         memory_free: shares.memory,
-        disk_free: reading.disk.map(|disk| share_of(disk.size, shares.disk)),
+        disk_free: reading
+            .disk
+            .map(|disk| crate::disk::floor(disk.size, shares.disk, reading.reserve)),
     }
-}
-
-/// `percent` of `bytes`: divided first, for the product may not fit.
-fn share_of(bytes: u64, percent: u64) -> u64 {
-    (bytes / 100).saturating_mul(percent)
 }
 
 /// One threshold the host is past, with what was read of it.
@@ -359,6 +363,7 @@ mod tests {
             load: Some(100),
             memory_free: Some(60),
             disk: Some(Disk { free: 500 * GIB, size: 1000 * GIB }),
+            reserve: None,
         }
     }
 
@@ -392,6 +397,14 @@ mod tests {
     }
 
     #[test]
+    fn the_disk_is_held_to_what_its_builds_take_where_that_is_more_than_its_share() {
+        let builds = Reading { reserve: Some(60 * GIB), ..idle() };
+        assert_eq!(thresholds(SHARES, &builds).disk_free, Some(60 * GIB));
+        let filling = Reading { disk: Some(Disk { free: 59 * GIB, size: 1000 * GIB }), ..builds };
+        assert_eq!(holds(SHARES, &filling), [Hold::Disk { free: 59 * GIB, floor: 60 * GIB }]);
+    }
+
+    #[test]
     fn disk_holds_only_once_under_its_floor() {
         let floor = 1000 * GIB / 100;
         let at = Reading { disk: Some(Disk { free: floor, size: 1000 * GIB }), ..idle() };
@@ -407,6 +420,7 @@ mod tests {
             load: Some(9000),
             memory_free: Some(3),
             disk: Some(Disk { free: GIB, size: 1000 * GIB }),
+            reserve: None,
         };
         let by: Vec<&str> = holds(SHARES, &busy)
             .iter()
@@ -422,7 +436,7 @@ mod tests {
 
     #[test]
     fn what_was_not_read_holds_nothing_back() {
-        let unread = Reading { cores: 1, load: None, memory_free: None, disk: None };
+        let unread = Reading { cores: 1, load: None, memory_free: None, disk: None, reserve: None };
         assert_eq!(holds(Shares { load: 0, memory: 100, disk: 100 }, &unread), []);
     }
 

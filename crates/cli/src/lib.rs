@@ -48,6 +48,7 @@ pub mod copies;
 pub mod cut;
 pub mod daybook;
 mod delivery;
+pub mod disk;
 pub mod dispatch;
 pub mod distill;
 pub mod doctor;

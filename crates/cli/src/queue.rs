@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use afkconvoy_core::exclusive::{Lanes, Snapshot, Ticket, snapshot};
+use afkconvoy_core::exclusive::{Halt, Lanes, Low, Snapshot, Ticket, snapshot};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -21,6 +21,10 @@ pub const WITHIN: Duration = Duration::from_secs(10);
 struct Answer {
     exclusive: Vec<Ticket>,
     exclusive_paused: Option<bool>,
+    /// What it last saw of the disk; `None` from an older runner, which
+    /// holds nothing for it.
+    #[serde(default)]
+    disk: Option<crate::disk::Seen>,
     host_runner: Identity,
 }
 
@@ -63,7 +67,14 @@ fn observe(fixed_now: Option<u64>) -> Result<Value> {
             let mut runner = answer.host_runner.rest;
             runner.insert("pid".into(), json!(answer.host_runner.pid));
             runner.insert("version".into(), json!(answer.host_runner.version));
-            (Value::Object(runner), Some((answer.exclusive, answer.exclusive_paused)))
+            (
+                Value::Object(runner),
+                Some((
+                    answer.exclusive,
+                    answer.exclusive_paused,
+                    answer.disk.and_then(|seen| seen.low()),
+                )),
+            )
         }
         None => (Value::Null, None),
     };
@@ -73,26 +84,29 @@ fn observe(fixed_now: Option<u64>) -> Result<Value> {
 }
 
 /// What a host runner says of its exclusive queue: its tickets and whether
-/// it paused new grants, the pause `None` where an older one does not say.
+/// it paused new grants, the pause `None` where an older one does not say;
+/// and the disk under its floor, where it grants nothing new for it (`disk`).
 /// `None` whole where no host runner listens.
-pub type Said = Option<(Vec<Ticket>, Option<bool>)>;
+pub type Said = Option<(Vec<Ticket>, Option<bool>, Option<Low>)>;
 
 /// The one observation of the exclusive queue that `queue`, doctor and the
 /// panel show, of what the host runner `said`.
 pub fn snapshot_of(said: &Said, lanes: Lanes, now: u64) -> Snapshot {
     // An older runner that does not say its pause has none to apply.
-    let (tickets, paused) = match said {
-        Some((tickets, paused)) => (tickets.as_slice(), paused.unwrap_or(false)),
-        None => (&[][..], false),
+    let (tickets, halt) = match said {
+        Some((tickets, paused, disk)) => {
+            (tickets.as_slice(), Halt { paused: paused.unwrap_or(false), disk: *disk })
+        }
+        None => (&[][..], Halt::default()),
     };
-    snapshot(tickets, lanes, paused, now)
+    snapshot(tickets, lanes, halt, now)
 }
 
 /// `snapshot_of` as `queue` and doctor answer it. A pause the runner did not
 /// say stays null.
 pub(crate) fn observation(said: Said, lanes: Lanes, now: u64) -> Value {
     let (status, paused) = match &said {
-        Some((_, paused)) => ("available", *paused),
+        Some((_, paused, _)) => ("available", *paused),
         None => ("no_runner", Some(false)),
     };
     let mut answer = observation_json(&snapshot_of(&said, lanes, now));

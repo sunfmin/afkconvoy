@@ -188,6 +188,7 @@ kinds! {
     NotMoved: Warning, "the host runner did not move onto";
     NotUpgraded: Warning, "is published, newer than the host runner's";
     RunnerBusy: Warning, "the host runner's own process uses";
+    DiskFilling: Warning, "the disk the host builds on has";
     PathStale: Warning, "is first on PATH";
     RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
@@ -264,6 +265,7 @@ impl Kind {
                 | Kind::NotMoved
                 | Kind::NotUpgraded
                 | Kind::RunnerBusy
+                | Kind::DiskFilling
                 | Kind::PathStale
                 | Kind::OtherAccount
                 | Kind::RepoUnworked
@@ -2651,9 +2653,15 @@ fn host_once(
     elsewhere: Option<&afkconvoy_core::resources::Elsewhere>,
 ) -> Map<String, Value> {
     let (exclusive, installed, watch) = match host_runner::shared() {
-        Ok(Some(said)) => {
-            (Ok(Some((said.exclusive, said.exclusive_paused))), said.installed, said.watch)
-        }
+        Ok(Some(said)) => (
+            Ok(Some((
+                said.exclusive,
+                said.exclusive_paused,
+                said.disk.and_then(|seen| seen.low()),
+            ))),
+            said.installed,
+            said.watch,
+        ),
         Ok(None) => (Ok(None), None, None),
         Err(error) => (Err(error), None, None),
     };

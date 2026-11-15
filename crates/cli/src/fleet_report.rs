@@ -290,6 +290,7 @@ mod tests {
             load: Some(load),
             memory_free: Some(50),
             disk: Some(Disk { free: 1 << 40, size: 1 << 41 }),
+            reserve: None,
         };
         Admission {
             shares: SHARES,

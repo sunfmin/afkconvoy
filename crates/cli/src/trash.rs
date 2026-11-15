@@ -43,10 +43,27 @@ pub fn discard(path: &Path) -> Result<PathBuf> {
 /// nothing deletes yet: the caller deletes it (`delete_detached`) or puts it
 /// back (`put_back`).
 pub fn set_aside(path: &Path) -> Result<PathBuf> {
-    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+    let Some(parent) = path.parent() else {
         bail!("{} has no directory to be set aside in", path.display());
     };
-    let trash = parent.join(TRASH_DIR);
+    set_aside_in(path, parent)
+}
+
+/// Moves `path` into the trash in `dir`, which must be on its filesystem, and
+/// has a detached child delete it there → the entry it was moved to: a
+/// worktree's `target/` goes to a trash beside the worktree, never into
+/// it, where git would see it.
+pub fn discard_in(path: &Path, dir: &Path) -> Result<PathBuf> {
+    let entry = set_aside_in(path, dir)?;
+    delete_detached(&entry);
+    Ok(entry)
+}
+
+fn set_aside_in(path: &Path, dir: &Path) -> Result<PathBuf> {
+    let Some(name) = path.file_name() else {
+        bail!("{} has no name to be set aside by", path.display());
+    };
+    let trash = dir.join(TRASH_DIR);
     std::fs::create_dir_all(&trash)
         .with_context(|| format!("cannot make the trash {}", trash.display()))?;
     remember(&trash);

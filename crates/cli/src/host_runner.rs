@@ -187,6 +187,7 @@ impl Shared {
             watch: self.watch.running(),
             own_cpu: self.own_cpu.average(),
             queue_share: self.queue_share.share(),
+            disk: self.queue.disk(),
         })
     }
 
@@ -238,6 +239,11 @@ pub struct SharedNow {
     /// or an older host runner did not say.
     #[serde(default)]
     pub queue_share: Option<u64>,
+    /// What the host runner last saw of the disk its checkouts build on
+    /// (`disk::Keeper`): under its floor, the queue grants nothing new.
+    /// `None`: nothing yet, or an older host runner.
+    #[serde(default)]
+    pub disk: Option<crate::disk::Seen>,
 }
 
 /// The afkconvoy installed where the host runner was started from, once that
@@ -301,7 +307,16 @@ pub fn findings() -> Vec<Finding> {
     let Some(shared) = shared().ok().flatten() else { return vec![] };
     let moved = shared.installed.as_ref().and_then(not_moved);
     let busy = shared.own_cpu.filter(crate::own_cpu::Average::over_budget).map(over_budget);
-    moved.into_iter().chain(shared.published.as_ref().map(not_upgraded)).chain(busy).collect()
+    let disk = shared
+        .disk
+        .as_ref()
+        .and_then(|seen| crate::disk::finding_of(seen, &crate::disk::listed(), crate::clock()));
+    moved
+        .into_iter()
+        .chain(shared.published.as_ref().map(not_upgraded))
+        .chain(busy)
+        .chain(disk)
+        .collect()
 }
 
 /// The finding of the host runner's own process averaging more of a core
@@ -1015,6 +1030,8 @@ fn held_host(
     let still_ours = || std::fs::metadata(&lock_file).is_ok_and(|now| identity(&now) == ours);
     let mut left = None;
     let mut queue_noted = Instant::now();
+    let mut keeper = crate::disk::Keeper::default();
+    let mut disk_looked: Option<Instant> = None;
     while !stop.told() && left.is_none() {
         std::thread::sleep(WATCHED_EVERY);
         runner.shared.own_cpu.note();
@@ -1023,6 +1040,10 @@ fn held_host(
             if let Ok((queue, _)) = runner.shared.queue.observation() {
                 runner.shared.queue_share.note(&queue);
             }
+        }
+        if disk_looked.is_none_or(|looked| looked.elapsed() >= crate::disk::LOOK_EVERY) {
+            disk_looked = Some(Instant::now());
+            runner.look_at_disk(&mut keeper);
         }
         if !stop.told() && !still_ours() {
             runner.log.say(
@@ -1326,6 +1347,52 @@ fn handed_over(path: &Path, lock: File) -> Result<Value> {
 impl Runner {
     fn holding(&self) -> MutexGuard<'_, BTreeMap<PathBuf, Held>> {
         self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Looks at the disk the checkouts on its list build on (`disk::Keeper`):
+    /// under its floor, reclaims the `target/` no one builds in first, then
+    /// tells the queue whether it still holds. Each reclaim, and each hold's
+    /// start and end, is a line of its log.
+    fn look_at_disk(&self, keeper: &mut crate::disk::Keeper) {
+        let checkouts: Vec<PathBuf> = self
+            .list
+            .read()
+            .map(|listed| listed.checkouts.into_iter().map(|entry| entry.checkout).collect())
+            .unwrap_or_default();
+        let queue = self.shared.queue.observation().map(|(queue, _)| queue).unwrap_or_default();
+        let before = self.shared.queue.disk().is_some_and(|seen| seen.held);
+        let now = crate::clock();
+        let seen = keeper.look(&checkouts, &queue, now);
+        if let Some(seen) = &seen {
+            let said = crate::measure::said;
+            for done in seen.reclaimed.iter().filter(|done| done.at == now) {
+                self.log.say(&format!(
+                    "disk: reclaimed the target/ of {} ({:?}), {} free under a floor of {}",
+                    done.worktree.display(),
+                    done.why,
+                    said(seen.free),
+                    said(seen.floor)
+                ));
+            }
+            if seen.held != before {
+                self.log.say(&if seen.held {
+                    format!(
+                        "disk: {} free under {}, under its floor of {}: the queue grants no new \
+                         heavy command until space returns",
+                        said(seen.free),
+                        seen.dir.display(),
+                        said(seen.floor)
+                    )
+                } else {
+                    format!(
+                        "disk: {} free, back over its floor of {}",
+                        said(seen.free),
+                        said(seen.floor)
+                    )
+                });
+            }
+        }
+        self.shared.queue.saw_disk(seen);
     }
 
     /// Whether it moves onto a newer afkconvoy: each fleet instance was told

@@ -368,6 +368,9 @@ struct Hosted {
     /// How long each command ran, by what it is called (`Ran::key`), its
     /// last `RAN_KEPT` runs: what admission estimates the queue's drain by.
     ran: Mutex<Ran>,
+    /// What the host runner last saw of the disk its checkouts build on
+    /// (`disk::Keeper`): under its floor, it grants nothing new.
+    disk: Mutex<Option<crate::disk::Seen>>,
 }
 
 /// How many runs of one command the queue keeps the seconds of.
@@ -447,6 +450,14 @@ impl Host<Note> for Hosted {
         crate::slots::repo_available(ticket).unwrap_or(false)
     }
 
+    fn disk(&self) -> Option<afkconvoy_core::exclusive::Low> {
+        self.disk
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|seen| seen.low())
+    }
+
     fn leaving(&self, ticket: &Ticket) -> bool {
         if !ticket.candidate {
             return true;
@@ -469,7 +480,12 @@ impl Host<Note> for Hosted {
 
 impl Queue {
     pub(crate) fn with_leases(leases: bool) -> Self {
-        let hosted = Hosted { leases, validations: Mutex::default(), ran: Mutex::default() };
+        let hosted = Hosted {
+            leases,
+            validations: Mutex::default(),
+            ran: Mutex::default(),
+            disk: Mutex::default(),
+        };
         Self { holder: Holder::new(hosted) }
     }
 
@@ -499,6 +515,17 @@ impl Queue {
     /// the host runner could move onto it.
     pub fn resume(&self) {
         self.holder.resume();
+    }
+
+    /// Notes what the host runner saw of the disk (`disk::Keeper`): the next
+    /// grant is judged by it.
+    pub fn saw_disk(&self, seen: Option<crate::disk::Seen>) {
+        *self.holder.host().disk.lock().unwrap_or_else(PoisonError::into_inner) = seen;
+    }
+
+    /// What the host runner last saw of the disk; `None`: nothing yet.
+    pub fn disk(&self) -> Option<crate::disk::Seen> {
+        self.holder.host().disk.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// How long the commands it ran took (`Ran`).
