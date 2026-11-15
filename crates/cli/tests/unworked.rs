@@ -242,3 +242,29 @@ fn runner_opens_one_report_starts_its_watch_and_closes_on_a_live_heartbeat() {
         "{tracker}"
     );
 }
+
+#[test]
+fn a_look_with_rest_core_spent_says_one_quota_finding_with_its_reset_and_no_repo_unread() {
+    let (world, _remote, _now) = setup();
+    let reset = 4_000_000_123u64;
+    let spent = |gh: &mut Value| {
+        gh["quota"] = json!({"resources": {
+            "core": {"remaining": 0, "reset": reset, "limit": 5000},
+            "graphql": {"remaining": 5000, "reset": reset}
+        }});
+        gh["quota_fail"] = json!({"core": "gh: API rate limit exceeded"});
+    };
+    world.with_gh(spent);
+    world.with_tracker(spent);
+    let answer = world.afk(&["doctor", "--all"]).json;
+    let findings = answer["findings"].as_array().unwrap_or_else(|| panic!("{answer}"));
+    let quota: Vec<&Value> = findings.iter().filter(|f| f["kind"] == "github_quota").collect();
+    assert_eq!(quota.len(), 1, "{answer}");
+    assert!(quota[0]["what"].as_str().unwrap().contains(&reset.to_string()), "{answer}");
+    assert!(
+        findings.iter().all(|f| f["kind"] != "repo_unreadable" && f["kind"] != "repo_unworked"),
+        "{answer}"
+    );
+    assert_eq!(answer["host"]["unworked_repos"], json!([]), "{answer}");
+    assert_eq!(answer["host"]["github_quota"]["reset"], reset, "{answer}");
+}

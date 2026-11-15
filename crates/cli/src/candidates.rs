@@ -1397,7 +1397,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         if next == Next::Ended {
             return Ok(cancelled(result, c, &chain));
         }
-        let locks = crate::lock::standing_locks(&gh, config)?;
+        // Asked again at each wait: one read for the host's waiting turns.
+        let locks = crate::lock::waited_locks(&gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
             invalidate(repo, config, &id, "fleet_lock")?;
             return Ok(crate::turn::locked(result, &locks));

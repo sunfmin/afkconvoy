@@ -170,6 +170,7 @@ kinds! {
     PublicTracker: Critical, "is public: its fleet instance works nothing";
     RepoUnworked: Warning, "no fleet has taken";
     RepoUnreadable: Warning, "remote could not be read";
+    GithubQuota: Warning, "GitHub quota is spent";
     StepFailed: Critical, "failed in each of the last";
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
@@ -265,6 +266,7 @@ impl Kind {
                 | Kind::OtherAccount
                 | Kind::RepoUnworked
                 | Kind::RepoUnreadable
+                | Kind::GithubQuota
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
         )
@@ -285,6 +287,7 @@ impl Kind {
                 | Kind::PathStale
                 | Kind::NotUpgraded
                 | Kind::LandingContention
+                | Kind::GithubQuota
         )
     }
 }
@@ -2752,16 +2755,19 @@ pub fn all_since_rounds(
         watch.insert("events".to_string(), Value::Array(watch_events));
     }
     of_host.extend(overdue_findings(&paces, now));
-    let unworked = match crate::unworked::read(now) {
-        Ok(read) => read,
-        Err(error) => crate::error_json(&error),
-    };
+    // A spent quota is one finding of the host's, not one per repo it
+    // could not read (sunfmin/control#1111).
+    let (unworked, quota) = crate::unworked::read_unless_spent(now);
     once.insert("unworked_repos".into(), unworked);
     of_host.extend(crate::unworked::findings(
         &once["unworked_repos"],
         host.unwrap_or(&crate::this_host()),
         now,
     ));
+    if let Some(quota) = quota {
+        of_host.push(crate::unworked::quota_finding(&quota));
+        once.insert("github_quota".into(), quota);
+    }
     // Said once, named for the first checkout on the list: the lines are
     // equal while they are gathered, and each runs from any directory.
     if let Some(checkout) = listed.first() {
