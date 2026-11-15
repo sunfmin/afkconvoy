@@ -7,6 +7,12 @@
 //! the gate crate's plain gate runner (`afkconvoy_gate::run`). It asks its
 //! program's forge what it must (`Forge`).
 //!
+//! A run that asks while another run's round runs its whole gate stacks on
+//! that round's root (sunfmin/control#1140): it pairs its changes, fast-gates
+//! their root merged onto that root-onto-tip commit, and waits. That round
+//! landed, its own lands with only its slow gate run; ended otherwise, its
+//! changes pair again in a round of their own.
+//!
 //! What afkconvoy's own runner adds is not here: lanes of a host's
 //! exclusive queue, a gate's processes owned, frozen and confirmed gone
 //! across turns and hosts, a candidate adopted by a later turn, a base tip
@@ -27,7 +33,7 @@ use crate::chain::{
     Barrier, Candidate, Chain, Decision, Evidence, Observed, Phase, Process, Reused, Status,
 };
 use crate::forge::{Change, Forge, source_ref};
-use crate::pairing::{self, Asks, Built, Left, RoundNext};
+use crate::pairing::{self, Asks, Built, Left, Merged, RoundNext};
 use crate::turn::{self, Declared};
 
 /// How many of a run's last lines its evidence keeps.
@@ -73,9 +79,13 @@ pub type Assigned<R> = Result<String, Outcome<R>>;
 pub type Told<E> = Vec<(u64, Result<(), E>)>;
 /// What became of each change, by its number.
 pub type Outcomes<R> = Vec<(u64, Outcome<R>)>;
-/// What became of each change one round decided, and the changes that left
-/// it for the next.
-type Rounded<R> = (Outcomes<R>, Vec<Change>);
+/// What became of each change one round decided, the changes that left it
+/// for the next, and whether the round was a stacked one discarded, which
+/// decided nothing of them.
+type Rounded<R> = (Outcomes<R>, Vec<Change>, bool);
+
+/// How long a stacked round waits between reads of the round it stands on.
+const STACKED_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A change's place in a round: the change as its forge has it, the place's
 /// id, and the head it asks to land.
@@ -624,7 +634,9 @@ where
     /// level at once; the root merged onto the target's tip, one candidate
     /// per change, and gated whole once at the last; green, the round lands
     /// as one fast-forward. A change that left the round for the next is
-    /// taken into the next, while each round decides one change or more.
+    /// taken into the next, while each round decides one change or more, or
+    /// was a stacked round discarded as the round it stood on ended
+    /// otherwise than landed.
     pub fn land(&self, changes: &[Change]) -> Result<Outcomes<F::Refusal>, Error<F::Error>> {
         let Some(target) = changes.first().map(|c| c.target.clone()) else {
             return Ok(vec![]);
@@ -635,10 +647,11 @@ where
         let mut asking: Vec<Change> = changes.to_vec();
         while !asking.is_empty() {
             let before = asking.len();
-            let (decided, next) = self.land_round(&target, &asking, changes, &mut refused)?;
+            let (decided, next, again) =
+                self.land_round(&target, &asking, changes, &mut refused)?;
             outcomes.extend(decided);
             asking = next;
-            if asking.len() >= before {
+            if asking.len() >= before && !again {
                 break;
             }
         }
@@ -660,17 +673,23 @@ where
     ) -> Result<Rounded<F::Refusal>, Error<F::Error>> {
         let mut outcomes: Outcomes<F::Refusal> = vec![];
         let places = self.places(asking, &mut outcomes)?;
-        let Some(first) = places.first() else { return Ok((outcomes, vec![])) };
+        let Some(first) = places.first() else { return Ok((outcomes, vec![], false)) };
         let round = format!("round-{}-{}", (self.now)(), first.change.number);
         let ids: Vec<String> = places.iter().map(|p| p.id.clone()).collect();
         if !self.open(target, &places, &round)? {
             // Another round is open, or a barrier holds the chain: nothing ran.
             self.change(target, |chain| chain.pending.retain(|b| !ids.contains(&b.id)))?;
             outcomes.extend(places.iter().map(|p| (p.change.number, Outcome::Waiting)));
-            return Ok((outcomes, vec![]));
+            return Ok((outcomes, vec![], false));
         }
         while self.step(target, &round, &places, changes, refused, &mut outcomes)? {}
         let chain = self.change(target, |_| {})?;
+        let held = chain.rounds().any(|r| r.id == round);
+        if !held && chain.pending.iter().any(|b| ids.contains(&b.id)) {
+            // A stacked round discarded: its changes pair in the next round.
+            self.change(target, |chain| chain.pending.retain(|b| !ids.contains(&b.id)))?;
+            return Ok((outcomes, places.into_iter().map(|p| p.change).collect(), true));
+        }
         let mut next = vec![];
         for place in &places {
             match self.decided(&chain, place, refused)? {
@@ -680,7 +699,7 @@ where
         }
         let chain = self.change(target, |chain| chain.leave_round(|a| ids.contains(&a.id)))?;
         self.remove_ended(&chain);
-        Ok((outcomes, next))
+        Ok((outcomes, next, false))
     }
 
     /// The places `asking` takes in a round, each change as its forge has
@@ -713,8 +732,8 @@ where
         Ok(places)
     }
 
-    /// Takes `places` pending and opens the round `round` of them →
-    /// whether it opened.
+    /// Takes `places` pending and opens the round `round` of them, or
+    /// stacks it on the round whose whole gate runs → whether it did.
     fn open(&self, target: &str, places: &[Place], round: &str) -> Result<bool, String> {
         let mut opened = false;
         self.change(target, |chain| {
@@ -738,8 +757,10 @@ where
     }
 
     /// Takes the round `round` one step on: pairs a level, gates a level's
-    /// pairs, assigns a candidate of its root, gates the root whole, or
-    /// lands it → whether there is more to do.
+    /// pairs, makes a stacked round's stacked merge, assigns a candidate of
+    /// its root, gates the root whole, or lands it → whether there is more
+    /// to do. A stacked round with nothing to do waits for the round it
+    /// stands on, unless that round's candidate is wedged.
     fn step(
         &self,
         target: &str,
@@ -751,19 +772,21 @@ where
     ) -> Result<bool, Error<F::Error>> {
         let read = self.read(target)?;
         let chain = &read.chain;
-        let Some(open) = chain.round.as_ref().filter(|r| r.id == round) else { return Ok(false) };
-        if let Some(level) = chain.to_pair() {
+        let Some(open) = chain.rounds().find(|r| r.id == round) else { return Ok(false) };
+        if let Some(level) = chain.to_pair().filter(|(id, ..)| id == round) {
             self.pair(target, level)?;
             return Ok(true);
         }
         let mut gates: Vec<String> = vec![];
         let mut assign: Option<(String, u64)> = None;
+        let mut stack = false;
         for ask in &open.asked {
             match chain.round_next(&ask.id) {
                 Some(RoundNext::Gate(pair)) => gates.push(pair),
                 Some(RoundNext::Assign) if assign.is_none() => {
                     assign = Some((ask.id.clone(), ask.asks.change));
                 }
+                Some(RoundNext::Stack) => stack = true,
                 _ => {}
             }
         }
@@ -771,8 +794,20 @@ where
             self.gate_pairs(target, &gates)?;
             return Ok(true);
         }
+        if stack {
+            self.stack_root(target)?;
+            return Ok(true);
+        }
         if let Some((ask, number)) = assign {
             self.assign_root(target, (&ask, number), places, outcomes)?;
+            return Ok(true);
+        }
+        if let Some(on) = &open.on {
+            let stood = chain.candidates.iter().find(|c| c.id == on.candidate);
+            if stood.is_some_and(|c| c.wedged((self.now)())) {
+                return Ok(false);
+            }
+            std::thread::sleep(STACKED_WAIT);
             return Ok(true);
         }
         if let Some(tip) = chain.whole_tip() {
@@ -830,7 +865,7 @@ where
         place: &Place,
         refused: &Refusals,
     ) -> Result<Option<Outcome<F::Refusal>>, Error<F::Error>> {
-        let asked = chain.round.iter().flat_map(|r| &r.asked).find(|a| a.id == place.id);
+        let asked = chain.rounds().flat_map(|r| &r.asked).find(|a| a.id == place.id);
         let Some(ask) = asked else { return Ok(Some(Outcome::Waiting)) };
         let outcome = match (&ask.left, &ask.candidate) {
             (Some(Left::Red(pair)), _) => {
@@ -905,6 +940,48 @@ where
         let now = (self.now)();
         self.change(target, |chain| {
             chain.pair_level((&round, level), built.clone(), note, worktree, now);
+        })?;
+        Ok(())
+    }
+
+    /// Makes the stacked round's stacked merge, as `Chain::to_stack` names
+    /// it: its root's heads merged one after another, in the order they
+    /// asked, onto the commit it stands on, each a merge commit as its
+    /// candidate of the root will be, so the last has the tree its root's
+    /// last candidate will have on that commit as the tip. A conflict makes
+    /// none.
+    fn stack_root(&self, target: &str) -> Result<(), String> {
+        let Some((round, on, heads)) = self.read(target)?.chain.to_stack() else { return Ok(()) };
+        let mut merged = Some((on.clone(), String::new()));
+        for head in &heads {
+            let Some((at, _)) = merged.take() else { break };
+            let Some(tree) = merged_tree(self.dir(), &at, &head.head)? else { break };
+            let message = format!("Stack !{} onto {}", head.change, on.get(..12).unwrap_or(&on));
+            let commit = git(
+                self.dir(),
+                &["commit-tree", &tree, "-p", &at, "-p", &head.head, "-m", &message],
+            )?;
+            merged = Some((commit, tree));
+        }
+        let made = match merged {
+            Some((commit, tree)) => {
+                let own = (self.declared)(self.dir(), &commit)?.own();
+                Some(Merged { commit, tree, command: own.command, seconds: own.seconds })
+            }
+            None => None,
+        };
+        let note = |number: u64| {
+            self.forge.note(&Change {
+                number,
+                source: String::new(),
+                target: target.to_string(),
+                title: String::new(),
+            })
+        };
+        let worktree = |id: &str| self.worktrees.join(id).to_string_lossy().into_owned();
+        let now = (self.now)();
+        self.change(target, |chain| {
+            chain.stack_merge(&round, made.clone(), note, worktree, now);
         })?;
         Ok(())
     }

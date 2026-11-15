@@ -5,7 +5,9 @@
 //! at once, the root merged onto the target tip and gated whole once, the
 //! target fast-forwarded through one candidate per change in order, and the
 //! forge told each landed. A red pair sends its later-asked change back
-//! while the rest lands; a red root lands nothing and is not bisected.
+//! while the rest lands; a red root lands nothing and is not bisected. A
+//! change asked while another run's round runs its whole gate stacks on
+//! that round's root.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -72,8 +74,9 @@ const DECLARED: &str = "# The repo's gate\n\n```yaml gates\nfast:\n  command: ./
 /// commit — whose slow gate is red on a tree that holds `breaks` — or any
 /// file named `breaks…` — and whose fast gate is red on one that holds both
 /// `red-x` and `red-y`, and notes in `order` when each fast run starts and
-/// ends, a second apart, where `concurrent` is there; committed and pushed
-/// to a bare remote beside it.
+/// ends, a second apart, where `concurrent` is there; whose slow gate, where
+/// `hold` is there, says so in `slowing` and runs on only once `release` is;
+/// committed and pushed to a bare remote beside it.
 fn scratch(root: &Path) -> (PathBuf, PathBuf) {
     let remote = root.join("remote.git");
     let work = root.join("work");
@@ -87,7 +90,7 @@ fn scratch(root: &Path) -> (PathBuf, PathBuf) {
     std::fs::write(work.join("gate.md"), DECLARED).unwrap();
     // Each run also notes how many worktrees the checkout lists as it runs.
     let script = format!(
-        "#!/bin/sh\necho \"$1 $(git rev-parse HEAD)\" >> {ran}\necho \"$1 $(git worktree list --porcelain | grep -c '^worktree ')\" >> {listed}\nif [ \"$1\" = fast ] && [ -e {root}/concurrent ]; then echo start >> {root}/order; sleep 1; echo end >> {root}/order; fi\nif [ \"$1\" = fast ] && [ -e red-x ] && [ -e red-y ]; then echo FAIL; exit 1; fi\nif [ \"$1\" = slow ] && ls | grep -q '^breaks'; then echo FAIL; exit 1; fi\necho ok\n",
+        "#!/bin/sh\necho \"$1 $(git rev-parse HEAD)\" >> {ran}\necho \"$1 $(git worktree list --porcelain | grep -c '^worktree ')\" >> {listed}\nif [ \"$1\" = fast ] && [ -e {root}/concurrent ]; then echo start >> {root}/order; sleep 1; echo end >> {root}/order; fi\nif [ \"$1\" = fast ] && [ -e red-x ] && [ -e red-y ]; then echo FAIL; exit 1; fi\nif [ \"$1\" = slow ] && [ -e {root}/hold ]; then touch {root}/slowing; while [ ! -e {root}/release ]; do sleep 0.1; done; fi\nif [ \"$1\" = slow ] && ls | grep -q '^breaks'; then echo FAIL; exit 1; fi\necho ok\n",
         ran = ran.display(),
         listed = root.join("listed").display(),
         root = root.display(),
@@ -903,4 +906,144 @@ fn a_publication_whose_push_is_refused_is_unpublished_with_git_s_error_and_lands
     assert_eq!(git(&work, &["rev-parse", "origin/main"]), tip.commit);
     let told: Vec<u64> = forge.landed.borrow().iter().map(|(n, _)| *n).collect();
     assert_eq!(told, [1, 2]);
+}
+
+/// Another checkout of the scratch repo's remote, as another program's
+/// process landing on it has.
+fn another_checkout(root: &Path, name: &str) -> PathBuf {
+    let remote = root.join("remote.git");
+    let work = root.join(name);
+    git(root, &["clone", "--quiet", remote.to_str().unwrap(), work.to_str().unwrap()]);
+    for (key, value) in [("user.name", "someone"), ("user.email", "someone@example.com")] {
+        git(&work, &["config", key, value]);
+    }
+    work
+}
+
+/// The chain of `main` as the remote holds it, read on the remote itself.
+fn on_remote(root: &Path) -> Chain {
+    let name = turn::record_ref(Layout::Hidden, "main");
+    let text = git(&root.join("remote.git"), &["show", "-s", "--format=%B", &name]);
+    serde_json::from_str(&text).unwrap()
+}
+
+/// Waits until `done`, at most a minute.
+fn wait_for(what: &str, done: impl Fn() -> bool) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !done() {
+        assert!(std::time::Instant::now() < until, "waited a minute for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// The stacked merge of the chain `main` has, once its fast gate decided it.
+fn stacked_merge(chain: &Chain) -> Option<Candidate> {
+    let merges = chain.candidates.iter().filter(|c| c.pair.as_ref().is_some_and(|p| p.stacked));
+    merges.into_iter().find(|c| c.phase != Phase::Building && c.phase != Phase::Validating).cloned()
+}
+
+/// Lands `first` in one run whose round's slow gate holds, and, once it
+/// runs, `second` in another run, from a checkout of its own; lets the slow
+/// gate go once the second run's stacked merge is gated → what became of
+/// each, and the second run's stacked merge.
+fn stacked_on(
+    root: &Path,
+    work: &Path,
+    (first, second): (Change, Change),
+) -> (
+    Vec<(u64, Outcome<String>)>,
+    Vec<(u64, Outcome<String>)>,
+    Candidate,
+    Vec<(u64, Option<Evidence>)>,
+) {
+    std::fs::write(root.join("hold"), "").unwrap();
+    let other = another_checkout(root, "other");
+    let worktrees = root.join("candidates");
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| {
+            let forge = Fake::default();
+            lander(work, &worktrees, &forge).land(&[first]).unwrap()
+        });
+        wait_for("the round's slow gate", || root.join("slowing").exists());
+        let stacking = scope.spawn(|| {
+            let forge = Fake::default();
+            let outcomes = lander(&other, &worktrees, &forge).land(&[second]).unwrap();
+            (outcomes, forge.sent_back.take())
+        });
+        wait_for("the stacked merge's fast gate", || stacked_merge(&on_remote(root)).is_some());
+        let merge = stacked_merge(&on_remote(root)).unwrap();
+        let chain = on_remote(root);
+        assert!(chain.whole_running().is_some(), "the round's whole gate still runs: {chain:?}");
+        std::fs::write(root.join("release"), "").unwrap();
+        let first = running.join().unwrap();
+        let (second, sent_back) = stacking.join().unwrap();
+        (first, second, merge, sent_back)
+    })
+}
+
+/// A change asked while another run's round runs its whole gate stacks on
+/// that round's root: its merge onto the root-onto-tip commit is fast-gated
+/// at once, the running gate left as it is; that round landed, the change's
+/// own round starts from that merge's tree, its fast gate the stacked
+/// merge's run, reused, and runs only its slow gate.
+#[test]
+fn a_change_asked_while_a_round_s_whole_gate_runs_stacks_on_its_root_and_runs_only_its_slow_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    let a = change(&work, 1, "a", "a.txt");
+    let b = change(&work, 2, "b", "b.txt");
+
+    let (first, second, merge, sent_back) = stacked_on(root.path(), &work, (a, b));
+
+    assert!(matches!(first[..], [(1, Outcome::Landed(_))]), "{first:?}");
+    assert!(matches!(second[..], [(2, Outcome::Landed(_))]), "{second:?}");
+    assert!(sent_back.is_empty());
+    let chain = recorded(&work);
+    let [ca, cb] = &chained(&chain)[..] else { panic!("{chain:?}") };
+    assert_eq!(merge.predecessor, ca.commit, "stacked on the round's root-onto-tip commit");
+    assert_eq!(merge.phase, Phase::Green);
+    assert_eq!(cb.predecessor, ca.commit, "its round started from that commit as the tip");
+    assert_eq!(cb.tree, merge.tree, "its root has the stacked merge's tree");
+    assert_eq!(
+        runs(&ran),
+        [
+            ("fast".to_string(), ca.commit.clone()),
+            ("slow".to_string(), ca.commit.clone()),
+            ("fast".to_string(), merge.commit.clone()),
+            ("slow".to_string(), cb.commit.clone()),
+        ],
+        "no second fast run of the stacked merge's tree"
+    );
+    let reused = cb.result.as_ref().and_then(|e| e.reused.as_ref());
+    assert!(reused.is_none(), "the slow gate ran: {cb:?}");
+    git(&work, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(&work, &["rev-parse", "origin/main"]), cb.commit);
+    assert_eq!((chain.round.as_ref(), chain.stacked.as_ref()), (None, None));
+}
+
+/// The round a change stacked on ends red: the stacked merge is discarded,
+/// nothing is charged to the change, and it pairs in the next round and
+/// lands.
+#[test]
+fn a_change_stacked_on_a_round_that_ends_red_is_charged_nothing_and_lands_in_the_next_round() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    let a = change(&work, 1, "a", "breaks-a");
+    let b = change(&work, 2, "b", "b.txt");
+    let base = git(&work, &["rev-parse", "main"]);
+
+    let (first, second, merge, sent_back) = stacked_on(root.path(), &work, (a, b));
+
+    assert_eq!(ended(first), [(1, Some(Decision::Red))]);
+    assert!(matches!(second[..], [(2, Outcome::Landed(_))]), "{second:?}");
+    assert!(sent_back.is_empty(), "the red is not the stacked change's");
+    let chain = recorded(&work);
+    let merge = chain.candidates.iter().find(|c| c.id == merge.id).cloned().unwrap_or(merge);
+    assert!(!merge.valid());
+    let landed = chained(&chain).into_iter().find(|c| c.change == 2).unwrap();
+    assert_eq!(landed.predecessor, base, "it paired anew on the target tip");
+    let gates = runs(&ran);
+    assert_eq!(gates.last(), Some(&("slow".to_string(), landed.commit.clone())));
+    git(&work, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(&work, &["rev-parse", "origin/main"]), landed.commit);
 }
