@@ -119,14 +119,15 @@ impl Readings {
         }
     }
 
-    /// Hot-worker limits derived from this same host reading.
+    /// Hot-worker limits derived from this same host reading: what a worker
+    /// may write is judged by the disk free over its floor (`disk::headroom`).
     pub fn hot_limits(&self, said: crate::hot::Said, dir: &Path) -> afkconvoy_core::hot::Limits {
         let reading = self.at(dir);
         crate::hot::limits_from(
             said,
             reading.cores,
             self.memory,
-            reading.disk.map(|disk| disk.free),
+            reading.disk.map(|disk| crate::disk::headroom(disk, reading.reserve)),
         )
     }
 }

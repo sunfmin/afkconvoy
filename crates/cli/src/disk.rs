@@ -109,6 +109,14 @@ pub fn floor_of(settings: &Settings, disk: Disk, reserve: Option<u64>) -> u64 {
     floor(disk.size, settings.admit_disk.unwrap_or(SHARES.disk), reserve)
 }
 
+/// The bytes free on `disk` over the floor it is held to, by this host's
+/// settings and the measured `reserve`: what a worker may still fill before
+/// new work is held, which its hot limit on writing is a share of.
+pub fn headroom(disk: Disk, reserve: Option<u64>) -> u64 {
+    let settings = crate::host_settings::of_host().unwrap_or_default();
+    disk.free.saturating_sub(floor_of(&settings, disk, reserve))
+}
+
 /// When anything under `dir` was last written, in epoch seconds, by the
 /// directories down to `depth` under it: cargo makes files in
 /// `target/<profile>/deps`, `.fingerprint` and `incremental` as it builds,
