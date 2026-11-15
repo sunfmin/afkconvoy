@@ -1166,11 +1166,11 @@ busy_after_seconds: {const:CUT_BUSY_AFTER_SECONDS}
 
 A repo may declare host checks in a `yaml cut-needs` block (`afkconvoy config --help`). A host whose check fails does not claim a due cut; the tick, plan and doctor name it. Stdout is discarded and failed stderr is private to the host.
 
-Optional `minor_paths`, a list of paths such as `["docs/adr/"]`, says where a design change is recorded: a cut is minor, its patch 0, where a PR landed since the newest tag adds or changes a file under one of them, each landing read against its first parent — what it brought to the base branch. A path is itself or a directory, its trailing `/` optional; an empty one is refused. `{const:CUT_MINOR_LABEL}` on a PR still makes a cut minor beside it. Leaving it out, only that label does. Put it in a second cut block, as `busy_after_seconds` above, so that an older version, which refuses a key it does not know in the first one, still reads the config:
+Optional `minor_paths`, a list of paths such as `["decisions/"]`, says where a design change is recorded: a cut is minor, its patch 0, where a PR landed since the newest tag adds or changes a file under one of them, each landing read against its first parent — what it brought to the base branch. A path is itself or a directory, its trailing `/` optional; an empty one is refused. `{const:CUT_MINOR_LABEL}` on a PR still makes a cut minor beside it. Leaving it out, only that label does. Put it in a second cut block, as `busy_after_seconds` above, so that an older version, which refuses a key it does not know in the first one, still reads the config:
 
 ~~~markdown
 ```yaml cut
-minor_paths: ["docs/adr/"]
+minor_paths: ["decisions/"]
 ```
 ~~~
 
@@ -1180,7 +1180,7 @@ Each step is run by `sh -e` in the cut's checkout with the version, `0.5.17`, in
 
 ## What it does
 
-The version: the next patch past the newest version tag — a tag `v` and three numbers, `v0.5.16` — or the next minor, its patch 0, where a PR that landed since carries the label `{const:CUT_MINOR_LABEL}`, or adds or changes a file under one of the paths the repo declares in `minor_paths`. The cut's line names why it is minor: `v0.2.0 (past v0.1.111, the next minor for #9 changing docs/adr/0027-x.md, holding #8, #9)`. The tick that starts the cut picks it, from the tags as they are then, and keeps it in the checkout with the PRs the cut holds: those the base branch's landings past the tag name.
+The version: the next patch past the newest version tag — a tag `v` and three numbers, `v0.5.16` — or the next minor, its patch 0, where a PR that landed since carries the label `{const:CUT_MINOR_LABEL}`, or adds or changes a file under one of the paths the repo declares in `minor_paths`. The cut's line names why it is minor: `v0.2.0 (past v0.1.111, the next minor for #9 changing decisions/0027-x.md, holding #8, #9)`. The tick that starts the cut picks it, from the tags as they are then, and keeps it in the checkout with the PRs the cut holds: those the base branch's landings past the tag name.
 
 Its steps, in order, each timed:
 
