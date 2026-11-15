@@ -37,6 +37,15 @@ fn backlog(numbers: &[u64]) -> World {
     world
 }
 
+/// The worker's harness gives its model each line typed at it, and the line
+/// starts no turn of its own: told its issue closed, it is still at work.
+fn takes_lines(world: &World) {
+    world.with_orca(|orca| {
+        orca["notes"] = json!("taken");
+        orca["session_turn"] = json!(false);
+    });
+}
+
 fn alpha(numbers: &[u64]) -> Vec<(u64, String)> {
     numbers.iter().map(|&n| (n, "alpha".to_string())).collect()
 }
@@ -613,6 +622,7 @@ fn settling_waits_for_a_finishing_worker_then_leaves_without_a_failed_tick() {
     let worktree = worker_worktree(&world);
     let session = Session::start(&world, &worktree);
     report(&world, "working", 1000);
+    takes_lines(&world);
     world.close_issue(391);
 
     let (lines, _) = world.afk_lines(&[
@@ -691,6 +701,7 @@ fn a_run_says_left_after_a_finishing_worker_leaves() {
     let worktree = worker_worktree(&world);
     let session = Session::start(&world, &worktree);
     report(&world, "working", 1000);
+    takes_lines(&world);
     world.close_issue(391);
     world.afk(&["wake"]).ok();
     let waiting = running.line(soon).unwrap();
@@ -711,6 +722,7 @@ fn a_worker_still_busy_after_the_settle_grace_gets_exactly_one_finding() {
     let worktree = worker_worktree(&world);
     let _session = Session::start(&world, &worktree);
     report(&world, "working", 1000);
+    takes_lines(&world);
     world.close_issue(381);
 
     tick(&world, "1090");

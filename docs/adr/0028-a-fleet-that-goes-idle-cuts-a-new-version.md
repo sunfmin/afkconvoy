@@ -10,6 +10,8 @@ The fleet cuts a version itself (#466). A **cut** is the run that makes a new ve
 
 Amended by sunfmin/control#541: a cut no longer lands on the base branch, and so no longer holds the landing train (below, **A branch of its own**).
 
+Amended by sunfmin/control#1071: a PR that changes a path the repo declares in `minor_paths` makes the cut minor (below, **A design change is minor**).
+
 ## When
 
 In a repo that turns cutting on, a tick whose pass ends idle — no claim held, an empty frontier, admission holding nothing back — starts a cut when its base branch holds landed commits past its newest version tag (`v` and three numbers), or its remote has no version tag and its cut block declares `initial: X.Y.Z`.
@@ -32,7 +34,7 @@ It is a command, `afkconvoy cut`, not a model session. Its steps are known and t
 
 ## What
 
-1. The version: the next patch past the newest tag, or the next minor, its patch 0, where a PR that landed since carries `release:minor`. Picked by the tick that starts the cut, and kept in its checkout with the PRs it holds: those the base branch's landings past the tag name, `<title> (#<pr>)`.
+1. The version: the next patch past the newest tag, or the next minor, its patch 0, where a PR that landed since carries `release:minor`, or adds or changes a file under a path its repo declares in `minor_paths` (below, **A design change is minor**). Picked by the tick that starts the cut, and kept in its checkout with the PRs it holds: those the base branch's landings past the tag name, `<title> (#<pr>)`.
 2. `set`: the base tip as it stood when the checkout was cut is the cut's snapshot `S`. The repo's set lines run on it, and what they wrote — even nothing — is committed as `<repo> <version>`: the version's commit, whose only parent is `S`. `push`: that commit pushed to the cut's own branch, `afkconvoy-cut/v<version>-<stamp>`. It opens no PR. `gate`: the cut gate — the fast gate and the slow gate, the whole `gate_command`, run on that commit in the cut's checkout, in a worker lane like any heavy command; a green run on record for its tree answers. It is not a candidate on `candidates/<base>`, and it reserves no barrier.
 3. `tag`: that commit tagged `v<version>` and the tag pushed.
 4. `publish`: with the tag checked out, the repo's publish lines.
@@ -51,6 +53,18 @@ The version's home is the tag. The next cut picks its version from the newest ta
 A cut interrupted after tagging goes on from the tag, and one interrupted before tagging from its branch: its `set` step takes up the commit the remote's tag `v<version>`, or a branch a cut of that version pushed, already holds, and makes no second branch. Records an earlier afkconvoy kept read on: a step `pr` as `push`, `land` as `gate`, and the commit that landed as the commit it tags. Cut candidates and barriers an earlier afkconvoy left on the remote chain are read as before and left to drain; nothing removes a record a host still owns.
 
 The four restarts opened no failure issue. A claimed cut was unclaimed with no issue when the tick ending it found no checkout of it on its host — read as a cut that "started nothing" — and when a peer's claim was presumed dead. The candidate of the first cut's PR #783 is recorded `cancelled` by `operator_cleared`, from outside the fleet, while its fast and slow gates were green, consistent with its checkout being taken from outside before the tick read it. Unclaimed with nothing open, the next idle tick cut v0.5.64 again. Both cases now open the one failure issue, naming the version the cut's branch says, or add to the one open; the next cut starts again (ADR-0072), and after three failures of the same way in a row waits for a landing.
+
+## A design change is minor (sunfmin/control#1071)
+
+On 2026-11-15 Guild stood at 112 tags, v0.1.0 to v0.1.111, every one a patch: no worker ever sets `release:minor`, so a repo's versions never said when its design changed. Felix decided that the middle number marks a design change: 「开吧」.
+
+A repo declares where its design is recorded: `minor_paths`, a list such as `["docs/adr/"]`, in a cut block. A cut is minor, its patch 0, where a PR landed since the newest tag adds or changes a file under one of them. Each landing on the base branch's first-parent line past the tag is read against its first parent — what the PR brought to the base — and names its PR by its subject, `<title> (#<pr>)`; a landing that names no PR makes no cut minor. A path is itself or a directory below it, its trailing `/` optional. `release:minor` still makes a cut minor beside it. Without the key, nothing changes.
+
+The cut's line names why it is minor, the PRs and the files: `v0.2.0 (past v0.1.111, the next minor for #9 changing docs/adr/0027-x.md, holding #8, #9)`. Its record keeps them as `changed`. A patch cut that finds such a landing at `tag`, landed while it ran, stops there as for a `release:minor` landing, and the next tick cuts the minor.
+
+The key goes in a second cut block, as `busy_after_seconds` does: an afkconvoy older than this one refuses it in the first.
+
+Considered: a worker setting `release:minor` itself where its PR changes an ADR. Refused: what a PR changes is in its landing, and a label every worker must remember is the rule that was never followed.
 
 ## Failure
 

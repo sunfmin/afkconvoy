@@ -1021,6 +1021,69 @@ fn a_pr_labelled_for_a_minor_version_raises_the_minor_one() {
     assert_eq!((&record["version"], &record["minor"]), (&json!("0.2.0"), &json!(true)));
 }
 
+/// A repo that declares `minor_paths: ["docs/adr/"]`, in a cut block of its
+/// own, tagged `v0.1.111`; then a code PR, #8, lands, and, where `adr`, a PR,
+/// #9, adding `docs/adr/0027-x.md`.
+fn declaring_minor_paths(adr: bool) -> World {
+    let world = World::new();
+    let config = format!(
+        "{CONFIG}\n{}\n```yaml cut\nminor_paths: [\"docs/adr/\"]\n```\n",
+        cut_block(&says_published(&world))
+    );
+    commit_config(&world, &config, "Turn cutting on (#7)");
+    tag(&world, "v0.1.111");
+    land(&world, "Fix a widget (#8)");
+    if adr {
+        let adr = world.clone.join("docs/adr");
+        std::fs::create_dir_all(&adr).unwrap();
+        std::fs::write(adr.join("0027-x.md"), "# X\n").unwrap();
+        git(&world.clone, &["add", "docs/adr/0027-x.md"]);
+        git(&world.clone, &["commit", "-q", "-m", "Record a decision (#9)"]);
+        git(&world.clone, &["push", "-q", "origin", BASE]);
+    }
+    world
+}
+
+#[test]
+fn a_pr_changing_a_declared_minor_path_raises_the_minor_and_code_alone_the_patch() {
+    let world = declaring_minor_paths(true);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let record = record(&checkout(&world));
+    assert_eq!((&record["version"], &record["minor"]), (&json!("0.2.0"), &json!(true)));
+    assert_eq!(record["changed"], json!([{"pr": 9, "paths": ["docs/adr/0027-x.md"]}]));
+    let said = logged(&world);
+    assert!(
+        said.iter().any(|line| line.contains(
+            "v0.2.0 (past v0.1.111, the next minor for #9 changing docs/adr/0027-x.md, \
+             holding #8, #9)"
+        )),
+        "{said:?}"
+    );
+
+    let world = declaring_minor_paths(false);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let patch = self::record(&checkout(&world));
+    assert_eq!((&patch["version"], &patch["minor"]), (&json!("0.1.112"), &json!(false)));
+    assert!(patch.get("changed").is_none(), "{patch}");
+
+    // An ADR that lands while the patch runs supersedes it, as a label would.
+    let checkout = checkout(&world);
+    its_commit_is_made(&checkout);
+    std::fs::create_dir_all(world.clone.join("docs/adr")).unwrap();
+    std::fs::write(world.clone.join("docs/adr/0028-y.md"), "# Y\n").unwrap();
+    git(&world.clone, &["add", "docs/adr/0028-y.md"]);
+    git(&world.clone, &["commit", "-q", "-m", "Record another decision (#10)"]);
+    git(&world.clone, &["push", "-q", "origin", BASE]);
+    let stopped = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
+    assert_eq!(stopped["stopped"], "tag", "{stopped}");
+    assert!(
+        stopped["why"].as_str().unwrap().contains("#10 changing docs/adr/0028-y.md"),
+        "{stopped}"
+    );
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut superseded", "cut done"]);
+    assert_eq!(self::record(&self::checkout(&world))["version"], "0.2.0");
+}
+
 #[test]
 fn a_cut_whose_terminal_is_gone_opens_one_issue_and_the_next_cut_starts_while_it_is_open() {
     let world = cutting();

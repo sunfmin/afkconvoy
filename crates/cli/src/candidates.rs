@@ -1072,6 +1072,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Ok(answer);
         }
         Err(Refusal::Retargeted) => bail!(RETARGETED),
+        Err(Refusal::Closed(n)) => bail!(crate::turn::closed(n)),
     }
     let root = prepare_worktree_root(repo)?;
     let barrier = !locks.is_empty() || !matches!(of, Of::Issue(_));
@@ -1426,6 +1427,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 return Ok(result);
             }
             Err(Refusal::Retargeted) => bail!(RETARGETED),
+            // Closed while the candidate waited or validated: it lands nothing.
+            Err(Refusal::Closed(n)) => {
+                invalidate(repo, config, &id, "issue_closed")?;
+                bail!(crate::turn::closed(n));
+            }
         }
         let current = forge.current(&asked)?.context(
             "internal PR disappeared before publication; restore it before requesting another turn",
