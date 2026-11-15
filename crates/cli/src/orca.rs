@@ -2041,8 +2041,14 @@ impl Worktree {
 
     /// How the harness here stands at its terminal (`foreground`). The
     /// terminal it is on is kept beside the brief, where there is one.
+    /// A process listing that cannot be read shows nothing of it: `Unseen`,
+    /// as on a host that cannot see its harness. Only what is seen holds a
+    /// line back.
     pub(crate) fn holds(&self) -> Result<Holds> {
-        let holds = crate::foreground::holds(&crate::hot::listed_checked()?, &self.path)?;
+        let Ok(procs) = crate::hot::listed_checked() else { return Ok(Holds::Unseen) };
+        let Ok(holds) = crate::foreground::holds(&procs, &self.path) else {
+            return Ok(Holds::Unseen);
+        };
         if let Some(tty) = holds.tty()
             && let Ok(file) = self.note(crate::foreground::TTY_FILE)
             && std::fs::read_to_string(&file).ok().as_deref() != Some(tty)
@@ -2063,7 +2069,8 @@ impl Worktree {
     /// shell: its harness gone, and the shell that started it there still.
     pub(crate) fn bare_shell(&self) -> Result<bool> {
         let Some(tty) = self.seen_tty() else { return Ok(false) };
-        crate::foreground::bare_shell(&crate::hot::listed_checked()?, &self.path, &tty)
+        let Ok(procs) = crate::hot::listed_checked() else { return Ok(false) };
+        Ok(crate::foreground::bare_shell(&procs, &self.path, &tty).unwrap_or(false))
     }
 
     /// A line is typed only at a harness that would read it: one that holds
