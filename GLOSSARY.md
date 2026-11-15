@@ -502,7 +502,7 @@ A landing of the repo within the last 45 minutes, while this fleet's green work 
 _Avoid_: landing timeout, train health
 
 **Round**:
-The PRs that asked to land — each one's worker fast-green — taken together when it starts, and landed together through a pairing tree (ADR-0083): its pairs are fast-gated alone, and its root, merged onto the target tip, is gated whole, fast and slow, once; green, every PR of it lands in one fast-forward and each issue closes. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next. A red root is not split to find whose change failed: the round's last-asked PR's worker fixes it whole, from the round's issues and its failing tests, and the round's other PRs stop, their changes carried by that PR.
+The PRs that asked to land — each one's worker fast-green — taken together when it starts, and landed together through a pairing tree (ADR-0083): its pairs are fast-gated alone, and its root, merged onto the target tip, is gated whole, fast and slow, once; green, every PR of it lands in one fast-forward and each issue closes. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next, or, while its whole gate runs, stacks on it as a stacked round. A red root is not split to find whose change failed: the round's last-asked PR's worker fixes it whole, from the round's issues and its failing tests, and the round's other PRs stop, their changes carried by that PR.
 _Avoid_: batch round (gone with ADR-0068), bisection, merge train, rollup
 
 **Pairing tree**:
@@ -516,6 +516,10 @@ _Avoid_: couple, twin
 **Root**:
 The pairing tree's last node: every PR of the round still in it. It is merged onto the target tip as one candidate per PR, in the order they asked, and the last of them runs the whole gate once.
 _Avoid_: tip (the target branch's), apex
+
+**Stacked round**:
+The PRs that ask to land while a round's whole gate runs, a round of their own stacked on that round's root (sunfmin/control#1140, ADR-0083). They neither wait idle nor interrupt it: they pair among themselves as a round's PRs do, and their root, merged onto the running round's root-onto-tip commit, is fast-gated there — the **stacked merge**, a candidate beside the chain gated by the root's last-asked PR's turn. A PR that asks later joins it as a node of the level it pairs, or a level above its root, whose stacked merge is made again; one not yet started ends, one gating runs on. The running round lands green: the target tip is that commit, the stacked round is the open round, and its root's last candidate has the stacked merge's tree, whose fast gate on record answers for it, so only its slow gate runs. The running round ends otherwise: the stacked round is discarded, its PRs pending again and charged nothing, and they pair in the next round. The running gate is never killed or restarted for it.
+_Avoid_: next round (it is one only once the round it stands on lands), speculative round, queued round
 
 **Carrying PR**:
 A PR that merged another PR of its round into its own — the partner of a pair red on its fast gate, the earliest-asked PR it conflicts with when it conflicts with every partner, or every PR of a red root — and lands them together, its description rewritten as the changes together with `Closes` for every issue (ADR-0083). It rejoins its round while no PR of the root has its candidate, and otherwise waits for the next. The **carried PR** is closed once the carrying PR's head holds its own — commented "carried by #…", its branch deleted, its worktree removed and its worker ended; its issue stays open until the carrying PR lands, held off the frontier while that PR is open, and worked again from that PR's branch should it close unlanded.
