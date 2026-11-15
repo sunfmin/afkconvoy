@@ -272,6 +272,7 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
         "cancelled_by": c.cancelled_by,
         "round": chain.round_of(&c.id).map(|tip| &tip.id),
         "assigned": c.assigned,
+        "host": c.owner.host,
     });
     // A candidate of a round's root says so; a pair says what it joins.
     if c.batch {
