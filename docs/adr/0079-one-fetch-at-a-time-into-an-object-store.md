@@ -39,4 +39,5 @@ hand with `--refetch`.
 A start sets `maintenance.auto false` and `gc.auto 0` in its checkout, and
 disables the scheduled maintenance tasks that repack. Each tick runs git's
 auto-gc under the fetch lock, only where no fetch holds it, never detached,
-so no repack rewrites the packs a fetch reads.
+so no repack rewrites the packs a fetch reads. ADR-0081 also keeps it off
+every gate, turn and land of the repository.
