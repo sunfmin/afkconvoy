@@ -83,9 +83,11 @@ fn scratch(root: &Path) -> (PathBuf, PathBuf) {
         git(&work, &["config", key, value]);
     }
     std::fs::write(work.join("gate.md"), DECLARED).unwrap();
+    // Each run also notes how many worktrees the checkout lists as it runs.
     let script = format!(
-        "#!/bin/sh\necho \"$1 $(git rev-parse HEAD)\" >> {}\nif [ \"$1\" = slow ] && ls | grep -q '^breaks'; then echo FAIL; exit 1; fi\necho ok\n",
-        ran.display()
+        "#!/bin/sh\necho \"$1 $(git rev-parse HEAD)\" >> {}\necho \"$1 $(git worktree list --porcelain | grep -c '^worktree ')\" >> {}\nif [ \"$1\" = slow ] && ls | grep -q '^breaks'; then echo FAIL; exit 1; fi\necho ok\n",
+        ran.display(),
+        root.join("listed").display()
     );
     std::fs::write(work.join("gate.sh"), script).unwrap();
     let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
@@ -254,6 +256,30 @@ fn two_changes_land_in_one_round_with_one_slow_gate_at_its_tip() {
         heads
     );
     assert!(!worktrees.join(&first.id).exists() && !worktrees.join(&second.id).exists());
+}
+
+#[test]
+fn a_candidate_s_worktree_goes_as_its_gate_run_ends_and_a_round_adds_one_again() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, _) = scratch(root.path());
+    let a = change(&work, 1, "a", "a.txt");
+    let b = change(&work, 2, "b", "b.txt");
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+
+    lander(&work, &worktrees, &forge).land(&[a, b]).unwrap();
+
+    // Every run, the second candidate's fast gate and the round's slow gate
+    // among them, saw the checkout and its own worktree alone: the first
+    // candidate's went as its fast gate ended, green, and the second's as
+    // its fast gate did, before the round added one again for its slow gate
+    // (sunfmin/control#1063).
+    let listed = std::fs::read_to_string(root.path().join("listed")).unwrap();
+    assert_eq!(listed, "fast 2\nfast 2\nslow 2\n");
+    let chain = recorded(&work);
+    assert!(chain.candidates.iter().all(|c| !Path::new(&c.worktree).exists()));
+    let all = git(&work, &["worktree", "list", "--porcelain"]);
+    assert_eq!(all.lines().filter(|line| line.starts_with("worktree ")).count(), 1, "{all}");
 }
 
 #[test]
