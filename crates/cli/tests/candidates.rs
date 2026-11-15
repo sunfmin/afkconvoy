@@ -828,18 +828,33 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
 fn a_close_refused_while_github_closes_the_issue_itself_is_a_close() {
     let world = world(1);
     let (a, _) = worker(&world, 1, "a");
-    // GitHub closes the issue as the merged PR says it, and refuses the
-    // turn's own close at that moment.
-    world.with_gh(|gh| {
-        gh["fail"] = json!(["state=closed"]);
-        let rows = gh["issues"].as_array_mut().unwrap();
-        let issue = rows.iter_mut().find(|row| row["number"] == 1).unwrap();
-        issue["state"] = json!("closed");
-    });
+    // GitHub closes the issue as the merged PR reaches main, and refuses
+    // the turn's own close at that moment. Closed before the push, the turn
+    // would land nothing for it (sunfmin/control#1081).
+    world.with_gh(|gh| gh["fail"] = json!(["state=closed"]));
+    let hook = world.bare.join("hooks/post-receive");
+    let gh = world.root.join("gh.json");
+    let script = format!(
+        r#"#!/bin/sh
+while read old new ref; do
+  case "$ref" in refs/heads/main)
+    sed 's/"number":1,"state":"open"/"number":1,"state":"closed"/' {gh} > {gh}.closing
+    mv {gh}.closing {gh}
+  esac
+done
+"#,
+        gh = quote(&gh)
+    );
+    std::fs::write(&hook, script).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     release(&world, "a", false);
     let landed = finish(start(&world, &a, &world.cache(), 1));
     assert_eq!(landed["outcome"], "merged", "{landed}");
     assert!(landed.get("settle_error").is_none(), "{landed}");
+    assert_eq!(world.gh()["issues"][0]["state"], "closed", "the hook closed it at the push");
 }
 
 #[test]
