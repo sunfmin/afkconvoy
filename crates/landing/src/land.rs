@@ -960,7 +960,18 @@ where
             (Some(Left::Unpaired | Left::Next), _) => return Ok(None),
             (None, Some(candidate)) => match chain.candidates.iter().find(|c| &c.id == candidate) {
                 Some(c) if c.phase == Phase::Landed => Outcome::Landed(c.commit.clone()),
-                Some(c) => c.decision().map_or(Outcome::Waiting, Outcome::Decided),
+                // A red root is fixed on the spot by the round's last-asked
+                // change, which carries every other (docs/adr/0083).
+                Some(c) => match (chain.root_carry(&c.id), chain.round_carrier(c)) {
+                    (Some(carry), _) => {
+                        let run = c.result.as_ref();
+                        let sent = SentBack { run, merge: &carry.merge, carried: &carry.carried };
+                        self.forge.sent_back(&place.change, &sent).map_err(Error::Forge)?;
+                        Outcome::Carrying(carry.carried)
+                    }
+                    (None, Some(by)) => Outcome::Carried(by),
+                    (None, None) => c.decision().map_or(Outcome::Waiting, Outcome::Decided),
+                },
                 None => Outcome::Waiting,
             },
             (None, None) => Outcome::Waiting,

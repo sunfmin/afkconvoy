@@ -1503,6 +1503,15 @@ mod tests {
             decisions,
             [Some(Decision::RoundRed), Some(Decision::RoundRed), Some(Decision::Red)]
         );
+        // Not bisected: the last-asked PR is brought up to the root's tip and
+        // carries every other PR of the round.
+        let carry = chain.root_carry("c2").expect("the tip carries the round");
+        assert_eq!(carry.merge, ["m2"]);
+        assert_eq!(carry.carried, [0, 1]);
+        assert_eq!(carry.pair, None);
+        assert_eq!(chain.round_carrier(&chain.candidates[0]), Some(2));
+        assert_eq!(chain.round_carrier(&chain.candidates[2]), None, "the tip carries");
+        assert_eq!(chain.root_carry("c1"), None, "only the red tip carries");
         // A per-candidate chain has no whole tip.
         let chain = Chain { candidates: (0..3).map(split).collect(), ..Chain::default() };
         assert_eq!(chain.whole_tip(), None);

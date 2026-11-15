@@ -1036,6 +1036,43 @@ impl<N: Clone> Chain<N> {
         Some(if ready { RoundNext::Assign } else { RoundNext::Wait })
     }
 
+    /// What the round's last-asked PR carries where its round gated red
+    /// whole at `tip`, its candidate (docs/adr/0083): not bisected, it is
+    /// fixed on the spot. Its source is brought up to `tip`'s commit, which
+    /// holds every change of the round, and it carries every other PR of the
+    /// round, each stopped `round_red` by it, in the order they asked. `None`
+    /// where `tip` is not red, or it was alone in its round.
+    pub fn root_carry(&self, tip: &str) -> Option<Carry> {
+        let tip = self.candidates.iter().find(|c| c.id == tip && c.phase == Phase::Red)?;
+        let mut carried: Vec<u64> = vec![];
+        for c in self.chained() {
+            let by_tip = c.cancelled_by.as_deref() == Some(tip.id.as_str());
+            if by_tip
+                && c.decision() == Some(Decision::RoundRed)
+                && c.change != tip.change
+                && !carried.contains(&c.change)
+            {
+                carried.push(c.change);
+            }
+        }
+        (!carried.is_empty()).then(|| Carry {
+            pair: None,
+            merge: vec![tip.commit.clone()],
+            carried,
+        })
+    }
+
+    /// The PR that carries `c`'s change where its round gated red whole at
+    /// another candidate (`Decision::RoundRed`): that candidate's, the round's
+    /// last-asked PR (`root_carry`).
+    pub fn round_carrier(&self, c: &Candidate<N>) -> Option<u64> {
+        if c.decision() != Some(Decision::RoundRed) {
+            return None;
+        }
+        let by = c.cancelled_by.as_deref()?;
+        self.candidates.iter().find(|t| t.id == by).map(|t| t.change)
+    }
+
     /// The round's PR whose place is `id` leaves it: `why`.
     pub fn leave(&mut self, id: &str, why: Left) {
         let rounds = self.round.iter_mut().chain(self.stacked.iter_mut());

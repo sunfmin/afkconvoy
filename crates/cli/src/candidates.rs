@@ -1134,8 +1134,9 @@ fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
         answer["cancelled_by"] = json!(c.cancelled_by);
         answer["cause"] = json!(c.cause);
         answer["round_pr"] = json!(tip.map(|t| t.change));
+        answer["carried_by"] = json!(chain.round_carrier(c));
         answer["detail"] = json!(
-            "the slow gate ran red on the round at PR `round_pr`, which holds this change; its worker fixes the round: stop"
+            "the whole gate ran red on the round at PR `round_pr`, the round's last-asked, which holds this change and carries this PR: its worker fixes the round on the spot and lands it with this change; its turn closes this PR as carried by it: stop"
         );
         return answer;
     }
@@ -1552,25 +1553,25 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         }
     };
     let path = root.join(&id);
+    let turn = InRound {
+        repo,
+        config,
+        gh: &gh,
+        forge: &forge,
+        asked: &asked,
+        pr,
+        of,
+        issue,
+        id: &id,
+        original: &original,
+        host,
+        root: &root,
+        heavy,
+        clock: &clock,
+    };
     let candidate = if let Some(candidate) = adopted {
         candidate
     } else if rooted {
-        let turn = InRound {
-            repo,
-            config,
-            gh: &gh,
-            forge: &forge,
-            asked: &asked,
-            pr,
-            of,
-            issue,
-            id: &id,
-            original: &original,
-            host,
-            root: &root,
-            heavy,
-            clock: &clock,
-        };
         // What its head holds of other PRs it carries (docs/adr/0083).
         let carried = carry_held(&turn, &original)?;
         if !carried.is_empty() {
@@ -1807,8 +1808,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             return Ok(crate::turn::locked(result, &locks));
         }
         if next == Next::Whole {
-            let round_of = Round { repo, config, tracker, id: &id, host, issue, heavy };
-            if let Some(red) = whole(round_of, &clock)? {
+            if let Some(red) = whole(Round { turn: &turn, tracker })? {
                 for (key, value) in red.as_object().into_iter().flatten() {
                     result[key] = value.clone();
                 }
@@ -1824,8 +1824,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             continue;
         }
         if next == Next::Round {
-            let round_of = Round { repo, config, tracker, id: &id, host, issue, heavy };
-            if let Some(red) = round(round_of, clock)? {
+            if let Some(red) = round(Round { turn: &turn, tracker })? {
                 for (key, value) in red.as_object().into_iter().flatten() {
                     result[key] = value.clone();
                 }
@@ -2425,10 +2424,10 @@ fn assign_rooted(turn: &InRound<'_>, mut answer: Value) -> Result<Option<Rounded
 /// nothing. The whole gate's green run on record of its tree on this kind of
 /// machine answers for it; otherwise its fast gate runs, in a worker lane,
 /// and, green, its slow gate, in a slow lane, which puts the whole gate on
-/// record. Red is not bisected: the worker's branch is brought up to the
-/// round's tip, as a red round's is (docs/adr/0048).
-fn whole(round: Round<'_>, clock: &dyn Fn() -> u64) -> Result<Option<Value>> {
-    let Round { repo, config, tracker, id, host, issue, heavy } = round;
+/// record. Red is not bisected: the round's last-asked PR fixes it on the
+/// spot, carrying every other PR of it (`red_round`).
+fn whole(round: Round<'_>) -> Result<Option<Value>> {
+    let InRound { repo, config, id, host, issue, heavy, clock, .. } = *round.turn;
     let mut started = false;
     let chain = change(repo, config, |chain| started = chain.start_whole(id))?;
     if !started {
@@ -2531,7 +2530,7 @@ fn whole(round: Round<'_>, clock: &dyn Fn() -> u64) -> Result<Option<Value>> {
             }
         };
     let chain = change(repo, config, |chain| chain.finish(id, evidence.clone()))?;
-    let mut result = json!(evidence);
+    let result = json!(evidence);
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
     remove_ended_run(repo, &path, &tip.worktree);
@@ -2544,6 +2543,37 @@ fn whole(round: Round<'_>, clock: &dyn Fn() -> u64) -> Result<Option<Value>> {
     if at.decision() != Some(Decision::Red) {
         return Ok(None);
     }
+    let red = match &judged {
+        Judged::Red(red) => red.said(&format!("the {gate} gate on the round at this candidate")),
+        Judged::Green | Judged::Unsettled(_) => {
+            format!("the {gate} gate ran red on the round at this candidate")
+        }
+    };
+    let ran = Ran { gate, red: &red, members: &members, tip: &tip, at };
+    Ok(Some(red_round(&round, &ran, result)?))
+}
+
+/// What a round's red gate ran on: which gate, what it said, the round's
+/// candidates, its tip and the tip as the chain decided it.
+struct Ran<'a> {
+    gate: &'a str,
+    red: &'a str,
+    members: &'a [Candidate],
+    tip: &'a Candidate,
+    at: &'a Candidate,
+}
+
+/// The tip turn's answer of a round red on its gate (docs/adr/0083): it is
+/// not bisected but fixed on the spot by the round's last-asked PR, this
+/// turn's. Its branch is brought up to the round's tip, a fast-forward that
+/// holds every change of the round; pushed, every other PR of the round,
+/// which its head now holds, is carried by it at once (`carry_held`), and
+/// it lands the whole round as one carrying PR. A merge that conflicts is
+/// left in its worktree: its worker resolves it, and its next turn carries.
+fn red_round(round: &Round<'_>, ran: &Ran<'_>, mut result: Value) -> Result<Value> {
+    let Round { turn, tracker } = *round;
+    let InRound { repo, pr, original, .. } = *turn;
+    let Ran { gate, red, members, tip, at } = *ran;
     let files = crate::turn::merge_in(repo, &tip.commit, "the round's tip")?;
     decided(&mut result, at);
     result["gate"] = json!(gate);
@@ -2554,33 +2584,32 @@ fn whole(round: Round<'_>, clock: &dyn Fn() -> u64) -> Result<Option<Value>> {
             .collect::<Vec<_>>()
     );
     result["files"] = json!(files);
-    let red = match &judged {
-        Judged::Red(red) => red.said(&format!("the {gate} gate on the round at this candidate")),
-        Judged::Green | Judged::Unsettled(_) => {
-            format!("the {gate} gate ran red on the round at this candidate")
-        }
-    };
-    result["detail"] = json!(if files.is_empty() {
-        format!(
-            "{red}; your branch now holds the round's tip, every change of it: do not split it; read the issues of `round` and the failing tests, fix the round, commit and ask for a turn again"
-        )
-    } else {
-        format!(
-            "{red}; bringing your branch up to the round's tip conflicts: resolve `files`, commit, then fix the round from the issues of `round` and the failing tests, and ask for a turn again"
-        )
-    });
-    Ok(Some(result))
+    let others: Vec<u64> = members.iter().map(|m| m.change).filter(|&n| n != tip.change).collect();
+    result["carrying"] = json!(others);
+    if !files.is_empty() {
+        result["detail"] = json!(format!(
+            "{red}; bringing your branch up to the round's tip conflicts: resolve `files`, commit, then fix the round from the issues of `round` and the failing tests, pass the fast gate, push and ask for a turn again: that turn closes every other PR of `round` as carried by this PR, which lands them with its own"
+        ));
+        return Ok(result);
+    }
+    let head = repo.git(&["rev-parse", "HEAD"])?;
+    if head != original {
+        let branch = format!("refs/heads/{}", pr.head_branch);
+        repo.remote().push(&Push::set(&head, &branch).leased(original))?;
+    }
+    result["carried"] = json!(carry_held(turn, &head)?);
+    result["detail"] = json!(format!(
+        "{red}; your branch now holds the round's tip, every change of it, pushed, and every other PR of `round` is closed as carried by this PR, which lands them all with its own: do not split it; read the issues of `round` and the failing tests, fix the round on the spot, commit, pass the fast gate, push and ask for a turn again"
+    ));
+    Ok(result)
 }
 
-/// What a round's slow gate runs with: the tip's turn.
+/// What a round's gate runs with: the tip's turn, the round's last-asked
+/// PR's, and the tracker its issues are named on.
+#[derive(Clone, Copy)]
 struct Round<'a> {
-    repo: &'a Repo,
-    config: &'a Config,
+    turn: &'a InRound<'a>,
     tracker: &'a Tracker,
-    id: &'a str,
-    host: &'a str,
-    issue: Option<u64>,
-    heavy: bool,
 }
 
 /// Runs the round at the tip `id`: the slow gate, once, on the tip's commit,
@@ -2591,8 +2620,8 @@ struct Round<'a> {
 /// and slow runs. Red is not bisected: the worker's branch is brought up to
 /// the round's tip, which holds every change of the round, and the worker
 /// fixes the round from its issues and the failing tests (docs/adr/0048).
-fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
-    let Round { repo, config, tracker, id, host, issue, heavy } = round;
+fn round(round: Round<'_>) -> Result<Option<Value>> {
+    let InRound { repo, config, id, host, issue, heavy, clock, .. } = *round.turn;
     // The slow gate takes a worker lane again; a barrier still holds its own.
     let _lane = if crate::exclusive::held() {
         None
@@ -2620,7 +2649,7 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
         std::fs::remove_file(&scope)?;
     }
     let command = GateCommand::new(&slow.command);
-    let hook = Gate { repo, config, id, slow: true, clock: &clock };
+    let hook = Gate { repo, config, id, slow: true, clock };
     let result = crate::gate::candidate_gate(
         &checkout,
         &command,
@@ -2648,7 +2677,7 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
         }
     }
     let chain = change(repo, config, |chain| chain.finish(id, evidence.clone()))?;
-    let mut result = json!(evidence);
+    let result = json!(evidence);
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
     remove_ended_run(repo, &path, &tip.worktree);
@@ -2661,32 +2690,14 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
     if at.decision() != Some(Decision::Red) {
         return Ok(None);
     }
-    let files = crate::turn::merge_in(repo, &tip.commit, "the round's tip")?;
-    decided(&mut result, at);
-    result["gate"] = json!("slow");
-    result["round"] = json!(
-        members
-            .iter()
-            .map(|m| json!({"pr": m.change, "issue": m.note.issue.map(|n| tracker.issue(n))}))
-            .collect::<Vec<_>>()
-    );
-    result["files"] = json!(files);
     let red = match &judged {
         Judged::Red(red) => red.said("the slow gate on the round at this candidate"),
         Judged::Green | Judged::Unsettled(_) => {
             "the slow gate ran red on the round at this candidate".to_string()
         }
     };
-    result["detail"] = json!(if files.is_empty() {
-        format!(
-            "{red}; your branch now holds the round's tip, every change of it: do not split it; read the issues of `round` and the failing tests, fix the round, commit and ask for a turn again"
-        )
-    } else {
-        format!(
-            "{red}; bringing your branch up to the round's tip conflicts: resolve `files`, commit, then fix the round from the issues of `round` and the failing tests, and ask for a turn again"
-        )
-    });
-    Ok(Some(result))
+    let ran = Ran { gate: "slow", red: &red, members: &members, tip: &tip, at };
+    Ok(Some(red_round(&round, &ran, result)?))
 }
 
 /// Publishes `members`, the candidates a landing takes, in one atomic push:
