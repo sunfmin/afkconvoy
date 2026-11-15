@@ -20,6 +20,35 @@ fn operator_on_branch(world: &World, name: &str) -> PathBuf {
     checkout
 }
 
+/// A watch's checkout named `name`, cut by orca, which lists it.
+fn orca_cut(world: &World, name: &str) -> PathBuf {
+    let checkout = operator_on_branch(world, name);
+    world.with_orca(|orca| {
+        orca["worktrees"].as_array_mut().unwrap().push(json!({
+            "path": checkout, "branch": format!("refs/heads/{BRANCH}"), "repoId": "repo-1",
+            "isMainWorktree": false, "isArchived": false, "lastActivityAt": 0}));
+    });
+    checkout
+}
+
+/// The watch's checkout and its local branch are gone, its pushed branch is
+/// kept, and the candidates' worktrees are gone too (sunfmin/control#1063).
+fn checkout_gone(world: &World, checkout: &Path, answer: &serde_json::Value) {
+    assert_eq!(answer["checkout"]["removed"], json!(checkout), "{answer}");
+    assert!(!checkout.exists(), "{} is still there", checkout.display());
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!crate::common::worktree_listed(&listed, checkout), "{listed}");
+    let local = git(&world.clone, &["branch", "--list", BRANCH]);
+    assert_eq!(local, "", "its local branch is gone");
+    assert!(!world.remote(&["rev-parse", &format!("refs/heads/{BRANCH}")]).is_empty());
+    let text = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
+    let chain: serde_json::Value = serde_json::from_str(&text).unwrap();
+    for candidate in chain["candidates"].as_array().unwrap() {
+        let path = PathBuf::from(candidate["worktree"].as_str().unwrap());
+        assert!(!path.exists() && !crate::common::worktree_listed(&listed, &path), "{listed}");
+    }
+}
+
 /// The watch in `checkout` commits a change of the repo on its branch,
 /// pushes it and opens its PR, #90, which closes no issue → its head.
 fn change(world: &World, checkout: &Path) -> String {
@@ -65,7 +94,7 @@ fn lands_on_no_issue(world: &World, name: &str) {
     assert_eq!(world.gh()["issues"], json!([]), "no issue was opened");
     let plan = world.afk(&["plan", "--instance", "me", "--now", "10100"]).ok();
     assert!(plan.get("watches_on_train").is_none(), "no train: {plan}");
-    crate::common::stopped_candidates_gone(world, &checkout);
+    checkout_gone(world, &checkout, &joined);
 }
 
 #[test]
@@ -157,4 +186,95 @@ fn a_watch_never_treats_a_failed_rest_lock_read_as_no_locks() {
     let error = world.afk_in(&checkout, &["land", "--watch"]).error();
     assert!(error.contains("injected failure"), "{error}");
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
+}
+
+#[test]
+fn a_landed_watch_s_checkout_orca_cut_goes_through_orca_with_its_branch() {
+    let world = World::new();
+    world.set_gate("true");
+    let checkout = orca_cut(&world, "afkconvoy-watch-2");
+    change(&world, &checkout);
+    let answer = world.afk_in(&checkout, &["land", "--watch", "--host", "h1"]).ok();
+    assert_eq!(answer["outcome"], "merged", "{answer}");
+    checkout_gone(&world, &checkout, &answer);
+    assert!(world.worktrees().is_empty(), "orca lists it no more");
+}
+
+#[test]
+fn a_landed_watch_s_checkout_that_holds_a_change_no_commit_has_stays() {
+    let world = World::new();
+    world.set_gate("true");
+    let checkout = watch_on_branch(&world);
+    change(&world, &checkout);
+    std::fs::write(checkout.join("notes.txt"), "kept\n").unwrap();
+    let answer = world.afk_in(&checkout, &["land", "--watch", "--host", "h1"]).ok();
+    assert_eq!(answer["outcome"], "merged", "{answer}");
+    assert_eq!(answer["checkout"]["kept"], json!(checkout), "{answer}");
+    assert_eq!(answer["checkout"]["why"], "it holds changes no commit has");
+    assert!(checkout.join("notes.txt").is_file());
+}
+
+/// A watch left its checkout `checkout` with its change committed `age`
+/// seconds ago, and pushed.
+fn left(world: &World, checkout: &Path, file: &str, age: u64) {
+    let at = now() - age;
+    std::fs::write(checkout.join(file), "left\n").unwrap();
+    git(checkout, &["add", file]);
+    let date = format!("@{at} +0000");
+    let ran = std::process::Command::new("git")
+        .current_dir(checkout)
+        .args(["commit", "-q", "-m", "left"])
+        .env("GIT_COMMITTER_DATE", &date)
+        .env("GIT_AUTHOR_DATE", &date)
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    git(checkout, &["push", "-q", "origin", "HEAD"]);
+    let reflog = git(checkout, &["rev-parse", "--path-format=absolute", "--git-path", "logs/HEAD"]);
+    let stamp =
+        std::process::Command::new("touch").args(["-t", &stamp_of(at), &reflog]).status().unwrap();
+    assert!(stamp.success());
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// `at`, as `touch -t` takes it, in local time.
+fn stamp_of(at: u64) -> String {
+    let out = std::process::Command::new("date")
+        .args(["-r", &at.to_string(), "+%Y%m%d%H%M.%S"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn a_watch_s_checkout_left_unlanded_goes_at_a_tick_past_its_grace_and_one_holding_work_stays() {
+    let world = World::new();
+    world.set_gate("true");
+    let checkout = orca_cut(&world, "afkconvoy-watch-3");
+    left(&world, &checkout, "pushed.txt", 2 * 3600);
+    let tick = |world: &World| {
+        let now = now().to_string();
+        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok();
+    };
+
+    // Within its grace it stays, however clean.
+    left(&world, &checkout, "recent.txt", 60);
+    tick(&world);
+    assert!(checkout.is_dir(), "a checkout that moved within the hour stays");
+
+    // Moved past its grace, holding a file no commit has, it stays.
+    left(&world, &checkout, "old.txt", 2 * 3600);
+    std::fs::write(checkout.join("draft.txt"), "draft\n").unwrap();
+    tick(&world);
+    assert!(checkout.join("draft.txt").is_file(), "a checkout holding work stays");
+
+    // Nothing in it but what is pushed: it goes, with its local branch.
+    std::fs::remove_file(checkout.join("draft.txt")).unwrap();
+    tick(&world);
+    assert!(!checkout.exists(), "{} is still there", checkout.display());
+    assert!(world.worktrees().is_empty(), "orca lists it no more");
+    assert_eq!(git(&world.clone, &["branch", "--list", BRANCH]), "");
 }

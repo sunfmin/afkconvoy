@@ -206,6 +206,13 @@ pub fn tick(
     {
         eprintln!("warning: a worktree a removal left will be removed on a later tick: {error:#}");
     }
+    // A watch's checkout a watch left, everything in it pushed, goes past its
+    // grace (sunfmin/control#1063).
+    if let Err(error) =
+        crate::watch_checkout::remove_left(&fleet.repo, &fleet.config.base_branch, fleet.now)
+    {
+        eprintln!("warning: a watch's checkout left will be removed on a later tick: {error:#}");
+    }
     // Cover interruption after an internal task landed but before final review.
     // A bad delivery does not prevent unrelated task reconciliation.
     let delivery_failure = crate::delivery::reconcile(&fleet).err();
