@@ -957,3 +957,6 @@ afkconvoy::cli tracker::a_workers_command_goes_by_its_fleets_tracker_before_the_
 afkconvoy::cli admission::a_chain_that_cannot_keep_up_holds_its_repo_while_another_repo_starts
 afkconvoy::cli stopped::a_comment_written_by_this_worker_is_not_told_even_with_the_same_login
 afkconvoy::cli stopped::a_note_is_told_to_a_busy_worker_only_once_its_harness_gave_it_to_the_model
+# Checked alone on macstudio-jp: 7.06s (a land process waited on) and 4.96s (ticks of a busy fleet).
+afkconvoy::cli candidates::a_candidate_whose_issue_closed_during_validation_lands_nothing
+afkconvoy::cli cutting::an_operator_s_cut_now_starts_the_due_cut_at_the_next_tick_while_busy
