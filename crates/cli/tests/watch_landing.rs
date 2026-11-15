@@ -270,6 +270,14 @@ fn a_watch_s_checkout_left_unlanded_goes_at_a_tick_past_its_grace_and_one_holdin
     std::fs::write(checkout.join("draft.txt"), "draft\n").unwrap();
     tick(&world);
     assert!(checkout.join("draft.txt").is_file(), "a checkout holding work stays");
+    // Doctor names it, with what keeps it.
+    let now = now().to_string();
+    let answer = world.afk(&["doctor", "--host", "h1", "--now", &now]).json;
+    let findings = answer["findings"].as_array().unwrap();
+    let left = findings.iter().find(|f| f["kind"] == "left_watch_checkout").expect("found");
+    let what = left["what"].as_str().unwrap();
+    assert!(what.contains("a watch left its checkout"), "{left}");
+    assert!(what.ends_with("it holds changes no commit has"), "{left}");
 
     // Nothing in it but what is pushed: it goes, with its local branch.
     std::fs::remove_file(checkout.join("draft.txt")).unwrap();

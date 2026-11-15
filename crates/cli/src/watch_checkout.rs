@@ -5,7 +5,7 @@
 //! nothing would be lost with it: no change that no commit holds, untracked
 //! files included, and its head on the remote.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use afkconvoy_core::worker::{is_worktree_named, short_branch};
 use anyhow::Result;
@@ -109,36 +109,59 @@ fn last_moved(path: &Path) -> Option<u64> {
     reflog.into_iter().chain(committed).max()
 }
 
-/// Removes each watch's checkout of `repo` that a watch left: one orca lists,
-/// where no watch round runs on this host, no process works in it, it has
-/// not moved for `GRACE_SECONDS` before `now`, and nothing would be lost with
-/// it. One that holds something stays, for doctor to name.
-pub(crate) fn remove_left(repo: &Repo, base: &str, now: u64) -> Result<()> {
+/// A watch's checkout a watch left: no watch round runs on this host, and
+/// it has not moved for `GRACE_SECONDS`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Left {
+    pub path: PathBuf,
+    pub branch: String,
+    /// When it last moved (`last_moved`).
+    pub moved: u64,
+    /// Why it stays, `None` where nothing would be lost with it.
+    pub keeps: Option<String>,
+}
+
+/// Each watch's checkout of `repo` a watch left by `now`: one orca lists,
+/// where no watch round runs on this host, and it has not moved for
+/// `GRACE_SECONDS` → none where orca is not running.
+pub(crate) fn left(repo: &Repo, base: &str, now: u64) -> Result<Vec<Left>> {
     if !crate::orca::running() || crate::host_watch::running()?.is_some() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let source = Source::of(repo)?;
     let main = Repo::new(repo.main_checkout()?);
-    let mut busy = None;
+    let mut left = vec![];
     for row in crate::orca::linked_rows(&source)? {
-        let Some(path) = row["path"].as_str().map(std::path::PathBuf::from) else { continue };
+        let Some(path) = row["path"].as_str().map(PathBuf::from) else { continue };
         if !named(&path) || !path.is_dir() {
             continue;
         }
-        if last_moved(&path).is_none_or(|moved| now.saturating_sub(moved) < GRACE_SECONDS) {
-            continue;
-        }
-        if busy.is_none() {
-            busy = Some(crate::hot::working_directories()?);
-        }
-        if crate::hot::occupies(busy.as_deref().unwrap_or_default(), &path) {
+        let Some(moved) = last_moved(&path) else { continue };
+        if now.saturating_sub(moved) < GRACE_SECONDS {
             continue;
         }
         let branch = short_branch(row["branch"].as_str().unwrap_or("")).to_string();
-        let checkout = Worktree::at(path, branch);
-        if keeps(&main, base, &checkout, None)?.is_some() {
+        let keeps = keeps(&main, base, &Worktree::at(path.clone(), branch.clone()), None)?;
+        left.push(Left { path, branch, moved, keeps });
+    }
+    Ok(left)
+}
+
+/// Removes each watch's checkout of `repo` a watch left (`left`), where no
+/// process works in it and nothing would be lost with it. One that holds
+/// something stays, for doctor to name.
+pub(crate) fn remove_left(repo: &Repo, base: &str, now: u64) -> Result<()> {
+    let left = left(repo, base, now)?;
+    if left.iter().all(|left| left.keeps.is_some()) {
+        return Ok(());
+    }
+    let main = Repo::new(repo.main_checkout()?);
+    let busy = crate::hot::working_directories()?;
+    for left in left.into_iter().filter(|left| left.keeps.is_none()) {
+        if crate::hot::occupies(&busy, &left.path) {
             continue;
         }
+        let checkout = Worktree::at(left.path, left.branch);
         if let Err(error) = remove(&main, &checkout) {
             eprintln!(
                 "warning: the watch's checkout {} will be removed on a later tick: {error:#}",
