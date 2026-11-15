@@ -1756,6 +1756,29 @@ impl World {
         std::fs::write(self.tracker_file(tracker), state.to_string()).unwrap();
     }
 
+    /// How many ticks the fleet instances of this world have ended, as their
+    /// tick logs keep them.
+    pub fn ticks_ended(&self) -> usize {
+        let runs = self.cache().join("afkconvoy/runs");
+        let logs = std::fs::read_dir(runs).into_iter().flatten().flatten();
+        let ended = |line: &str| {
+            serde_json::from_str::<Value>(line).is_ok_and(|entry| entry.get("tick").is_some())
+        };
+        logs.map(|log| std::fs::read_to_string(log.path()).unwrap_or_default())
+            .map(|text| text.lines().filter(|line| ended(line)).count())
+            .sum()
+    }
+
+    /// Waits until the fleet instances of this world have ended `n` more
+    /// ticks: what a later tick would do is done, in place of a fixed sleep.
+    pub fn after_ticks(&self, n: usize) {
+        let (before, until) = (self.ticks_ended(), Instant::now() + PATIENCE);
+        while self.ticks_ended() < before + n {
+            assert!(Instant::now() < until, "no {n} more ticks ended: {before} had");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Every line of the host runner's log, the stamp of each taken off.
     pub fn runner_log(&self) -> Vec<String> {
         let file = self.cache().join("afkconvoy/host-runner.log");

@@ -211,7 +211,7 @@ fn a_worker_already_at_work_is_continued_once_and_switch_does_not_move_it() {
 
     // A later tick does not start a second writer on the named harness.
     world.orca_calls();
-    std::thread::sleep(Duration::from_secs(2));
+    world.after_ticks(2);
     assert_eq!(open_commands(&world, &dir), vec![moved.clone()]);
     let again: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert!(!again.iter().any(|call| call == "terminal create"), "{again:?}");
@@ -254,7 +254,7 @@ fn a_worker_already_at_work_is_continued_once_and_switch_does_not_move_it() {
         let held = entries.remove(at);
         entries.insert(0, held);
     });
-    std::thread::sleep(Duration::from_secs(2));
+    world.after_ticks(2);
     assert!(open_commands(&world, &dir)[0].contains("grok --always-approve"));
     assert_eq!(applied(&world, &world.clone).as_deref(), Some(""));
 }
