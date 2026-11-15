@@ -178,7 +178,7 @@ publish: |
   afkconvoy exclusive -- packaging/release.sh build
   packaging/release.sh package
   packaging/release.sh publish
-  brew update --quiet
+  for wait in 1 2 3 4 5 6 7 8 9 10 11 12; do brew update --quiet || true; brew info sunfmin/tap/afkconvoy | head -1 | grep -qwF "stable $VERSION" && break; sleep 10; done
   brew upgrade sunfmin/tap/afkconvoy
   test "$("$(brew --prefix)/bin/afkconvoy" --version)" = "afkconvoy $VERSION"
 ```
@@ -198,6 +198,10 @@ busy_after_seconds: 18000
 - `publish` writes the archives and the formula to `sunfmin/homebrew-tap`: the
   host's `gh` login must be able to write there.
 - `brew update` comes first: `brew upgrade` alone fetches the tap at most once
-  a day, and would find nothing newer. The last line fails the step unless the
-  afkconvoy Homebrew links is the version cut. The host runner moves onto it
+  a day, and would find nothing newer. It runs again every 10 seconds, up to
+  12 times, until Homebrew lists the version just pushed: run seconds after the
+  push, it can fetch the tap before the new formula is there, upgrade nothing,
+  and fail the last line (v0.5.94 and v0.5.96, sunfmin/control#1154). The
+  last line fails the step unless the afkconvoy Homebrew links is the version
+  cut. The host runner moves onto it
   between ticks once no exclusive command runs (`afkconvoy run --help`).
