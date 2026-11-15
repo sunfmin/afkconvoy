@@ -250,7 +250,7 @@ _Avoid_: roster (the team's), host config, inventory
 
 **Guild machine**:
 A host whose user has Guild's home, `~/.guild`: a machine of Guild, the other agent system of this host's user (sunfmin/control#693), which runs no fleet of its own there but takes tmux, and only tmux, from the host kit crate (ADR-0062, ADR-0066); it is given none of the operator's agent setup. Guild runs each instance in a tmux server of its own, so writing the host kit on a Guild machine with no tmux installs one where a standard account can — `pixi global install tmux`, or Homebrew where it has bottles, installing a pinned pixi checked by its published checksum first where neither is there — and leaves an existing tmux alone; `doctor` names a Guild machine with no tmux, with the line that fixes it.
-_Avoid_: Guild host (a host is one account's, as under Host), node
+_Avoid_: Guild host (a host is one account's, as under Host), node (a pairing tree's: a PR's head or a pair)
 
 **Default model**:
 What a harness runs when a worker is started with no model named: its own login's model. Every worker whose model label is not followed starts on it, including one whose range holds a single model. Codex uses the model in the user's Codex config when the host kit lists that model; with none, Codex's own. A named Codex model the kit does not list, or that the role's range does not hold, refuses the start.
@@ -507,7 +507,7 @@ _Avoid_: couple, twin
 
 **Root**:
 The pairing tree's last node: every PR of the round still in it. It is merged onto the target tip as one candidate per PR, in the order they asked, and the last of them runs the whole gate once.
-_Avoid_: tip (the target branch's), top
+_Avoid_: tip (the target branch's), apex
 
 **Carrying PR**:
 A PR that merged another PR of its round into its own — the partner of a pair red on its fast gate, the earliest-asked PR it conflicts with when it conflicts with every partner, or every PR of a red root — and lands them together, its description rewritten as the changes together with `Closes` for every issue (ADR-0082). The **carried PR** is closed, commented "carried by #…", its branch deleted, its worktree removed and its worker ended; its issue stays open until the carrying PR lands.
