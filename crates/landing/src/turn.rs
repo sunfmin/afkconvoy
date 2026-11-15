@@ -62,7 +62,7 @@ pub enum Next {
     /// It is the round's tip: its turn runs the round's slow gate now.
     Round,
     /// It is the last candidate of a round's root: its turn runs the
-    /// round's whole gate now (`Chain::whole_tip`, docs/adr/0082).
+    /// round's whole gate now (`Chain::whole_tip`, docs/adr/0083).
     Whole,
     /// It is valid and waits — for its round, or its predecessor — unless it
     /// is ripe to land on the target as it stands (`Chain::ripe`).

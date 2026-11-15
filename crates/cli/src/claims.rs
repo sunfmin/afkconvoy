@@ -84,9 +84,11 @@ pub struct Scan {
     pub last_runs: BTreeMap<String, Ran>,
     /// patrol → a human's ask for a run of it now, while one stands.
     pub asks: BTreeMap<String, Ask>,
+    /// An operator's ask for a cut now, while one stands.
+    pub cut_ask: Option<Ask>,
 }
 
-/// A human's ask for a run of a patrol now, as the remote has it.
+/// A human's ask for a run of a patrol, or for a cut, now, as the remote has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
     /// When it was made.
@@ -152,6 +154,7 @@ impl Scan {
             runs: vec![],
             last_runs: BTreeMap::new(),
             asks: BTreeMap::new(),
+            cut_ask: None,
         };
         // run key → the claim its worker declared over.
         let mut over: BTreeMap<String, String> = BTreeMap::new();
@@ -185,6 +188,10 @@ impl Scan {
                 && let Some(ts) = read_asked(&record.subject)
             {
                 scan.asks.insert(patrol.to_string(), Ask { ts, sha: record.sha });
+            } else if kept == afkconvoy_core::cut::ASKED_REF
+                && let Some(ts) = afkconvoy_core::cut::read_asked(&record.subject)
+            {
+                scan.cut_ask = Some(Ask { ts, sha: record.sha });
             } else if let Some(key) = kept.strip_prefix(OVER_KIND)
                 && let Some(claim) = read_over(&record.subject)
             {
@@ -516,9 +523,8 @@ pub fn drop_run(repo: &Repo, scan: &mut Scan, claim: &RunClaim) -> Result<()> {
 /// replaced: of two, one stands, and one run answers it.
 pub fn push_ask(repo: &Repo, scan: &mut Scan, name: &str, host: &str, now: u64) -> Result<String> {
     let refname = asked_ref(repo.layout(), name);
-    let sha = repo.record_commit(&write_asked(now, host))?;
-    repo.remote().push(&Push::set(&sha, &refname).force())?;
-    scan.asks.insert(name.to_string(), Ask { ts: now, sha });
+    let ask = put_ask(repo, &refname, &write_asked(now, host), now)?;
+    scan.asks.insert(name.to_string(), ask);
     Ok(refname)
 }
 
@@ -526,15 +532,46 @@ pub fn push_ask(repo: &Repo, scan: &mut Scan, name: &str, host: &str, now: u64) 
 /// answered, only while it is still that one: an ask made since is another
 /// human's, and stands. Already gone counts as deleted.
 pub fn drop_ask(repo: &Repo, scan: &mut Scan, name: &str, ask: &Ask) -> Result<()> {
-    let refname = asked_ref(repo.layout(), name);
-    let push = Push::delete(&refname).leased(&ask.sha);
+    unput_ask(repo, &asked_ref(repo.layout(), name), ask)?;
+    scan.asks.remove(name);
+    Ok(())
+}
+
+/// Records on the remote that an operator on `host` asked at `now` for a cut
+/// now → the ref it is kept at. An ask standing already is replaced: of two,
+/// one stands, and one cut answers it.
+pub fn push_cut_ask(repo: &Repo, scan: &mut Scan, host: &str, now: u64) -> Result<String> {
+    let refname = repo.layout().under(afkconvoy_core::cut::ASKED_REF);
+    let record = afkconvoy_core::cut::write_asked(now, host);
+    scan.cut_ask = Some(put_ask(repo, &refname, &record, now)?);
+    Ok(refname)
+}
+
+/// Deletes the ask `ask` for a cut now, which a cut that started has
+/// answered, only while it is still that one. Already gone counts as deleted.
+pub fn drop_cut_ask(repo: &Repo, scan: &mut Scan, ask: &Ask) -> Result<()> {
+    unput_ask(repo, &repo.layout().under(afkconvoy_core::cut::ASKED_REF), ask)?;
+    scan.cut_ask = None;
+    Ok(())
+}
+
+/// Puts the ask `record`, made at `now`, on the remote at `refname`, over
+/// any standing there → it.
+fn put_ask(repo: &Repo, refname: &str, record: &str, now: u64) -> Result<Ask> {
+    let sha = repo.record_commit(record)?;
+    repo.remote().push(&Push::set(&sha, refname).force())?;
+    Ok(Ask { ts: now, sha })
+}
+
+/// Deletes the ask at `refname`, only while it is still `ask`.
+fn unput_ask(repo: &Repo, refname: &str, ask: &Ask) -> Result<()> {
+    let push = Push::delete(refname).leased(&ask.sha);
     let pushed = repo.remote().try_push_retried(&push, None, || Ok(false))?;
     if !pushed.ok
-        && repo.remote().sha(&refname, Fresh::Process)?.as_deref() == Some(ask.sha.as_str())
+        && repo.remote().sha(refname, Fresh::Process)?.as_deref() == Some(ask.sha.as_str())
     {
         bail!("the ask {refname} is still on the remote: {}", pushed.stderr.trim());
     }
-    scan.asks.remove(name);
     Ok(())
 }
 

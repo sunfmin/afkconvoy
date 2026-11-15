@@ -187,6 +187,7 @@ impl Shared {
             watch: self.watch.running(),
             own_cpu: self.own_cpu.average(),
             queue_share: self.queue_share.share(),
+            disk: self.queue.disk(),
         })
     }
 
@@ -238,6 +239,11 @@ pub struct SharedNow {
     /// or an older host runner did not say.
     #[serde(default)]
     pub queue_share: Option<u64>,
+    /// What the host runner last saw of the disk its checkouts build on
+    /// (`disk::Keeper`): under its floor, the queue grants nothing new.
+    /// `None`: nothing yet, or an older host runner.
+    #[serde(default)]
+    pub disk: Option<crate::disk::Seen>,
 }
 
 /// The afkconvoy installed where the host runner was started from, once that
@@ -301,7 +307,16 @@ pub fn findings() -> Vec<Finding> {
     let Some(shared) = shared().ok().flatten() else { return vec![] };
     let moved = shared.installed.as_ref().and_then(not_moved);
     let busy = shared.own_cpu.filter(crate::own_cpu::Average::over_budget).map(over_budget);
-    moved.into_iter().chain(shared.published.as_ref().map(not_upgraded)).chain(busy).collect()
+    let disk = shared
+        .disk
+        .as_ref()
+        .and_then(|seen| crate::disk::finding_of(seen, &crate::disk::listed(), crate::clock()));
+    moved
+        .into_iter()
+        .chain(shared.published.as_ref().map(not_upgraded))
+        .chain(busy)
+        .chain(disk)
+        .collect()
 }
 
 /// The finding of the host runner's own process averaging more of a core
@@ -1015,6 +1030,8 @@ fn held_host(
     let still_ours = || std::fs::metadata(&lock_file).is_ok_and(|now| identity(&now) == ours);
     let mut left = None;
     let mut queue_noted = Instant::now();
+    let mut keeper = crate::disk::Keeper::default();
+    let mut disk_looked: Option<Instant> = None;
     while !stop.told() && left.is_none() {
         std::thread::sleep(WATCHED_EVERY);
         runner.shared.own_cpu.note();
@@ -1024,6 +1041,10 @@ fn held_host(
             if let Ok((queue, _)) = runner.shared.queue.observation() {
                 runner.shared.queue_share.note(&queue);
             }
+        }
+        if disk_looked.is_none_or(|looked| looked.elapsed() >= crate::disk::LOOK_EVERY) {
+            disk_looked = Some(Instant::now());
+            runner.look_at_disk(&mut keeper);
         }
         if !stop.told() && !still_ours() {
             runner.log.say(
@@ -1327,6 +1348,52 @@ fn handed_over(path: &Path, lock: File) -> Result<Value> {
 impl Runner {
     fn holding(&self) -> MutexGuard<'_, BTreeMap<PathBuf, Held>> {
         self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Looks at the disk the checkouts on its list build on (`disk::Keeper`):
+    /// under its floor, reclaims the `target/` no one builds in first, then
+    /// tells the queue whether it still holds. Each reclaim, and each hold's
+    /// start and end, is a line of its log.
+    fn look_at_disk(&self, keeper: &mut crate::disk::Keeper) {
+        let checkouts: Vec<PathBuf> = self
+            .list
+            .read()
+            .map(|listed| listed.checkouts.into_iter().map(|entry| entry.checkout).collect())
+            .unwrap_or_default();
+        let queue = self.shared.queue.observation().map(|(queue, _)| queue).unwrap_or_default();
+        let before = self.shared.queue.disk().is_some_and(|seen| seen.held);
+        let now = crate::clock();
+        let seen = keeper.look(&checkouts, &queue, now);
+        if let Some(seen) = &seen {
+            let said = crate::measure::said;
+            for done in seen.reclaimed.iter().filter(|done| done.at == now) {
+                self.log.say(&format!(
+                    "disk: reclaimed the target/ of {} ({:?}), {} free under a floor of {}",
+                    done.worktree.display(),
+                    done.why,
+                    said(seen.free),
+                    said(seen.floor)
+                ));
+            }
+            if seen.held != before {
+                self.log.say(&if seen.held {
+                    format!(
+                        "disk: {} free under {}, under its floor of {}: the queue grants no new \
+                         heavy command until space returns",
+                        said(seen.free),
+                        seen.dir.display(),
+                        said(seen.floor)
+                    )
+                } else {
+                    format!(
+                        "disk: {} free, back over its floor of {}",
+                        said(seen.free),
+                        said(seen.floor)
+                    )
+                });
+            }
+        }
+        self.shared.queue.saw_disk(seen);
     }
 
     /// Whether it moves onto a newer afkconvoy: each fleet instance was told
@@ -2927,7 +2994,9 @@ Then everything a fleet instance does. It makes the startup probe — at every s
 
 A fleet never puts its host to sleep: an idle host stays awake until something else puts it to sleep. Idle is holding no claim — on an issue, a patrol's run, a cut — and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. A cut starts when idle or landed work reaches its age bound, and keeps it from idle while it runs. Every fleet on this host is a fleet instance of its one host runner, which holds how each stands, as each says it as every tick of its begins and ends: in a tick, or between two, at work or quiet. No fleet instance asks another.
 
-ADMISSION. Admission alone decides whether a tick starts another worker: no number bounds a checkout's workers. A tick starts workers while admission admits, one reading per start: the reading the tick opens with admits its first start, and each start after one is admitted by a reading of its own, which counts the workers it started on the account. ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average, less the estimated share of running exclusive queue process trees, past 200% of its cores. The estimate apportions total load by the trees’ share of observed CPU; if the queue or process table cannot be read, it subtracts nothing. `doctor` says total, queue and other load. Its estimate uses current CPU and may differ from the minute average; memory and disk include everything. It also holds if, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim and a due patrol. Workers already running are left alone, and so is the worker a declared verdict starts. The host says its own shares, each a whole percent, in its host settings: `--admit-load` (of its cores), `--admit-memory` and `--admit-disk` (free) — `--admit-load 400` lets the load reach four times the cores, and `--admit-disk 0` never holds for disk. A value that is no whole percent is refused, and `default` changes a share back. What cannot be read holds nothing back. Two readings more stand beside the load, the memory and the disk. The usage windows of the account the checkout's next worker starts on — its own harness, or the host kit's first — as the newest records of its workers at work on it say them, within the last hour, where its harness records them in its session (a Codex session's `token_count` line does): admission starts no worker while one of them, at the rate it was used at since it began, with one more worker beside those running on it, would be past 100% used before it resets, nor while one is used up. A harness that reports no window, or none of whose workers runs, is judged by the load, the memory and the disk alone. And the host's exclusive queue: admission starts no worker while its commands would take longer than {const:QUEUE_BOUND} seconds to drain — each lane's commands one after another, as many at once as it has places, the rest of each running one and the whole of each waiting one, by the median of that command's last five runs; a command no run of which is kept counts for nothing. More workers would only wait behind the gate. The tick's line, `plan` and `doctor` say which reading held a start back, with its numbers: `the `five_hour` window of the codex account is 60% used and resets in 150 min: at its rate, with 2 worker(s) on it and one more, it would be 165% used by then`, `the exclusive queue would take 22 min to drain, by its commands' recent run times, past 15 min`.
+ADMISSION. Admission alone decides whether a tick starts another worker: no number bounds a checkout's workers. A tick starts workers while admission admits, one reading per start: the reading the tick opens with admits its first start, and each start after one is admitted by a reading of its own, which counts the workers it started on the account. ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average, less the estimated share of running exclusive queue process trees, past 200% of its cores. The estimate apportions total load by the trees’ share of observed CPU; if the queue or process table cannot be read, it subtracts nothing. `doctor` says total, queue and other load. Its estimate uses current CPU and may differ from the minute average; memory and disk include everything. It also holds if, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less free on the disk under the checkout (`df`) than its floor (DISK, below). The issue stays on the frontier for the next tick, and so do a stale claim and a due patrol. Workers already running are left alone, and so is the worker a declared verdict starts. The host says its own shares, each a whole percent, in its host settings: `--admit-load` (of its cores), `--admit-memory` and `--admit-disk` (free) — `--admit-load 400` lets the load reach four times the cores, and `--admit-disk 0` never holds for disk. A value that is no whole percent is refused, and `default` changes a share back. What cannot be read holds nothing back. Two readings more stand beside the load, the memory and the disk. The usage windows of the account the checkout's next worker starts on — its own harness, or the host kit's first — as the newest records of its workers at work on it say them, within the last hour, where its harness records them in its session (a Codex session's `token_count` line does): admission starts no worker while one of them, at the rate it was used at since it began, with one more worker beside those running on it, would be past 100% used before it resets, nor while one is used up. A harness that reports no window, or none of whose workers runs, is judged by the load, the memory and the disk alone. And the host's exclusive queue: admission starts no worker while its commands would take longer than {const:QUEUE_BOUND} seconds to drain — each lane's commands one after another, as many at once as it has places, the rest of each running one and the whole of each waiting one, by the median of that command's last five runs; a command no run of which is kept counts for nothing. More workers would only wait behind the gate. The tick's line, `plan` and `doctor` say which reading held a start back, with its numbers: `the `five_hour` window of the codex account is 60% used and resets in 150 min: at its rate, with 2 worker(s) on it and one more, it would be 165% used by then`, `the exclusive queue would take 22 min to drain, by its commands' recent run times, past 15 min`.
+
+DISK. A build fills the disk while it runs, and a fixed share of it holds back nothing already building (sunfmin/control#1126). So the disk is held to a floor measured from the host's builds: the largest fresh build on record in the worktrees of the checkouts on the list (what git ignored there after the worktree's first green gate), times the exclusive queue's worker, fast and slow lanes and the worktrees a worker was started in, which build beside them — never under the share `--admit-disk` says or its default of 1%, nor over a quarter of the disk. A host that says `--admit-disk` holds to that share alone, measured floor or not: `--admit-disk 15` keeps 15% free, and `--admit-disk 0` never holds for disk. Admission starts no worker under the floor. The host runner reads the disk under the checkouts on its list every ten seconds: under the floor, it first reclaims the `target/` of every worktree no one builds in — those whose worker's processes ended first, then those nothing wrote for six hours, the longest unwritten first — set aside into the trash beside the worktree and deleted by a detached child; a `target/` an exclusive command runs in, or that was written in the last ten minutes, is never reclaimed. Still under the floor after that, the exclusive queue grants no new command — a gate, a landing turn, a candidate, a cut's build — until space returns; running commands keep their lanes, and `afkconvoy queue` shows each waiting request with a `disk` reason. Each reclaim, and each hold's start and end, is a line of the host runner's log. A hot worker's limit on what it writes is a share of the disk free over the floor, so a worker's own build outside the queue is hot before the disk reaches it. A disk under its floor, or whose free space fell faster than 2 GiB a minute over the last five minutes, is an episode: `doctor` reports it as a host finding, `the disk the host builds on has`, with the worktrees that build now and the sizes of their `target/`.
 
 OWN SHARE. A host that runs another system beside the fleet — a Guild Hub's Forgejo, scheduler and Guild's own work — keeps room for it by capping afkconvoy's own share: `--max-share-of-cores 50%` and `--max-share-of-memory 40%`, each a whole percent from 1 to 100, the `%` sign or none; `default` removes the cap, and none is the default. The load, memory and disk shares above are the whole host's; this one is afkconvoy's alone: its host runner and keeper and all under them, every process its fleets started — a worker's harness, its gates and tests — and what runs in its exclusive queue, a cut's build among it, by the share of a core each takes now and what each holds resident, read of the process table at each look. Admission starts no worker while they take as many cores as the cap allows, or hold as much memory: a start would take them past it. The tick's line, `plan` and `doctor` say it with its numbers, `afkconvoy's own processes take 7.25 cores, at or past 7.00, the 50% of its 14 cores it may use`, and held back for it past the span it calls for the host's watch as any reading does. And every command of the exclusive queue — a gate, a cut's build — is kept to the cores the cap allows: given them as `CARGO_BUILD_JOBS` and `NEXTEST_TEST_THREADS`, unless its environment already says them, a gate's tests fewer where its share beside another lane is fewer. A host that caps none gives its builds every core. `doctor` says the cap in force, as `host.settings` (`max_share_of_cores`, `max_share_of_memory`), and admission's `share`: the cap, what it comes to on this host and what afkconvoy's own processes use now.
 

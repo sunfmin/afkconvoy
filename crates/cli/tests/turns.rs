@@ -46,7 +46,7 @@ fn seed(world: &World) {
 }
 
 /// How many turns wait pending on the candidate chain of `main`: for the
-/// next round (docs/adr/0082).
+/// next round (docs/adr/0083).
 fn pending(world: &World) -> usize {
     let record = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
     let chain: Value = serde_json::from_str(&record).unwrap_or(Value::Null);

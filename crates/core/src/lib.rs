@@ -21,6 +21,7 @@ pub mod claims;
 pub mod closing;
 pub mod config;
 pub mod cut;
+pub mod disk;
 pub mod distill;
 pub mod ending;
 pub mod exclusive;

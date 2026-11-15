@@ -8,7 +8,7 @@
 //! Where the commit declares a fast gate and a slow gate, a candidate runs
 //! the fast one, and a round runs the slow one once at the chain's tip,
 //! landing every candidate up to it together (docs/adr/0048). A round of
-//! PRs that asked to land is paired first (docs/adr/0082, `pairing`): its
+//! PRs that asked to land is paired first (docs/adr/0083, `pairing`): its
 //! pairs are candidates of their own, beside the chain, each fast-gated
 //! alone; its root is merged onto the target tip as candidates none of which
 //! gates alone, and the last of them runs the whole gate once.
@@ -30,7 +30,7 @@ pub enum Phase {
     /// The round's tip, running the slow gate on its commit.
     Slow,
     /// A candidate of a round's root, not gated alone: the whole gate at the
-    /// round's last candidate gates it with the rest (docs/adr/0082). The
+    /// round's last candidate gates it with the rest (docs/adr/0083). The
     /// name is the batch round's, whose records still read.
     Batched,
     Red,
@@ -105,7 +105,7 @@ pub struct Candidate<N = Plain> {
     /// The round at this candidate gated green.
     #[serde(default)]
     pub slowed: bool,
-    /// It was assigned for a round's root (docs/adr/0082): it is not gated
+    /// It was assigned for a round's root (docs/adr/0083): it is not gated
     /// alone, and the whole gate at the round's last candidate gates every
     /// candidate up to it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -502,7 +502,9 @@ impl<N: Clone> Chain<N> {
     pub fn owners(&self) -> Vec<&str> {
         let mut hosts: Vec<&str> = vec![];
         for c in &self.candidates {
-            if !c.stopped && !c.abandoned {
+            // A valid candidate of a round's root holds no gate process while
+            // it waits, but its turn does: its host owns it all the same.
+            if (!c.stopped || (c.batch && c.valid())) && !c.abandoned {
                 hosts.push(&c.owner.host);
             }
         }
@@ -902,7 +904,7 @@ impl<N: Clone> Chain<N> {
     }
 
     /// The candidate of a round's root whose turn runs the round's whole
-    /// gate now (docs/adr/0082): the last valid candidate of the chain, once
+    /// gate now (docs/adr/0083): the last valid candidate of the chain, once
     /// it and every valid one before it was assigned for a round's root and
     /// waits for its gate — or, before it, passed the whole gate already, as
     /// one an earlier run left unpublished. `None` while a candidate of the
@@ -1466,7 +1468,7 @@ mod tests {
 
     /// A round's root is gated whole once, at its last candidate: green, it
     /// lands every candidate of the root; red, the round is red and not
-    /// bisected, its tip keeping the failure (docs/adr/0082).
+    /// bisected, its tip keeping the failure (docs/adr/0083).
     #[test]
     fn a_round_s_root_is_gated_whole_once_at_its_last_candidate() {
         let mut chain = Chain { candidates: (0..3).map(batched).collect(), ..Chain::default() };

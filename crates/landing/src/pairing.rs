@@ -1,4 +1,4 @@
-//! A round's pairing tree (docs/adr/0082): the PRs that asked to land are
+//! A round's pairing tree (docs/adr/0083): the PRs that asked to land are
 //! taken into a round as it starts; in the order they asked, each pairs with
 //! the first later one it merges with cleanly, and each pair's merge is
 //! fast-gated alone. Pairs pair the same way, level by level, fast gate

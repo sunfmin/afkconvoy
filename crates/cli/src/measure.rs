@@ -11,7 +11,7 @@ use crate::worker_tmp::TMP_DIR;
 
 /// The note of the bytes the worktree held after its first gate run, kept in
 /// the worktree's own git dir: gone when the worktree is.
-const FRESH_NOTE: &str = "convoy-fresh-build";
+pub(crate) const FRESH_NOTE: &str = "convoy-fresh-build";
 
 /// The note of the bytes git ignored in the worktree after its last landing's
 /// gate run: what a tick reads, for it measures nothing.
@@ -39,7 +39,7 @@ pub fn holds_ignored(repo: &Repo) -> Result<bool> {
 
 /// The bytes of the files under `path`, a symlink counted as itself and never
 /// followed. Something gone while it is counted counts nothing.
-fn bytes_under(path: &Path) -> u64 {
+pub(crate) fn bytes_under(path: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else { return 0 };
     if !meta.is_dir() {
         return meta.len();

@@ -2,7 +2,7 @@
 //! of its own: one process takes its changes into a round, pairs them and
 //! fast-gates each pair, its pairs' gates of one level at once, merges the
 //! round's root onto the target tip, gates it whole once and lands the round
-//! as one atomic fast-forward (docs/adr/0082), on the chain the remote
+//! as one atomic fast-forward (docs/adr/0083), on the chain the remote
 //! records, through the round's rules (`pairing`), the turn's (`turn`) and
 //! the gate crate's plain gate runner (`afkconvoy_gate::run`). It asks its
 //! program's forge what it must (`Forge`).
@@ -620,7 +620,7 @@ where
 
     /// Lands `changes`, which ask to land on one target, as this process
     /// alone → what became of each. They are taken into a round in the order
-    /// given (docs/adr/0082): paired, each pair fast-gated, the pairs of one
+    /// given (docs/adr/0083): paired, each pair fast-gated, the pairs of one
     /// level at once; the root merged onto the target's tip, one candidate
     /// per change, and gated whole once at the last; green, the round lands
     /// as one fast-forward. A change that left the round for the next is

@@ -24,6 +24,23 @@ pub const CLAIM_KEY: &str = "cut";
 /// runs at a time.
 pub const CHECKOUT: &str = "afkconvoy-cut";
 
+/// What the ref an operator's ask for a cut now is kept under is named, under
+/// the fleet's refs: it stands until a cut starts (`afkconvoy cut --now`).
+pub const ASKED_REF: &str = "cut-asked";
+
+/// The kind of record an operator's ask for a cut now is.
+const ASKED: &str = "convoy:cut-asked";
+
+/// The record of an ask for a cut now, made at `ts` on the host `host`.
+pub fn write_asked(ts: u64, host: &str) -> String {
+    record::write(ASKED, &[("ts", &ts.to_string()), ("host", host)])
+}
+
+/// A commit subject → when the ask for a cut now it records was made.
+pub fn read_asked(subject: &str) -> Option<u64> {
+    record::read(ASKED, subject)?.number("ts")
+}
+
 /// The line that opens the fenced block of a repo's config file its cut
 /// steps are written in. It is not the config's own block, whose opening line
 /// is ```` ```yaml ```` alone: an afkconvoy that reads only that block reads
@@ -331,6 +348,9 @@ pub struct Seen {
     /// nothing has landed past the base the last of them was cut from: the
     /// next cut waits for a landing (docs/adr/0072).
     pub held: bool,
+    /// When an operator asked for a cut now (`afkconvoy cut --now`), while
+    /// that ask stands: a due cut starts at the next tick, idle or not.
+    pub asked: Option<u64>,
 }
 
 /// How a repo's cut stands: what a tick does about it.
@@ -349,7 +369,8 @@ pub enum Standing {
     /// A fleet lock stands: no cut starts, for the base it would snapshot may
     /// be red.
     Locked,
-    /// A tick that ends idle starts one.
+    /// A tick that ends idle starts one, as does one past the age bound or
+    /// after an operator asked for a cut now.
     Due,
     /// A cut of mine is still going: a tick asks after it.
     Running,
@@ -394,6 +415,10 @@ pub struct Row {
     pub oldest_landing_age_seconds: Option<u64>,
     /// How many seconds remain before a busy tick may start it; zero once due.
     pub busy_in_seconds: Option<u64>,
+    /// When an operator asked for a cut now, while that ask stands: the next
+    /// tick starts the due cut, idle or busy, at the age bound or not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<u64>,
     /// The open issues that wait on the next cut (`WAITING_LABEL`), lowest
@@ -501,6 +526,7 @@ pub fn row(
         busy_in_seconds: seen
             .oldest_landing
             .map(|landed| landed.saturating_add(seen.busy_after_seconds).saturating_sub(now)),
+        asked: seen.asked,
         failure: seen.failure,
         waiting: vec![],
         failed: None,
@@ -510,12 +536,27 @@ pub fn row(
 
 /// Whether a tick that ends with `held` claims held, `frontier` issues left
 /// on its frontier
-/// starts the cut `row`: it is due and either the age bound has been reached,
-/// or the tick ends idle with admission open. An overdue cut starts even
-/// while admission holds workers back: its heavy steps use the exclusive queue.
+/// starts the cut `row`: it is due and an operator asked for it now, or the
+/// age bound has been reached, or the tick ends idle with admission open. An
+/// asked-for or overdue cut starts even while admission holds workers back:
+/// its heavy steps use the exclusive queue.
 pub fn starts(row: &Row, held: usize, frontier: usize, held_back: bool) -> bool {
     row.standing == Standing::Due
-        && (row.busy_in_seconds == Some(0) || (held == 0 && frontier == 0 && !held_back))
+        && (row.asked.is_some()
+            || row.busy_in_seconds == Some(0)
+            || (held == 0 && frontier == 0 && !held_back))
+}
+
+/// Whether an operator's ask for a cut now is taken, the cut standing as
+/// `row`: it is, while the cut is due — the next tick starts it, idle or
+/// busy. Refused, with what holds it, otherwise: nothing to cut, a fleet
+/// lock, the same failure repeated with nothing landed since, a cut going.
+/// Only a cut that would start once idle is started sooner.
+pub fn ask(row: &Row) -> Result<(), Standing> {
+    match row.standing {
+        Standing::Due => Ok(()),
+        held => Err(held),
+    }
 }
 
 /// One step of a cut, in the order it takes them.
@@ -1244,6 +1285,7 @@ mod tests {
             claim: None,
             failure: None,
             held: false,
+            asked: None,
         }
     }
 
@@ -1342,6 +1384,28 @@ mod tests {
             false,
         );
         assert!(!starts(&running, 8, 4, false));
+    }
+
+    #[test]
+    fn an_asked_for_cut_starts_busy_before_the_age_bound_but_never_one_not_due() {
+        let asked = Seen { oldest_landing: Some(1000), asked: Some(1001), ..seen() };
+        let due = row(&asked, None, &[], 1001, false);
+        assert_eq!((due.busy_in_seconds, due.asked), (Some(BUSY_AFTER_SECONDS - 1), Some(1001)));
+        assert!(starts(&due, 8, 4, true), "busy, held back and short of the bound");
+        assert_eq!(ask(&due), Ok(()));
+        let unasked = row(&Seen { asked: None, ..asked.clone() }, None, &[], 1001, false);
+        assert!(!starts(&unasked, 8, 4, true));
+        let locked = row(&asked, None, &[], 1001, true);
+        assert!(!starts(&locked, 0, 0, false));
+        assert_eq!(ask(&locked), Err(Standing::Locked));
+        let tagged = row(&Seen { past: 0, ..asked.clone() }, None, &[], 1001, false);
+        assert_eq!(ask(&tagged), Err(Standing::Tagged));
+        let held = row(&Seen { held: true, ..asked.clone() }, None, &[], 1001, false);
+        assert!(!starts(&held, 0, 0, false));
+        assert_eq!(ask(&held), Err(Standing::Failed));
+        let running = Seen { claim: Some(claim("peer")), ..asked };
+        let running = row(&running, None, &[("peer".into(), 1001)], 1001, false);
+        assert_eq!(ask(&running), Err(Standing::PeerRunning));
     }
 
     #[test]

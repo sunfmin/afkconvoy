@@ -1,7 +1,7 @@
 //! The landing crate as another program uses it (docs/adr/0060): from
 //! outside, through its public API alone, with a fake forge and no fleet
 //! beside it. Changes land on a local bare repo in a round through its
-//! pairing tree (docs/adr/0082) — each pair fast-gated, the pairs of a level
+//! pairing tree (docs/adr/0083) — each pair fast-gated, the pairs of a level
 //! at once, the root merged onto the target tip and gated whole once, the
 //! target fast-forwarded through one candidate per change in order, and the
 //! forge told each landed. A red pair sends its later-asked change back

@@ -38,7 +38,7 @@ the fast gate, which a worker passes before it opens or updates its PR, and
 the slow gate, which runs the tests `.config/slow-tests` marks slow. A landing
 turn runs the fast gate on each pair of a round's pairing tree, and the whole
 gate, fast and slow, once per round, at its root merged onto the tip
-(ADR-0082). Older versions skip this block, and land
+(ADR-0083). Older versions skip this block, and land
 on `gate_command`, both; this repo's fleet is upgraded by hand before it
 lands with rounds.
 

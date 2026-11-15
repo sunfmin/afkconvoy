@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::exclusive::{
-    Lanes, Retained, Ticket, ahead, excludes, in_order, limit, ready, same_lane, same_repo,
+    Lanes, Low, Retained, Ticket, ahead, excludes, in_order, limit, ready, same_lane, same_repo,
 };
 
 /// How often a waiting turn looks again, besides being woken by a change.
@@ -50,6 +50,13 @@ pub trait Host<N>: Send + Sync {
     fn grantable(&self, ticket: &Ticket<N>) -> bool {
         let _ = ticket;
         true
+    }
+
+    /// The disk the host builds on, where it is under the floor its builds
+    /// need kept free, now: no new command is granted while it is. `None`:
+    /// it is not, or the host does not say.
+    fn disk(&self) -> Option<Low> {
+        None
     }
 
     /// What is shown of `ticket` of this queue, as an observation reads it:
@@ -252,7 +259,7 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
                 self.retry();
                 joined = self.joined();
             }
-            if !joined.paused {
+            if !joined.paused && self.host.disk().is_none() {
                 let eligible: Vec<Ticket<N>> = self
                     .with_beside(&joined)
                     .unwrap_or_default()
@@ -623,5 +630,63 @@ mod tests {
         joined.tickets = vec![joined.tickets[0].clone(), b, another_a];
         assert_eq!(joined.waiting_for(1, TWO), 1);
         assert_eq!(joined.waiting_for(2, TWO), 0, "b does not hold a's second turn up");
+    }
+}
+
+#[cfg(test)]
+mod disk_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+    use crate::exclusive::Plain;
+
+    /// A host whose disk is under its floor while `low` says so.
+    struct Filling {
+        low: AtomicBool,
+    }
+
+    impl Host<Plain> for Filling {
+        fn now(&self) -> u64 {
+            100
+        }
+        fn lanes(&self) -> Lanes {
+            Lanes { worker: 4, fast: 4, slow: 1 }
+        }
+        fn bound(&self) -> u64 {
+            3600
+        }
+        fn disk(&self) -> Option<Low> {
+            self.low.load(Ordering::SeqCst).then_some(Low { free: 1, floor: 2 })
+        }
+    }
+
+    #[test]
+    fn a_disk_under_its_floor_grants_nothing_new_until_space_returns() {
+        let holder = Holder::new(Filling { low: AtomicBool::new(true) });
+        let ticket = Ticket {
+            number: 0,
+            pid: 1,
+            command: "gate".into(),
+            dir: "/w/a".into(),
+            cut: false,
+            repo_lane: None,
+            repo: None,
+            is_turn: false,
+            candidate: false,
+            whole_repo: false,
+            gate: None,
+            asked: 100,
+            ran: None,
+            retained: None,
+            note: Plain::default(),
+        };
+        let (number, ahead) = holder.join(ticket);
+        assert_eq!(ahead, 0, "nothing is ahead of it, and every lane is free");
+        let waiting = holder.clone();
+        let turn = std::thread::spawn(move || waiting.turn(number));
+        std::thread::sleep(CHECK_EVERY * 3);
+        assert!(!turn.is_finished(), "no grant while the disk is under its floor");
+        holder.host().low.store(false, Ordering::SeqCst);
+        assert_eq!(turn.join().unwrap(), Turn::Runs(100), "granted once space returned");
     }
 }

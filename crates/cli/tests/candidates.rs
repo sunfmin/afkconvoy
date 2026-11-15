@@ -201,7 +201,7 @@ impl Drop for Held {
 }
 
 /// Starts the turns of `turns`, each a worker's checkout and its issue, into
-/// one round (docs/adr/0082): a turn of issue 5's worker, `e`, takes a round
+/// one round (docs/adr/0083): a turn of issue 5's worker, `e`, takes a round
 /// of its own first and holds it in its gate; the others ask during it and
 /// wait pending, in the order given; `release_holder` lets its gate go, it
 /// lands, and the next round takes them all.
@@ -515,7 +515,7 @@ fn a_pr_retargeted_during_validation_is_invalidated_without_publishing() {
     assert_eq!(world.gh()["issues"][0]["state"], "open");
 }
 
-/// Four ready, mutually clean PRs (docs/adr/0082): the turn builds two
+/// Four ready, mutually clean PRs (docs/adr/0083): the turn builds two
 /// pairs and fast-gates both at once, then their pair, then gates the root
 /// merged onto the tip whole once, and lands all four in one fast-forward;
 /// each issue closes.
@@ -581,7 +581,7 @@ fn four_ready_prs_pair_twice_gate_their_pair_and_land_in_one_fast_forward() {
     }
 }
 
-/// A pair whose fast gate is red stops no other pair (docs/adr/0082): its
+/// A pair whose fast gate is red stops no other pair (docs/adr/0083): its
 /// later-asked PR's turn is given the red run, its earlier one goes up
 /// unpaired, and the rest of the round lands.
 #[test]
@@ -744,7 +744,7 @@ fn dead_owner_is_cancelled_before_replacement_and_duplicate_requests_never_start
 
 /// The PRs that asked to land are taken into a round as it starts, its root
 /// one chain of candidates; a PR asking during the round waits for the next
-/// (docs/adr/0082). An odd PR goes up a level unpaired.
+/// (docs/adr/0083). An odd PR goes up a level unpaired.
 #[test]
 fn a_round_takes_the_prs_that_asked_and_one_asking_during_it_waits_for_the_next() {
     let world = world(3);
@@ -1495,7 +1495,7 @@ fn a_red_root_is_fixed_whole_by_its_last_asked_pr_and_the_others_stop() {
 }
 
 /// A PR that merges cleanly with no partner leaves the round for the next
-/// (docs/adr/0082); there, merged onto the tip that landed the other, it
+/// (docs/adr/0083); there, merged onto the tip that landed the other, it
 /// conflicts, and its worker resolves the conflict left in its worktree.
 #[test]
 fn a_pr_clean_with_no_partner_waits_for_the_next_round_and_resolves_its_conflict_there() {

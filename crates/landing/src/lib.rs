@@ -3,7 +3,7 @@
 //! change's immutable merge onto its predecessor, the chain that orders the
 //! candidates and cancels a failed or invalid suffix, the round whose PRs are
 //! paired and fast-gated pair by pair, and whose root is gated whole once on
-//! the target tip (docs/adr/0082), and the ordered fast-forward that lands
+//! the target tip (docs/adr/0083), and the ordered fast-forward that lands
 //! it, all on one record the remote holds. afkconvoy depends on it, and so may
 //! another program, by a git dependency pinned to a revision of this repo.
 

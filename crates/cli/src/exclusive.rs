@@ -118,12 +118,31 @@ const CAPPED: [&str; 2] = ["CARGO_BUILD_JOBS", "NEXTEST_TEST_THREADS"];
 /// host has would only be slower (ADR-0019), but a host that caps the share
 /// keeps the rest for a co-resident system.
 pub(crate) fn keep_within(command: &mut Command) {
+    one_front_end_thread(command);
     let Ok(settings) = crate::host_settings::of_host() else { return };
     let Some(cores) = settings.capped_cores(crate::host_settings::host_cores()) else { return };
     for name in CAPPED {
         if std::env::var_os(name).is_none() {
             command.env(name, cores.to_string());
         }
+    }
+}
+
+/// The variable huacnlee/cargo reads for the front-end threads it gives each
+/// rustc (sunfmin/control#1127).
+const RUSTC_THREADS: &str = "CARGO_RUSTC_THREADS";
+
+/// Keeps each rustc that `command` — a gate, a cut's build — starts to one
+/// front-end thread, unless the environment already says how many. On a
+/// nightly toolchain huacnlee/cargo passes `-Zthreads=8` to every rustc, so a
+/// build of `CARGO_BUILD_JOBS` jobs would run eight times the threads its
+/// share gives it; one is rustc's own default, and what rustup's cargo runs.
+/// Measured on Studio64 (2026-11-15): with it set to 1, its rustc gets no
+/// `-Zthreads` at all, and a build fresh without it stays fresh. Any other
+/// cargo ignores it.
+pub(crate) fn one_front_end_thread(command: &mut Command) {
+    if std::env::var_os(RUSTC_THREADS).is_none() {
+        command.env(RUSTC_THREADS, "1");
     }
 }
 
@@ -218,7 +237,7 @@ impl Permit {
     }
 
     /// A candidate's lane, waited for as long as it takes: a gate of a
-    /// round's pair, or the fast part of its whole gate (docs/adr/0082).
+    /// round's pair, or the fast part of its whole gate (docs/adr/0083).
     pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
         Self::acquire(repo, command, heavy, true, true, None)
     }
@@ -375,6 +394,9 @@ struct Hosted {
     /// How long each command ran, by what it is called (`Ran::key`), its
     /// last `RAN_KEPT` runs: what admission estimates the queue's drain by.
     ran: Mutex<Ran>,
+    /// What the host runner last saw of the disk its checkouts build on
+    /// (`disk::Keeper`): under its floor, it grants nothing new.
+    disk: Mutex<Option<crate::disk::Seen>>,
 }
 
 /// How many runs of one command the queue keeps the seconds of.
@@ -454,6 +476,14 @@ impl Host<Note> for Hosted {
         crate::slots::repo_available(ticket).unwrap_or(false)
     }
 
+    fn disk(&self) -> Option<afkconvoy_core::exclusive::Low> {
+        self.disk
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|seen| seen.low())
+    }
+
     fn leaving(&self, ticket: &Ticket) -> std::result::Result<(), String> {
         if !ticket.candidate {
             return Ok(());
@@ -477,7 +507,12 @@ impl Host<Note> for Hosted {
 
 impl Queue {
     pub(crate) fn with_leases(leases: bool) -> Self {
-        let hosted = Hosted { leases, validations: Mutex::default(), ran: Mutex::default() };
+        let hosted = Hosted {
+            leases,
+            validations: Mutex::default(),
+            ran: Mutex::default(),
+            disk: Mutex::default(),
+        };
         Self { holder: Holder::new(hosted) }
     }
 
@@ -513,6 +548,17 @@ impl Queue {
     /// the host runner could move onto it.
     pub fn resume(&self) {
         self.holder.resume();
+    }
+
+    /// Notes what the host runner saw of the disk (`disk::Keeper`): the next
+    /// grant is judged by it.
+    pub fn saw_disk(&self, seen: Option<crate::disk::Seen>) {
+        *self.holder.host().disk.lock().unwrap_or_else(PoisonError::into_inner) = seen;
+    }
+
+    /// What the host runner last saw of the disk; `None`: nothing yet.
+    pub fn disk(&self) -> Option<crate::disk::Seen> {
+        self.holder.host().disk.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// How long the commands it ran took (`Ran`).
@@ -1051,7 +1097,7 @@ A worker, in its own worktree. Anyone else on the host may too: the queue is the
 
 ## What it reads and writes
 
-Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its worker lane while it builds and gates; a round's slow gate takes one of the host's slow lanes, 1 by default, which `run --slow-gate-lanes N` sets live. A gate alone in the queue keeps every core; one that starts while another command runs in a worker, fast or slow lane is given its share of the host's cores — its cores over those lanes together, at least 1 — as `NEXTEST_TEST_THREADS`, unless its environment already sets it, and its build every core (sunfmin/control#245, sunfmin/control#318). Inherited kernel leases keep a dead owner's still-running descendants from being replaced. A server shared by the host that inherited one is no such descendant: one handed to pid 1 that works outside the worktree, as sccache's server, which a gate's build starts, works in `/` for every worktree of the host, or one under it. A lease that only such servers hold once its owner ended is free, also across a host runner restarted (sunfmin/control#822); so is a repo lease, which keeps an ordinary command of a repo from another of it, once every command that took it ended (sunfmin/control#829).
+Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its worker lane while it builds and gates; a round's slow gate takes one of the host's slow lanes, 1 by default, which `run --slow-gate-lanes N` sets live. A gate alone in the queue keeps every core; one that starts while another command runs in a worker, fast or slow lane is given its share of the host's cores — its cores over those lanes together, at least 1 — as `NEXTEST_TEST_THREADS`, unless its environment already sets it, and its build every core (sunfmin/control#245, sunfmin/control#318). Each rustc a command of the queue starts, and each a gate starts, runs one front-end thread, as `CARGO_RUSTC_THREADS=1`, unless its environment already sets it: huacnlee/cargo gives each eight on a nightly toolchain (sunfmin/control#1127). Inherited kernel leases keep a dead owner's still-running descendants from being replaced. A server shared by the host that inherited one is no such descendant: one handed to pid 1 that works outside the worktree, as sccache's server, which a gate's build starts, works in `/` for every worktree of the host, or one under it. A lease that only such servers hold once its owner ended is free, also across a host runner restarted (sunfmin/control#822); so is a repo lease, which keeps an ordinary command of a repo from another of it, once every command that took it ended (sunfmin/control#829).
 
 A worker's fast gate, run by `afkconvoy gate --fast`, takes the fast lane instead: `gate --fast` tells its command's `exclusive` that it runs the fast gate, through `AFKCONVOY_GATE`, which `exclusive` does not pass on to its command. Fast gates contend only with each other, up to the host setting `fast_lanes`, {const:FAST_LANES} by default (`run --fast-lanes N`); no slow gate, turn or other command holds a place they need, and fast gates of one repo run side by side, each in its own worktree. A slow gate run alone, `gate --slow`, keeps the worker lanes.
 

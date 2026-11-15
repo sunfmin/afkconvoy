@@ -1,12 +1,12 @@
 ---
-status: superseded by ADR-0082
+status: superseded by ADR-0083
 ---
 
 # A batch round gates only the chain's tip and bisects on red
 
 Amends ADR-0048 and ADR-0060 (sunfmin/control#789; decided in sunfmin/control#693, Felix, 2026-11-12).
 
-Superseded by ADR-0082 (sunfmin/control#1135): the batch round and its bisection are gone. Every round now lands through a pairing tree, whose root is gated whole once as a batch round's tip was, and a red root is not bisected.
+Superseded by ADR-0083 (sunfmin/control#1135): the batch round and its bisection are gone. Every round now lands through a pairing tree, whose root is gated whole once as a batch round's tip was, and a red root is not bisected.
 
 A goal of Guild's is split into ten tasks, and each lands through a round: each candidate runs the fast gate alone, and the round's tip runs the slow gate (ADR-0048). What Felix asked of a goal is its lead time, from its split to its release; he named the remedy: "都 merge 到一个分支之后再跑再修" — merge them all onto one branch, then run, then fix.
 
@@ -25,7 +25,11 @@ The per-candidate round stays the default (`Landing::PerCandidate`). A repo is i
 
 The mode is the landing crate's (ADR-0060): the rules in `chain` (`Chain::batch_step`, `start_batched`, `drop_red`, and a candidate's `batch` and `holds_red`), and the plain runner (`Lander`) that runs them. A candidate of a batch round is `batched` until a gate runs at it, and holds no gate process.
 
-afkconvoy's own runner of a turn lands per candidate: its config has no `landing` key, it assigns no batch candidate, and a record it writes reads as before. Its turns are one per PR, each waiting for its own; a batch round's bisection needs one runner over the whole round, which is what the plain runner is. It is added there once a fleet repo is seen to need it.
+afkconvoy's own runner of a turn lands in batch rounds too, where its repo's config says `landing: batch` at the target's tip (sunfmin/control#1120): Guild's fleet of 2026-11-15 held 28 PRs, each mergeable alone, and its turns answered 38 `speculative_conflict`s to 3 `merged`. A turn there assigns its PR a batch candidate on the chain, gated alone by nobody, and holds no worker lane while it waits; a barrier — a cut, a watch, a certification, a repair — drains the chain and lands per candidate as before, and a turn whose landing differs from the valid candidates on the chain answers `waiting_for_capacity` until they are gone. A merge onto the chain that conflicts answers `speculative_conflict` as before.
+
+Its turns are one per PR, and a batch round's bisection needs one runner over the whole round. **That runner is the chain**: `Chain::batch_step` says the round's one next step, and the turn of the candidate it is at runs it — the gate at it, in a worker lane; its drop, where it is the first red candidate, which answers `gate_red` to its worker with the red run its own turn found, as every gate at a candidate is its own turn's; and its landing, with every candidate before it, each of whose turns answers `merged`. Every other turn of the round waits on the chain. A turn whose candidate is cancelled `rebuilt` assigns its PR again on what is left, without the red one. No turn runs a step at another's candidate, so a host runner never holds a round, no turn of the round waits on another to come back, and a turn that dies leaves its candidate to the lease as any other: a waiting batch candidate holds no gate process, but its host is its owner (`Chain::owners`), and a dead owner invalidates it `owner_died` with its suffix. The host runner was refused for it: it is one more process to hold the round's state across restarts, which the chain already holds. The tip's turn was refused: the tip moves as turns join and as a red one is dropped, and a turn whose own candidate landed would have to stay to run another's.
+
+A green candidate lands, with every candidate before it, before the candidates merged onto it since its gate began are gated: in a fleet turns join a round while its gate runs, and gating the new tip first would hold a green prefix back for every gate a stream of turns sets off. With a red known, nothing lands until the first red candidate is dropped, as above.
 
 ## Considered options
 

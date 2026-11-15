@@ -57,6 +57,10 @@ pub(crate) struct Scope {
 pub(crate) struct Observation {
     pub(crate) remaining: Option<u64>,
     pub(crate) reset: u64,
+    /// The hour's quota, as GitHub said it with `remaining`; none where it
+    /// said none (a rejection's own words).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) limit: Option<u64>,
 }
 
 pub(crate) fn now() -> u64 {
@@ -152,6 +156,11 @@ impl Scope {
         Ok(Self { dir, host: host.to_string(), login })
     }
 
+    /// Where the host's shared readings of this login are kept (`crate::shared_reading`).
+    pub(crate) fn shared(&self) -> PathBuf {
+        self.dir.join("shared")
+    }
+
     pub(crate) fn read(&self, name: &str) -> Result<Observation> {
         let file = self.dir.join(format!("{name}.json"));
         match std::fs::read(&file) {
@@ -177,6 +186,7 @@ impl Scope {
             return Ok(());
         }
         let mut value = value.clone();
+        value.limit = value.limit.or(prior.limit);
         // Two rejections in flight at once: `api graphql` says its reset in
         // its headers, `pr list` says none and is bounded to a minute. The
         // one saved last does not shorten a reset already known
@@ -227,7 +237,10 @@ impl Scope {
             Ok(out) => out,
             Err(error) => {
                 if let Some(reset) = secondary(&error.to_string(), now()) {
-                    self.save("secondary", &Observation { remaining: Some(0), reset })?;
+                    self.save(
+                        "secondary",
+                        &Observation { remaining: Some(0), reset, limit: None },
+                    )?;
                     bail!(
                         "GitHub secondary rate limit on quota observation: both APIs wait until {reset} (Unix seconds); {error}"
                     );
@@ -244,7 +257,11 @@ impl Scope {
                 if let (Some(remaining), Some(reset)) =
                     (row["remaining"].as_u64(), row["reset"].as_u64())
                 {
-                    self.save(api.name(), &Observation { remaining: Some(remaining), reset })?;
+                    let limit = row["limit"].as_u64();
+                    self.save(
+                        api.name(),
+                        &Observation { remaining: Some(remaining), reset, limit },
+                    )?;
                 }
             }
         } else {
@@ -313,6 +330,7 @@ pub(crate) fn response(out: &str) -> (String, String) {
             let lower = line.to_ascii_lowercase();
             if line.starts_with("HTTP/")
                 || [
+                    "x-ratelimit-limit:",
                     "x-ratelimit-remaining:",
                     "x-ratelimit-reset:",
                     "x-ratelimit-resource:",
@@ -348,7 +366,11 @@ impl Scope {
         {
             self.save(
                 resource,
-                &Observation { remaining: Some(remaining.parse()?), reset: reset.parse()? },
+                &Observation {
+                    remaining: Some(remaining.parse()?),
+                    reset: reset.parse()?,
+                    limit: fields.get("x-ratelimit-limit").and_then(|limit| limit.parse().ok()),
+                },
             )?;
         }
         Ok(())
@@ -541,10 +563,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let scope = Scope { dir: dir.path().into(), host: "github.com".into(), login: "me".into() };
         let known = now() + 3600;
-        scope.save("graphql", &Observation { remaining: Some(0), reset: known }).unwrap();
-        scope.save("graphql", &Observation { remaining: Some(0), reset: now() + 60 }).unwrap();
+        scope
+            .save("graphql", &Observation { remaining: Some(0), reset: known, limit: None })
+            .unwrap();
+        scope
+            .save("graphql", &Observation { remaining: Some(0), reset: now() + 60, limit: None })
+            .unwrap();
         assert_eq!(scope.read("graphql").unwrap().reset, known);
-        scope.save("graphql", &Observation { remaining: Some(0), reset: known + 60 }).unwrap();
+        scope
+            .save("graphql", &Observation { remaining: Some(0), reset: known + 60, limit: None })
+            .unwrap();
         assert_eq!(scope.read("graphql").unwrap().reset, known + 60, "a later reset is taken");
     }
 

@@ -871,6 +871,58 @@ fn a_busy_fleet_cuts_at_the_age_bound_with_claims_held() {
     assert!(cut(&tick_as(&world, "beta", landed + 18_001)).is_empty());
 }
 
+/// The operator's ask for a cut now, on the remote.
+fn cut_asked(world: &World) -> bool {
+    let listed = git(&world.bare, &["for-each-ref", "--format=%(refname)"]);
+    listed.lines().any(|name| name.ends_with("cut-asked"))
+}
+
+#[test]
+fn an_operator_s_cut_now_starts_the_due_cut_at_the_next_tick_while_busy() {
+    let world = cutting();
+    let landed: u64 = git(&world.clone, &["log", "-1", "--format=%ct"]).trim().parse().unwrap();
+    for issue in 1..=4 {
+        world.issue(issue, &["ready-for-agent"]);
+    }
+    world.busy("1000");
+    let early = landed + 60;
+    let busy = tick_as(&world, "alpha", early);
+    assert!(cut(&busy).is_empty(), "busy and short of the age bound: {busy}");
+
+    let asked = world.afk(&["cut", "--now"]).ok();
+    assert_eq!((&asked["cut"], &asked["said"]), (&json!("asked"), &json!("1 commits past v0.1.0")));
+    assert!(cut_asked(&world));
+    let plan = planned(&world, "alpha", early + 1);
+    assert_eq!(plan["cut"]["asked"], asked["asked"], "{plan}");
+    assert!(plan["cut"]["busy_in_seconds"].as_u64().unwrap() > 0, "{plan}");
+
+    // Busy, admission holding workers back, short of the bound: it starts.
+    let ticked = tick_as(&world, "alpha", early + 2);
+    assert_eq!(cut(&ticked), ["cut done"], "{ticked}");
+    assert!(logged(&world).iter().any(|line| line.contains("fleet busy, as an operator asked")));
+    assert!(!cut_asked(&world), "the cut that started answers the ask");
+    assert!(planned(&world, "alpha", early + 3)["cut"].get("asked").is_none());
+
+    // A cut going: asking again is refused, and nothing is recorded.
+    let going = world.afk(&["cut", "--now"]).error();
+    assert!(going.contains("a cut is still going"), "{going}");
+    assert!(!cut_asked(&world));
+}
+
+#[test]
+fn a_cut_now_with_nothing_to_cut_is_refused_and_a_bare_now_is_cut_s_alone() {
+    let world = World::new();
+    turn_cutting_on(&world, "Turn cutting on");
+    tag(&world, "v0.1.0");
+    let refused = world.afk(&["cut", "--now"]).error();
+    assert!(refused.contains("nothing has landed past v0.1.0"), "{refused}");
+    assert!(!cut_asked(&world));
+    let elsewhere = world.afk(&["plan", "--now"]).error();
+    assert!(elsewhere.contains("only on `afkconvoy cut --now`"), "{elsewhere}");
+    let both = world.afk(&["cut", "--now", "--from", "gate"]).error();
+    assert!(both.contains("give one of them"), "{both}");
+}
+
 #[test]
 fn a_repo_can_shorten_the_busy_bound_and_admission_does_not_hold_an_overdue_cut() {
     let world = World::new();

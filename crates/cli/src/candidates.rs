@@ -273,6 +273,10 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
         "round": chain.round_of(&c.id).map(|tip| &tip.id),
         "assigned": c.assigned,
     });
+    // A candidate of a round's root says so; a pair says what it joins.
+    if c.batch {
+        row["batch"] = json!(true);
+    }
     if let Some(pair) = &c.pair {
         row["pair"] = json!(pair);
     }
@@ -1408,7 +1412,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         waited_past(answer, detail)
     };
     // A pending turn says what it asks to land: the next round takes it in
-    // with it (docs/adr/0082).
+    // with it (docs/adr/0083).
     let asks = (!barrier).then(|| Asks {
         change: pr.number,
         branch: pr.head_branch.clone(),
@@ -1521,7 +1525,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     }
     let recovering = adopted.is_some();
     // A turn that is no barrier lands through its round's pairing tree
-    // (docs/adr/0082): it takes a lane for each gate it runs there.
+    // (docs/adr/0083): it takes a lane for each gate it runs there.
     let rooted = !barrier && !recovering;
     let id = adopted.as_ref().map_or_else(|| id.clone(), |c| c.id.clone());
     let mut permit = if recovering || rooted {
@@ -1782,7 +1786,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         if next == Next::Ended {
             return Ok(cancelled(result, c, &chain));
         }
-        let locks = crate::lock::standing_locks(&gh, config)?;
+        // Asked again at each wait: one read for the host's waiting turns.
+        let locks = crate::lock::waited_locks(&gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
             invalidate(repo, config, &id, "fleet_lock")?;
             return Ok(crate::turn::locked(result, &locks));
@@ -1903,7 +1908,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     }
 }
 
-/// A turn in its round (docs/adr/0082): what it runs with.
+/// A turn in its round (docs/adr/0083): what it runs with.
 struct InRound<'a> {
     repo: &'a Repo,
     config: &'a Config,
@@ -1930,7 +1935,7 @@ enum Rounded {
 }
 
 /// Takes the turn through its round, up to its candidate of the round's
-/// root (docs/adr/0082): it opens a round where none is open, pairs a level
+/// root (docs/adr/0083): it opens a round where none is open, pairs a level
 /// where it sees one to pair, gates each pair it is the later-asked PR of,
 /// and assigns its candidate once every PR of the root asked before it has
 /// one. A pair of its red answers `gate_red` with that pair's run; a round
@@ -1946,7 +1951,8 @@ fn in_round(
     let mut waiting = Waiting::new();
     loop {
         let chain = reconcile(repo, config, clock())?;
-        let locks = crate::lock::standing_locks(gh, config)?;
+        // Asked again at each wait: one read for the host's waiting turns.
+        let locks = crate::lock::waited_locks(gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
             return Ok(Rounded::Answer(crate::turn::locked(answer, &locks)));
         }
@@ -2010,7 +2016,7 @@ fn in_round(
 }
 
 /// The answer of a turn whose pair ran red on its fast gate: the pair's
-/// run, which this PR's worker is given (docs/adr/0082).
+/// run, which this PR's worker is given (docs/adr/0083).
 fn pair_red(answer: Value, p: &Candidate) -> Value {
     let mut result = match &p.result {
         Some(evidence) => answered(evidence, &answer),
@@ -2118,7 +2124,7 @@ fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
 
 /// Assigns this turn's candidate of the round's root: its PR's original
 /// head merged onto the round's candidates so far, or the target tip, as
-/// one merge commit, gated with the round at its last (docs/adr/0082) →
+/// one merge commit, gated with the round at its last (docs/adr/0083) →
 /// `None` once assigned, for the round to carry on; the turn's answer where
 /// it cannot be: a conflict, which the worker resolves, or a base or window
 /// not ready.

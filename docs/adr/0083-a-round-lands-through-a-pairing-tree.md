@@ -49,3 +49,4 @@ Carrying is the next ticket. Until it lands, a pair red on its fast gate hands t
 - A pair's fast gate runs on a tree that is not the target's: a change that breaks only with the tip's newer commits is first seen by the root's whole gate.
 - `Phase::Batched` and a candidate's `batch` now mean a candidate of a round's root, not gated alone; records of batch rounds still read.
 - Guild lands with the same crate, and its `land_with` and `Landing` are gone with the batch round.
+- A repo's `landing: batch` (sunfmin/control#1120), which put afkconvoy's own turns in batch rounds, goes with them: every round pairs, and the key is unknown again.

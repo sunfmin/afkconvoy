@@ -61,7 +61,7 @@ pub trait Forge {
 
     /// `change` is sent back from its round: it is the later-asked change of
     /// a pair whose fast gate ran red, and `run` is that run
-    /// (docs/adr/0082). What follows of it on the forge, such as asking its
+    /// (docs/adr/0083). What follows of it on the forge, such as asking its
     /// author to fix it; nothing, unless the program says.
     fn sent_back(&self, change: &Change, run: Option<&Evidence>) -> Result<(), Self::Error> {
         let _ = (change, run);

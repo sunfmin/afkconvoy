@@ -14,6 +14,13 @@ pub fn standing_locks(gh: &GitHub, config: &Config) -> Result<Vec<u64>> {
     gh.open_with(&config.lock_label)
 }
 
+/// The fleet locks standing, as a turn that waits asks again and again:
+/// read for every waiting process of the host once an interval
+/// (`GitHub::open_with_shared`), so a lock raised is seen within it.
+pub fn waited_locks(gh: &GitHub, config: &Config) -> Result<Vec<u64>> {
+    gh.open_with_shared(&config.lock_label)
+}
+
 /// The closed lock that explains an `escalate` or a failure declared at `at`
 /// (`lock::explains`), from the locks GitHub says have closed. `None` of one
 /// declared at no known time: nothing is run again on a guess.
