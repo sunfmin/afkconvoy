@@ -231,7 +231,8 @@ pub fn closed(fleet: &Fleet, host: &str, closed: &[(u64, Option<&str>)]) -> Vec<
             let Ok((worktree, terminal)) = crate::tell::worker(fleet, host, number)? else {
                 return Ok(None);
             };
-            if worktree.state(fleet.now)? != WorkerState::Busy {
+            // Nobody works in a directory that is gone.
+            if !worktree.path.is_dir() || worktree.state(fleet.now)? != WorkerState::Busy {
                 return Ok(None);
             }
             let Some(started) = worktree.handed(None)? else { return Ok(None) };

@@ -387,9 +387,6 @@ fn land_task(
                 json!({"issue": issue, "pr": landed.pr, "outcome": Ending::Merged, "commit": landed.commit, "detail": "recovered landing from base history; issue settled"}),
             );
         }
-        if gh.issue(issue)?.is_closed() {
-            bail!(closed(issue));
-        }
         bail!("no open PR closes issue #{issue} — if it has already merged, stop");
     };
     if let Some(id) = crate::target::delivery(repo, issue)? {
