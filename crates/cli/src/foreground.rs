@@ -250,7 +250,13 @@ mod tests {
     fn a_row_of_ps_is_its_terminal_place() {
         assert_eq!(
             job("  412   412   400 T+   ttys012"),
-            Some(Job { pid: 412, pgid: 412, tpgid: 400, stopped: true, tty: Some("ttys012".into()) })
+            Some(Job {
+                pid: 412,
+                pgid: 412,
+                tpgid: 400,
+                stopped: true,
+                tty: Some("ttys012".into())
+            })
         );
         assert_eq!(
             job("9 9 0 Ss ??"),
@@ -290,7 +296,8 @@ mod tests {
             };
             assert_eq!(opened, 0, "openpty: {}", std::io::Error::last_os_error());
             // SAFETY: both descriptors were just opened, and each is owned once.
-            let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+            let (master, slave) =
+                unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
             let home = tempfile::tempdir().unwrap();
             let mut command = Command::new(zsh);
             command
@@ -433,14 +440,16 @@ mod tests {
         let said = terminal.worktree.path().join("said");
         let harness = terminal.start_harness(&format!("read:{}", said.display()));
         signal(harness, libc::SIGSTOP);
-        terminal.until("the shell takes its terminal back", |holds| {
-            matches!(holds, Holds::Background(held) if held.shell_holds)
-        });
+        terminal.until(
+            "the shell takes its terminal back",
+            |holds| matches!(holds, Holds::Background(held) if held.shell_holds),
+        );
         signal(harness, libc::SIGCONT);
         // Continued in the background, its first read stops it again.
-        let held = terminal.until("the harness is resumed in the background", |holds| {
-            matches!(holds, Holds::Background(held) if held.stopped && held.shell_holds)
-        });
+        let held = terminal.until(
+            "the harness is resumed in the background",
+            |holds| matches!(holds, Holds::Background(held) if held.stopped && held.shell_holds),
+        );
         let Holds::Background(held) = held else { unreachable!() };
         assert_eq!(held.pid, harness);
         assert!(held.evidence().contains("not its terminal's foreground"), "{}", held.evidence());

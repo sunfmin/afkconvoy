@@ -1005,7 +1005,13 @@ fn observe(
         return Ok(());
     };
     let state = worktree.state(fleet.now)?;
-    let background = foreground(fleet, me, issue.map(|n| n.to_string()).or(patrol.map(str::to_string)), worktree, &terminal)?;
+    let background = foreground(
+        fleet,
+        me,
+        issue.map(|n| n.to_string()).or(patrol.map(str::to_string)),
+        worktree,
+        &terminal,
+    )?;
     let orca = worktree.agent_report()?;
     let signal = error_of(worktree)?;
     // A delivery that failed after the runtime reported working still
