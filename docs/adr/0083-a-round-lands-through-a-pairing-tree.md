@@ -43,7 +43,17 @@ The plain runner stacks the same way: a run that asks while another run's round 
 
 ## This slice (sunfmin/control#1135)
 
-Carrying is the next ticket. Until it lands, a pair red on its fast gate hands the red run back to its later-asked PR's worker, which answers `gate_red`; the other side goes up unpaired, and the rest of the round lands. A PR that merges with no partner at its level, or whose pair said nothing of its tree, leaves the round for the next, as a conflicting PR waited before. A red root is handled as a red round was (ADR-0048): its tip's worker is handed the round, and the others answer `round_red`.
+A red root is handled as a red round was (ADR-0048): its tip's worker is handed the round, and the others answer `round_red`.
+
+## Carrying (sunfmin/control#1136)
+
+Carrying is the pairing tree's (`pairing`), on the round's one record: a pair red on its fast gate takes both its sides out of the round; its later-asked PR leaves it `carrying`, handed the pair's merge and the PRs it carries, and each of those leaves `carried` by it. A level's last-asked node that `git merge-tree` finds conflicting with every other node of the level carries the earliest-asked of them no pair took, one a level, its last-asked PR handed its own node's commit and then that node's; where the two of them conflict with each other only, the later-asked carries the earlier, as of a red pair. The round notes each carrying PR; one asked again while no PR of its root has its candidate rejoins the round at the level pairing then, or a root not yet assigned pairs with it again (`Chain::rejoin`); otherwise it waits for the next.
+
+A carried PR is closed only once the carrying PR's head holds its head, so nothing carried is lost while its worker merges: every turn, before its round, carries each open PR whose head its own head holds and the target tip does not (`forge::carry`), whatever brought it there. A red pair's merge is a fast-forward of the carrying branch, so its turn pushes it and carries at once, and answers `gate_red` with the run; a conflicting merge is left in the worktree, its turn answers `conflict`, and the turn after the worker resolved it carries. The carried PR's turn answers `carried`, naming its carrier. The forge (ADR-0060) closes a change with a comment, reads and rewrites its description, deletes its source while still at the head carried, and tells its program (`Forge::carried`): the carrying description is its own followed by each carried one's under a heading that names it, once, so it closes every issue they closed.
+
+afkconvoy tells each carried issue, by a comment, which PR carries it and on which branch, which it records as one of the issue's own branches. While that PR is open the issue is off the frontier, and a claim on it is settled — its worker ended, its worktree removed, the claim let go — without closing it. The carrying PR's landing closes every issue its description closes. Should it close unlanded, the issue is dispatchable again, and its next worker starts from the carrying branch, which holds its work.
+
+The plain runner (`Lander::land`) carries the same way among the changes it is given: each one's outcome says `Carrying` or `Carried`, and the forge is told what a carrying change merges (`Forge::sent_back`).
 
 ## Considered options
 

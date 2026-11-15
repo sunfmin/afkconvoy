@@ -55,6 +55,30 @@ pub fn branch_comment(branch: &str) -> String {
     )
 }
 
+/// The kind of record that says an issue's PR is carried by another PR
+/// (docs/adr/0083), which lands its change with its own.
+pub const CARRIED: &str = "convoy:carried";
+
+/// The comment on the issue of PR `pr`, carried by PR `by` on `branch`: it
+/// records `branch` as one of the issue's own as well, so that, should `by`
+/// never land, the issue's next worker starts from the branch that holds its
+/// work (`recorded_branches`).
+pub fn carried_comment(pr: u64, by: u64, branch: &str) -> String {
+    let (pr_text, by_text) = (pr.to_string(), by.to_string());
+    format!(
+        "{}\n{}\nafkconvoy: PR #{pr} of this issue is carried by PR #{by}, which lands its change \
+         with its own from the branch `{branch}`; this issue closes when that PR lands.",
+        record::marker(CARRIED, &[("pr", &pr_text), ("by", &by_text)]),
+        record::marker(BRANCH, &[("name", branch)]),
+    )
+}
+
+/// The PR that carries an issue's work, from its comments' bodies, oldest
+/// first: the latest record's.
+pub fn carried_by<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<u64> {
+    record::latest_marker(CARRIED, bodies).and_then(|(_, fields)| fields.number("by"))
+}
+
 /// The branches the fleet recorded on an issue, from its comments' bodies,
 /// oldest first.
 pub fn recorded_branches<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Vec<String> {
@@ -386,6 +410,19 @@ mod rejected {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A carried issue's comment names its carrier and records the
+    /// carrier's branch as one of the issue's own, for a next worker to
+    /// start from (docs/adr/0083).
+    #[test]
+    fn a_carried_comment_names_its_carrier_and_records_its_branch() {
+        let comment = carried_comment(10, 20, "issue-2");
+        assert!(comment.starts_with("<!--convoy:carried pr=10 by=20-->\n"), "{comment}");
+        let bodies = ["<!--convoy:branch name=issue-1-->", comment.as_str()];
+        assert_eq!(carried_by(bodies), Some(20));
+        assert_eq!(recorded_branches(bodies), ["issue-1", "issue-2"]);
+        assert_eq!(carried_by(["a comment"]), None);
+    }
 
     #[test]
     fn refusal_comments_keep_evidence_and_ignore_unknown_or_duplicate_harnesses() {

@@ -602,6 +602,9 @@ pub struct State {
     /// The pending places live lands of this host hold on its chains, from
     /// the same listing.
     pub(crate) pending: Vec<crate::candidates::PendingLand>,
+    /// When the base branch's tip on the remote was committed, in epoch
+    /// seconds: the repo's last landing, this host's or a peer's.
+    pub base_moved: Option<u64>,
     /// Jira deliveries from the same remote listing as the working set.
     pub deliveries: Vec<Value>,
 }
@@ -2028,6 +2031,9 @@ fn finish_state(
     let candidates = crate::candidates::view(&fleet.repo, &fleet.config, &chains)
         .unwrap_or_else(|error| json!({"error": error.to_string()}));
     let pending = crate::candidates::pending_lands(&chains, &prefix, now);
+    let base_moved = fleet.base_tip().ok().and_then(|tip| {
+        fleet.repo.git(&["log", "-1", "--format=%ct", &tip]).ok()?.trim().parse().ok()
+    });
     let deliveries = report.deliveries_json();
     let state = State {
         wait_holders: crate::human_wait::holders(&fleet.scan, now),
@@ -2051,6 +2057,7 @@ fn finish_state(
         on_gone,
         candidates,
         pending,
+        base_moved,
         deliveries,
     };
     Ok((state, report))
@@ -2449,7 +2456,14 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     }
     found.extend(bounded);
     if let Ok(state) = &state {
-        found.extend(stalled_finding(&state.candidates, &lands, now));
+        let own_prs: Vec<u64> = state.held.iter().filter_map(|held| held.pr).collect();
+        let waiting = LandWait {
+            candidates: &state.candidates,
+            own_prs: &own_prs,
+            host: &crate::this_host(),
+            base_moved: state.base_moved,
+        };
+        found.extend(stalled_finding(&waiting, &lands, now));
     }
     found.extend(look.trackers.findings(repo));
     found.extend(crate::paused::findings(now));
@@ -2583,14 +2597,31 @@ pub(crate) const LANDING_STALLED: u64 = 45 * 60;
 /// How many of the last `land` turns a stalled finding tallies.
 const LAST_LANDS: usize = 20;
 
+/// What of this fleet waits to land, as doctor read it.
+struct LandWait<'a> {
+    /// The chain's rows as `candidates::view` shows them.
+    candidates: &'a Value,
+    /// The open PRs of this fleet's own claims.
+    own_prs: &'a [u64],
+    /// This host, whose candidates are this fleet's.
+    host: &'a str,
+    /// When the base branch's tip was committed: a landing by a peer on the
+    /// same remote is the repo landing too.
+    base_moved: Option<u64>,
+}
+
 /// The landing heartbeat (sunfmin/control#1112): a fleet with green work
-/// waiting — a valid candidate fast-green or gating, or `land` turns asked
-/// since the last landing — that has landed nothing for `LANDING_STALLED`.
-/// `candidates` are the chain's rows as `candidates::view` shows them,
-/// `entries` this host's tick log of the repo. It names the waiting PRs and
-/// tallies the last `LAST_LANDS` turns by outcome; a turn that failed is
-/// `error`. The watch takes it as a stall to resolve, not work to wait out.
-fn stalled_finding(candidates: &Value, entries: &[Entry], now: u64) -> Option<Finding> {
+/// of its own waiting — a valid candidate of this host fast-green or
+/// gating, or `land` turns asked since the last landing while its own
+/// claims have an open PR — where the repo has landed nothing for
+/// `LANDING_STALLED`. The last landing is this host's last `merged` or the
+/// base branch's move, a peer's landing included. An idle fleet, or one
+/// whose issues a peer holds or blockers hold back, is not stalled
+/// (sunfmin/control#1143). `entries` are this host's tick log of the repo.
+/// It names the waiting PRs and tallies the last `LAST_LANDS` turns by
+/// outcome; a turn that failed is `error`. The watch takes it as a stall to
+/// resolve, not work to wait out.
+fn stalled_finding(seen: &LandWait, entries: &[Entry], now: u64) -> Option<Finding> {
     let lands: Vec<(u64, &str, bool)> = entries
         .iter()
         .filter_map(|entry| match &entry.what {
@@ -2601,11 +2632,13 @@ fn stalled_finding(candidates: &Value, entries: &[Entry], now: u64) -> Option<Fi
         })
         .collect();
     let merged = |&&(_, outcome, failed): &&(u64, &str, bool)| !failed && outcome == "merged";
-    let last_landed = lands.iter().filter(merged).map(|(at, ..)| *at).max();
+    let last_merged = lands.iter().filter(merged).map(|(at, ..)| *at).max();
+    let last_landed = last_merged.max(seen.base_moved);
     if last_landed.is_some_and(|at| now.saturating_sub(at) < LANDING_STALLED) {
         return None;
     }
-    let waiting: Vec<&Value> = candidates
+    let waiting: Vec<&Value> = seen
+        .candidates
         .as_array()
         .map(|rows| {
             rows.iter()
@@ -2614,12 +2647,14 @@ fn stalled_finding(candidates: &Value, entries: &[Entry], now: u64) -> Option<Fi
                         row["phase"].as_str(),
                         Some("green" | "slow" | "batched" | "validating")
                     ) && row["cancelled_by"].is_null()
+                        && row["host"].as_str() == Some(seen.host)
                 })
                 .collect()
         })
         .unwrap_or_default();
     let asked_since = lands
         .iter()
+        .filter(|_| !seen.own_prs.is_empty())
         .filter(|(at, ..)| last_landed.is_none_or(|landed| *at > landed))
         .map(|(at, ..)| *at)
         .min();
@@ -2634,6 +2669,10 @@ fn stalled_finding(candidates: &Value, entries: &[Entry], now: u64) -> Option<Fi
         *tally.entry(if *failed { "error" } else { outcome }).or_default() += 1;
     }
     let mut prs: Vec<u64> = waiting.iter().filter_map(|row| row["pr"].as_u64()).collect();
+    if asked_since.is_some() {
+        prs.extend(seen.own_prs);
+    }
+    prs.sort_unstable();
     prs.dedup();
     let green = waiting.iter().filter(|row| row["phase"] == "green").count();
     let tallied = if tally.is_empty() {
@@ -2641,7 +2680,8 @@ fn stalled_finding(candidates: &Value, entries: &[Entry], now: u64) -> Option<Fi
     } else {
         tally.iter().map(|(outcome, n)| format!("{n} {outcome}")).collect::<Vec<_>>().join(", ")
     };
-    let landed = last_landed.map_or_else(|| "none".to_string(), |at| at.to_string());
+    let landed = last_merged.map_or_else(|| "none".to_string(), |at| at.to_string());
+    let moved = seen.base_moved.map_or_else(|| "unknown".to_string(), |at| at.to_string());
     Some(finding(
         Kind::LandingStalled,
         json!(["landing-stalled", since]),
@@ -2653,7 +2693,7 @@ fn stalled_finding(candidates: &Value, entries: &[Entry], now: u64) -> Option<Fi
         ),
         format!(
             "the last {} `land` turn(s) on this host answered {tallied}; the last `merged` at \
-             {landed}, waiting since {since}",
+             {landed}, the base branch last moved at {moved}, waiting since {since}",
             tally.values().sum::<u64>()
         ),
         "afkconvoy plan".to_string(),
@@ -3265,6 +3305,7 @@ mod tests {
             on_gone: vec![],
             candidates: json!([]),
             pending: vec![],
+            base_moved: None,
             deliveries: vec![],
         }
     }
@@ -4491,7 +4532,17 @@ mod tests {
     }
 
     fn candidate(pr: u64, phase: &str, assigned: u64) -> Value {
-        json!({"phase": phase, "pr": pr, "cancelled_by": null, "assigned": assigned})
+        json!({"phase": phase, "pr": pr, "cancelled_by": null, "assigned": assigned, "host": "h"})
+    }
+
+    /// What waits: `candidates`, read on host `h`, whose own claims have
+    /// `own_prs` open, and whose base branch last moved at `base_moved`.
+    fn waiting<'a>(
+        candidates: &'a Value,
+        own_prs: &'a [u64],
+        base_moved: Option<u64>,
+    ) -> LandWait<'a> {
+        LandWait { candidates, own_prs, host: "h", base_moved }
     }
 
     #[test]
@@ -4508,7 +4559,7 @@ mod tests {
         entries.extend((0..12).map(|n| land(since + n, "speculative_conflict", false)));
         entries.extend((0..6).map(|n| land(since + 100 + n, "waiting_for_capacity", false)));
         entries.extend((0..4).map(|n| land(since + 200 + n, "fetch failed", true)));
-        let found = stalled_finding(&green, &entries, now).expect("stalled");
+        let found = stalled_finding(&waiting(&green, &[], None), &entries, now).expect("stalled");
         assert_eq!(found.kind, Kind::LandingStalled);
         assert_eq!(found.severity, Severity::Critical);
         assert!(Kind::LandingStalled.watched(), "the watch resolves it");
@@ -4518,8 +4569,8 @@ mod tests {
             found.evidence,
             format!(
                 "the last 20 `land` turn(s) on this host answered 4 error, 10 \
-                 speculative_conflict, 6 waiting_for_capacity; the last `merged` at {}, waiting \
-                 since {since}",
+                 speculative_conflict, 6 waiting_for_capacity; the last `merged` at {}, the base \
+                 branch last moved at unknown, waiting since {since}",
                 since - 600
             )
         );
@@ -4527,18 +4578,72 @@ mod tests {
         // not yet stalled.
         let mut beat = entries.clone();
         beat.push(land(now - 60, "merged", false));
-        assert_eq!(stalled_finding(&green, &beat, now), None);
+        assert_eq!(stalled_finding(&waiting(&green, &[], None), &beat, now), None);
         let young = json!([candidate(10, "green", now - 60)]);
         assert_eq!(
-            stalled_finding(&young, &[land(now - 60, "speculative_conflict", false)], now),
+            stalled_finding(
+                &waiting(&young, &[], None),
+                &[land(now - 60, "speculative_conflict", false)],
+                now
+            ),
             None
         );
         // Nothing waiting is nothing stalled, however long since the last landing.
-        assert_eq!(stalled_finding(&json!([]), &[land(since - 600, "merged", false)], now), None);
+        assert_eq!(
+            stalled_finding(
+                &waiting(&json!([]), &[], None),
+                &[land(since - 600, "merged", false)],
+                now
+            ),
+            None
+        );
         // Turns asked since the last landing are work waiting, though the
         // chain could not be read.
         let asked = [land(since - 600, "merged", false), land(since, "fetch failed", true)];
-        let found = stalled_finding(&json!({"error": "fetch"}), &asked, now).expect("stalled");
-        assert!(found.what.contains("PR(s) none wait"), "{}", found.what);
+        let unread = json!({"error": "fetch"});
+        let found = stalled_finding(&waiting(&unread, &[7], None), &asked, now).expect("stalled");
+        assert!(found.what.contains("PR(s) #7 wait"), "{}", found.what);
+    }
+    #[test]
+    fn an_idle_fleet_while_a_peer_lands_the_repo_is_not_stalled() {
+        // Studio64, 2026-11-15 (sunfmin/control#1143): no claim of its own,
+        // no candidate of its own, its last `merged` 11 h ago, and land
+        // turns asked since then; a peer moved the base branch meanwhile.
+        let now = 100_000;
+        let last = now - 11 * 3600;
+        let entries = [
+            land(last, "merged", false),
+            land(last + 60, "waiting_for_capacity", false),
+            land(last + 120, "target_moved", false),
+        ];
+        let peers = json!([
+            {"phase": "green", "pr": 904, "cancelled_by": null, "assigned": last, "host": "peer"},
+        ]);
+        let moved = Some(now - 600);
+        assert_eq!(stalled_finding(&waiting(&peers, &[], moved), &entries, now), None);
+        // However long ago the base moved, an idle fleet waits for nothing.
+        assert_eq!(stalled_finding(&waiting(&peers, &[], Some(last)), &entries, now), None);
+        // Its own claim's open PR waiting while a peer lands is a landing
+        // of the repo too.
+        assert_eq!(stalled_finding(&waiting(&peers, &[905], moved), &entries, now), None);
+    }
+
+    #[test]
+    fn a_fast_green_candidate_of_this_host_waiting_past_the_bound_is_still_stalled() {
+        let now = 100_000;
+        let since = now - LANDING_STALLED - 60;
+        let rows = json!([
+            candidate(31, "green", since),
+            {"phase": "green", "pr": 32, "cancelled_by": null, "assigned": since, "host": "peer"},
+        ]);
+        let entries = [land(since - 600, "merged", false)];
+        let found = stalled_finding(&waiting(&rows, &[], Some(since - 600)), &entries, now)
+            .expect("stalled");
+        assert_eq!(found.kind, Kind::LandingStalled);
+        assert!(
+            found.what.contains("1 fast-green candidate(s) and PR(s) #31 wait"),
+            "{}",
+            found.what
+        );
     }
 }

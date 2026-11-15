@@ -516,7 +516,9 @@ enum Sweep {
 /// `TickStep::Watch`).
 fn ending_step(sweep: Sweep, issue: u64, status: Status, start: bool) -> Option<TickStep> {
     match (sweep, status) {
-        (Sweep::Landed, Status::Closed | Status::Landed) => Some(TickStep::Settle { issue }),
+        (Sweep::Landed, Status::Closed | Status::Landed | Status::Carried) => {
+            Some(TickStep::Settle { issue })
+        }
         (Sweep::Landed, Status::Gone) => Some(TickStep::Forget { issue }),
         (Sweep::Stopped, Status::NoPr) => Some(TickStep::Judge { issue, start }),
         (Sweep::Stopped, Status::Landing) => Some(TickStep::Watch { issue, start }),
@@ -945,6 +947,14 @@ mod relied_on {
 mod tests {
     use super::*;
     use crate::plan::Dispatchable;
+
+    /// A claim on a carried issue is settled as a landed one is (docs/adr/0083).
+    #[test]
+    fn a_carried_claim_is_settled() {
+        let step = ending_step(Sweep::Landed, 3, Status::Carried, true);
+        assert!(matches!(step, Some(TickStep::Settle { issue: 3 })), "{step:?}");
+        assert!(ending_step(Sweep::Stopped, 3, Status::Carried, true).is_none());
+    }
 
     fn set(frontier: &[u64], mine: &[(u64, Status)]) -> WorkingSet {
         WorkingSet {

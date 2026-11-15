@@ -864,7 +864,10 @@ pub fn reconcile(
         }
         if set.mine.iter().any(|mine| {
             mine.number == claim.number
-                && matches!(mine.status, Status::Landed | Status::Closed | Status::Gone)
+                && matches!(
+                    mine.status,
+                    Status::Landed | Status::Closed | Status::Gone | Status::Carried
+                )
         }) {
             if let Some(worktree) = Worktree::of_issue(&source, claim.number)? {
                 book.workers.retain(|o| o.path != worktree.path);

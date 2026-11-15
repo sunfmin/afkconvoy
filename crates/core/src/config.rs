@@ -84,6 +84,9 @@ pub struct Settings {
     /// Read only to be refused: a config names no harness (docs/adr/0020).
     pub harness: Option<String>,
     pub escalate_to: Option<String>,
+    /// Read only to be refused: a config says nothing of how a round lands,
+    /// which is through a pairing tree (docs/adr/0083).
+    pub landing: Option<String>,
 }
 
 /// What a bound repo's config says beside the keys every repo has.
@@ -189,6 +192,8 @@ pub enum ConfigError {
     NeedsTeam(&'static str),
     /// `harness`, which a config names no more: what it was set to.
     Harness(String),
+    /// `landing`, which a config says no more: what it was set to.
+    Landing(String),
     /// A key that means something only in an unbound repo, in a repo naming a team.
     Unbound(&'static str),
     /// `escalate_to` is neither `consult` nor `human`: what it was set to.
@@ -226,6 +231,12 @@ impl std::fmt::Display for ConfigError {
                  workers may run, and the host kit (`afkconvoy kit`) which this host can start. \
                  A checkout names one with `afkconvoy run <checkout> --harness`"
             ),
+            ConfigError::Landing(named) => write!(
+                f,
+                "landing: a config says nothing of how a round lands any more (docs/adr/0083): \
+                 delete the line `landing: {named}`: every round lands through a pairing tree, \
+                 and no batch round is left"
+            ),
             ConfigError::Unbound(key) => write!(
                 f,
                 "{key}: is read only in an unbound repo: a bound repo's stage says where its \
@@ -246,6 +257,9 @@ impl Config {
     pub fn new(settings: Settings) -> Result<Config, ConfigError> {
         if let Some(named) = settings.harness {
             return Err(ConfigError::Harness(named));
+        }
+        if let Some(named) = settings.landing {
+            return Err(ConfigError::Landing(named));
         }
         let base_branch = required("base_branch", settings.base_branch)?;
         if settings.gate_budget_seconds.is_some_and(|budget| {
@@ -703,6 +717,18 @@ mod tests {
             let said = refused.to_string();
             assert!(said.contains("delete the line `harness: pi`"), "{said}");
             assert!(said.contains("`roster`"), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_config_that_says_how_rounds_land_is_refused_with_the_adr_that_decides_it() {
+        for landing in ["batch", "per_candidate"] {
+            let named = Settings { landing: Some(landing.into()), ..minimal() };
+            let refused = Config::new(named).unwrap_err();
+            assert_eq!(refused, ConfigError::Landing(landing.to_string()));
+            let said = refused.to_string();
+            assert!(said.contains("docs/adr/0083"), "{said}");
+            assert!(said.contains(&format!("delete the line `landing: {landing}`")), "{said}");
         }
     }
 

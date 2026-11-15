@@ -182,6 +182,15 @@ fn main() {
             let number = number.to_string();
             pr_edit(&mut st, &number)
         }
+        ["pr", "view", number, "--json", "body", "--jq", ".body"] => {
+            let wanted: u64 = number.parse().unwrap();
+            let rows = st.doc["prs"].as_array().unwrap();
+            let Some(pr) = rows.iter().find(|pr| pr["number"] == wanted) else {
+                st.finish("", 1, "gh: no pull request found\n")
+            };
+            let body = pr["body"].as_str().unwrap_or("").to_string();
+            st.finish(&body, 0, "")
+        }
         ["pr", "ready", number, ..] => {
             let number = number.to_string();
             pr_ready(&mut st, &number)

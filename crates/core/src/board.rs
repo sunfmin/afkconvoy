@@ -50,7 +50,7 @@ impl Stage {
         match status {
             Status::NoPr | Status::AtStage => Some(Stage::Claimed),
             Status::Landing => Some(Stage::Joining),
-            Status::Landed | Status::Closed | Status::Gone => None,
+            Status::Landed | Status::Closed | Status::Gone | Status::Carried => None,
         }
     }
 

@@ -498,7 +498,7 @@ The ordered candidates of one repo and target branch, each depending on its pred
 _Avoid_: landing train, speculative queue
 
 **Landing heartbeat**:
-A landing within the last 45 minutes, while green work waits: a valid candidate fast-green or gating, or `land` turns asked since the last landing. A fleet whose green work waited past that with none is stalled, `doctor`'s critical `landing_stalled`, which names the waiting PRs and tallies the last 20 `land` turns by outcome; the host's watch takes it as a stall to resolve, not fleet work to wait out.
+A landing of the repo within the last 45 minutes, while this fleet's green work waits: a valid candidate of this host fast-green or gating, or `land` turns asked since the last landing while its own claims have an open PR. The repo's landing is this host's last `merged` or the base branch's move, a peer's landing on the same remote included; an idle fleet, or one whose issues a peer holds or blockers hold back, waits for nothing (sunfmin/control#1143). A fleet whose green work waited past that with none is stalled, `doctor`'s critical `landing_stalled`, which names the waiting PRs and tallies the last 20 `land` turns by outcome; the host's watch takes it as a stall to resolve, not fleet work to wait out.
 _Avoid_: landing timeout, train health
 
 **Round**:
@@ -506,11 +506,11 @@ The PRs that asked to land — each one's worker fast-green — taken together w
 _Avoid_: batch round (gone with ADR-0068), bisection, merge train, rollup
 
 **Pairing tree**:
-How a round's PRs come together (ADR-0083). In the order they asked to land, each PR pairs with the first later one it merges with cleanly (`git merge-tree`, textual conflicts only); pairs pair the same way, level by level, until one node is left: the root. A node with no partner at a level goes up unpaired. Only the fast gate runs inside the tree.
+How a round's PRs come together (ADR-0083). In the order they asked to land, each PR pairs with the first later one it merges with cleanly (`git merge-tree`, textual conflicts only); pairs pair the same way, level by level, until one node is left: the root. A node with no partner at a level goes up unpaired; the last-asked node that conflicts with every other of its level carries the earliest-asked of them no pair took, one a level. Only the fast gate runs inside the tree.
 _Avoid_: candidate chain (within a round), bracket
 
 **Pair**:
-Two nodes of a pairing tree merged, the earlier-asked first, fast-gated alone in a worktree of its own by its later-asked PR's turn; the pairs of a level gate at once. Red, it stops no other pair: its later-asked PR is given the red run, and the other side goes up unpaired. A pair's merge is never landed.
+Two nodes of a pairing tree merged, the earlier-asked first, fast-gated alone in a worktree of its own by its later-asked PR's turn; the pairs of a level gate at once. Red, it stops no other pair: both its sides leave the round, its later-asked PR carrying every other PR of it, its branch fast-forwarded to the pair's merge and given the red run. A pair's merge is never landed.
 _Avoid_: couple, twin
 
 **Root**:
@@ -522,7 +522,7 @@ The PRs that ask to land while a round's whole gate runs, a round of their own s
 _Avoid_: next round (it is one only once the round it stands on lands), speculative round, queued round
 
 **Carrying PR**:
-A PR that merged another PR of its round into its own — the partner of a pair red on its fast gate, the earliest-asked PR it conflicts with when it conflicts with every partner, or every PR of a red root — and lands them together, its description rewritten as the changes together with `Closes` for every issue (ADR-0083). The **carried PR** is closed, commented "carried by #…", its branch deleted, its worktree removed and its worker ended; its issue stays open until the carrying PR lands.
+A PR that merged another PR of its round into its own — the partner of a pair red on its fast gate, the earliest-asked PR it conflicts with when it conflicts with every partner, or every PR of a red root — and lands them together, its description rewritten as the changes together with `Closes` for every issue (ADR-0083). It rejoins its round while no PR of the root has its candidate, and otherwise waits for the next. The **carried PR** is closed once the carrying PR's head holds its own — commented "carried by #…", its branch deleted, its worktree removed and its worker ended; its issue stays open until the carrying PR lands, held off the frontier while that PR is open, and worked again from that PR's branch should it close unlanded.
 _Avoid_: absorbing PR, squash
 
 **Land**:
