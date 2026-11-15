@@ -1049,3 +1049,5 @@ afkconvoy::cli cutting::an_operator_s_cut_now_starts_the_due_cut_at_the_next_tic
 afkconvoy foreground::tests::a_harness_stopped_and_continued_under_a_login_zsh_is_backgrounded_and_brought_back
 afkconvoy foreground::tests::an_undelivered_line_leaves_nothing_a_shell_reads_after_the_harness_exits
 afkconvoy::cli joining::a_bare_shell_its_harness_left_is_continued_by_restart_with_no_nudge
+# Checked alone on macstudio-jp: 7.31s (two landing turns over a gate that says the host is overloaded).
+afkconvoy::cli turns::a_base_tip_red_only_on_timeouts_under_overload_is_not_recorded_red
