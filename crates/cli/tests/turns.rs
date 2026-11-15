@@ -53,6 +53,13 @@ fn pending(world: &World) -> usize {
     chain["pending"].as_array().map_or(0, Vec::len)
 }
 
+/// The PRs of the round stacked on the open one (sunfmin/control#1140).
+fn stacked(world: &World) -> usize {
+    let record = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
+    let chain: Value = serde_json::from_str(&record).unwrap_or(Value::Null);
+    chain["stacked"]["asked"].as_array().map_or(0, Vec::len)
+}
+
 #[test]
 fn two_turns_land_in_order_with_a_record_of_each_landed_tree_and_no_line() {
     let world = World::new();
@@ -247,10 +254,11 @@ fn the_exclusive_bound_ends_the_whole_turn_and_releases_the_next_one() {
     let _runner = world.host_held();
     let first = start(&world, &one, &world.cache(), 1);
     until(|| world.root.join("started").exists());
-    // The next turn waits for the next round, not in the queue; a command
-    // waiting in the queue is what the bound ends the turn for.
+    // The next turn waits for the next round, or stacks on this one, whose
+    // whole gate runs (sunfmin/control#1140); a command waiting in the queue
+    // is what the bound ends the turn for.
     let next = start(&world, &two, &world.cache(), 2);
-    until(|| pending(&world) == 1);
+    until(|| pending(&world) + stacked(&world) == 1);
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     command.env("XDG_CACHE_HOME", world.cache());
     let queued = command

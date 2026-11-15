@@ -439,6 +439,13 @@ pub struct Chain<N = Plain> {
     /// (`pairing::Round`); `None` between rounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round: Option<crate::pairing::Round>,
+    /// The round stacked on the open one while its whole gate runs
+    /// (`pairing::Round::on`, sunfmin/control#1140): its PRs pair among
+    /// themselves and its root is fast-gated merged onto the open round's
+    /// root-onto-tip commit; it becomes the open round once that one lands,
+    /// and is discarded, its PRs pending again, once it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stacked: Option<crate::pairing::Round>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -464,6 +471,7 @@ impl<N> Default for Chain<N> {
             pending: vec![],
             heartbeats: BTreeMap::new(),
             round: None,
+            stacked: None,
         }
     }
 }
@@ -514,7 +522,7 @@ impl<N: Clone> Chain<N> {
         for b in &self.pending {
             hosts.push(&b.owner.host);
         }
-        for ask in self.round.iter().flat_map(|r| &r.asked) {
+        for ask in self.rounds().flat_map(|r| &r.asked) {
             hosts.push(&ask.owner.host);
         }
         hosts.sort_unstable();
@@ -594,7 +602,7 @@ impl<N: Clone> Chain<N> {
         for b in &self.pending {
             owners.push(&b.owner);
         }
-        for ask in self.round.iter().flat_map(|r| &r.asked) {
+        for ask in self.rounds().flat_map(|r| &r.asked) {
             owners.push(&ask.owner);
         }
         let mut processes: Vec<Process> = vec![];
@@ -987,10 +995,12 @@ impl<N: Clone> Chain<N> {
     pub fn prune(&mut self, released: impl Fn(&Candidate<N>) -> bool) {
         let mut kept: Vec<Candidate<N>> = vec![];
         // The open round's pairs and its PRs' candidates say what became
-        // of each of its PRs, until its turns have left it.
+        // of each of its PRs, until its turns have left it; the candidate a
+        // stacked round stands on says whether it lands.
         let mut needed: Vec<String> = vec![];
-        if let Some(round) = &self.round {
+        for round in self.rounds() {
             needed.extend(round.asked.iter().filter_map(|a| a.candidate.clone()));
+            needed.extend(round.on.iter().map(|on| on.candidate.clone()));
             for c in &self.candidates {
                 if c.pair.as_ref().is_some_and(|p| p.round == round.id) {
                     needed.push(c.id.clone());
@@ -1271,6 +1281,7 @@ mod tests {
             barriers: vec![reserved("b-far", "far")],
             heartbeats: [("far".to_string(), 1000), ("here".to_string(), 1000)].into(),
             round: None,
+            stacked: None,
         };
         assert!(!chain.can_assign(false), "the slow round holds the chain");
         chain.abandon("far");
