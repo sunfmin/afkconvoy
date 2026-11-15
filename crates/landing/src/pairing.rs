@@ -490,16 +490,13 @@ impl<N: Clone> Chain<N> {
         if stacked.root.is_none() && stacked.paired {
             return false;
         }
-        let merges: Vec<String> = self
-            .candidates
-            .iter()
-            .filter(|c| {
-                c.valid()
-                    && c.phase == Phase::Building
-                    && c.pair.as_ref().is_some_and(|p| p.stacked && p.round == stacked.id)
-            })
-            .map(|c| c.id.clone())
-            .collect();
+        let mut merges: Vec<String> = vec![];
+        for c in &self.candidates {
+            let of_it = c.pair.as_ref().is_some_and(|p| p.stacked && p.round == stacked.id);
+            if of_it && c.valid() && c.phase == Phase::Building {
+                merges.push(c.id.clone());
+            }
+        }
         let mut taken = stacked.out.clone();
         taken.extend(stacked.asked.iter().map(|a| a.asks.change));
         let asked = self.take_pending(&taken);

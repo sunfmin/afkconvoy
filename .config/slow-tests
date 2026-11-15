@@ -1045,3 +1045,7 @@ afkconvoy-landing::standalone two_changes_land_in_one_round_through_one_pair_and
 # Checked alone on macstudio-jp: 7.06s (a land process waited on) and 4.96s (ticks of a busy fleet).
 afkconvoy::cli candidates::a_candidate_whose_issue_closed_during_validation_lands_nothing
 afkconvoy::cli cutting::an_operator_s_cut_now_starts_the_due_cut_at_the_next_tick_while_busy
+# The stacked round (sunfmin/control#1140): each lands two rounds, one stacked on the other's whole gate; measured 11.8s, 7.3s for both standalone ones.
+afkconvoy::cli candidates::a_pr_ready_while_a_round_s_whole_gate_runs_stacks_on_its_root
+afkconvoy-landing::standalone a_change_asked_while_a_round_s_whole_gate_runs_stacks_on_its_root_and_runs_only_its_slow_gate
+afkconvoy-landing::standalone a_change_stacked_on_a_round_that_ends_red_is_charged_nothing_and_lands_in_the_next_round
