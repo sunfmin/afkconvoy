@@ -1045,3 +1045,7 @@ afkconvoy-landing::standalone two_changes_land_in_one_round_through_one_pair_and
 # Checked alone on macstudio-jp: 7.06s (a land process waited on) and 4.96s (ticks of a busy fleet).
 afkconvoy::cli candidates::a_candidate_whose_issue_closed_during_validation_lands_nothing
 afkconvoy::cli cutting::an_operator_s_cut_now_starts_the_due_cut_at_the_next_tick_while_busy
+# Measured 2.3s, 2.4s and 3.0s in the fast gate on macstudio-jp: a login zsh on a pty of its own, and its harness stopped, continued or ended.
+afkconvoy foreground::tests::a_harness_stopped_and_continued_under_a_login_zsh_is_backgrounded_and_brought_back
+afkconvoy foreground::tests::an_undelivered_line_leaves_nothing_a_shell_reads_after_the_harness_exits
+afkconvoy::cli joining::a_bare_shell_its_harness_left_is_continued_by_restart_with_no_nudge
