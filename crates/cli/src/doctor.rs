@@ -170,6 +170,7 @@ kinds! {
     PublicTracker: Critical, "is public: its fleet instance works nothing";
     RepoUnworked: Warning, "no fleet has taken";
     RepoUnreadable: Warning, "remote could not be read";
+    GithubQuota: Warning, "GitHub quota is spent";
     StepFailed: Critical, "failed in each of the last";
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
@@ -270,6 +271,7 @@ impl Kind {
                 | Kind::OtherAccount
                 | Kind::RepoUnworked
                 | Kind::RepoUnreadable
+                | Kind::GithubQuota
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
                 | Kind::ExitWaiting
@@ -292,6 +294,7 @@ impl Kind {
                 | Kind::PathStale
                 | Kind::NotUpgraded
                 | Kind::LandingContention
+                | Kind::GithubQuota
         )
     }
 }
@@ -2921,16 +2924,19 @@ pub fn all_since_rounds(
         watch.insert("events".to_string(), Value::Array(watch_events));
     }
     of_host.extend(overdue_findings(&paces, now));
-    let unworked = match crate::unworked::read(now) {
-        Ok(read) => read,
-        Err(error) => crate::error_json(&error),
-    };
+    // A spent quota is one finding of the host's, not one per repo it
+    // could not read (sunfmin/control#1111).
+    let (unworked, quota) = crate::unworked::read_unless_spent(now);
     once.insert("unworked_repos".into(), unworked);
     of_host.extend(crate::unworked::findings(
         &once["unworked_repos"],
         host.unwrap_or(&crate::this_host()),
         now,
     ));
+    if let Some(quota) = quota {
+        of_host.push(crate::unworked::quota_finding(&quota));
+        once.insert("github_quota".into(), quota);
+    }
     // Said once, named for the first checkout on the list: the lines are
     // equal while they are gathered, and each runs from any directory.
     if let Some(checkout) = listed.first() {
@@ -2976,7 +2982,7 @@ It reads this host (the commands the fleet needs, in a login shell; orca), the l
 A harness whose first login answer reads logged out is asked once more in that same login shell setting before `tools` reports `logged_out`; ready on the second answer is ready. A ready harness is still started at most once per doctor. A tool finding's evidence carries the last answer's exit status and the first 500 characters it printed, with credential-shaped text redacted.
 
 With `--all` it reads the checkout list (checkouts.json in the cache directory) and the same of each checkout on it, all at once.
-It also reads every tracker that list names once for repo-labelled work, including repos absent from this host. A repo nobody works has an open ready issue with no open blocker or claim, ready for more than an hour since the later of its dispatch label being applied and its last blocker closing, and no remote heartbeat within the 1800-second lease. Ready means the repo's ready label, or its team's flow labels. Only an old enough unblocked issue, or an existing report, asks that repo's heartbeat remote. `host.unworked_repos` holds the waiting issues and their seconds, newest heartbeat's host and time (or null), report and opening host, recovery host, and read error. An unreadable remote proves nothing about whether a fleet works it. Doctor opens and closes nothing; the host runner reconciles these reports at its look.
+It also reads every tracker that list names once for repo-labelled work, including repos absent from this host. A repo nobody works has an open ready issue with no open blocker or claim, ready for more than an hour since the later of its dispatch label being applied and its last blocker closing, and no remote heartbeat within the 1800-second lease. Ready means the repo's ready label, or its team's flow labels. Only an old enough unblocked issue, or an existing report, asks that repo's heartbeat remote. `host.unworked_repos` holds the waiting issues and their seconds, newest heartbeat's host and time (or null), report and opening host, recovery host, and read error. An unreadable remote proves nothing about whether a fleet works it. Where the login's REST core quota is spent, no tracker is read before its reset, and no repo is said unread for want of it: `host.github_quota` holds {host, login, api, reset} and one finding says it, which calls no watch. Doctor opens and closes nothing; the host runner reconciles these reports at its look.
 
 ## What it answers
 

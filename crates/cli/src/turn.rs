@@ -152,7 +152,8 @@ fn take(
     let mut said = None;
     loop {
         let gh = GitHub::of(repo)?;
-        let locks = standing_locks(&gh, config)?;
+        // Asked again while the base is red: one read for the host's waiting turns.
+        let locks = crate::lock::waited_locks(&gh, config)?;
         if !locks.is_empty() && issue.is_none_or(|n| keeps_off(&locks, n)) {
             bail!(
                 "a fleet lock stands ({}): no turn starts; run this again when told to carry on",

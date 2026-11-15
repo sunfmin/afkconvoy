@@ -371,6 +371,61 @@ pub(crate) fn read(now: u64) -> Result<Value> {
     Ok(serde_json::to_value(found)?)
 }
 
+/// The host's GitHub REST core quota, where the quota note of the login of
+/// its first listed checkout says it is spent at `now`:
+/// {host, login, api, reset}. One look observes it once (`Scope::observe`).
+pub(crate) fn spent(now: u64) -> Option<Value> {
+    let listed = List::of_host().ok()?.read().ok()?.checkouts;
+    let checkout = listed.into_iter().find_map(|entry| Repo::at(&entry.checkout).ok())?;
+    let gh = GitHub::new(checkout.dir, Tracker::Own);
+    let scope = crate::gh_quota::Scope::of(&gh).ok()?;
+    let _ = scope.observe(&gh);
+    let core = scope.read("core").ok()?;
+    (core.remaining == Some(0) && core.reset > now).then(
+        || json!({"host": scope.host, "login": scope.login, "api": "core", "reset": core.reset}),
+    )
+}
+
+/// `read`, unless the quota is spent: then no tracker is read before its
+/// reset, and what a read already made could not read for want of it is
+/// dropped → (the rows, the spent quota). A repo nobody could read for want
+/// of quota is no evidence of a repo nobody works.
+pub(crate) fn read_unless_spent(now: u64) -> (Value, Option<Value>) {
+    if let Some(quota) = spent(now) {
+        return (json!([]), Some(quota));
+    }
+    let read = match read(now) {
+        Ok(read) => read,
+        Err(error) => crate::error_json(&error),
+    };
+    let Some(quota) = spent(now) else { return (read, None) };
+    let rows = match read {
+        Value::Array(rows) => rows.into_iter().filter(|row| row["error"].is_null()).collect(),
+        _ => vec![],
+    };
+    (Value::Array(rows), Some(quota))
+}
+
+/// The one finding of a spent quota, with its reset. The watch is not
+/// called for it: nothing on the host can give the quota back before then.
+pub(crate) fn quota_finding(quota: &Value) -> Finding {
+    let reset = quota["reset"].as_u64().unwrap_or_default();
+    finding(
+        Kind::GithubQuota,
+        json!(["github-quota", quota["host"], quota["login"], quota["api"]]),
+        format!(
+            "{}'s GitHub quota is spent on {}: REST core resets at {reset} (Unix seconds)",
+            quota["login"].as_str().unwrap_or_default(),
+            quota["host"].as_str().unwrap_or_default()
+        ),
+        format!(
+            "REST core remaining 0, reset {reset} ({}); no repo's readiness is judged before it",
+            crate::log::stamp(reset)
+        ),
+        "gh api rate_limit".into(),
+    )
+}
+
 fn finding_of(seen: &Observed, host: &str, now: u64) -> Option<Finding> {
     let identity = json!(["unworked-repo", seen.tracker, seen.repo]);
     if let Some(error) = &seen.error {
