@@ -84,7 +84,7 @@ fn key(command: &str) -> Result<String> {
     let status = loop {
         match child.try_wait()? {
             Some(status) => break status,
-            None if started.elapsed() >= TIMEOUT => {
+            None if started.elapsed() >= crate::waits::bound(TIMEOUT) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 bail!("the Jev key command did not end within {}s", TIMEOUT.as_secs());

@@ -151,6 +151,7 @@ mod turn;
 mod turn_answer;
 mod unbound_issue;
 mod unworked;
+pub mod waits;
 pub mod wake;
 pub mod watch;
 pub(crate) mod watch_checkout;
