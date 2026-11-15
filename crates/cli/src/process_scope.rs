@@ -38,10 +38,13 @@ pub(crate) fn create(path: &Path, command: &mut Command) -> Result<File> {
     Ok(file)
 }
 
+/// Whether no process holds the scope at `path`. It looks through a
+/// descriptor open for reading alone, which `owns` never counts: a process
+/// only looking at a scope is never taken for one of its holders, and never
+/// killed as one (sunfmin/control#1096).
 pub(crate) fn free(path: &Path) -> Result<bool> {
     let file = OpenOptions::new()
         .read(true)
-        .write(true)
         .open(path)
         .with_context(|| format!("cannot open the gate's process scope {}", path.display()))?;
     // SAFETY: nonblocking observation of this scope's kernel lease.
@@ -55,6 +58,9 @@ pub(crate) fn free(path: &Path) -> Result<bool> {
     Ok(false)
 }
 
+/// Whether process `pid` holds the scope at `path`: has it open for writing,
+/// as only the descriptor its gate inherits is (`create`). One open for
+/// reading alone is a look (`free`), not a hold.
 pub(crate) fn owns(pid: u32, path: &Path) -> Result<bool> {
     let meta = std::fs::metadata(path)
         .with_context(|| format!("cannot read the gate's process scope {}", path.display()))?;
@@ -71,11 +77,26 @@ fn owns_file(pid: u32, dev: u64, ino: u64) -> Result<bool> {
         if let Ok(meta) = std::fs::metadata(entry.path())
             && meta.dev() == dev
             && meta.ino() == ino
+            && writes(pid, &entry.file_name())
         {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Whether descriptor `fd` of `pid` is open for writing, as its fdinfo's
+/// octal `flags` say.
+#[cfg(target_os = "linux")]
+fn writes(pid: u32, fd: &std::ffi::OsStr) -> bool {
+    let Ok(info) = std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{}", fd.to_string_lossy()))
+    else {
+        return false;
+    };
+    info.lines()
+        .find_map(|line| line.strip_prefix("flags:"))
+        .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok())
+        .is_some_and(|flags| flags & libc::O_ACCMODE as u32 != libc::O_RDONLY as u32)
 }
 
 #[cfg(target_os = "macos")]
@@ -135,7 +156,12 @@ fn owns_file(pid: u32, dev: u64, ino: u64) -> Result<bool> {
         }
         // SAFETY: the initialized structure consists only of numeric fields.
         let info = unsafe { info.assume_init() };
-        if u64::from(info.vnode.vi_stat.vst_dev) == dev && info.vnode.vi_stat.vst_ino == ino {
+        // sys/fcntl.h's FWRITE: the descriptor is open for writing.
+        const FWRITE: u32 = 0x2;
+        if u64::from(info.vnode.vi_stat.vst_dev) == dev
+            && info.vnode.vi_stat.vst_ino == ino
+            && info.file.flags & FWRITE != 0
+        {
             return Ok(true);
         }
     }

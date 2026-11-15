@@ -105,6 +105,16 @@ pub(super) fn take(common: &Path, wait: bool) -> Result<Option<File>> {
     Ok(None)
 }
 
+/// The fetch lock of the store at `common`, held until it is dropped, and
+/// whether it had to wait for another to let it go: one that waited asks
+/// first whether the fetch it waited for brought what it is for.
+pub(super) fn take_after(common: &Path) -> Result<(File, bool)> {
+    if let Some(file) = take(common, false)? {
+        return Ok((file, false));
+    }
+    Ok((take(common, true)?.expect("a lock waited for is taken"), true))
+}
+
 /// The fetch that keeps failing corrupt in the store at `common`, if one does.
 pub(crate) fn failing_at(common: &Path) -> Option<Failing> {
     let text = std::fs::read_to_string(common.join(FAILING)).ok()?;

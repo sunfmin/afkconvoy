@@ -333,11 +333,24 @@ impl Repo {
     /// this repository's object store (`one_fetch`). At `FETCH_LIMIT` its
     /// process group is ended and the call is a failure.
     pub fn try_fetch(&self, args: &[&str]) -> Result<Ran> {
+        let ran = self.fetch_unless(args, || Ok(false))?;
+        Ok(ran.expect("a fetch that is never done is run"))
+    }
+
+    /// Runs the fetch `args` under the fetch lock: no other fetch into this
+    /// object store runs beside it, of this process or another. A fetch that
+    /// had to wait asks `done` first, and runs only when the fetch it waited
+    /// for did not bring what it is for → `None` when it was not run
+    /// (sunfmin/control#1106, sunfmin/control#1102).
+    fn fetch_unless(&self, args: &[&str], done: impl Fn() -> Result<bool>) -> Result<Option<Ran>> {
         if args.first() != Some(&"fetch") {
             bail!("Repo::try_fetch takes a git fetch command");
         }
-        let _lock = one_fetch::take(self.common_dir()?, true)?;
-        run_within(&self.dir, args, &[], FETCH_LIMIT)
+        let (_lock, waited) = one_fetch::take_after(self.common_dir()?)?;
+        if waited && done()? {
+            return Ok(None);
+        }
+        run_within(&self.dir, args, &[], FETCH_LIMIT).map(Some)
     }
 
     /// One fetch that must succeed → its stdout, trimmed.
@@ -536,7 +549,9 @@ impl Repo {
             let began = lock(&self.reads().seen).began();
             let mut fetch = vec!["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE];
             fetch.extend(records.iter().map(|record| record.name.as_str()));
-            let ran = self.try_fetch(&fetch)?;
+            // The fetch waited for may have brought every one.
+            let done = || Ok(self.subjects(records)?.is_some());
+            let Some(ran) = self.fetch_unless(&fetch, done)? else { return Ok(()) };
             if ran.ok {
                 return Ok(());
             }
@@ -747,6 +762,99 @@ mod tests {
             let read = repo.git_dir().unwrap();
             assert_eq!(read.canonicalize().unwrap(), Path::new(&said).canonicalize().unwrap());
         }
+    }
+
+    /// A checkout whose remote has a commit at `refs/convoy/candidates/main`
+    /// and answers each fetch only after `slow`, noting in `seen` how many of
+    /// its fetches run at once as each one starts → (checkout, sha, seen).
+    fn slow_remote(root: &Path, slow: &str) -> (Repo, String, PathBuf) {
+        let origin = root.join("origin");
+        let work = root.join("work");
+        let marks = root.join("marks");
+        std::fs::create_dir(&marks).unwrap();
+        git(root, &["init", "-q", "-b", "main", origin.to_str().unwrap()]);
+        let commit = ["-c", "user.name=a", "-c", "user.email=a@b", "commit", "-q"];
+        git(&origin, &[&commit[..], &["--allow-empty", "-m", "chain"]].concat());
+        git(&origin, &["update-ref", "refs/convoy/candidates/main", "HEAD"]);
+        let sha = std::process::Command::new("git")
+            .current_dir(&origin)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let sha = String::from_utf8_lossy(&sha.stdout).trim().to_string();
+        let pack = root.join("slow-upload-pack");
+        let d = marks.display();
+        std::fs::write(
+            &pack,
+            format!(
+                "#!/bin/sh\ntouch \"{d}/running.$$\"\n\
+                 ls \"{d}\" | grep -c '^running\\.' >> \"{d}/seen\"\n\
+                 sleep {slow}\ngit upload-pack \"$@\"\nended=$?\n\
+                 rm \"{d}/running.$$\"\nexit $ended\n"
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&pack, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(root, &["init", "-q", "-b", "main", work.to_str().unwrap()]);
+        git(&work, &["remote", "add", REMOTE, origin.to_str().unwrap()]);
+        git(&work, &["config", "remote.origin.uploadpack", pack.to_str().unwrap()]);
+        (Repo::new(work), sha, marks.join("seen"))
+    }
+
+    /// How many fetches each start saw running, itself included.
+    fn running_at_each_start(seen: &Path) -> Vec<u32> {
+        let text = std::fs::read_to_string(seen).unwrap_or_default();
+        text.lines().map(|line| line.trim().parse().unwrap()).collect()
+    }
+
+    /// The host-runner's threads each find the same fetch due, one well
+    /// before the last one ends (sunfmin/control#1106): each runs in turn
+    /// under the fetch lock,
+    /// never beside another.
+    #[test]
+    fn a_fetch_due_while_the_same_one_runs_waits_for_it() {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, _, seen) = slow_remote(root.path(), "0.6");
+        let fetch = [
+            "fetch",
+            "--quiet",
+            "--no-write-fetch-head",
+            "--no-tags",
+            REMOTE,
+            "refs/convoy/candidates/main",
+        ];
+        let fetches: Vec<_> = (0..4)
+            .map(|n| {
+                let repo = repo.clone();
+                std::thread::sleep(std::time::Duration::from_millis(if n == 0 { 0 } else { 100 }));
+                std::thread::spawn(move || repo.try_fetch(&fetch).unwrap())
+            })
+            .collect();
+        for fetch in fetches {
+            let ran = fetch.join().unwrap();
+            assert!(ran.ok, "{}", ran.stderr);
+        }
+        assert_eq!(running_at_each_start(&seen), [1, 1, 1, 1]);
+    }
+
+    /// Commits brought while another bring of the same ref runs are not
+    /// fetched again: the one that waited finds the commit here.
+    #[test]
+    fn a_bring_that_waited_for_the_same_fetch_fetches_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, sha, seen) = slow_remote(root.path(), "0.6");
+        let brings: Vec<_> = (0..4)
+            .map(|n| {
+                let (repo, sha) = (repo.clone(), sha.clone());
+                std::thread::sleep(std::time::Duration::from_millis(if n == 0 { 0 } else { 100 }));
+                std::thread::spawn(move || repo.bring(&sha, "refs/convoy/candidates/main"))
+            })
+            .collect();
+        for bring in brings {
+            bring.join().unwrap().unwrap();
+        }
+        assert_eq!(running_at_each_start(&seen), [1]);
     }
 
     #[test]
