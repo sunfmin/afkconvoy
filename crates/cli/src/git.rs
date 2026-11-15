@@ -331,8 +331,8 @@ impl Repo {
     ///
     /// A fetch that fails because this repository lost objects its
     /// commit-graph or refs still name (sunfmin/control#1090) repairs it from
-    /// the remote and runs again: the commit-graph, which only speeds up
-    /// reads, is dropped, and if the fetch still finds objects missing it
+    /// the remote and runs again: the commit-graph and multi-pack-index,
+    /// which only speed up reads, are dropped, and if the fetch still finds objects missing it
     /// fetches again with `--refetch`, which sends every object anew. Every
     /// worktree of the repository shares its object store, so one lost
     /// object would otherwise stop every gate and land on the host.
@@ -344,7 +344,7 @@ impl Repo {
         if ran.ok || !lost_objects(&ran.stderr) {
             return Ok(ran);
         }
-        self.drop_commit_graph()?;
+        self.drop_object_indexes()?;
         let ran = run_within(&self.dir, args, &[], FETCH_LIMIT)?;
         if ran.ok || !lost_objects(&ran.stderr) {
             return Ok(ran);
@@ -366,10 +366,19 @@ impl Repo {
     }
 
     /// Removes this repository's commit-graph, which names commits its object
-    /// store lost. git writes it again from what is there on a later `gc`.
-    fn drop_commit_graph(&self) -> Result<()> {
-        let info = self.common_dir()?.join("objects").join("info");
-        for graph in [info.join("commit-graph"), info.join("commit-graphs")] {
+    /// store lost, and its multi-pack-index, which an interrupted repack
+    /// leaves naming a pack that is gone (`could not load pack`) and so breaks
+    /// every read. Both only speed up reads: git reads each pack's own `.idx`
+    /// without them, and writes them again from what is there on a later `gc`.
+    fn drop_object_indexes(&self) -> Result<()> {
+        let objects = self.common_dir()?.join("objects");
+        let (info, pack) = (objects.join("info"), objects.join("pack"));
+        for graph in [
+            info.join("commit-graph"),
+            info.join("commit-graphs"),
+            pack.join("multi-pack-index"),
+            pack.join("multi-pack-index.d"),
+        ] {
             let gone = if graph.is_dir() {
                 std::fs::remove_dir_all(&graph)
             } else {
@@ -635,6 +644,7 @@ fn lost_objects(stderr: &str) -> bool {
         "missing blob",
         "missing tree",
         "missing commit",
+        "could not load pack",
     ]
     .iter()
     .any(|said| stderr.contains(said))
@@ -855,6 +865,7 @@ mod tests {
              but not in the object database."
         ));
         assert!(lost_objects("error: remote did not send all necessary objects"));
+        assert!(lost_objects("error: could not load pack 0"));
         assert!(!lost_objects("fatal: couldn't find remote ref refs/heads/gone"));
         assert!(!lost_objects("fatal: unable to access 'https://github.com/': timed out"));
     }
