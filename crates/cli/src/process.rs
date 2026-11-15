@@ -32,6 +32,49 @@ pub(crate) fn inheriting_nothing(command: &mut Command) -> &mut Command {
     }
 }
 
+/// This process's descriptors past stderr that a child would inherit: those
+/// it was handed itself and has not marked close-on-exec. In an afkconvoy a
+/// gate started, one of them is the gate's process scope (`process_scope`).
+fn inherited() -> Vec<i32> {
+    let listing = if cfg!(target_os = "linux") { "/proc/self/fd" } else { "/dev/fd" };
+    let Ok(entries) = std::fs::read_dir(listing) else { return vec![] };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|&fd| {
+            // SAFETY: F_GETFD only reads the descriptor's flags.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            fd > 2 && flags >= 0 && flags & libc::FD_CLOEXEC == 0
+        })
+        .collect()
+}
+
+/// Has `command` close each descriptor this process was handed and would
+/// pass on (`inherited`): afkconvoy's own `ps`, `git` and `gh` hold no
+/// gate's process scope or worker lane. A setuid `ps` an afkconvoy inside a
+/// gate started held its scope, which no kill of its user could end, and so
+/// every lane of the host, for four hours (sunfmin/control#1096).
+fn closing_inherited(command: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    let fds = inherited();
+    if fds.is_empty() {
+        return command;
+    }
+    // SAFETY: fcntl and close are async-signal-safe; `fds` was made before
+    // the fork, and only one still without close-on-exec is closed.
+    unsafe {
+        command.pre_exec(move || {
+            for &fd in &fds {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                    libc::close(fd);
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
 /// Starts `command` with its configured streams, without inheriting a pipe
 /// another start is still preparing. Waiting for the child holds no turn.
 pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
@@ -70,7 +113,9 @@ pub(crate) fn merged_stdio() -> io::Result<(Stdio, Stdio, OwnedFd)> {
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 
 /// Runs `command` with no input, capturing both output streams. Every caller
-/// here wants these streams; commands with other streams use `spawn`.
+/// here wants these streams; commands with other streams use `spawn`. It
+/// inherits no descriptor this process was handed (`closing_inherited`):
+/// what is run for its output is afkconvoy's own look, never a gate's work.
 ///
 /// The pipes are read while the child runs, so a full pipe cannot stall it.
 /// Once it has exited, a write end that stays open is drained for
@@ -107,6 +152,7 @@ fn output_bounded(
 ) -> io::Result<(Output, bool)> {
     let limit = limit.into();
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
+    let command = closing_inherited(command);
     let mut child =
         starting(|| command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn())?;
     let writer = child.stdin.take();
@@ -388,5 +434,37 @@ mod tests {
                 "the child inherited another command's pipe"
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod inherited {
+    use std::os::fd::AsRawFd;
+
+    /// A descriptor this process was handed and would pass on — a gate's
+    /// process scope, in an afkconvoy a gate started — is not inherited by
+    /// what it runs for its output, as afkconvoy's own `ps` is
+    /// (sunfmin/control#1096).
+    #[test]
+    fn what_is_run_for_its_output_inherits_no_descriptor_this_process_was_handed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("w.processes")).unwrap();
+        let fd = file.as_raw_fd();
+        // SAFETY: clears close-on-exec of this test's own open descriptor.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+        let probe = format!("if [ -e /dev/fd/{fd} ]; then echo held; else echo closed; fi");
+        let out = super::output(std::process::Command::new("sh").args(["-c", &probe])).unwrap();
+        let mut spawned = super::spawn(
+            std::process::Command::new("sh")
+                .args(["-c", &probe])
+                .stdout(std::process::Stdio::piped()),
+        )
+        .unwrap();
+        let mut passed = String::new();
+        std::io::Read::read_to_string(&mut spawned.stdout.take().unwrap(), &mut passed).unwrap();
+        spawned.wait().unwrap();
+        drop(file);
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "closed");
+        assert_eq!(passed.trim(), "held", "a start of the gate's own work still passes it on");
     }
 }
