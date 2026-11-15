@@ -361,15 +361,14 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
 
     fn due_of(&self, joined: &Joined<N>) -> Vec<u64> {
         let every = self.host.retry_every();
-        joined
-            .tickets
-            .iter()
-            .filter(|ticket| ticket.retained.is_some())
-            .filter(|ticket| {
-                joined.tried.get(&ticket.number).is_none_or(|tried| tried.elapsed() >= every)
-            })
-            .map(|ticket| ticket.number)
-            .collect()
+        let mut due = vec![];
+        for ticket in &joined.tickets {
+            let tried = joined.tried.get(&ticket.number);
+            if ticket.retained.is_some() && tried.is_none_or(|tried| tried.elapsed() >= every) {
+                due.push(ticket.number);
+            }
+        }
+        due
     }
 
     /// Runs `work` in the lane of `ticket`, once its turn came, and leaves →
