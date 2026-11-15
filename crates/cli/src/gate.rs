@@ -613,6 +613,18 @@ pub fn recorded(
     run::recorded(&OnRemote(repo), tree, command, now)
 }
 
+/// The green run of `command` on `tree` on record that answers for a run of
+/// it on this kind of machine at `now` (docs/adr/0069): one `recorded`
+/// believes, which ran on this kind.
+pub fn reusable(
+    repo: &Repo,
+    tree: &Tree,
+    command: &GateCommand,
+    now: u64,
+) -> Result<Option<GreenRun>> {
+    run::reusable(&OnRemote(repo), tree, command, &afkconvoy_gate::gate::machine(), now)
+}
+
 /// The still-valid green run among an existing remote snapshot's records,
 /// from either ref layout. The noted layout's record wins when both stand.
 pub fn recorded_among(

@@ -738,6 +738,8 @@ impl<N: Clone> Chain<N> {
             let green = result.green();
             self.green_or_red(id, green, result);
         }
+        // A pair decided carries its round on.
+        self.advance_round();
     }
 
     fn green_or_red(&mut self, id: &str, green: bool, result: Evidence) {

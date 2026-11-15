@@ -61,6 +61,9 @@ pub enum Next {
     Ended,
     /// It is the round's tip: its turn runs the round's slow gate now.
     Round,
+    /// It is the last candidate of a round's root: its turn runs the
+    /// round's whole gate now (`Chain::whole_tip`, docs/adr/0082).
+    Whole,
     /// It is valid and waits — for its round, or its predecessor — unless it
     /// is ripe to land on the target as it stands (`Chain::ripe`).
     Waiting,
@@ -86,6 +89,8 @@ impl<N: Clone> Chain<N> {
             Next::Ended
         } else if self.round_tip().is_some_and(|tip| tip.id == id) {
             Next::Round
+        } else if self.whole_tip().is_some_and(|tip| tip.id == id) {
+            Next::Whole
         } else {
             Next::Waiting
         })
