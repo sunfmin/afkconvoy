@@ -310,6 +310,44 @@ pub(crate) fn landing(records: &[crate::remote::RemoteRecord], prefix: &str, bra
     })
 }
 
+/// A pending place on a candidate chain that a live `land` of this host
+/// holds: its process, the target branch, and how long it has waited — none
+/// where an older afkconvoy took it, which says no time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingLand {
+    pub pid: u32,
+    pub branch: String,
+    pub waited: Option<u64>,
+}
+
+/// The pending places, of every chain in `records` under `prefix`, that a
+/// live process of this host holds, longest waiting first. Another host's
+/// processes cannot be read from here: its own `doctor` names them.
+pub(crate) fn pending_lands(
+    records: &[crate::remote::RemoteRecord],
+    prefix: &str,
+    now: u64,
+) -> Vec<PendingLand> {
+    let mut lands = vec![];
+    for record in records {
+        let Some(branch) = record.name.strip_prefix(prefix) else { continue };
+        let Ok(chain) = serde_json::from_str::<Chain>(&record.subject) else { continue };
+        for b in &chain.pending {
+            if b.owner.host == crate::this_host()
+                && identity(b.owner.pid).ok().flatten().as_ref() == Some(&b.owner)
+            {
+                lands.push(PendingLand {
+                    pid: b.owner.pid,
+                    branch: branch.to_string(),
+                    waited: b.since.map(|since| now.saturating_sub(since)),
+                });
+            }
+        }
+    }
+    lands.sort_by_key(|land| std::cmp::Reverse(land.waited));
+    lands
+}
+
 /// A process this user may not read is another user's, never the recorded
 /// owner. Any other unreadable observation never proves death. Kernel start
 /// time prevents PID reuse; host identity is physical, independent of --host.
