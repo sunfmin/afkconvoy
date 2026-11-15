@@ -45,6 +45,12 @@ pub struct Ticket<N = Plain> {
     /// its repo. Ordinary commands and serial barriers retain exclusion.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub candidate: bool,
+    /// Holds its whole repo: no other ticket of its repo runs beside it, in
+    /// any lane, and it is granted only where none of its repo runs or
+    /// waits (`holder::Holder::at_once`) — the fleet's housekeeping of the
+    /// repo's object store (sunfmin/control#1101).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole_repo: bool,
     /// Which of the two gates (docs/adr/0047) the command runs, where it is
     /// one run alone: a fast gate takes the fast lane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,6 +227,18 @@ pub fn same_repo<N>(a: &Ticket<N>, b: &Ticket<N>) -> bool {
 /// Whether this ticket can start with the host's lane counts. Earlier
 /// requests reserve available lanes in order, but a second request of a
 /// running repo waits without holding another repo back from a free lane.
+/// Whether the admitted ticket `held` keeps `asking`, of the same repo, from
+/// its lane: they share a lane, or both are turns, unless both are candidates
+/// or both fast gates; and either that holds its whole repo always does.
+pub fn excludes<N>(held: &Ticket<N>, asking: &Ticket<N>) -> bool {
+    same_repo(held, asking)
+        && (held.whole_repo
+            || asking.whole_repo
+            || ((same_lane(held, asking) || (held.is_turn && asking.is_turn))
+                && !(held.candidate && asking.candidate)
+                && !(is_fast(held) && is_fast(asking))))
+}
+
 pub fn ready<N>(queue: &[Ticket<N>], number: u64, lanes: Lanes) -> bool {
     scheduling(queue, lanes, false)
         .iter()
@@ -301,16 +319,7 @@ fn reservation<N>(
 ) -> Scheduling {
     let limit = limit(ticket, lanes);
     let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
-    let own: Vec<_> = admitted
-        .iter()
-        .copied()
-        .filter(|t| {
-            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
-                && same_repo(t, ticket)
-                && !(t.candidate && ticket.candidate)
-                && !(is_fast(t) && is_fast(ticket))
-        })
-        .collect();
+    let own: Vec<_> = admitted.iter().copied().filter(|t| excludes(t, ticket)).collect();
     let mut reasons = vec![];
     if paused {
         reasons.push(Constraint {
@@ -772,6 +781,7 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            whole_repo: false,
             note: Plain::default(),
             gate: None,
             asked,

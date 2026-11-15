@@ -158,8 +158,9 @@ pub fn tick(
     // A harness held since the agent setup was last given gets it now
     // (sunfmin/control#528); with none declared this reads the settings alone.
     let _ = crate::kit::give_new_agent_setup(repo, me.instance.as_str(), &me.host, me.now);
-    // The object store is repacked while nothing fetches into it, as git's
-    // auto-gc would (sunfmin/control#1102). A failure costs the tick nothing.
+    // The object store is packed as git's auto-gc would, at a quiet moment:
+    // nothing fetches into it, and the exclusive queue holds the repo whole
+    // (sunfmin/control#1102, #1101). A failure costs the tick nothing.
     if let Err(error) = repo.housekeep() {
         eprintln!("warning: housekeeping of the object store will retry: {error:#}");
     }
