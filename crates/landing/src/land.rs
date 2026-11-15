@@ -770,6 +770,15 @@ where
         refused: &mut Refusals,
         outcomes: &mut Outcomes<F::Refusal>,
     ) -> Result<bool, Error<F::Error>> {
+        // No gate of this process runs between its steps.
+        let unstarted = |c: &Candidate<F::Note>| {
+            c.is_pair() && c.owner == self.owner && c.phase == Phase::Cancelling && !c.stopped
+        };
+        if self.read(target)?.chain.candidates.iter().any(unstarted) {
+            self.change(target, |chain| {
+                chain.stop_unstarted(&self.owner);
+            })?;
+        }
         let read = self.read(target)?;
         let chain = &read.chain;
         let Some(open) = chain.rounds().find(|r| r.id == round) else { return Ok(false) };

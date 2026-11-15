@@ -705,6 +705,28 @@ impl<N: Clone> Chain<N> {
         self.candidates.push(candidate);
     }
 
+    /// Stops each candidate beside the chain — a pair, or a stacked merge —
+    /// of `owner`'s that ended before its gate started: no process of it
+    /// runs to be confirmed gone, and one cancelling would hold the window
+    /// (`can_assign`). Its owner says so while it gates nothing, as a
+    /// stacked round settled, or a newcomer joined it, ends what it had not
+    /// started → whether any was.
+    pub fn stop_unstarted(&mut self, owner: &Process) -> bool {
+        let mut any = false;
+        for c in self.candidates.iter_mut().filter(|c| {
+            c.is_pair()
+                && c.owner == *owner
+                && c.phase == Phase::Cancelling
+                && c.gate.is_none()
+                && !c.stopped
+        }) {
+            c.stopped = true;
+            c.phase = Phase::Cancelled;
+            any = true;
+        }
+        any
+    }
+
     /// The pairs of the level `slot`'s round pairs now.
     fn level_pairs(&self, slot: Slot) -> Vec<&Candidate<N>> {
         let Some(round) = self.slot(slot) else { return vec![] };

@@ -1953,9 +1953,20 @@ fn in_round(
     pending_past: &dyn Fn(Value, &str) -> Value,
 ) -> Result<Rounded> {
     let InRound { repo, config, gh, issue, id, clock, .. } = *turn;
+    let me = identity(std::process::id())?.context("cannot identify turn owner")?;
     let mut waiting = Waiting::new();
     loop {
-        let chain = reconcile(repo, config, clock())?;
+        let mut chain = reconcile(repo, config, clock())?;
+        // No gate of this turn runs between its steps: a pair or stacked
+        // merge of it that ended unstarted has no process to wait for.
+        let unstarted = |c: &Candidate| {
+            c.is_pair() && c.owner == me && c.phase == Phase::Cancelling && c.gate.is_none()
+        };
+        if chain.candidates.iter().any(|c| unstarted(c) && !c.stopped) {
+            chain = change(repo, config, |chain| {
+                chain.stop_unstarted(&me);
+            })?;
+        }
         // Asked again at each wait: one read for the host's waiting turns.
         let locks = crate::lock::waited_locks(gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {

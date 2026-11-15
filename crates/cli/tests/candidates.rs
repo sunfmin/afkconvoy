@@ -1690,6 +1690,10 @@ fn a_quiet_hosts_candidate_is_taken_over_past_the_lease_and_its_turn_learns_it_o
     assert_eq!(candidate_of(&world, 1)["owner"]["host"], "far");
     assert!(chain(&world)["heartbeats"]["far"].is_u64(), "its turn said it was alive");
     world.say_host_settings(here);
+    // A turn here would stack on its round, whose whole gate runs: a
+    // barrier's place of that far turn holds it pending instead, and goes
+    // with what the far host owns.
+    hold_pending(&world);
     let asleep = Held::stop(&far);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let beat = (now + 1000).to_string();
@@ -1845,6 +1849,8 @@ fn a_pending_turn_past_its_bound_ends_and_frees_its_place() {
     if first.try_wait().unwrap().is_some() {
         panic!("first turn exited: {}", finish(first));
     }
+    // It would stack on the round whose whole gate runs: a barrier holds it.
+    hold_pending(&world);
     let behind = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &b)
         .env("XDG_CACHE_HOME", world.cache())
@@ -1863,7 +1869,7 @@ fn a_pending_turn_past_its_bound_ends_and_frees_its_place() {
     });
     let answer = finish(behind);
     assert_eq!(answer["outcome"], "waited_past_bound", "{answer}");
-    assert!(answer["detail"].as_str().unwrap().contains("for its round"), "{answer}");
+    assert!(answer["detail"].as_str().unwrap().contains("for a barrier"), "{answer}");
     let pending = chain(&world)["pending"].clone();
     assert!(pending.as_array().is_none_or(Vec::is_empty), "its place is freed: {pending}");
     assert!(!world.root.join("start-b").exists(), "nothing of it ran");
