@@ -2297,6 +2297,16 @@ fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
     let ran = crate::gate::candidate_gate(&checkout, &command, host, clock(), limit, issue, &hook);
     let evidence = match ran {
         Ok((evidence, _)) => evidence,
+        // Cancelled as its gate started — a stacked merge whose round was
+        // discarded (sunfmin/control#1140) — it ends with nothing to say:
+        // the round carries on without it.
+        Err(_)
+            if read(repo, config)?.chain.candidates.iter().any(|c| c.id == pair && !c.valid()) =>
+        {
+            stop_candidate(repo, config, pair)?;
+            remove_ended_run(repo, &path, &p.worktree);
+            return Ok(());
+        }
         Err(error) => {
             invalidate(repo, config, pair, "gate_interrupted")?;
             return Err(error);
