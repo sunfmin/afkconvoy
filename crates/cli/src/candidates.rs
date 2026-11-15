@@ -502,24 +502,173 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
     Ok(frozen.owned.clone())
 }
 
-fn confirmed(processes: &[Process], scope: &std::path::Path) -> Result<()> {
-    let began = std::time::Instant::now();
+/// A stopped candidate whose processes did not all exit within the time
+/// this host's load gives them (`exit_bound`): its worker lane stays
+/// occupied, held by `pids` (sunfmin/control#1096). A turn answers it as
+/// `lane_occupied`; `exclusive` waits for another lane instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unconfirmed {
+    pub candidate: String,
+    pub pids: Vec<u32>,
+    pub waited: u64,
+}
+
+impl Unconfirmed {
+    /// The lane it holds, as a turn's answer and a log line name it.
+    pub fn lane(&self) -> String {
+        format!("the worker lane of candidate {}", self.candidate)
+    }
+}
+
+impl std::fmt::Display for Unconfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pids: Vec<String> = self.pids.iter().map(u32::to_string).collect();
+        let held = if pids.is_empty() {
+            "a process this host cannot name".to_string()
+        } else {
+            format!("pids {}", pids.join(", "))
+        };
+        write!(
+            f,
+            "candidate exit is unconfirmed after {}s, killed hard: {held} still hold {}, \
+             which stays occupied",
+            self.waited,
+            self.lane()
+        )
+    }
+}
+
+impl std::error::Error for Unconfirmed {}
+
+/// The unconfirmed exit `error` is, or is caused by.
+pub(crate) fn unconfirmed(error: &anyhow::Error) -> Option<&Unconfirmed> {
+    error.chain().find_map(|cause| cause.downcast_ref::<Unconfirmed>())
+}
+
+/// How long a candidate's killed processes are given to exit, at a 1-minute
+/// load of `load` hundredths on `cores` cores: a minute for each time the
+/// load fills the cores, at least one, at most half an hour. An overloaded
+/// host's kernel takes that much longer to tear a process down.
+fn exit_bound(load: u64, cores: u64) -> Duration {
+    let per = load.div_ceil(cores.max(1).saturating_mul(100)).clamp(1, 30);
+    Duration::from_secs(60 * per)
+}
+
+/// What a stopped candidate leaves while it exits.
+#[derive(Debug, Default)]
+struct Left {
+    /// Its processes still alive, by pid.
+    pids: Vec<u32>,
+    /// Whether its process scope is still held.
+    held: bool,
+}
+
+/// A stopped candidate's processes as they exit: what is left of them, and
+/// how they are killed again.
+trait Exiting {
+    fn left(&mut self) -> Result<Left>;
+    /// SIGKILL what is left, the scope's holders found again among them.
+    fn kill(&mut self) -> Result<()>;
+}
+
+/// Waits for `exiting` to leave nothing, killing what is left hard every
+/// `again`, for `bound` by `clock` → the pids still there past it. A process
+/// still dying is waited for: what it is waited for is not a fixed span
+/// but what the host's load gives it.
+fn awaited(
+    exiting: &mut impl Exiting,
+    bound: Duration,
+    again: Duration,
+    clock: &mut dyn FnMut() -> Duration,
+) -> Result<std::result::Result<(), Vec<u32>>> {
+    let began = clock();
+    let mut killed = began;
     loop {
-        let mut live = false;
-        for process in processes {
-            live |= alive(process)?;
+        let left = exiting.left()?;
+        if left.pids.is_empty() && !left.held {
+            return Ok(Ok(()));
         }
-        if scope.exists() {
-            live |= !crate::process_scope::free(scope)?;
+        let now = clock();
+        if now.saturating_sub(began) >= bound {
+            return Ok(Err(left.pids));
         }
-        if !live {
-            return Ok(());
+        if now.saturating_sub(killed) >= again {
+            exiting.kill()?;
+            killed = now;
         }
-        ensure!(
-            began.elapsed() < Duration::from_secs(10),
-            "candidate exit is unconfirmed; its lane stays occupied"
-        );
+    }
+}
+
+/// This host's stopped candidate: its frozen `processes`, and its `scope`,
+/// whose holders are found again as it is killed again.
+struct Stopped<'a> {
+    processes: &'a [Process],
+    scope: &'a Path,
+    owner: u32,
+    holders: Vec<Process>,
+}
+
+impl Exiting for Stopped<'_> {
+    fn left(&mut self) -> Result<Left> {
+        let mut pids = vec![];
+        for process in self.processes.iter().chain(&self.holders) {
+            if alive(process)? && !pids.contains(&process.pid) {
+                pids.push(process.pid);
+            }
+        }
+        let held = self.scope.exists() && !crate::process_scope::free(self.scope)?;
+        Ok(Left { pids, held })
+    }
+
+    fn kill(&mut self) -> Result<()> {
+        if self.scope.exists() && !crate::process_scope::free(self.scope)? {
+            for p in crate::hot::listed_checked()? {
+                if p.pid == self.owner
+                    || p.pid == std::process::id()
+                    || self.holders.iter().any(|known| known.pid == p.pid)
+                    || !crate::process_scope::owns(p.pid, self.scope)?
+                {
+                    continue;
+                }
+                if let Some(process) = identity(p.pid)? {
+                    self.holders.push(process);
+                }
+            }
+        }
+        for process in self.processes.iter().chain(&self.holders) {
+            if process.host == crate::this_host() && alive(process)? {
+                // SAFETY: a checked identity belonging to this candidate.
+                unsafe {
+                    libc::kill(process.pid as i32, libc::SIGKILL);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Confirms candidate `c`'s killed `processes`, and its process scope, gone:
+/// waiting as long as the host's load gives them (`exit_bound`), killing
+/// what is left hard each second. Errors: `Unconfirmed`, what is left past
+/// that, which keeps its lane occupied.
+fn confirmed(c: &Candidate, processes: &[Process]) -> Result<()> {
+    let scope = crate::process_scope::path(&c.worktree);
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
+    // An unread load is a loaded host's: the longest bound.
+    let load = crate::admission::load().unwrap_or(u64::MAX);
+    let bound = exit_bound(load, cores);
+    let mut stopped = Stopped { processes, scope: &scope, owner: c.owner.pid, holders: vec![] };
+    let began = std::time::Instant::now();
+    let mut clock = || {
         std::thread::sleep(Duration::from_millis(10));
+        began.elapsed()
+    };
+    match awaited(&mut stopped, bound, Duration::from_secs(1), &mut clock)? {
+        Ok(()) => Ok(()),
+        Err(pids) => {
+            Err(Unconfirmed { candidate: c.id.clone(), pids, waited: began.elapsed().as_secs() }
+                .into())
+        }
     }
 }
 
@@ -534,7 +683,7 @@ fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
         return Ok(());
     }
     let processes = signal(repo, config, c)?;
-    confirmed(&processes, &crate::process_scope::path(&c.worktree))?;
+    confirmed(c, &processes)?;
     change(repo, config, |chain| {
         for c in &mut chain.candidates {
             if c.id == id {
@@ -558,14 +707,11 @@ fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
         if c.owner.host != crate::this_host() || (c.gate.is_none() && alive(&c.owner)?) {
             continue;
         }
-        signalled.push((
-            c.id.clone(),
-            signal(repo, config, c)?,
-            crate::process_scope::path(&c.worktree),
-        ));
+        signalled.push((c.clone(), signal(repo, config, c)?));
     }
-    for (id, processes, scope) in signalled {
-        confirmed(&processes, &scope)?;
+    for (c, processes) in signalled {
+        let id = c.id.clone();
+        confirmed(&c, &processes)?;
         change(repo, config, |chain| {
             for c in &mut chain.candidates {
                 if c.id == id && !c.valid() {
@@ -1045,7 +1191,28 @@ impl Drop for Reap<'_> {
 
 /// The source head has been pushed and the base certified by the caller.
 /// Assignment happens only after capacity is granted, by one atomic record.
-pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
+pub(crate) fn run(request: Request<'_>, answer: Value) -> Result<Value> {
+    let asked = answer.clone();
+    match take_turn(request, answer) {
+        Err(error) => match unconfirmed(&error) {
+            Some(left) => Ok(occupied(asked, left)),
+            None => Err(error),
+        },
+        answered => answered,
+    }
+}
+
+/// A turn's `answer` where a stopped candidate's processes, `left`, did not
+/// exit: its lane stays occupied, and the turn is asked for again.
+fn occupied(mut answer: Value, left: &Unconfirmed) -> Value {
+    answer["outcome"] = json!(Ending::LaneOccupied);
+    answer["lane"] = json!(left.lane());
+    answer["pids"] = json!(left.pids);
+    answer["detail"] = json!(left.to_string());
+    answer
+}
+
+fn take_turn(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let Request { repo, config, tracker, pr, of, host, now } = request;
     let _reap = Reap(repo);
     let began = std::time::Instant::now();
@@ -1710,5 +1877,115 @@ mod tests {
         };
         assert_eq!(waiting.wait(&moved), ms(100));
         assert_eq!(waiting.wait(&moved), ms(200));
+    }
+
+    /// Processes that exit at `exits` of a clock each look moves 10 ms on,
+    /// or never: what a stopped candidate leaves on an overloaded host.
+    struct Dying {
+        at: std::rc::Rc<std::cell::Cell<std::time::Duration>>,
+        exits: Option<std::time::Duration>,
+        kills: usize,
+    }
+
+    impl super::Exiting for Dying {
+        fn left(&mut self) -> anyhow::Result<super::Left> {
+            let gone = self.exits.is_some_and(|exits| self.at.get() >= exits);
+            Ok(super::Left { pids: if gone { vec![] } else { vec![41, 42] }, held: !gone })
+        }
+
+        fn kill(&mut self) -> anyhow::Result<()> {
+            self.kills += 1;
+            Ok(())
+        }
+    }
+
+    fn dying(exits: Option<std::time::Duration>) -> Dying {
+        Dying { at: std::rc::Rc::default(), exits, kills: 0 }
+    }
+
+    fn awaited(dying: &mut Dying, bound: std::time::Duration) -> Result<(), Vec<u32>> {
+        let at = dying.at.clone();
+        let mut clock = || {
+            at.set(at.get() + std::time::Duration::from_millis(10));
+            at.get()
+        };
+        super::awaited(dying, bound, std::time::Duration::from_secs(1), &mut clock).unwrap()
+    }
+
+    /// The bound grows with the load: a minute for each time it fills the
+    /// cores, at least one, at most half an hour (sunfmin/control#1096).
+    #[test]
+    fn a_candidates_processes_are_given_as_long_to_exit_as_the_hosts_load_needs() {
+        use std::time::Duration;
+        let minutes = |m: u64| Duration::from_secs(60 * m);
+        assert_eq!(super::exit_bound(0, 16), minutes(1));
+        assert_eq!(super::exit_bound(1600, 16), minutes(1));
+        assert_eq!(super::exit_bound(1601, 16), minutes(2));
+        assert_eq!(super::exit_bound(95_000, 16), minutes(30), "load 950 on 16 cores");
+        assert_eq!(super::exit_bound(u64::MAX, 0), minutes(30), "an unread load");
+    }
+
+    /// Processes that take 15 s to exit, on an idle host, are confirmed
+    /// gone, killed hard again each second as they die.
+    #[test]
+    fn processes_that_take_fifteen_seconds_to_exit_are_confirmed_gone() {
+        use std::time::Duration;
+        let mut dying = dying(Some(Duration::from_secs(15)));
+        assert_eq!(awaited(&mut dying, super::exit_bound(100, 16)), Ok(()));
+        assert!((14..=15).contains(&dying.kills), "killed again each second: {}", dying.kills);
+    }
+
+    /// Processes that never exit are named, past the bound, with the lane
+    /// they keep: the turn answers `lane_occupied`, not an error.
+    #[test]
+    fn processes_that_never_exit_end_the_turn_as_lane_occupied_naming_the_lane_and_pids() {
+        use std::time::Duration;
+        let mut dying = dying(None);
+        let pids = awaited(&mut dying, super::exit_bound(0, 16)).unwrap_err();
+        assert_eq!(pids, [41, 42]);
+        let left = super::Unconfirmed { candidate: "c7".into(), pids, waited: 60 };
+        let error: anyhow::Error = anyhow::Error::from(left.clone()).context("cleanup");
+        let found = super::unconfirmed(&error).expect("an unconfirmed exit under its context");
+        let answer = super::occupied(serde_json::json!({"pr": 5}), found);
+        assert_eq!(answer["outcome"], "lane_occupied");
+        assert_eq!(answer["lane"], "the worker lane of candidate c7");
+        assert_eq!(answer["pids"], serde_json::json!([41, 42]));
+        assert_eq!(answer["pr"], 5);
+        let detail = answer["detail"].as_str().unwrap();
+        assert!(detail.contains("pids 41, 42") && detail.contains("candidate c7"), "{detail}");
+    }
+
+    /// A holder of the candidate's process scope that its freeze never saw
+    /// — one that traps the signals a shell can trap and sleeps — is found
+    /// again and killed hard, and its exit is confirmed.
+    #[test]
+    fn a_scope_holder_the_freeze_missed_is_killed_hard_and_confirmed_gone() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("w.processes");
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "trap 'sleep 15' TERM INT HUP; while :; do sleep 1; done"]);
+        let parent = crate::process_scope::create(&scope, &mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        drop(parent);
+        let mut stopped =
+            super::Stopped { processes: &[], scope: &scope, owner: 0, holders: vec![] };
+        let began = std::time::Instant::now();
+        let mut clock = || {
+            std::thread::sleep(Duration::from_millis(10));
+            began.elapsed()
+        };
+        let confirmed = super::awaited(
+            &mut stopped,
+            Duration::from_secs(60),
+            Duration::from_secs(1),
+            &mut clock,
+        )
+        .unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(confirmed, Ok(()));
+        assert!(began.elapsed() < Duration::from_secs(15), "{:?}", began.elapsed());
+        assert!(crate::process_scope::free(&scope).unwrap());
     }
 }

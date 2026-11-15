@@ -96,12 +96,31 @@ pub(crate) fn recover() -> Result<()> {
             && let Ok(owner) = serde_json::from_slice::<Owner>(&bytes)
             && owner.candidate
             && dead(&owner)?
+            && !cleaned(&owner.dir)?
         {
-            crate::candidates::abandoned(&owner.dir)?;
+            continue;
         }
         free_left_behind(&entry.path(), &file)?;
     }
     Ok(())
+}
+
+/// Stops the candidates of the checkout `dir` whose owner died
+/// (`candidates::abandoned`) → whether their exits are confirmed. One whose
+/// processes did not exit keeps its lane occupied: that is said on stderr,
+/// and the caller waits for another lane rather than failing
+/// (sunfmin/control#1096).
+fn cleaned(dir: &str) -> Result<bool> {
+    match crate::candidates::abandoned(dir) {
+        Ok(()) => Ok(true),
+        Err(error) => match crate::candidates::unconfirmed(&error) {
+            Some(left) => {
+                eprintln!("[afkconvoy] exclusive: {left}; it waits for another lane");
+                Ok(false)
+            }
+            None => Err(error),
+        },
+    }
 }
 
 /// Whether the process that took the slot `owner` names, on this host, ended.
@@ -242,7 +261,9 @@ fn free_left_behind(path: &Path, file: &File) -> Result<bool> {
         return Ok(false);
     }
     for owner in owners.iter().filter(|owner| owner.candidate) {
-        crate::candidates::abandoned(&owner.dir)?;
+        if !cleaned(&owner.dir)? {
+            return Ok(false);
+        }
     }
     let _dir = lock_dir(path.parent().unwrap_or(path))?;
     let open = file.metadata()?;
@@ -439,8 +460,10 @@ impl Slot {
                     && let Ok(owner) = serde_json::from_slice::<Owner>(&bytes)
                     && owner.candidate
                     && dead(&owner)?
+                    && !cleaned(&owner.dir)?
                 {
-                    crate::candidates::abandoned(&owner.dir)?;
+                    n += 1;
+                    continue 'places;
                 }
                 // One its owner left behind is free: the path is taken
                 // again at once, as a new file.

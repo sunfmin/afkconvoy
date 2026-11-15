@@ -581,7 +581,7 @@ fn hundredths(hundredths: u64) -> String {
 
 /// The 1-minute load average, in hundredths: what `sysctl vm.loadavg` says
 /// first, `{ 2.34 2.10 1.98 }`, or `/proc/loadavg` where there is one.
-fn load() -> Result<u64> {
+pub(crate) fn load() -> Result<u64> {
     let said = match std::fs::read_to_string("/proc/loadavg") {
         Ok(said) => said,
         Err(_) => output("sysctl", &["-n", "vm.loadavg"])?,
