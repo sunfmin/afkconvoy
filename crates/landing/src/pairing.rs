@@ -461,11 +461,14 @@ impl<N: Clone> Chain<N> {
     /// Stacks the pending turns on the open round while its whole gate runs
     /// (sunfmin/control#1140) → whether any were taken: a stacked round of
     /// them, named `id`, where none is; otherwise they join the one there
-    /// is, while it can still pair them — as nodes of the level it pairs,
-    /// that level not paired yet; or, once it has its root and its stacked
-    /// merge does not gate, a level above it, of that root and theirs. A PR
-    /// that left the stacked round does not join it again. A barrier stacks
-    /// nothing, nor does a round whose whole gate does not run.
+    /// is, while it can pair them — as nodes of the level it pairs, that
+    /// level not paired yet; or, once it has its root, a level above it, of
+    /// that root and theirs, whose own stacked merge is made once it has its
+    /// root again. A stacked merge of the root before that has not started
+    /// ends `stack_joined`; one gating runs on, as no gate is killed for a
+    /// newcomer. A PR that left the stacked round does not join it again. A
+    /// barrier stacks nothing, nor does a round whose whole gate does not
+    /// run.
     fn stack(&mut self, id: &str) -> bool {
         if !self.barriers.is_empty() {
             return false;
@@ -484,26 +487,26 @@ impl<N: Clone> Chain<N> {
         if stacked.on.as_ref().is_none_or(|o| o.candidate != on.candidate) {
             return false;
         }
-        let merges: Vec<&Candidate<N>> = self
+        if stacked.root.is_none() && stacked.paired {
+            return false;
+        }
+        let merges: Vec<String> = self
             .candidates
             .iter()
             .filter(|c| {
-                c.valid() && c.pair.as_ref().is_some_and(|p| p.stacked && p.round == stacked.id)
+                c.valid()
+                    && c.phase == Phase::Building
+                    && c.pair.as_ref().is_some_and(|p| p.stacked && p.round == stacked.id)
             })
+            .map(|c| c.id.clone())
             .collect();
-        let gating = merges.iter().any(|c| c.phase == Phase::Validating);
-        let open = if stacked.root.is_some() { !gating } else { !stacked.paired };
-        if !open {
-            return false;
-        }
-        let merges: Vec<String> = merges.into_iter().map(|c| c.id.clone()).collect();
         let mut taken = stacked.out.clone();
         taken.extend(stacked.asked.iter().map(|a| a.asks.change));
         let asked = self.take_pending(&taken);
         if asked.is_empty() {
             return false;
         }
-        // Its stacked merge is of a root it is no more.
+        // A stacked merge not started is of a root it is no more.
         for merge in merges {
             self.invalidate(&merge, "stack_joined");
         }
@@ -1151,11 +1154,8 @@ mod tests {
     /// Makes and gates the stacked round's stacked merge `green`, as its
     /// root's last-asked PR's turn does → its id.
     fn stack_and_gate(chain: &mut Chain, green: bool) -> String {
-        let (round, on, heads) = chain.to_stack().expect("a root to stack");
-        let commit = heads.iter().fold(on, |merged, a| format!("({merged}+{})", a.head));
-        let merged = Merged { commit, tree: "stacked".into(), command: "fast".into(), seconds: 1 };
-        chain.stack_merge(&round, Some(merged), |_| Plain::default(), |id| format!("w/{id}"), 0);
-        let last = heads.last().unwrap().change;
+        let last = chain.to_stack().expect("a root to stack").2.last().unwrap().change;
+        make_stack(chain);
         let Some(RoundNext::Gate(id)) = chain.round_next(&format!("t{last}")) else {
             panic!("{chain:?}")
         };
@@ -1229,8 +1229,9 @@ mod tests {
     }
 
     /// A PR ready later in the gate joins the stacked round, a level above
-    /// its root, while its stacked merge does not gate; none stacks while
-    /// the round pairs, nor does a PR that left the stacked round.
+    /// its root: a stacked merge of that root not started ends, one gating
+    /// runs on. None stacks while the round pairs, nor does a PR that left
+    /// the stacked round.
     #[test]
     fn a_pr_ready_later_joins_the_stacked_round_above_its_root() {
         let mut chain = asking(2);
@@ -1242,7 +1243,7 @@ mod tests {
         let mut chain = whole_running();
         asks(&mut chain, 2);
         assert!(chain.open_round("s"));
-        let merge = stack_and_gate(&mut chain, true);
+        let merge = make_stack(&mut chain);
         asks(&mut chain, 3);
         assert!(chain.open_round("s3"));
         let stacked = chain.stacked.clone().unwrap();
@@ -1261,5 +1262,27 @@ mod tests {
         assert!(!chain.open_round("s3"));
         assert_eq!(chain.pending.len(), 1);
         assert_eq!(chain.round_next("t2"), Some(RoundNext::Stack));
+        // Its stacked merge gating, a PR that asks joins, and the gate runs on.
+        chain.pending.clear();
+        let gating = make_stack(&mut chain);
+        chain.candidates.iter_mut().filter(|c| c.id == gating).for_each(|c| {
+            c.phase = Phase::Validating;
+        });
+        asks(&mut chain, 4);
+        assert!(chain.open_round("s4"));
+        let m = chain.candidates.iter().find(|c| c.id == gating).unwrap();
+        assert!(m.valid() && m.phase == Phase::Validating, "{m:?}");
+        assert_eq!(chain.round_next("t4"), Some(RoundNext::Pair));
+    }
+
+    /// Makes the stacked round's stacked merge, not gated yet → its id.
+    fn make_stack(chain: &mut Chain) -> String {
+        let (round, on, heads) = chain.to_stack().expect("a root to stack");
+        let commit = heads.iter().fold(on, |merged, a| format!("({merged}+{})", a.head));
+        let merged = Merged { commit, tree: "stacked".into(), command: "fast".into(), seconds: 1 };
+        chain.stack_merge(&round, Some(merged), |_| Plain::default(), |id| format!("w/{id}"), 0);
+        let made =
+            chain.candidates.iter().rev().find(|c| c.pair.as_ref().is_some_and(|p| p.stacked));
+        made.unwrap().id.clone()
     }
 }

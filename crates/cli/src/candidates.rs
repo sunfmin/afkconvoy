@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use afkconvoy_landing::forge::{Change, Forge};
-use afkconvoy_landing::pairing::{self, Asks, Built, RoundNext};
+use afkconvoy_landing::pairing::{self, Asks, Built, Merged, RoundNext};
 use afkconvoy_landing::turn::{Declared, Next};
 
 use crate::exclusive::Permit;
@@ -320,7 +320,7 @@ pub(crate) fn landing(records: &[crate::remote::RemoteRecord], prefix: &str, bra
             && identity(owner.pid).ok().flatten().as_ref() == Some(owner)
     };
     chains.into_iter().any(|chain| {
-        let asked = chain.round.iter().flat_map(|r| &r.asked);
+        let asked = chain.rounds().flat_map(|r| &r.asked);
         chain
             .candidates
             .iter()
@@ -352,7 +352,7 @@ pub(crate) fn pending_lands(
         let Some(branch) = record.name.strip_prefix(prefix) else { continue };
         let Ok(chain) = serde_json::from_str::<Chain>(&record.subject) else { continue };
         // A turn in a round without a candidate yet waits as a pending one does.
-        let asked = chain.round.iter().flat_map(|r| &r.asked).filter(|a| a.candidate.is_none());
+        let asked = chain.rounds().flat_map(|r| &r.asked).filter(|a| a.candidate.is_none());
         let places = chain.pending.iter().map(|b| (&b.owner, b.since));
         for (owner, since) in places.chain(asked.map(|a| (&a.owner, None))) {
             if owner.host == crate::this_host()
@@ -905,7 +905,7 @@ fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
                 dead_barriers.push(barrier.id.clone());
             }
         }
-        for ask in updated.chain.round.iter().flat_map(|r| &r.asked) {
+        for ask in updated.chain.rounds().flat_map(|r| &r.asked) {
             if !alive(&ask.owner)? {
                 dead_barriers.push(ask.id.clone());
             }
@@ -1419,7 +1419,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         head: original.clone(),
     });
     let reserve = |chain: &mut Chain| {
-        let in_round = chain.round.iter().flat_map(|r| &r.asked).any(|a| a.id == id);
+        let in_round = chain.rounds().flat_map(|r| &r.asked).any(|a| a.id == id);
         let places = if barrier { &mut chain.barriers } else { &mut chain.pending };
         if !in_round && !places.iter().any(|b| b.id == id) {
             places.push(Barrier {
@@ -1471,7 +1471,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         // Another host read this one dead while it was away — it slept, or
         // lost the network — and dropped its place: it takes one again, at
         // the back.
-        let in_round = chain.round.iter().flat_map(|r| &r.asked).any(|a| a.id == id);
+        let in_round = chain.rounds().flat_map(|r| &r.asked).any(|a| a.id == id);
         if adopted.is_none()
             && !in_round
             && !chain.barriers.iter().chain(&chain.pending).any(|b| b.id == id)
@@ -1939,7 +1939,12 @@ enum Rounded {
 /// where it sees one to pair, gates each pair it is the later-asked PR of,
 /// and assigns its candidate once every PR of the root asked before it has
 /// one. A pair of its red answers `gate_red` with that pair's run; a round
-/// it leaves for the next takes it back pending.
+/// it leaves for the next takes it back pending. Asking while a round's
+/// whole gate runs, it stacks on that round's root (sunfmin/control#1140):
+/// its stacked round pairs, and the root's last-asked PR's turn merges the
+/// root onto that round's root-onto-tip commit and fast-gates it, then
+/// waits; that round landed, the stacked round is the open one; ended
+/// otherwise, its turns are pending again, charged nothing.
 fn in_round(
     turn: &InRound<'_>,
     answer: Value,
@@ -1975,6 +1980,10 @@ fn in_round(
             }
             Some(RoundNext::Gate(pair)) => {
                 gate_pair(turn, &pair)?;
+                continue;
+            }
+            Some(RoundNext::Stack) => {
+                stack_root(turn, &chain)?;
                 continue;
             }
             Some(RoundNext::Assign) => {
@@ -2079,6 +2088,44 @@ fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
     let now = clock();
     change(repo, config, |chain| {
         chain.pair_level((&round, level), built.clone(), |_| Default::default(), worktree, now);
+    })?;
+    Ok(())
+}
+
+/// Makes the stacked round's stacked merge as `chain` names it
+/// (`Chain::to_stack`): its root's heads merged one after another, in the
+/// order they asked, onto the commit it stands on, each a merge commit as
+/// its candidate of the root will be, so the last has the tree the root's
+/// last candidate will have on that commit as the tip; its fast gate the
+/// one that commit declares. A conflict makes none: the root's candidates
+/// meet it as they are merged onto the tip.
+fn stack_root(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
+    let InRound { repo, config, root, clock, .. } = *turn;
+    let Some((round, on, heads)) = chain.to_stack() else { return Ok(()) };
+    let mut merged = Some(on.clone());
+    for head in &heads {
+        let Some(at) = merged.take() else { break };
+        let message = format!("Stack #{} onto {}", head.change, on.get(..12).unwrap_or(&on));
+        merged = crate::turn::merged_onto(repo, &at, &head.head, &message, clock())?;
+    }
+    let made = match merged {
+        Some(commit) => {
+            let declared = crate::turn::tip_config(repo, &commit)?;
+            let own = Declared {
+                whole: declared.gate_command.clone(),
+                seconds: declared.gate_seconds(),
+                gates: declared.gates.clone(),
+            }
+            .own();
+            let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
+            Some(Merged { commit, tree, command: own.command, seconds: own.seconds })
+        }
+        None => None,
+    };
+    let worktree = |id: &str| root.join(id).to_string_lossy().into_owned();
+    let now = clock();
+    change(repo, config, |chain| {
+        chain.stack_merge(&round, made.clone(), |_| Default::default(), worktree, now);
     })?;
     Ok(())
 }
