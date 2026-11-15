@@ -103,7 +103,8 @@ impl Backgrounded {
 }
 
 /// How the harness of the worker in `worktree` stands at its terminal, of
-/// `procs` (`hot::listed_checked`).
+/// `procs`: every process with a terminal and every one above one, at least
+/// (`hot::on_terminals`).
 pub(crate) fn holds(procs: &[Proc], worktree: &Path) -> Result<Holds> {
     let tree = crate::hot::tree(procs, worktree);
     let ours: Vec<u32> = tree.iter().map(|proc| proc.pid).collect();
@@ -184,7 +185,7 @@ pub(crate) fn recover(
     }
     let until = Instant::now() + RECOVER_WAIT;
     loop {
-        if let Holds::Foreground { .. } = holds(&crate::hot::listed_checked()?, worktree)? {
+        if let Holds::Foreground { .. } = holds(&crate::hot::on_terminals()?, worktree)? {
             return Ok(true);
         }
         if Instant::now() >= until {

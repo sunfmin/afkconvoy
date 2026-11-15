@@ -909,7 +909,8 @@ fn confirmed(c: &Candidate, signalled: &Signalled) -> Result<()> {
 }
 
 fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
-    let chain = read(repo, config, Read::Known)?.chain;
+    // Live: what it signals is no write a moved chain refuses.
+    let chain = read(repo, config, Read::Live)?.chain;
     let c = chain
         .candidates
         .iter()
@@ -935,22 +936,18 @@ fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
 
 /// Invalidate the suffix atomically, signal ALL its gates, then confirm each
 /// exit. A slow root's cleanup cannot postpone signalling its descendants.
+///
+/// What it signals is no write a moved chain refuses: where `chain` names a
+/// candidate to stop, the chain is read live, and only what that names is
+/// stopped. Another turn may have stopped one meanwhile, its scope gone
+/// with its gate (`Read::Known`).
 fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
+    if to_stop(chain)?.is_empty() {
+        return Ok(());
+    }
+    let live = read(repo, config, Read::Live)?.chain;
     let mut signalled = vec![];
-    for c in
-        chain.candidates.iter().filter(|c| !c.stopped && !c.valid() && c.phase != Phase::Landed)
-    {
-        if c.owner.host != crate::this_host() || (c.gate.is_none() && alive(&c.owner)?) {
-            continue;
-        }
-        // A pair or stacked merge beside the chain is its live turn's to
-        // stop: its gate asks whether it was cancelled and stops itself, and
-        // its turn stops it as its gate returns. Signalled from here as well,
-        // as a red round's turn invalidates a stacked merge just stopping,
-        // its scope may go between the two (sunfmin/control#1140).
-        if c.is_pair() && alive(&c.owner)? {
-            continue;
-        }
+    for c in to_stop(&live)? {
         signalled.push((c.clone(), signal(repo, config, c)?));
     }
     for (c, found) in signalled {
@@ -968,6 +965,29 @@ fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// The candidates of `chain` this turn's cleanup stops: each ended but not
+/// yet stopped, of this host, and with a gate or no live owner.
+fn to_stop(chain: &Chain) -> Result<Vec<&Candidate>> {
+    let mut stopping = vec![];
+    for c in
+        chain.candidates.iter().filter(|c| !c.stopped && !c.valid() && c.phase != Phase::Landed)
+    {
+        if c.owner.host != crate::this_host() || (c.gate.is_none() && alive(&c.owner)?) {
+            continue;
+        }
+        // A pair or stacked merge beside the chain is its live turn's to
+        // stop: its gate asks whether it was cancelled and stops itself, and
+        // its turn stops it as its gate returns. Signalled from here as well,
+        // as a red round's turn invalidates a stacked merge just stopping,
+        // its scope may go between the two (sunfmin/control#1140).
+        if c.is_pair() && alive(&c.owner)? {
+            continue;
+        }
+        stopping.push(c);
+    }
+    Ok(stopping)
 }
 
 pub(crate) fn invalidate(repo: &Repo, config: &Config, id: &str, cause: &str) -> Result<()> {

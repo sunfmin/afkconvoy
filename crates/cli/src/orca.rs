@@ -2056,15 +2056,8 @@ impl Worktree {
     /// as on a host that cannot see its harness. Only what is seen holds a
     /// line back.
     pub(crate) fn holds(&self) -> Result<Holds> {
-        self.holds_in(crate::hot::listed_checked().as_deref().ok())
-    }
-
-    /// `holds`, as `procs` shows it: a listing of the host's processes its
-    /// caller has just made, to answer more than this from, or `None` where
-    /// that could not be read.
-    pub(crate) fn holds_in(&self, procs: Option<&[crate::hot::Proc]>) -> Result<Holds> {
-        let Some(procs) = procs else { return Ok(Holds::Unseen) };
-        let Ok(holds) = crate::foreground::holds(procs, &self.path) else {
+        let Ok(procs) = crate::hot::on_terminals() else { return Ok(Holds::Unseen) };
+        let Ok(holds) = crate::foreground::holds(&procs, &self.path) else {
             return Ok(Holds::Unseen);
         };
         if let Some(tty) = holds.tty()
@@ -2087,7 +2080,7 @@ impl Worktree {
     /// shell: its harness gone, and the shell that started it there still.
     pub(crate) fn bare_shell(&self) -> Result<bool> {
         let Some(tty) = self.seen_tty() else { return Ok(false) };
-        let Ok(procs) = crate::hot::listed_checked() else { return Ok(false) };
+        let Ok(procs) = crate::hot::on_terminals() else { return Ok(false) };
         Ok(crate::foreground::bare_shell(&procs, &self.path, &tty).unwrap_or(false))
     }
 

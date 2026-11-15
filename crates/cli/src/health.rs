@@ -1005,20 +1005,12 @@ fn observe(
         return Ok(());
     };
     let state = worktree.state(fleet.now)?;
-    // One listing of the host's processes says both how the harness holds
-    // its terminal and what its processes have done, unless the harness was
-    // found in the background and acted on between the two: a slow-gate run
-    // made 5459 listings, at about 160 ms each (sunfmin/control#1158).
-    let listed = crate::hot::listed_checked();
-    let holds = worktree.holds_in(listed.as_deref().ok())?;
-    let acted_on = matches!(holds, crate::foreground::Holds::Background(_));
     let background = foreground(
         fleet,
         me,
         issue.map(|n| n.to_string()).or(patrol.map(str::to_string)),
         worktree,
         &terminal,
-        holds,
     )?;
     let orca = worktree.agent_report()?;
     let signal = error_of(worktree)?;
@@ -1051,11 +1043,7 @@ fn observe(
                     .any(|h| h.harness == harness && *key == command_key(&h.command))
         });
     let output = if working { vec![] } else { worktree.screen(&terminal, 100)? };
-    let processes = match listed {
-        _ if working => vec![],
-        Ok(procs) if !acted_on => procs,
-        _ => crate::hot::listed_checked()?,
-    };
+    let processes = if working { vec![] } else { crate::hot::listed_checked()? };
     let activity: Vec<_> = crate::hot::tree(&processes, &worktree.path)
         .into_iter()
         .map(|p| json!({"pid":p.pid,"parent":p.ppid,"cpu_ms":p.cpu_ms,"resident_bytes":p.resident}))
@@ -1234,9 +1222,8 @@ fn foreground(
     on: Option<String>,
     worktree: &Worktree,
     terminal: &str,
-    holds: crate::foreground::Holds,
 ) -> Result<Option<Diagnosis>> {
-    let crate::foreground::Holds::Background(held) = holds else { return Ok(None) };
+    let crate::foreground::Holds::Background(held) = worktree.holds()? else { return Ok(None) };
     let fg = || worktree.press_key(terminal, crate::foreground::FG);
     let recovered = crate::foreground::recover(&worktree.path, &held, fg)?;
     let how = if held.shell_holds { "fg typed at its shell" } else { "SIGCONT" };
