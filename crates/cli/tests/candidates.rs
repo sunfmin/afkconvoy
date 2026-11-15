@@ -204,7 +204,9 @@ impl Drop for Held {
 /// one round (docs/adr/0083): a turn of issue 5's worker, `e`, takes a round
 /// of its own first and holds it in its gate; the others ask during it and
 /// wait pending, in the order given; `release_holder` lets its gate go, it
-/// lands, and the next round takes them all.
+/// lands, and the next round takes them all. They would stack on its round
+/// as they ask while its whole gate runs (sunfmin/control#1140): a barrier's
+/// place the holder's process holds keeps them pending until it ends.
 fn one_round(
     world: &World,
     holder: &Path,
@@ -214,6 +216,7 @@ fn one_round(
 ) -> Vec<Child> {
     let held = start(world, holder, &world.cache(), 5);
     began_holder();
+    hold_pending(world);
     // One at a time, each pending before the next asks: the order they ask
     // in is the round's.
     let mut children: Vec<Child> = vec![];
@@ -226,6 +229,32 @@ fn one_round(
     let landed = finish(held);
     assert_eq!(landed["outcome"], "merged", "the holder's round: {landed}");
     children
+}
+
+/// Adds to the chain a barrier's place held by the process of the open
+/// round's first PR's turn: turns that ask wait pending while it runs, and
+/// the place goes as that process ends, as a dead owner's does.
+fn hold_pending(world: &World) {
+    let name = "refs/convoy/candidates/main";
+    loop {
+        let old = world.remote(&["rev-parse", name]);
+        let mut state = chain(world);
+        let owner = state["round"]["asked"][0]["owner"].clone();
+        assert!(owner.is_object(), "no round holds a turn: {state}");
+        let barriers = state["barriers"].as_array_mut().unwrap();
+        barriers.push(json!({"id": "held-by-the-holder", "owner": owner}));
+        let tree = world.remote(&["hash-object", "-w", "-t", "tree", "/dev/null"]);
+        let message = state.to_string();
+        let new = world.remote(&["commit-tree", &tree, "-p", &old, "-m", &message]);
+        let moved = Command::new("git")
+            .current_dir(&world.bare)
+            .args(["update-ref", name, &new, &old])
+            .status()
+            .unwrap();
+        if moved.success() {
+            return;
+        }
+    }
 }
 
 /// The pairs of the open round's pairing tree, each as its level and the
