@@ -84,6 +84,9 @@ pub struct Settings {
     /// Read only to be refused: a config names no harness (docs/adr/0020).
     pub harness: Option<String>,
     pub escalate_to: Option<String>,
+    /// How its rounds land: `per_candidate` (the default) or `batch`
+    /// (docs/adr/0068).
+    pub landing: Option<afkconvoy_landing::turn::Landing>,
 }
 
 /// What a bound repo's config says beside the keys every repo has.
@@ -153,6 +156,12 @@ pub struct Config {
     /// (`HEAVY_BLOCK`); empty where the file has none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub heavy_commands: Vec<String>,
+    /// How the repo's rounds land (docs/adr/0068): each candidate gated alone
+    /// and a round slow-gated at its tip, the default; or as batch rounds,
+    /// where only the chain's tip is gated and a red one is bisected. Said
+    /// in the answer only where it is `batch`.
+    #[serde(skip_serializing_if = "is_per_candidate")]
+    pub landing: afkconvoy_landing::turn::Landing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,7 +308,11 @@ impl Config {
             bound,
         ) {
             Some(config) => {
-                Ok(Config { gate_budget_seconds: settings.gate_budget_seconds, ..config })
+                Ok(Config {
+                gate_budget_seconds: settings.gate_budget_seconds,
+                landing: settings.landing.unwrap_or_default(),
+                ..config
+            })
             }
             None => Err(ConfigError::ZeroGateSeconds),
         }
@@ -380,6 +393,7 @@ fn checked(
         gate_needs: Vec::new(),
         cut_needs: Vec::new(),
         heavy_commands: Vec::new(),
+        landing: afkconvoy_landing::turn::Landing::PerCandidate,
     })
 }
 
@@ -524,6 +538,11 @@ impl From<RepoDir> for String {
 
 fn repo(key: &'static str, value: String) -> Result<RepoDir, ConfigError> {
     RepoDir::read(&value).map_err(|_| ConfigError::NotARepo(key))
+}
+
+/// Whether `landing` is the default, which the answer leaves unsaid.
+fn is_per_candidate(landing: &afkconvoy_landing::turn::Landing) -> bool {
+    *landing == afkconvoy_landing::turn::Landing::PerCandidate
 }
 
 fn required(key: &'static str, value: Option<String>) -> Result<String, ConfigError> {

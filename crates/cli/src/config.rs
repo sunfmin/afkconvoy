@@ -248,6 +248,14 @@ slow:
 
 The two are the gate split, not a gate more: together they check what `gate_command` checks: a landing turn runs the fast gate per candidate and the slow gate once per round (`afkconvoy land --help`), and a base tip with no record is gated with `gate_command` whole. So each budget is below its limit, their limits add up to no more than `gate_seconds`, and their budgets to no more than `gate_budget_seconds` where it is declared. `afkconvoy gate --fast` and `--slow` run each alone (`afkconvoy gate --help`). Older versions skip the block.
 
+An optional `landing` says how the repo's rounds land (docs/adr/0068): `per_candidate`, the default, gates each candidate alone, its fast gate, and a round's slow gate once at the chain's tip; `batch` lands its turns in batch rounds, where no candidate is gated alone: the chain's tip runs the whole gate, fast then slow, once, and green lands every candidate up to it as one fast-forward, each turn answering `merged`; red is bisected to the round's first red candidate, whose turn answers `gate_red` with that run, while the candidates before it land and the turns behind it are merged again without it (`afkconvoy land --help`). A turn whose merge onto the chain conflicts answers `speculative_conflict` either way. Put it in the first yaml block:
+
+```
+landing: batch
+```
+
+The landing a turn takes is the one the target's tip declares. Older versions refuse the key: set it once every host of the fleet runs a version that reads it.
+
 What is outside these blocks is yours to explain it in — but for a second block opened by the line ```yaml cut, which names the repo's cut steps and turns cutting on (`afkconvoy cut --help`). It is read beside this one; older versions read only this one, and refuse nothing for it.
 
 No command writes this file: write it, commit it, and run `afkconvoy config`.
@@ -296,7 +304,7 @@ Where a budget is declared, the answer also has `gate_budget_seconds`. The last 
 
 A repo whose config names a team is a bound repo, and answers three keys more: {"team", "patrols", "intake_limit"} — the team's directory as owner/repo or owner/repo/path (a whole repo, or a subdirectory of one), which of its patrols run here, by name (default none; `afkconvoy check` holds them against the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in by workers may be open (default {const:INTAKE_LIMIT}). A config names no harness: what each worker runs is its team's `roster`'s to say (`afkconvoy help roster`), within what the host kit holds (`afkconvoy kit --help`). A repo that names no team is unbound and answers the seven above and one legacy key: {"escalate_to"}, always `human`. Existing `consult` values still load, but every hand-off escalates for the host's watch to answer. Only a consult explicitly named by a bound repo's stage is asked before escalation (`afkconvoy help humans`).
 
-Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?, "minor_paths"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored. Optional `minor_paths`, a list such as `["decisions/"]`, makes a cut minor where a PR landed since the newest tag adds or changes a file under one of them (`afkconvoy cut --help`). Where it splits its gate, one more: {"gates": {"fast", "slow"}}, each {"command", "seconds", "budget_seconds"}.
+Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?, "minor_paths"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored. Optional `minor_paths`, a list such as `["decisions/"]`, makes a cut minor where a PR landed since the newest tag adds or changes a file under one of them (`afkconvoy cut --help`). Where it splits its gate, one more: {"gates": {"fast", "slow"}}, each {"command", "seconds", "budget_seconds"}. Where it lands in batch rounds, one more: {"landing": "batch"}.
 
 Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish`, `initial`, `busy_after_seconds` and `minor_paths`, lacks a required step, a step names nothing to run, `initial` is not X.Y.Z, or `minor_paths` names an empty path; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml heavy-commands block has a key but `commands`, an empty pattern or one declared twice; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout", or git's own words for a checkout it refuses.
 
@@ -408,6 +416,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(valid.gate_budget_seconds, Some(600));
+    }
+
+    #[test]
+    fn landing_is_per_candidate_unless_the_yaml_block_says_batch() {
+        use afkconvoy_landing::turn::Landing;
+        let of = |extra: &str| {
+            parse(&format!("```yaml\nbase_branch: main\ngate_command: make\n{extra}```\n"))
+        };
+        assert_eq!(of("").unwrap().landing, Landing::PerCandidate);
+        assert_eq!(of("landing: per_candidate\n").unwrap().landing, Landing::PerCandidate);
+        let batch = of("landing: batch\n").unwrap();
+        assert_eq!(batch.landing, Landing::Batch);
+        assert_eq!(serde_json::json!(batch)["landing"], "batch");
+        assert!(serde_json::json!(of("").unwrap()).get("landing").is_none());
+        let wrong = format!("{:#}", of("landing: rounds\n").unwrap_err());
+        assert!(wrong.contains("landing"), "{wrong}");
     }
 
     #[test]
