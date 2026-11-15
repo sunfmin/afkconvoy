@@ -307,13 +307,11 @@ impl Config {
             escalate_to,
             bound,
         ) {
-            Some(config) => {
-                Ok(Config {
+            Some(config) => Ok(Config {
                 gate_budget_seconds: settings.gate_budget_seconds,
                 landing: settings.landing.unwrap_or_default(),
                 ..config
-            })
-            }
+            }),
             None => Err(ConfigError::ZeroGateSeconds),
         }
     }
