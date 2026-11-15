@@ -225,6 +225,7 @@ kinds! {
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
     ExitWaiting: Warning, "has waited for its processes to exit for";
+    LaneRetained: Warning, "its lane retained for a cleanup it could not confirm";
     LandingContention: Warning, "its candidate chain cannot keep up";
     FetchCorrupt: Warning, "a fetch of the remote keeps failing corrupt";
     Moved: Info, "moved since the stage";
@@ -270,6 +271,7 @@ impl Kind {
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
                 | Kind::ExitWaiting
+                | Kind::LaneRetained
         )
     }
 
@@ -2644,6 +2646,7 @@ impl Look {
         let elsewhere = table.as_ref().ok().and_then(crate::machine::Table::elsewhere);
         let host = host_once(now, &readings, rounds, &others, elsewhere.as_ref());
         let mut findings = crate::resources::findings(&host["resources"], now);
+        findings.extend(crate::queue::retained_findings(&host["exclusive"], now));
         findings.extend(crate::machine::findings(&others, host_runner::runs()));
         findings.extend(crate::machine::path_findings());
         findings.extend(crate::kit_research::findings());

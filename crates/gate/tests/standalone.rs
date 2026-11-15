@@ -47,6 +47,7 @@ fn ticket(command: &str, dir: &str, asked: u64, gate: Option<Gate>) -> Ticket {
         gate,
         asked,
         ran: None,
+        retained: None,
         note: Plain::default(),
     }
 }

@@ -257,6 +257,7 @@ impl Permit {
             gate,
             asked: crate::clock(),
             ran: None,
+            retained: None,
         };
         let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -421,9 +422,9 @@ impl Host<Note> for Hosted {
         crate::slots::repo_available(ticket).unwrap_or(false)
     }
 
-    fn leaving(&self, ticket: &Ticket) -> bool {
+    fn leaving(&self, ticket: &Ticket) -> std::result::Result<(), String> {
         if !ticket.candidate {
-            return true;
+            return Ok(());
         }
         let checkout = ticket
             .repo
@@ -432,10 +433,11 @@ impl Host<Note> for Hosted {
             .and_then(Path::to_str)
             .unwrap_or(&ticket.dir);
         match crate::candidates::abandoned(checkout) {
-            Ok(_) => true,
+            Ok(_) => Ok(()),
             Err(error) => {
+                let error = format!("{error:#}");
                 eprintln!("[afkconvoy] candidate cleanup unconfirmed; lane retained: {error}");
-                false
+                Err(error)
             }
         }
     }
@@ -467,6 +469,12 @@ impl Queue {
     /// Waiting commands rejoin the replacement with their original ask time.
     pub fn pause(&self) -> usize {
         self.holder.pause()
+    }
+
+    /// Tries again to free each lane retained for a cleanup it could not
+    /// confirm, on the holder's bound: the host runner calls it each check.
+    pub fn retry(&self) {
+        self.holder.retry();
     }
 
     /// Lets commands start again if the installed release changed before
@@ -722,6 +730,7 @@ pub fn exclusive(
         gate: told_gate(),
         asked: now(),
         ran: None,
+        retained: None,
     };
     let acting = Acting::new("exclusive").on_own_issue().in_checkout(checkout);
     let place = match turn(&ticket, &acting, &now) {
@@ -941,6 +950,7 @@ mod tests {
             gate: None,
             asked,
             ran: None,
+            retained: None,
         }
     }
 

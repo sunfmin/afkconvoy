@@ -1017,6 +1017,7 @@ fn held_host(
     while !stop.told() && left.is_none() {
         std::thread::sleep(WATCHED_EVERY);
         runner.shared.own_cpu.note();
+        runner.shared.queue.retry();
         if queue_noted.elapsed() >= crate::queue_share::NOTED_EVERY {
             queue_noted = Instant::now();
             if let Ok((queue, _)) = runner.shared.queue.observation() {
