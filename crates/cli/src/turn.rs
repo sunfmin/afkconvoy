@@ -490,6 +490,12 @@ fn run(
         answer["commit"] = json!(current);
         return Ok(answer);
     }
+    // A closed issue asks for no turn: nothing lands for it.
+    if let Some(n) = issue
+        && gh.issue(n)?.is_closed()
+    {
+        bail!(closed(n));
+    }
     let mut unremoved = vec![];
     let taken = take(repo, config, issue, host, now, on_red, &mut unremoved)?;
     if !unremoved.is_empty() {
@@ -521,6 +527,11 @@ fn run(
         crate::candidates::Request { repo, config, tracker, pr, of, host, now },
         answer,
     )
+}
+
+/// Why a turn of `issue`, closed, lands nothing.
+pub(crate) fn closed(issue: u64) -> String {
+    format!("issue #{issue} is closed; nothing lands for it")
 }
 
 pub(crate) fn ensure_base(pr: &PullRequest, target: &str) -> Result<()> {
@@ -557,6 +568,8 @@ A bound repo's landing worker can stop with `afkconvoy verdict blocked --issue <
 An issue's worker in its own worktree; in a bound workflow its landing worker after the last stage passes. A watch uses its own linked checkout named {const:WATCH_CHECKOUT}, with an optional numeric suffix. Other watch checkout names are refused.
 
 The issue's claim is checked live first. If another host holds it, the command refuses: `the claim on #N is held by instance X on host H since <ts>: this worker's work was taken; stop`. No candidate, gate record or landing is written. Ownership uses the host's name from its host settings, regardless of --host; a new instance on the same host keeps its workers.
+
+A closed issue is refused before any turn is asked for: `issue #N is closed; nothing lands for it`, unless its PR is already on the target branch, which answers `merged`. A candidate whose issue closes while it waits or validates is invalidated before it publishes, and fails with the same words: nothing lands.
 
 ## What it reads and writes
 

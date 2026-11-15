@@ -35,6 +35,8 @@ pub(crate) enum Refusal {
     Blocked(Vec<u64>),
     /// The issue's pinned target is no longer the branch it lands on.
     Retargeted,
+    /// The issue is closed: nothing lands for it (sunfmin/control#1081).
+    Closed(u64),
 }
 
 /// A PR as the change it asks to land.
@@ -76,6 +78,9 @@ impl Forge for Pulls<'_> {
 
     fn may_land(&self, _: &Change) -> Result<Result<(), Refusal>> {
         let Some(n) = self.issue() else { return Ok(Ok(())) };
+        if self.gh.issue(n)?.is_closed() {
+            return Ok(Err(Refusal::Closed(n)));
+        }
         let blockers = self.gh.open_blockers(n)?;
         if !blockers.is_empty() {
             return Ok(Err(Refusal::Blocked(blockers)));

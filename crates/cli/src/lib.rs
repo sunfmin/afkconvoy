@@ -54,6 +54,7 @@ pub mod doctor;
 pub mod draft;
 pub mod evidence;
 pub mod exclusive;
+mod exits;
 pub mod first_start;
 pub mod fleet;
 pub mod fleet_report;

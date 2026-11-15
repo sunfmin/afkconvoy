@@ -224,6 +224,7 @@ kinds! {
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
+    ExitWaiting: Warning, "has waited for its processes to exit for";
     LandingContention: Warning, "its candidate chain cannot keep up";
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which is ignored";
@@ -267,6 +268,7 @@ impl Kind {
                 | Kind::RepoUnreadable
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
+                | Kind::ExitWaiting
         )
     }
 
@@ -2368,6 +2370,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     let entries = log.as_ref().and_then(Log::read);
     let mut bounded = exclusive_findings(entries.as_deref().unwrap_or_default(), now);
     bounded.extend(landing_finding(entries.as_deref().unwrap_or_default(), now));
+    bounded.extend(crate::exits::findings(now));
     let lines = entries.as_deref().unwrap_or_default();
     let (instance, _started_with, ticks) = run_log::run(lines, host);
     let mut run = Run {
