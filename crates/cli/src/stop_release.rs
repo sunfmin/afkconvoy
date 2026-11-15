@@ -259,7 +259,7 @@ fn read_fleet(checkout: &Repo, instance: &InstanceId, now: u64) -> Result<(Fleet
                 Some("its worker declared a verdict: its next tick acts on it")
             }
             Some(mine) => match mine.status {
-                Status::Landed | Status::Closed | Status::Gone => {
+                Status::Landed | Status::Closed | Status::Gone | Status::Carried => {
                     Some("its issue is settled at its next tick")
                 }
                 Status::NoPr | Status::Landing | Status::AtStage => None,

@@ -457,7 +457,7 @@ impl Panel {
                 seen.workers.iter().find(|(issue, _)| *issue == mine.number).map(|(_, w)| *w);
             match mine.status {
                 // Settled or let go by the same tick: there is nothing left of them to show.
-                Status::Landed | Status::Closed | Status::Gone => {}
+                Status::Landed | Status::Closed | Status::Gone | Status::Carried => {}
                 Status::Landing => put.at(Some(LAND), card, List::AtWork),
                 Status::NoPr | Status::AtStage => put.at(None, card, List::AtWork),
             }

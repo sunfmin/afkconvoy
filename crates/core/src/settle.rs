@@ -111,6 +111,14 @@ pub fn settle_steps(closed: bool) -> Vec<SettleStep> {
     order.steps
 }
 
+/// The steps that settle a claim on an open issue whose PR another open PR
+/// carries (docs/adr/0083): its worker ended and its worktree removed, and
+/// the claim let go. Nothing closes: the issue does as that PR lands, and
+/// is worked again from that PR's branch should it close unlanded.
+pub fn carried_steps() -> Vec<SettleStep> {
+    vec![SettleStep::RemoveWorktree, SettleStep::Release]
+}
+
 /// Was the landing made at `landed_at` made under the claim taken at
 /// `claimed_at`? A PR landed long ago closes the issue too — one since
 /// reopened and claimed again: only a landing no earlier than the claim is

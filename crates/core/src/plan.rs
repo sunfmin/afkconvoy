@@ -189,6 +189,10 @@ pub enum Status {
     /// GitHub says the issue was deleted, transferred to another repo, or
     /// never issued: nothing is left to settle, and the claim is let go.
     Gone,
+    /// Another open PR carries the issue's PR (docs/adr/0083): its worker is
+    /// ended and its worktree removed, and the claim is let go; the issue
+    /// stays open until that PR lands.
+    Carried,
     /// A bound repo's claim on an open issue that is not a landing worker's:
     /// it was dispatched to a stage, and what that stage declares is what
     /// ends it. An open PR says nothing.
@@ -451,6 +455,10 @@ pub struct Observed<'a> {
     /// the fleet recorded on the issue. Unclaimed, it is a PR an escalation
     /// or a park kept, which a worker takes up.
     pub kept: &'a [u64],
+    /// The open issues whose PR another open PR carries (docs/adr/0083), each
+    /// with that PR: their work goes on there, and they are worked no more
+    /// while it is open.
+    pub carried: &'a [(u64, u64)],
     /// My open issues the landing train landed under my claim.
     pub landed: &'a [u64],
     /// My claimed issues with a verdict declared under the claim and not
@@ -641,6 +649,10 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             said.filter(|_| !matches!(bar, LabelBar::Epic(_))).unwrap_or_else(|| bar.reason())
         } else if claimed {
             "already claimed".to_string()
+        } else if let Some((_, by)) = seen.carried.iter().find(|(n, _)| *n == number) {
+            // Its work goes on in that PR; should it close unlanded, the
+            // issue is worked again from that PR's branch (docs/adr/0083).
+            format!("carried by PR #{by}, which lands its change")
         } else if cut::waits(&issue.labels) {
             // Off the frontier until a cut installs a version: no worker
             // waits for it, and the fleet can go idle and cut.
@@ -688,6 +700,8 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                 Status::Closed
             } else if seen.landed.contains(&claim.number) {
                 Status::Landed
+            } else if seen.carried.iter().any(|(n, _)| *n == claim.number) {
+                Status::Carried
             } else if config.bound.is_some()
                 && !issues
                     .iter()
@@ -797,6 +811,7 @@ mod tests {
             closed: &[],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -841,6 +856,7 @@ mod tests {
             closed: &[],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -874,6 +890,62 @@ mod tests {
         );
     }
 
+    /// An issue whose PR an open PR carries (docs/adr/0083) is held off the
+    /// frontier, though that PR, closing it too, is the fleet's own; a claim
+    /// on one is `Carried`, to be settled; once the carrying PR is no longer
+    /// open, the issue is on the frontier again.
+    #[test]
+    fn a_carried_issue_is_held_off_while_its_carrier_is_open_and_its_claim_settled() {
+        let issues = [issue(1, READY), issue(2, READY), issue(3, READY)];
+        let mut carrier = pr(20, 2);
+        carrier.closes.push(1);
+        carrier.closes.push(3);
+        let prs = [carrier];
+        let claims = [claim(3, "me")];
+        let seen = Observed {
+            unworked_blockers: &[],
+            handoffs: &[],
+            issues: &issues,
+            prs: &prs,
+            claims: &claims,
+            heartbeats: &[("me".into(), 1000)],
+            closed: &[],
+            gone: &[],
+            kept: &[1, 2, 3],
+            carried: &[(1, 20), (3, 20)],
+            landed: &[],
+            declared: &[],
+            idle: &[],
+            due: &[],
+            flows: &FlowLabels::default(),
+            landing: &[],
+            begun: &[],
+            overlapping: &[],
+            patrols: &[],
+            waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
+            tracker: &Tracker::Own,
+            cut: None,
+        };
+        let set = assemble(&seen, Some(&me()), 1000, &config());
+        let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
+        assert_eq!(frontier, [2]);
+        let reasons: Vec<(u64, &str)> =
+            set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
+        assert_eq!(
+            reasons,
+            [(1, "carried by PR #20, which lands its change"), (3, "already claimed")]
+        );
+        let mine: Vec<(u64, Status)> = set.mine.iter().map(|m| (m.number, m.status)).collect();
+        assert_eq!(mine, [(3, Status::Carried)]);
+
+        let closed = Observed { prs: &[], kept: &[], carried: &[], claims: &[], ..seen };
+        let set = assemble(&closed, Some(&me()), 1000, &config());
+        let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
+        assert_eq!(frontier, [1, 2, 3], "its carrier closed unlanded: it is worked again");
+    }
+
     #[test]
     fn an_issue_waiting_on_the_cut_leaves_the_fleet_idle_until_a_cut_installs_a_version() {
         let waiting = [issue(8, &["ready-for-agent", cut::WAITING_LABEL])];
@@ -896,6 +968,7 @@ mod tests {
             closed: &[],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -949,6 +1022,7 @@ mod tests {
             gone: &[],
             // #1's, #2's and #3's PRs are the fleet's; #4's is somebody else's.
             kept: &[1, 2, 3],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -988,6 +1062,7 @@ mod tests {
             closed: &[],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -1051,6 +1126,7 @@ mod tests {
             closed: &[],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -1134,6 +1210,7 @@ mod tests {
             closed: &[],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -1251,6 +1328,7 @@ mod tests {
             closed: &[],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -1335,6 +1413,7 @@ mod tests {
             closed: &[6],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -1396,6 +1475,7 @@ mod tests {
             closed: &[4, 6],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[9],
             declared: &[],
             idle: &[],
@@ -1447,6 +1527,7 @@ mod tests {
             closed: &[4],
             gone: &[1, 2, 3],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -1482,6 +1563,7 @@ mod tests {
             closed: &[],
             gone: &[],
             kept: &[],
+            carried: &[],
             landed: &[],
             declared: &[],
             idle: &[],
@@ -1519,6 +1601,7 @@ mod tests {
                     closed: &[9],
                     gone: &[],
                     kept: &[],
+                    carried: &[],
                     landed: &[],
                     declared: &[],
                     idle: &[],

@@ -831,6 +831,7 @@ impl Ticked {
         }
         let said = |status: Status| match status {
             Status::Landed | Status::Closed | Status::Gone => "landed or closed",
+            Status::Carried => "carried",
             Status::NoPr | Status::Landing | Status::AtStage => "claimed, at work",
         };
         self.set.mine.iter().map(|mine| (mine.number, said(mine.status).to_string())).collect()

@@ -16,7 +16,7 @@ use afkconvoy_core::position::Position;
 use afkconvoy_core::selection::{self, Facts, Named, Selection, Unsafe, UserConfig};
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::team::{Role, Team, Workflow};
-use afkconvoy_core::worker::recorded_branches;
+use afkconvoy_core::worker::{carried_by, recorded_branches};
 use anyhow::{Context, Result, anyhow};
 use std::thread;
 
@@ -646,6 +646,16 @@ impl Fleet {
                 kept.push(issue.number);
             }
         }
+        // An issue whose PR another open PR carries (docs/adr/0083).
+        let mut carried = vec![];
+        for issue in issues {
+            let bodies = open.issues.comments(issue.number).iter().map(|c| c.body.as_str());
+            if let Some(by) = carried_by(bodies)
+                && prs.iter().any(|pr| pr.number == by)
+            {
+                carried.push((issue.number, by));
+            }
+        }
         let mut declared = vec![];
         for claim in
             self.scan.claims.iter().filter(|claim| me.is_some_and(|me| claim.is_held_by(me)))
@@ -680,6 +690,7 @@ impl Fleet {
             closed: &closed,
             gone: &vanished,
             kept: &kept,
+            carried: &carried,
             landed: &landed,
             declared: &declared,
             idle: &idle,

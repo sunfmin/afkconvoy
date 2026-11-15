@@ -103,7 +103,7 @@ impl Ending {
                 "the slow gate ran red on the round this candidate was fast-green in, at the round's tip, PR `round_pr`; nothing landed and the round is not split. Your change is in that PR, whose worker fixes the round: stop; your issue is settled when that PR lands"
             }
             Ending::Carried => {
-                "this PR is carried by PR `carried_by`, which merged its change into its own, its pair having run red on the fast gate or the two conflicting, and lands it with its own (docs/adr/0083); nothing of this PR lands alone, and that PR's turn closes it once that PR's branch holds this one's, and your issue closes when that PR lands: ask for a turn again"
+                "this PR is carried by PR `carried_by`, which merged its change into its own, their pair having gated red or the two conflicting, and lands it with its own (docs/adr/0083); nothing of this PR lands alone, and that PR's turn closes it once that PR's branch holds this one's, and your issue closes when that PR lands: ask for a turn again"
             }
             Ending::CandidateActive => {
                 "this PR already has an active candidate of another turn, which alone validates and lands it; nothing ran: ask for a turn again once that turn has ended; no gate failure or rework occurred"

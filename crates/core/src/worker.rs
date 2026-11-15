@@ -411,6 +411,19 @@ mod rejected {
 mod tests {
     use super::*;
 
+    /// A carried issue's comment names its carrier and records the
+    /// carrier's branch as one of the issue's own, for a next worker to
+    /// start from (docs/adr/0083).
+    #[test]
+    fn a_carried_comment_names_its_carrier_and_records_its_branch() {
+        let comment = carried_comment(10, 20, "issue-2");
+        assert!(comment.starts_with("<!--convoy:carried pr=10 by=20-->\n"), "{comment}");
+        let bodies = ["<!--convoy:branch name=issue-1-->", comment.as_str()];
+        assert_eq!(carried_by(bodies), Some(20));
+        assert_eq!(recorded_branches(bodies), ["issue-1", "issue-2"]);
+        assert_eq!(carried_by(["a comment"]), None);
+    }
+
     #[test]
     fn refusal_comments_keep_evidence_and_ignore_unknown_or_duplicate_harnesses() {
         let first = Refusal {

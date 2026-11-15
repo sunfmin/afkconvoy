@@ -634,9 +634,10 @@ fn a_red_pair_has_its_later_pr_carry_its_partner_and_the_rest_lands() {
     assert_eq!(world.remote(&["for-each-ref", "refs/heads/issue-1"]), "", "its branch deleted");
     let told = gh["comments"]["1"].as_array().unwrap();
     assert!(
-        told.iter().any(|c| c["body"].as_str().unwrap().starts_with(
-            "<!--convoy:carried pr=10 by=20-->\n<!--convoy:branch name=issue-2-->"
-        )),
+        told.iter()
+            .any(|c| c["body"].as_str().unwrap().starts_with(
+                "<!--convoy:carried pr=10 by=20-->\n<!--convoy:branch name=issue-2-->"
+            )),
         "{told:?}"
     );
     let_go(&world, "fast", "d", false);
