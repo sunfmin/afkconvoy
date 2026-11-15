@@ -1148,7 +1148,7 @@ impl Drop for Hold {
 }
 
 #[test]
-fn a_stopped_candidate_loses_its_worktree_and_a_live_one_keeps_it() {
+fn a_stopped_candidate_loses_its_worktree_and_a_gating_one_keeps_it() {
     use std::os::unix::fs::PermissionsExt;
     let world = world(2);
     seal_gate(&world);
@@ -1166,13 +1166,11 @@ fn a_stopped_candidate_loses_its_worktree_and_a_live_one_keeps_it() {
     assert!(listed(&world, &b_tree), "a validating candidate stays listed");
     release(&world, "b", false);
     green(&world, 2);
-    let sealed = b_tree.join("sealed");
-    let mode = std::fs::metadata(&sealed).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o555, "the gate left a directory the owner cannot write");
-    assert!(
-        listed(&world, &b_tree),
-        "a green candidate waiting on its predecessor keeps its worktree"
-    );
+    // Its gate run has ended: a green candidate waiting on its predecessor
+    // loses its worktree, the directory its gate sealed included, while the
+    // one ahead still gates in its own (sunfmin/control#1063).
+    until(|| !b_tree.exists() && !listed(&world, &b_tree));
+    assert!(listed(&world, &a_tree), "a validating candidate stays listed");
     let hold = Hold(Command::new("sleep").arg("300").current_dir(&a_tree).spawn().unwrap());
     release(&world, "a", false);
     let landed_a = finish(aa);

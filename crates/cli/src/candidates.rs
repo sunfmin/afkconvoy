@@ -1008,6 +1008,18 @@ fn add_candidate_worktree(repo: &Repo, path: &Path, commit: &str) -> Result<()> 
     Ok(())
 }
 
+/// Removes the worktree at `path` of a candidate whose gate run, this
+/// turn's, has just stopped, unless a process still works in it: then the
+/// next call of `remove_listed` does, once that process is gone.
+fn remove_ended_run(repo: &Repo, path: &Path, recorded: &str) {
+    match crate::hot::working_directories() {
+        Ok(busy) if !crate::hot::occupies(&busy, path) => {
+            remove_candidate_worktree(repo, path, recorded)
+        }
+        _ => {}
+    }
+}
+
 /// Drops `path` (`Repo::remove_worktree`) and, once the directory is gone,
 /// its process-scope file.
 fn remove_candidate_worktree(repo: &Repo, path: &Path, recorded: &str) {
@@ -1345,7 +1357,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let chain = change(repo, config, |chain| chain.finish(&id, evidence.clone()))?;
         cleanup(repo, config, &chain)?;
         stop_candidate(repo, config, &id)?;
-        remove_candidate_worktree(repo, &path, &candidate.worktree);
+        remove_ended_run(repo, &path, &candidate.worktree);
         chain
     };
     let current = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
@@ -1559,7 +1571,7 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
     let mut result = json!(evidence);
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
-    remove_candidate_worktree(repo, &path, &tip.worktree);
+    remove_ended_run(repo, &path, &tip.worktree);
     let at = chain.candidates.iter().find(|c| c.id == id).context("round tip disappeared")?;
     if let Judged::Unsettled(said) = &judged
         && at.decision() == Some(Decision::Unsettled)
