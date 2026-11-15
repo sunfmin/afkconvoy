@@ -186,7 +186,7 @@ The bound is in a second cut block: afkconvoy versions that know cut steps
 but not this key read only the first one and skip this addition.
 
 ```yaml cut
-busy_after_seconds: 18000
+busy_after_seconds: 3600
 ```
 
 - `set -ex` first: `sh` runs on past a line that fails and judges the step by
