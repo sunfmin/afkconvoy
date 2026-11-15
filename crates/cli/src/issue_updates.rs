@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
 use afkconvoy_core::harness::Harness;
+use afkconvoy_core::worker::WorkerState;
 
 use crate::orca::{Handed, Worktree};
 
@@ -136,46 +137,13 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
             // earlier revision waits does not erase the earlier instruction.
             seen.save(&worktree)?;
             let mut made = vec![];
-            let pending = std::mem::take(&mut seen.pending);
-            for mut update in pending {
-                let line = format!(
-                    "{} [issue update: {}]",
-                    crate::tell::one_line(&update.text),
-                    update.mark
-                );
-                let told = worktree.hand_update(
-                    &terminal,
-                    &line,
-                    &update.mark,
-                    started,
-                    &worktree.note(&update.receipt)?,
-                );
-                let told = match told {
-                    Ok(Handed::Queued) => queued(&mut update, fleet.now, harness),
-                    Ok(handed) => worktree.record_told(fleet.now, &update.mark).map(|()| handed),
-                    Err(error) => Err(error),
-                };
-                let mut step = json!({"do": "tell", "issue": number, "comment": update.mark});
+            for update in std::mem::take(&mut seen.pending) {
+                let (step, told) = deliver(fleet, number, (&worktree, &terminal), started, update);
                 match told {
-                    Ok(Handed::Queued) => {
-                        step["outcome"] = json!("queued");
-                        step["since"] = json!(update.queued_at);
-                        seen.pending.push(update);
+                    Told::Yes(mark) => {
+                        seen.told.insert(mark);
                     }
-                    Ok(handed) => {
-                        step["outcome"] = json!("done");
-                        if let Handed::Taken { seconds } = handed {
-                            step["seconds"] = json!(seconds);
-                        } else {
-                            step["typed"] = json!(false);
-                        }
-                        seen.told.insert(update.mark);
-                    }
-                    Err(error) => {
-                        step["outcome"] = json!("failed");
-                        step["error"] = json!(format!("{}: {error:#}", update.mark));
-                        seen.pending.push(update);
-                    }
+                    Told::Not(update) => seen.pending.push(update),
                 }
                 made.push(step);
             }
@@ -189,6 +157,138 @@ pub fn reconcile(fleet: &Fleet, host: &str, issues: &OpenIssues) -> Vec<Value> {
         }
     }
     steps
+}
+
+/// Whether an update reached the worker's model, or is still to.
+enum Told {
+    Yes(String),
+    Not(Update),
+}
+
+/// Types `update` at the worker in `terminal` of `worktree`, started at
+/// `started`, once, with tell's session proof → its tick step, and whether
+/// it was told. A line still queued, or a failed delivery, is kept for the
+/// next tick, which types no second line once the terminal took it.
+fn deliver(
+    fleet: &Fleet,
+    number: u64,
+    (worktree, terminal): (&Worktree, &str),
+    started: u64,
+    mut update: Update,
+) -> (Value, Told) {
+    let harness = worktree.recorded_harness().ok().flatten().unwrap_or(Harness::DEFAULT);
+    let line = format!("{} [issue update: {}]", crate::tell::one_line(&update.text), update.mark);
+    let told = worktree
+        .note(&update.receipt)
+        .and_then(|receipt| worktree.hand_update(terminal, &line, &update.mark, started, &receipt));
+    let told = match told {
+        Ok(Handed::Queued) => queued(&mut update, fleet.now, harness),
+        Ok(handed) => worktree.record_told(fleet.now, &update.mark).map(|()| handed),
+        Err(error) => Err(error),
+    };
+    let mut step = json!({"do": "tell", "issue": number, "comment": update.mark});
+    match told {
+        Ok(Handed::Queued) => {
+            step["outcome"] = json!("queued");
+            step["since"] = json!(update.queued_at);
+            (step, Told::Not(update))
+        }
+        Ok(handed) => {
+            step["outcome"] = json!("done");
+            if let Handed::Taken { seconds } = handed {
+                step["seconds"] = json!(seconds);
+            } else {
+                step["typed"] = json!(false);
+            }
+            (step, Told::Yes(update.mark))
+        }
+        Err(error) => {
+            step["outcome"] = json!("failed");
+            step["error"] = json!(format!("{}: {error:#}", update.mark));
+            (step, Told::Not(update))
+        }
+    }
+}
+
+/// The closing to tell the worker started at `started`: `None` once told.
+#[derive(Serialize, Deserialize)]
+struct Closing {
+    started: u64,
+    untold: Option<Update>,
+}
+
+const CLOSED_FILE: &str = "convoy-issue-closed.json";
+
+/// Tells the busy worker of each of my claims whose issue was closed under
+/// it, and nothing of it landed, that it is closed: once, the tick after
+/// the closing, as tell types a note. `closed` names each such issue with
+/// who closed it, where GitHub says. Settling goes on as before: it waits
+/// for the worker to leave. Each result is a tick step.
+pub fn closed(fleet: &Fleet, host: &str, closed: &[(u64, Option<&str>)]) -> Vec<Value> {
+    let mut steps = vec![];
+    for &(number, by) in closed {
+        let made = (|| -> Result<Option<Value>> {
+            // A closing its own landing made is the worker's own end: it is
+            // not told, and its worktree, which need not stay usable, is not
+            // read.
+            if crate::settle::landed(fleet, number)? {
+                return Ok(None);
+            }
+            let Ok((worktree, terminal)) = crate::tell::worker(fleet, host, number)? else {
+                return Ok(None);
+            };
+            // Nobody works in a directory that is gone.
+            if !worktree.path.is_dir() || worktree.state(fleet.now)? != WorkerState::Busy {
+                return Ok(None);
+            }
+            let Some(started) = worktree.handed(None)? else { return Ok(None) };
+            let file = worktree.note(CLOSED_FILE)?;
+            let kept: Option<Closing> = match std::fs::read(&file) {
+                Ok(bytes) => Some(
+                    serde_json::from_slice(&bytes)
+                        .with_context(|| format!("cannot read {}", file.display()))?,
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            let update = match kept.filter(|kept| kept.started == started) {
+                Some(Closing { untold: None, .. }) => return Ok(None),
+                Some(Closing { untold: Some(update), .. }) => update,
+                None => closed_update(number, by, started),
+            };
+            let (step, told) = deliver(fleet, number, (&worktree, &terminal), started, update);
+            let untold = match told {
+                Told::Yes(_) => None,
+                Told::Not(update) => Some(update),
+            };
+            let closing = Closing { started, untold };
+            let temporary = file.with_extension("tmp");
+            std::fs::write(&temporary, serde_json::to_vec(&closing)?)?;
+            std::fs::rename(temporary, file)?;
+            Ok(Some(step))
+        })();
+        match made {
+            Ok(made) => steps.extend(made),
+            Err(error) => steps.push(json!({"do": "tell", "issue": number,
+                "outcome": "failed", "error": format!("{error:#}")})),
+        }
+    }
+    steps
+}
+
+/// What a worker is told of its issue closed under it.
+fn closed_update(number: u64, by: Option<&str>, started: u64) -> Update {
+    let by = by.map_or_else(|| "on GitHub".to_string(), |login| format!("by @{login}"));
+    Update {
+        mark: format!("#convoy-closed-{number}-{started}"),
+        text: format!(
+            "Issue #{number} is closed, {by}: nothing is to land for it. Stop now: push \
+             nothing, open no PR, run no `afkconvoy land`, and leave. The fleet settles this \
+             worktree once you leave."
+        ),
+        receipt: format!("convoy-closed-send-{started}"),
+        queued_at: None,
+    }
 }
 
 /// A line the terminal took waits in its harness's input until the step the

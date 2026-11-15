@@ -383,6 +383,52 @@ fn interleaved_targets_and_default_publish_only_to_their_own_chains() {
 }
 
 #[test]
+fn land_of_a_closed_issue_names_it_and_asks_for_no_turn() {
+    let world = World::new();
+    let gated = world.root.join("gated");
+    world.set_gate(&format!("touch {}", quote(&gated)));
+    let (source, _) = worker(&world, 1, "a");
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    world.close_issue(1);
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &source)
+        .args(["land", "--issue", "1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let error = answer["error"].as_str().unwrap();
+    assert!(error.contains("issue #1 is closed; nothing lands for it"), "{error}");
+    assert!(!gated.exists(), "no gate ran: the turn was never asked for");
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty(),
+        "no candidate was assigned"
+    );
+    assert_eq!(world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"], json!([]));
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
+}
+
+#[test]
+fn a_candidate_whose_issue_closed_during_validation_lands_nothing() {
+    let world = world(2);
+    let a = worker(&world, 1, "a").0;
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let _runner = world.host_held();
+    let child = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    world.close_issue(1);
+    release(&world, "a", false);
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let said = error["error"].as_str().unwrap();
+    assert!(said.contains("issue #1 is closed; nothing lands for it"), "{error}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base, "nothing landed");
+    let candidate = candidate_of(&world, 1);
+    assert_ne!(candidate["phase"], "landed", "{candidate}");
+}
+
+#[test]
 fn a_pr_retargeted_during_validation_is_invalidated_without_publishing() {
     let world = world(2);
     git(&world.clone, &["push", "-q", "origin", "HEAD:delivery/one"]);
@@ -782,18 +828,33 @@ fn publication_survives_issue_settlement_failure_without_a_duplicate_gate() {
 fn a_close_refused_while_github_closes_the_issue_itself_is_a_close() {
     let world = world(1);
     let (a, _) = worker(&world, 1, "a");
-    // GitHub closes the issue as the merged PR says it, and refuses the
-    // turn's own close at that moment.
-    world.with_gh(|gh| {
-        gh["fail"] = json!(["state=closed"]);
-        let rows = gh["issues"].as_array_mut().unwrap();
-        let issue = rows.iter_mut().find(|row| row["number"] == 1).unwrap();
-        issue["state"] = json!("closed");
-    });
+    // GitHub closes the issue as the merged PR reaches main, and refuses
+    // the turn's own close at that moment. Closed before the push, the turn
+    // would land nothing for it (sunfmin/control#1081).
+    world.with_gh(|gh| gh["fail"] = json!(["state=closed"]));
+    let hook = world.bare.join("hooks/post-receive");
+    let gh = world.root.join("gh.json");
+    let script = format!(
+        r#"#!/bin/sh
+while read old new ref; do
+  case "$ref" in refs/heads/main)
+    sed 's/"number":1,"state":"open"/"number":1,"state":"closed"/' {gh} > {gh}.closing
+    mv {gh}.closing {gh}
+  esac
+done
+"#,
+        gh = quote(&gh)
+    );
+    std::fs::write(&hook, script).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     release(&world, "a", false);
     let landed = finish(start(&world, &a, &world.cache(), 1));
     assert_eq!(landed["outcome"], "merged", "{landed}");
     assert!(landed.get("settle_error").is_none(), "{landed}");
+    assert_eq!(world.gh()["issues"][0]["state"], "closed", "the hook closed it at the push");
 }
 
 #[test]

@@ -158,6 +158,11 @@ pub fn tick(
     // A harness held since the agent setup was last given gets it now
     // (sunfmin/control#528); with none declared this reads the settings alone.
     let _ = crate::kit::give_new_agent_setup(repo, me.instance.as_str(), &me.host, me.now);
+    // The object store is repacked while nothing fetches into it, as git's
+    // auto-gc would (sunfmin/control#1102). A failure costs the tick nothing.
+    if let Err(error) = repo.housekeep() {
+        eprintln!("warning: housekeeping of the object store will retry: {error:#}");
+    }
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
     // This is independent of the previous tick's log view: retry failed
     // closes, and cover a runner that restarted after the host woke.
@@ -246,13 +251,25 @@ pub fn tick(
     if crate::repair::tend(&mut fleet, me)? == Outcome::Done {
         (fleet, open) = Fleet::read(repo, me.now)?;
     }
-    let updates = crate::issue_updates::reconcile(&fleet, &me.host, &open.issues);
+    let mut updates = crate::issue_updates::reconcile(&fleet, &me.host, &open.issues);
     for issue in &open.issues.rows {
         // Dispatch reports a resolution failure against its issue; successful
         // discovery must precede the choice of range.
         let _ = agent.discover_casting(&issue.labels);
     }
     let (mut set, mut flows, mut claimed) = fleet.rebuild(&open, Some(&me.instance))?;
+    // A busy worker whose issue was closed under it is told so, once, before
+    // settling waits for it to leave (sunfmin/control#1081).
+    let closed: Vec<(u64, Option<&str>)> = set
+        .mine
+        .iter()
+        .filter(|mine| mine.status == Status::Closed)
+        .map(|mine| {
+            let by = claimed.closers.iter().find(|(number, _)| *number == mine.number);
+            (mine.number, by.map(|(_, login)| login.as_str()))
+        })
+        .collect();
+    updates.extend(crate::issue_updates::closed(&fleet, &me.host, &closed));
     // What the tick found, before its pass and in each step of it: what
     // its line says.
     let mut found = Found::default();

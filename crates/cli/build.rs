@@ -17,11 +17,6 @@ use std::process::Command;
 const PACKAGE: &str = "crates/cli/";
 /// Where the example teams are, in this package.
 const EXAMPLES: &str = "src/scaffold/examples";
-/// How long a commit's abbreviation is, in what a build says it was built
-/// from and in what a test reads back: fixed, as git's own grows with the
-/// objects its store holds, which a shared store gains between a build and
-/// its test (sunfmin/control#1096).
-pub const ABBREV: &str = "--abbrev=12";
 /// The commit a build is of, as `./gate.sh` names it to every build it runs.
 pub const COMMIT_ENV: &str = "AFKCONVOY_BUILD_COMMIT";
 
@@ -94,7 +89,7 @@ fn collect(dir: &Path, prefix: &str, files: &mut Vec<(String, PathBuf)>) {
 }
 
 /// What `--version` says after the name. `described` is what
-/// `git describe --tags --long --dirty --always` said of the checkout: `None`
+/// `DESCRIBE` said of the checkout: `None`
 /// with no git, and the commit alone where no tag is reachable.
 pub fn built_from(release: &str, described: Option<&str>) -> String {
     let Some(described) = described else {
@@ -129,8 +124,15 @@ fn checkout() -> bool {
     git(&["rev-parse", "--show-prefix"]).is_some_and(|prefix| prefix == PACKAGE)
 }
 
+/// How the checkout is described: the commit at a fixed length, so the
+/// answer is the same however many objects the store holds — git's own
+/// length grows with them, and a fetch beside a gate made a build and its
+/// test disagree (sunfmin/control#1102).
+pub const DESCRIBE: [&str; 8] =
+    ["describe", "--tags", "--long", "--dirty", "--always", "--abbrev=12", "--match", "v*"];
+
 fn describe() -> Option<String> {
-    git(&["describe", "--tags", "--long", "--dirty", "--always", ABBREV, "--match", "v*"])
+    git(&DESCRIBE)
 }
 
 /// What changes when the answer may: where git keeps the commit checked out,

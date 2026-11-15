@@ -226,6 +226,7 @@ kinds! {
     ExclusiveBound: Warning, "ended at the exclusive bound";
     ExitWaiting: Warning, "has waited for its processes to exit for";
     LandingContention: Warning, "its candidate chain cannot keep up";
+    FetchCorrupt: Warning, "a fetch of the remote keeps failing corrupt";
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which is ignored";
     KeptWorktree: Info, "is kept with no claim";
@@ -2370,6 +2371,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     let entries = log.as_ref().and_then(Log::read);
     let mut bounded = exclusive_findings(entries.as_deref().unwrap_or_default(), now);
     bounded.extend(landing_finding(entries.as_deref().unwrap_or_default(), now));
+    bounded.extend(repo.failing_fetch().map(|failing| fetch_finding(repo, &failing)));
     bounded.extend(crate::exits::findings(now));
     let lines = entries.as_deref().unwrap_or_default();
     let (instance, _started_with, ticks) = run_log::run(lines, host);
@@ -2549,6 +2551,33 @@ fn landing_finding(entries: &[Entry], now: u64) -> Option<Finding> {
         ),
         "afkconvoy plan".to_string(),
     ))
+}
+
+/// A fetch into this checkout's object store that failed on a corrupt pack
+/// even fetched again with `--refetch` (sunfmin/control#1102): every land
+/// and read that needs a commit not here yet waits out its backoff until a
+/// fetch succeeds. One fetched by hand ends it.
+fn fetch_finding(repo: &Repo, failing: &crate::git::Failing) -> Finding {
+    let checkout = repo.main_checkout().unwrap_or_else(|_| repo.dir.clone());
+    finding(
+        Kind::FetchCorrupt,
+        json!(["fetch-corrupt", failing.since]),
+        format!(
+            "a fetch of the remote keeps failing corrupt: {} failed {} time(s) since {}, and \
+             fetches wait until {}",
+            failing.refname,
+            failing.failures,
+            failing.since,
+            failing.next()
+        ),
+        format!("the last fetch, with --refetch, said: {}", failing.error),
+        format!(
+            "git -C {} fetch --refetch --no-tags {} {}",
+            checkout.display(),
+            crate::git::REMOTE,
+            failing.refname
+        ),
+    )
 }
 
 /// Watch log lines are the host's. `doctor --all` says each once.
@@ -2920,6 +2949,33 @@ mod tests {
     use crate::log::Cause;
 
     const NOW: u64 = 100_000;
+
+    /// A fetch that keeps failing corrupt is a finding naming its ref, its
+    /// error and how long it has failed, whose fix fetches it with
+    /// `--refetch` (sunfmin/control#1102).
+    #[test]
+    fn a_fetch_failing_corrupt_names_its_error_and_the_refetch() {
+        let failing = crate::git::Failing {
+            refname: "refs/convoy/candidates/main".into(),
+            error: "fatal: pack has 4 unresolved deltas".into(),
+            since: NOW - 5400,
+            failures: 48,
+            last: NOW,
+        };
+        let found = fetch_finding(&Repo::new(PathBuf::from("/work/guild")), &failing);
+        assert_eq!(found.kind, Kind::FetchCorrupt);
+        assert!(
+            found.what.contains("refs/convoy/candidates/main failed 48 time(s)"),
+            "{}",
+            found.what
+        );
+        assert!(found.evidence.contains("4 unresolved deltas"), "{}", found.evidence);
+        assert!(
+            found.fix.ends_with("fetch --refetch --no-tags origin refs/convoy/candidates/main"),
+            "{}",
+            found.fix
+        );
+    }
 
     fn host() -> Host {
         Host {
