@@ -2031,16 +2031,17 @@ echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 /// `other-accounts`: of another account's, as a test says them. Where
 /// `admission-processes` says each a pid, its parent and its share of a
 /// core, the share of a core each process takes is the one it says, and
-/// none for every other; a pid it says that no process has is listed too.
+/// none for every other; a pid it says that no process has is listed too,
+/// running the program its fourth word names, or `stand-in`.
 const PS: &str = r#"#!/bin/sh
 table=${0%/*}/../admission-processes
 case "$*" in
 *pid=,ppid=,pcpu=*)
     test -f "$table" || exec /bin/ps "$@"
     /bin/ps "$@" | awk -v table="$table" '
-        BEGIN { while ((getline row < table) > 0) { split(row, f, " "); share[f[1]] = f[3]; parent[f[1]] = f[2] } }
+        BEGIN { while ((getline row < table) > 0) { n = split(row, f, " "); share[f[1]] = f[3]; parent[f[1]] = f[2]; name[f[1]] = n > 3 ? f[4] : "stand-in" } }
         { if ($1 in share) { $3 = share[$1]; seen[$1] = 1 } else { $3 = "0.0" } print }
-        END { for (pid in share) if (!(pid in seen)) print pid, parent[pid], share[pid], 0, "0:00.00", "stand-in" }'
+        END { for (pid in share) if (!(pid in seen)) print pid, parent[pid], share[pid], 0, "0:00.00", name[pid] }'
     ;;
 *uid=*)
     me=$(id -u)

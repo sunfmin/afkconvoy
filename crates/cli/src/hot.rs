@@ -324,6 +324,23 @@ pub(crate) fn listed_checked() -> anyhow::Result<Vec<Proc>> {
     Ok(rows)
 }
 
+/// Every process of this host with the share of a core it takes now, and,
+/// for its `line`, the program it runs alone, without its arguments or its
+/// environment: the light reading the host runner averages the exclusive
+/// queue's share of the CPU by, every few seconds while it runs
+/// (`queue_share`). Errors: `ps` failed, or listed nothing.
+pub(crate) fn cpu_table() -> anyhow::Result<Vec<Proc>> {
+    let out = crate::process::output(Command::new("ps").args([
+        "ax",
+        "-o",
+        "pid=,ppid=,pcpu=,rss=,time=,comm=",
+    ]))?;
+    anyhow::ensure!(out.status.success(), "ps failed");
+    let rows: Vec<_> = String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect();
+    anyhow::ensure!(!rows.is_empty(), "ps listed no processes");
+    Ok(rows)
+}
+
 /// One row of `ps`: pid, ppid, share of a core, resident KiB, CPU time,
 /// then the rest. A share that is no number counts as none.
 fn parse(row: &str) -> Option<Proc> {
