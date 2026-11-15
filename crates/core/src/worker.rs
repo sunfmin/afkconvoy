@@ -55,6 +55,30 @@ pub fn branch_comment(branch: &str) -> String {
     )
 }
 
+/// The kind of record that says an issue's PR is carried by another PR
+/// (docs/adr/0083), which lands its change with its own.
+pub const CARRIED: &str = "convoy:carried";
+
+/// The comment on the issue of PR `pr`, carried by PR `by` on `branch`: it
+/// records `branch` as one of the issue's own as well, so that, should `by`
+/// never land, the issue's next worker starts from the branch that holds its
+/// work (`recorded_branches`).
+pub fn carried_comment(pr: u64, by: u64, branch: &str) -> String {
+    let (pr_text, by_text) = (pr.to_string(), by.to_string());
+    format!(
+        "{}\n{}\nafkconvoy: PR #{pr} of this issue is carried by PR #{by}, which lands its change \
+         with its own from the branch `{branch}`; this issue closes when that PR lands.",
+        record::marker(CARRIED, &[("pr", &pr_text), ("by", &by_text)]),
+        record::marker(BRANCH, &[("name", branch)]),
+    )
+}
+
+/// The PR that carries an issue's work, from its comments' bodies, oldest
+/// first: the latest record's.
+pub fn carried_by<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<u64> {
+    record::latest_marker(CARRIED, bodies).and_then(|(_, fields)| fields.number("by"))
+}
+
 /// The branches the fleet recorded on an issue, from its comments' bodies,
 /// oldest first.
 pub fn recorded_branches<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Vec<String> {

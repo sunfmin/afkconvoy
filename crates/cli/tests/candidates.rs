@@ -582,10 +582,12 @@ fn four_ready_prs_pair_twice_gate_their_pair_and_land_in_one_fast_forward() {
 }
 
 /// A pair whose fast gate is red stops no other pair (docs/adr/0083): its
-/// later-asked PR's turn is given the red run, its earlier one goes up
-/// unpaired, and the rest of the round lands.
+/// later-asked PR carries its partner — its branch fast-forwarded to the
+/// pair's merge and pushed, its turn given the red run — and the partner is
+/// closed "carried by #…", its branch deleted, its issue told where its
+/// work went on; the rest of the round lands.
 #[test]
-fn a_red_pair_stops_no_other_its_later_pr_gets_the_run_and_the_rest_lands() {
+fn a_red_pair_has_its_later_pr_carry_its_partner_and_the_rest_lands() {
     let world = split_world(3);
     let (e, _) = worker(&world, 5, "e");
     let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
@@ -612,7 +614,31 @@ fn a_red_pair_stops_no_other_its_later_pr_gets_the_run_and_the_rest_lands() {
     assert_eq!(red["outcome"], "gate_red", "{red}");
     assert_eq!(red["gate"], "fast");
     assert_eq!(red["pair"]["with"], json!([10]), "{red}");
-    assert!(red["detail"].as_str().unwrap().contains("#10"), "{red}");
+    assert_eq!(red["carrying"], json!([10]), "{red}");
+    assert_eq!(red["carried"], json!([10]), "{red}");
+    assert!(red["detail"].as_str().unwrap().contains("carried by this PR"), "{red}");
+    let pair = red["pair"]["commit"].as_str().unwrap();
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-2"]), pair, "pushed");
+    assert_eq!(git(&workers[1].0, &["rev-parse", "HEAD"]), pair, "its branch holds the pair");
+    let a = children.remove(0);
+    let carried = finish(a);
+    assert_eq!(carried["outcome"], "carried", "{carried}");
+    assert_eq!(carried["carried_by"], 20, "{carried}");
+    let gh = world.gh();
+    let pr = |n: u64| gh["prs"].as_array().unwrap().iter().find(|p| p["number"] == n).unwrap();
+    assert_eq!(pr(10)["state"], "closed");
+    assert_eq!(gh["comments"]["10"][0]["body"], "carried by #20");
+    let body = pr(20)["body"].as_str().unwrap();
+    assert!(body.contains("<!--carries change=10-->\n## Carries #10: pr 10"), "{body}");
+    assert!(body.starts_with("Closes #2\n") && body.contains("Closes #1"), "{body}");
+    assert_eq!(world.remote(&["for-each-ref", "refs/heads/issue-1"]), "", "its branch deleted");
+    let told = gh["comments"]["1"].as_array().unwrap();
+    assert!(
+        told.iter().any(|c| c["body"].as_str().unwrap().starts_with(
+            "<!--convoy:carried pr=10 by=20-->\n<!--convoy:branch name=issue-2-->"
+        )),
+        "{told:?}"
+    );
     let_go(&world, "fast", "d", false);
     until(|| started(&world, "slow", "d"));
     let_go(&world, "slow", "d", false);
@@ -620,11 +646,11 @@ fn a_red_pair_stops_no_other_its_later_pr_gets_the_run_and_the_rest_lands() {
         assert_eq!(answer["outcome"], "merged", "{answer}");
     }
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
-    for (name, landed) in [("a", true), ("b", false), ("c", true), ("d", true)] {
+    for (name, landed) in [("a", false), ("b", false), ("c", true), ("d", true)] {
         assert_eq!(files.lines().any(|f| f == format!("{name}.txt")), landed, "{files}");
     }
+    assert_eq!(world.state(1), "open", "a carried issue stays open until its carrier lands");
     assert_eq!(world.state(2), "open");
-    assert_eq!(git(&workers[1].0, &["rev-parse", "HEAD"]), workers[1].1, "its branch stays");
 }
 
 #[test]
@@ -1494,11 +1520,12 @@ fn a_red_root_is_fixed_whole_by_its_last_asked_pr_and_the_others_stop() {
     );
 }
 
-/// A PR that merges cleanly with no partner leaves the round for the next
-/// (docs/adr/0083); there, merged onto the tip that landed the other, it
-/// conflicts, and its worker resolves the conflict left in its worktree.
+/// Two PRs that conflict, neither with another partner (docs/adr/0083): the
+/// later-asked carries the earlier, its merge left in its worktree to
+/// resolve, and the earlier's turn answers `carried`. Resolved and asked
+/// again, its turn closes the carried PR, and lands both; both issues close.
 #[test]
-fn a_pr_clean_with_no_partner_waits_for_the_next_round_and_resolves_its_conflict_there() {
+fn a_pr_conflicting_with_every_partner_carries_the_earliest_and_lands_both() {
     let world = split_world(3);
     let (e, _) = worker(&world, 5, "e");
     let a = world.worker(1, "x.txt", "a");
@@ -1514,21 +1541,32 @@ fn a_pr_clean_with_no_partner_waits_for_the_next_round_and_resolves_its_conflict
             let_go(&world, "slow", "e", false);
         },
     );
-    for part in ["fast", "slow"] {
-        let_go(&world, part, "a", false);
-    }
     let conflict = finish(children.pop().unwrap());
-    assert_eq!(finish(children.pop().unwrap())["outcome"], "merged");
+    let carried = finish(children.pop().unwrap());
     assert_eq!(conflict["outcome"], "conflict", "{conflict}");
     assert_eq!(conflict["files"], json!(["x.txt"]));
+    assert_eq!(conflict["carrying"], json!([10]), "{conflict}");
+    assert_eq!(carried["outcome"], "carried", "{carried}");
+    assert_eq!(carried["carried_by"], 20);
     assert!(pairs(&world).is_empty(), "the two pair with nothing");
+    let open = |n: u64| {
+        let gh = world.gh();
+        gh["prs"].as_array().unwrap().iter().find(|p| p["number"] == n).unwrap()["state"].clone()
+    };
+    assert_eq!(open(10), "open", "nothing is closed before the carrier holds it");
     std::fs::write(b.join("x.txt"), "ab").unwrap();
     git(&b, &["commit", "-q", "-am", "resolve"]);
+    git(&b, &["push", "-q", "origin", "HEAD"]);
     for part in ["fast", "slow"] {
         let_go(&world, part, "b", false);
     }
-    assert_eq!(finish(start(&world, &b, &world.cache(), 2))["outcome"], "merged");
+    let landed = finish(start(&world, &b, &world.cache(), 2));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(landed["carried"], json!([10]), "{landed}");
+    assert_eq!(open(10), "closed");
     assert_eq!(world.remote(&["show", "refs/heads/main:x.txt"]), "ab");
+    assert_eq!(world.state(2), "closed");
+    assert_eq!(world.state(1), "closed", "the carried issue closes as its carrier lands");
 }
 
 #[test]

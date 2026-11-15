@@ -1562,6 +1562,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             heavy,
             clock: &clock,
         };
+        // What its head holds of other PRs it carries (docs/adr/0083).
+        let carried = carry_held(&turn, &original)?;
+        if !carried.is_empty() {
+            answer["carried"] = json!(carried);
+        }
         match in_round(&turn, answer.clone(), &reserve, &past, &pending_past)? {
             Rounded::Answer(answer) => return Ok(answer),
             Rounded::Assigned(candidate) => *candidate,
@@ -1963,7 +1968,7 @@ fn in_round(
                 let round = format!("round-{id}");
                 change(repo, config, |chain| {
                     reserve(chain);
-                    opened = chain.open_round(&round);
+                    opened = chain.open_round(&round) || chain.rejoin(id);
                 })?;
                 if opened {
                     continue;
@@ -1986,6 +1991,14 @@ fn in_round(
             Some(RoundNext::Assigned(candidate)) => {
                 let c = chain.candidates.iter().find(|c| c.id == candidate);
                 return Ok(Rounded::Assigned(Box::new(c.context("assigned candidate")?.clone())));
+            }
+            Some(RoundNext::Left(pairing::Left::Carrying(carry))) => {
+                let red =
+                    carry.pair.as_ref().and_then(|p| chain.candidates.iter().find(|c| &c.id == p));
+                return Ok(Rounded::Answer(carrying(turn, answer, &carry, red)?));
+            }
+            Some(RoundNext::Left(pairing::Left::Carried(by))) => {
+                return Ok(Rounded::Answer(carried_answer(answer, by)));
             }
             Some(RoundNext::Left(pairing::Left::Red(pair))) => {
                 let p = chain.candidates.iter().find(|c| c.id == pair).context("red pair")?;
@@ -2013,6 +2026,108 @@ fn in_round(
         }
         waiting.after(&chain);
     }
+}
+
+/// Carries every open PR whose head `head`, this PR's, holds and the base
+/// tip does not (docs/adr/0083): its worker merged that PR in, their pair
+/// having run red or the two conflicting. Each is closed, commented
+/// "carried by #…", its branch deleted while still at that head, and its
+/// issues told (`forge::carry`); this PR's description takes theirs → the
+/// PRs it carried.
+fn carry_held(turn: &InRound<'_>, head: &str) -> Result<Vec<u64>> {
+    let InRound { repo, config, gh, forge, asked, pr, .. } = *turn;
+    let base = read(repo, config)?.base;
+    let holds = |head: &str, other: &str| -> Result<bool> {
+        Ok(repo.try_git(&["merge-base", "--is-ancestor", other, head])?.ok)
+    };
+    let mut carried = vec![];
+    for other in gh.open_prs()? {
+        let elsewhere = other.number == pr.number || other.base_branch != pr.base_branch;
+        if elsewhere || other.head_sha == head || !holds(head, &other.head_sha)? {
+            continue;
+        }
+        if holds(&base, &other.head_sha)? {
+            continue;
+        }
+        let change = crate::forge::change(&other);
+        afkconvoy_landing::forge::carry(forge, asked, &change, &other.head_sha)?;
+        carried.push(other.number);
+    }
+    Ok(carried)
+}
+
+/// The answer of a turn whose PR left its round carrying others (docs/adr/0083),
+/// as `carry` hands it: what it merges goes into its branch. Merged cleanly
+/// — a red pair's merge, a fast-forward — it is pushed, and what it now
+/// holds is carried at once (`carry_held`); the turn answers `gate_red` with
+/// the pair's run, for its worker to fix. A merge that conflicts is left in
+/// the worktree, and the turn answers `conflict`: its worker resolves it,
+/// and its next turn carries what it then holds.
+fn carrying(
+    turn: &InRound<'_>,
+    answer: Value,
+    carry: &pairing::Carry,
+    red: Option<&Candidate>,
+) -> Result<Value> {
+    let InRound { repo, pr, original, .. } = *turn;
+    let mut result = match red {
+        Some(p) => pair_red(answer, p),
+        None => answer,
+    };
+    result["carrying"] = json!(carry.carried);
+    let named: Vec<String> = carry.carried.iter().map(|n| format!("#{n}")).collect();
+    let named = named.join(", ");
+    let mut files = vec![];
+    for commit in &carry.merge {
+        if repo.try_git(&["merge-base", "--is-ancestor", commit, "HEAD"])?.ok {
+            continue;
+        }
+        files = crate::turn::merge_in(repo, commit, "the PRs it carries")?;
+        if !files.is_empty() {
+            break;
+        }
+    }
+    if !files.is_empty() {
+        result["outcome"] = json!(Ending::Conflict);
+        result["status"] = json!("conflict");
+        result["files"] = json!(files);
+        result["recorded"] = json!(false);
+        result["worktree"] = json!(repo.dir);
+        result["detail"] = json!(format!(
+            "this PR merges cleanly with no other PR of its round, and carries {named}: their \
+             change is being merged into its branch, and conflicts. Resolve every file, git add \
+             it, COMMIT the merge, pass the fast gate, push, and ask for a turn again: that turn \
+             closes {named} as carried by this PR, and this PR lands their change with its own"
+        ));
+        return Ok(result);
+    }
+    let head = repo.git(&["rev-parse", "HEAD"])?;
+    if head != original {
+        let branch = format!("refs/heads/{}", pr.head_branch);
+        repo.remote().push(&Push::set(&head, &branch).leased(original))?;
+    }
+    result["carried"] = json!(carry_held(turn, &head)?);
+    if red.is_some() {
+        result["detail"] = json!(format!(
+            "the fast gate ran red on this PR's pair with {named}, whose merge is `pair.commit`: \
+             each is green alone, and the failing tests fail with them together. That merge is \
+             now this PR's branch, pushed, and {named} are closed as carried by this PR, which \
+             lands their change with its own: fix it so the fast gate passes, commit, push, and \
+             ask for a turn again"
+        ));
+    }
+    Ok(result)
+}
+
+/// The answer of a turn whose PR is carried by PR `by` (docs/adr/0083).
+fn carried_answer(mut answer: Value, by: u64) -> Value {
+    answer["outcome"] = json!(Ending::Carried);
+    answer["carried_by"] = json!(by);
+    answer["detail"] = json!(format!(
+        "this PR is carried by PR #{by}, which merges its change into its own and lands it \
+         with its own; that PR's turn closes this one once its branch holds it"
+    ));
+    answer
 }
 
 /// The answer of a turn whose pair ran red on its fast gate: the pair's
@@ -2057,7 +2172,7 @@ fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
         Ok::<bool, anyhow::Error>(merged.map(|commit| merges.push(((a, b), commit))).is_some())
     })?;
     let mut built = vec![];
-    for (at, commit) in merges.into_iter().filter(|(at, _)| made.contains(at)) {
+    for (at, commit) in merges.into_iter().filter(|(at, _)| made.pairs.contains(at)) {
         let declared = crate::turn::tip_config(repo, &commit)?;
         let own = Declared {
             whole: declared.gate_command.clone(),
@@ -2078,7 +2193,13 @@ fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
     let worktree = |id: &str| root.join(id).to_string_lossy().into_owned();
     let now = clock();
     change(repo, config, |chain| {
-        chain.pair_level((&round, level), built.clone(), |_| Default::default(), worktree, now);
+        chain.pair_level(
+            (&round, level),
+            (built.clone(), made.carry),
+            |_| Default::default(),
+            worktree,
+            now,
+        );
     })?;
     Ok(())
 }

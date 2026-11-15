@@ -4,8 +4,8 @@
 //! pairing tree (docs/adr/0083) — each pair fast-gated, the pairs of a level
 //! at once, the root merged onto the target tip and gated whole once, the
 //! target fast-forwarded through one candidate per change in order, and the
-//! forge told each landed. A red pair sends its later-asked change back
-//! while the rest lands; a red root lands nothing and is not bisected.
+//! forge told each landed. A red pair has its later-asked change carry its
+//! partner while the rest lands; a red root lands nothing and is not bisected.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use afkconvoy_gate::gate::GateCommand;
 use afkconvoy_gate::layout::Layout;
 use afkconvoy_gate::run::{self, Git, Settled};
 use afkconvoy_landing::chain::{Candidate, Chain, Decision, Evidence, Phase, Plain, Process};
-use afkconvoy_landing::forge::{Change, Forge};
+use afkconvoy_landing::forge::{Change, Forge, SentBack};
 use afkconvoy_landing::land::{Lander, Outcome};
 use afkconvoy_landing::turn::{self, Declared};
 
@@ -24,8 +24,19 @@ use afkconvoy_landing::turn::{self, Declared};
 #[derive(Default)]
 struct Fake {
     landed: RefCell<Vec<(u64, String)>>,
-    sent_back: RefCell<Vec<(u64, Option<Evidence>)>>,
+    /// Each change sent back: its number, the red run, what it merges and
+    /// what it carries.
+    sent_back: RefCell<Vec<Sent>>,
+    /// Each description rewritten, by its change.
+    described: RefCell<Vec<(u64, String)>>,
+    /// Each change closed, with its comment.
+    closed: RefCell<Vec<(u64, String)>>,
+    /// Each source deleted, at the head it was deleted at.
+    deleted: RefCell<Vec<(String, String)>>,
 }
+
+/// What a change was sent back with (`Forge::sent_back`).
+type Sent = (u64, Option<Evidence>, Vec<String>, Vec<u64>);
 
 impl Forge for Fake {
     type Error = String;
@@ -53,8 +64,31 @@ impl Forge for Fake {
         Ok(())
     }
 
-    fn sent_back(&self, change: &Change, run: Option<&Evidence>) -> Result<(), String> {
-        self.sent_back.borrow_mut().push((change.number, run.cloned()));
+    fn sent_back(&self, change: &Change, sent: &SentBack<'_>) -> Result<(), String> {
+        let merge = sent.merge.to_vec();
+        let entry = (change.number, sent.run.cloned(), merge, sent.carried.to_vec());
+        self.sent_back.borrow_mut().push(entry);
+        Ok(())
+    }
+
+    fn description(&self, change: &Change) -> Result<String, String> {
+        let described = self.described.borrow();
+        let latest = described.iter().rev().find(|(n, _)| *n == change.number);
+        Ok(latest.map_or_else(|| format!("Change {}.", change.number), |(_, d)| d.clone()))
+    }
+
+    fn describe(&self, change: &Change, description: &str) -> Result<(), String> {
+        self.described.borrow_mut().push((change.number, description.to_string()));
+        Ok(())
+    }
+
+    fn close(&self, change: &Change, comment: &str) -> Result<(), String> {
+        self.closed.borrow_mut().push((change.number, comment.to_string()));
+        Ok(())
+    }
+
+    fn delete_source(&self, change: &Change, head: &str) -> Result<(), String> {
+        self.deleted.borrow_mut().push((change.source.clone(), head.to_string()));
         Ok(())
     }
 }
@@ -458,10 +492,12 @@ fn four_clean_changes_pair_twice_gate_their_pair_and_land_in_one_fast_forward() 
 }
 
 /// A pair red on its fast gate stops no other pair: its later-asked change
-/// is sent back with the red run, its earlier one goes up unpaired, and the
-/// rest of the round lands.
+/// is sent back carrying its partner, with the red run and the pair's merge,
+/// its partner is carried, and the rest of the round lands. Its author
+/// merges that in and fixes it; asked again, the carrying change closes the
+/// carried one, takes its description, deletes its source, and lands both.
 #[test]
-fn a_red_pair_sends_its_later_change_back_and_the_rest_of_the_round_lands() {
+fn a_red_pair_has_its_later_change_carry_its_partner_and_the_rest_of_the_round_lands() {
     let root = tempfile::tempdir().unwrap();
     let (work, _) = scratch(root.path());
     // Each of the first two passes alone; together they break the fast gate.
@@ -476,39 +512,52 @@ fn a_red_pair_sends_its_later_change_back_and_the_rest_of_the_round_lands() {
 
     let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
 
-    assert_eq!(
-        ended(outcomes),
-        [
-            (1, Some(Decision::Landed)),
-            (2, Some(Decision::Red)),
-            (3, Some(Decision::Landed)),
-            (4, Some(Decision::Landed)),
-        ]
-    );
-    let sent = forge.sent_back.borrow();
-    let [(2, Some(run))] = &sent[..] else { panic!("{sent:?}") };
+    let mut outcomes = outcomes;
+    let rest = outcomes.split_off(2);
+    assert_eq!(outcomes, [(1, Outcome::Carried(2)), (2, Outcome::Carrying(vec![1]))]);
+    assert_eq!(ended(rest), [(3, Some(Decision::Landed)), (4, Some(Decision::Landed))]);
+    let sent = forge.sent_back.borrow().clone();
+    let [(2, Some(run), merge, carried)] = &sent[..] else { panic!("{sent:?}") };
     assert!(run.excerpt.iter().any(|line| line == "FAIL"), "sent back with its red run");
-    assert_eq!(landed_files(&work), ["file-3.txt", "file-4.txt", "red-x"]);
+    assert_eq!(carried, &[1]);
+    assert_eq!(landed_files(&work), ["file-3.txt", "file-4.txt"]);
     let chain = recorded(&work);
-    let levels: Vec<(u32, Vec<u64>, Vec<u64>)> = paired(&chain)
-        .iter()
-        .map(|p| {
-            let q = p.pair.as_ref().unwrap();
-            (q.level, q.first.clone(), q.second.clone())
-        })
-        .collect();
-    assert_eq!(
-        levels,
-        [(0, vec![1], vec![2]), (0, vec![3], vec![4]), (1, vec![1], vec![3, 4])],
-        "1 went up unpaired, and paired with 3 and 4"
+    let red = paired(&chain).into_iter().find(|p| p.change == 2).unwrap();
+    assert_eq!(merge, &[red.commit.clone()], "handed the pair's merge");
+    assert!(forge.closed.borrow().is_empty(), "nothing is closed before it holds the partner");
+
+    // Its author merges the pair in and fixes it.
+    let one = git(&work, &["rev-parse", "change-1"]);
+    git(&work, &["checkout", "--quiet", "change-2"]);
+    git(&work, &["merge", "--quiet", "--ff-only", &red.commit]);
+    git(&work, &["rm", "--quiet", "red-y"]);
+    std::fs::write(work.join("file-2.txt"), "fixed").unwrap();
+    git(&work, &["add", "file-2.txt"]);
+    git(&work, &["commit", "--quiet", "-m", "fix 2 with 1"]);
+    git(&work, &["push", "--quiet", "origin", "change-2"]);
+    git(&work, &["checkout", "--quiet", "main"]);
+
+    let outcomes = lander(&work, &worktrees, &forge).land(&asked[..2]).unwrap();
+
+    let mut outcomes = outcomes;
+    let landed = outcomes.split_off(1);
+    assert_eq!(outcomes, [(1, Outcome::Carried(2))]);
+    assert!(matches!(landed[..], [(2, Outcome::Landed(_))]), "{landed:?}");
+    assert_eq!(*forge.closed.borrow(), [(1, "carried by #2".to_string())]);
+    assert_eq!(*forge.deleted.borrow(), [("change-1".to_string(), one)]);
+    let described = forge.described.borrow();
+    let [(2, description)] = &described[..] else { panic!("{described:?}") };
+    assert!(
+        description.starts_with("Change 2.\n\n<!--carries change=1-->\n## Carries #1: Add red-x")
     );
+    assert!(description.ends_with("Change 1.\n"), "{description}");
+    assert_eq!(landed_files(&work), ["file-2.txt", "file-3.txt", "file-4.txt", "red-x"]);
 }
 
-/// An odd change goes up a level unpaired; one that merges cleanly with no
-/// node of its level leaves the round, and the next round finds it
-/// conflicting with the target.
+/// An odd change goes up a level unpaired; one that conflicts with every
+/// node of its level carries the earliest-asked of them.
 #[test]
-fn an_odd_change_goes_up_unpaired_and_one_clean_with_none_leaves_for_the_next_round() {
+fn an_odd_change_goes_up_unpaired_and_one_conflicting_with_every_node_carries_one() {
     let root = tempfile::tempdir().unwrap();
     let (work, _) = scratch(root.path());
     let asked = changes(&work, 3, &[]);
@@ -528,7 +577,8 @@ fn an_odd_change_goes_up_unpaired_and_one_clean_with_none_leaves_for_the_next_ro
         .collect();
     assert_eq!(levels, [(0, vec![1], vec![2]), (1, vec![1, 2], vec![3])]);
 
-    // 6 conflicts with 4: it pairs with none, and leaves the round.
+    // 6 conflicts with 4: it goes up unpaired, and conflicts with the pair of
+    // 4 and 5, its only partner: it carries them.
     let asked = vec![
         change(&work, 4, "change-4", "file-4.txt"),
         change(&work, 5, "change-5", "file-5.txt"),
@@ -537,10 +587,12 @@ fn an_odd_change_goes_up_unpaired_and_one_clean_with_none_leaves_for_the_next_ro
     let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
 
     assert_eq!(
-        ended(outcomes),
-        [(4, Some(Decision::Landed)), (5, Some(Decision::Landed)), (6, None)],
-        "6 conflicts with the target in the next round"
+        outcomes,
+        [(4, Outcome::Carried(6)), (5, Outcome::Carried(6)), (6, Outcome::Carrying(vec![4, 5]))]
     );
+    let sent = forge.sent_back.borrow();
+    let [(6, None, merge, _)] = &sent[..] else { panic!("{sent:?}") };
+    assert_eq!(merge.len(), 2, "its own node, then the node it conflicts with");
 }
 
 /// What the crate depends on: Flux's attributes, serde and the gate crate —
