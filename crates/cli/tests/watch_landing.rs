@@ -214,9 +214,9 @@ fn a_landed_watch_s_checkout_that_holds_a_change_no_commit_has_stays() {
     assert!(checkout.join("notes.txt").is_file());
 }
 
-/// A watch left its checkout `checkout` with its change committed `age`
+/// A watch left its checkout `checkout` with a change committed `age`
 /// seconds ago, and pushed.
-fn left(world: &World, checkout: &Path, file: &str, age: u64) {
+fn left(checkout: &Path, file: &str, age: u64) {
     let at = now() - age;
     std::fs::write(checkout.join(file), "left\n").unwrap();
     git(checkout, &["add", file]);
@@ -254,19 +254,19 @@ fn a_watch_s_checkout_left_unlanded_goes_at_a_tick_past_its_grace_and_one_holdin
     let world = World::new();
     world.set_gate("true");
     let checkout = orca_cut(&world, "afkconvoy-watch-3");
-    left(&world, &checkout, "pushed.txt", 2 * 3600);
+    left(&checkout, "pushed.txt", 2 * 3600);
     let tick = |world: &World| {
         let now = now().to_string();
         world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok();
     };
 
     // Within its grace it stays, however clean.
-    left(&world, &checkout, "recent.txt", 60);
+    left(&checkout, "recent.txt", 60);
     tick(&world);
     assert!(checkout.is_dir(), "a checkout that moved within the hour stays");
 
     // Moved past its grace, holding a file no commit has, it stays.
-    left(&world, &checkout, "old.txt", 2 * 3600);
+    left(&checkout, "old.txt", 2 * 3600);
     std::fs::write(checkout.join("draft.txt"), "draft\n").unwrap();
     tick(&world);
     assert!(checkout.join("draft.txt").is_file(), "a checkout holding work stays");
