@@ -71,6 +71,9 @@ pub(crate) struct RemoteReads {
     empty_tree: OnceLock<String>,
     /// Shas `bring` has already found present. Objects live in the common store.
     present: Mutex<HashSet<String>>,
+    /// Set once the repository's config holds its automatic gc off
+    /// (`Repo::hold_auto_gc`), which every worktree of it shares.
+    auto_gc_held: OnceLock<()>,
 }
 
 impl RemoteReads {
@@ -82,6 +85,7 @@ impl RemoteReads {
             messages: Mutex::default(),
             empty_tree: OnceLock::new(),
             present: Mutex::default(),
+            auto_gc_held: OnceLock::new(),
         }
     }
 }
@@ -332,14 +336,23 @@ impl Repo {
     /// A fetch that fails because this repository lost objects its
     /// commit-graph or refs still name (sunfmin/control#1090) repairs it from
     /// the remote and runs again: the commit-graph and multi-pack-index,
-    /// which only speed up reads, are dropped, and if the fetch still finds objects missing it
-    /// fetches again with `--refetch`, which sends every object anew. Every
+    /// which only speed up reads, are dropped, and if the fetch still finds
+    /// objects missing it fetches again with `--refetch`, which sends every
+    /// object anew and so never builds on a base that is not here. Every
     /// worktree of the repository shares its object store, so one lost
     /// object would otherwise stop every gate and land on the host.
+    ///
+    /// No fetch starts git's automatic gc or maintenance, and the repository
+    /// is set to start neither (`hold_auto_gc`): a repack consolidating packs
+    /// while the fleet's other fetches write new ones into the same store
+    /// loses objects.
     pub fn try_fetch(&self, args: &[&str]) -> Result<Ran> {
         if args.first() != Some(&"fetch") {
             bail!("Repo::try_fetch takes a git fetch command");
         }
+        self.hold_auto_gc();
+        let held = [&NO_AUTO_GC[..], args].concat();
+        let args = &held[..];
         let ran = run_within(&self.dir, args, &[], FETCH_LIMIT)?;
         if ran.ok || !lost_objects(&ran.stderr) {
             return Ok(ran);
@@ -349,8 +362,8 @@ impl Repo {
         if ran.ok || !lost_objects(&ran.stderr) {
             return Ok(ran);
         }
-        let mut refetch = vec!["fetch", "--refetch"];
-        refetch.extend(&args[1..]);
+        let at = NO_AUTO_GC.len();
+        let refetch = [&args[..=at], &["--refetch"], &args[at + 1..]].concat();
         let ran = run_within(&self.dir, &refetch, &[], FETCH_LIMIT)?;
         if ran.ok || !lost_objects(&ran.stderr) {
             return Ok(ran);
@@ -363,6 +376,30 @@ impl Repo {
             self.dir.display()
         ));
         Ok(Ran { stderr, ..ran })
+    }
+
+    /// Sets this repository's config, once a process, so that no git command
+    /// in it or any of its worktrees — a worker's commit, a merge — starts an
+    /// automatic gc or maintenance: those repack the object store the fleet's
+    /// fetches write into at the same time (sunfmin/control#1090). A value
+    /// already there is not written again; a write that fails is tried by the
+    /// next process, and every fetch holds gc off by itself meanwhile.
+    fn hold_auto_gc(&self) {
+        let reads = self.reads();
+        if reads.auto_gc_held.get().is_some() {
+            return;
+        }
+        let mut held = true;
+        for (key, value) in AUTO_GC_HELD {
+            let now = self.try_git(&["config", "--get", key]).map(|ran| ran.stdout);
+            if now.as_deref().is_ok_and(|now| now == value) {
+                continue;
+            }
+            held &= self.try_git(&["config", key, value]).is_ok_and(|ran| ran.ok);
+        }
+        if held {
+            let _ = reads.auto_gc_held.set(());
+        }
     }
 
     /// Removes this repository's commit-graph, which names commits its object
@@ -645,6 +682,8 @@ fn lost_objects(stderr: &str) -> bool {
         "missing tree",
         "missing commit",
         "could not load pack",
+        "unresolved deltas",
+        "invalid index-pack output",
     ]
     .iter()
     .any(|said| stderr.contains(said))
@@ -668,6 +707,12 @@ fn subjects_of(
     }
     out
 }
+
+/// The config that keeps git's automatic gc and maintenance from starting.
+const AUTO_GC_HELD: [(&str, &str); 2] = [("gc.auto", "0"), ("maintenance.auto", "false")];
+
+/// `AUTO_GC_HELD` for one git call, before its command.
+const NO_AUTO_GC: [&str; 4] = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
 
 const RECORD_IDENTITY: [(&str, &str); 4] = [
     ("GIT_AUTHOR_NAME", "afkconvoy"),
@@ -856,6 +901,10 @@ mod tests {
 
         assert!(repo.try_git(&["cat-file", "-e", &tip]).unwrap().ok);
         assert!(!local.join(".git/objects/info/commit-graph").exists());
+        // The fetch left the repository holding its automatic gc off, which
+        // every worktree of it reads from the one config.
+        assert_eq!(repo.git(&["config", "--get", "gc.auto"]).unwrap(), "0");
+        assert_eq!(repo.git(&["config", "--get", "maintenance.auto"]).unwrap(), "false");
     }
 
     #[test]
@@ -866,6 +915,9 @@ mod tests {
         ));
         assert!(lost_objects("error: remote did not send all necessary objects"));
         assert!(lost_objects("error: could not load pack 0"));
+        assert!(lost_objects(
+            "fatal: pack has 4 unresolved deltas\nfatal: fetch-pack: invalid index-pack output"
+        ));
         assert!(!lost_objects("fatal: couldn't find remote ref refs/heads/gone"));
         assert!(!lost_objects("fatal: unable to access 'https://github.com/': timed out"));
     }
