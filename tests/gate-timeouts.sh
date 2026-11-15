@@ -23,6 +23,7 @@ MOCK
 cat > "$tmp/home/.cargo/bin/cargo" <<'MOCK'
 #!/bin/sh
 case "$*" in
+metadata*) echo "{\"target_directory\":\"$PWD/target\",\"version\":1}" ;;
 *'nextest --version'*|*'--no-run'*|fmt*|clippy*) exit 0 ;;
 *'nextest run'*'--profile fast -E'*)
     if [ "$CASE" = failure ]; then echo 'FAIL [   0.100s] afkconvoy::cli tick::example' >&2; else echo 'TIMEOUT [   6.000s] afkconvoy::cli tick::example' >&2; fi
