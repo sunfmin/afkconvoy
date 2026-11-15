@@ -156,7 +156,7 @@ _Avoid_: throttling, backpressure
 
 **Disk floor**:
 The bytes free under which the disk a host builds on holds new work back: what the builds that may run at once take, measured — the largest **fresh build** on record in the worktrees of the checkouts on the list, times the exclusive queue's lanes and the worktrees a worker was started in — never under the share the host settings say or its default, nor over a quarter of the disk; a host that says its own share (`--admit-disk`) holds to that alone. Under it, admission starts no worker and the exclusive queue grants no new heavy command, running ones keeping their lanes; before either holds, the host runner reclaims the `target/` of every worktree no one builds in — its worker ended, or nothing wrote it for six hours. A disk under its floor, or falling faster than 2 GiB a minute, is an **episode** that `doctor` reports with the worktrees that build (ADR-0082).
-_Avoid_: disk share, disk quota
+_Avoid_: disk quota
 
 **Host user's skills and rules**:
 The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. A role may say it for itself, whatever the team says: `reviewer: { dir: ./roles/reviewer, host_user: false }` in `roles`; a role named by its directory alone takes the team's. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. DSH alone may load those too when its role chooses the host user's DSH profile.
