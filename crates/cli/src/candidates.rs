@@ -919,7 +919,7 @@ fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
     if c.stopped {
         return Ok(());
     }
-    let signalled = signal(repo, config, c)?;
+    let Some(signalled) = signal_unstopped(repo, config, c)? else { return Ok(()) };
     confirmed(c, &signalled)?;
     change(repo, config, |chain| {
         for c in &mut chain.candidates {
@@ -948,7 +948,9 @@ fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
     let live = read(repo, config, Read::Live)?.chain;
     let mut signalled = vec![];
     for c in to_stop(&live)? {
-        signalled.push((c.clone(), signal(repo, config, c)?));
+        if let Some(found) = signal_unstopped(repo, config, c)? {
+            signalled.push((c.clone(), found));
+        }
     }
     for (c, found) in signalled {
         let id = c.id.clone();
@@ -965,6 +967,23 @@ fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// `signal`s `c`, read live just now, unless another turn stops it first:
+/// its turn writes it stopped and then drops its scope with its run, so a
+/// signal that fails between the two reads the chain again, and finds it
+/// stopped or gone. → `None` then: nothing of it is this turn's to confirm.
+fn signal_unstopped(repo: &Repo, config: &Config, c: &Candidate) -> Result<Option<Signalled>> {
+    match signal(repo, config, c) {
+        Ok(signalled) => Ok(Some(signalled)),
+        Err(error) => {
+            let live = read(repo, config, Read::Live)?.chain;
+            match live.candidates.iter().find(|now| now.id == c.id) {
+                Some(now) if !now.stopped => Err(error),
+                _ => Ok(None),
+            }
+        }
+    }
 }
 
 /// The candidates of `chain` this turn's cleanup stops: each ended but not
