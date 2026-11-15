@@ -204,7 +204,9 @@ impl Drop for Held {
 /// one round (docs/adr/0083): a turn of issue 5's worker, `e`, takes a round
 /// of its own first and holds it in its gate; the others ask during it and
 /// wait pending, in the order given; `release_holder` lets its gate go, it
-/// lands, and the next round takes them all.
+/// lands, and the next round takes them all. They would stack on its round
+/// as they ask while its whole gate runs (sunfmin/control#1140): a barrier's
+/// place the holder's process holds keeps them pending until it ends.
 fn one_round(
     world: &World,
     holder: &Path,
@@ -214,6 +216,7 @@ fn one_round(
 ) -> Vec<Child> {
     let held = start(world, holder, &world.cache(), 5);
     began_holder();
+    hold_pending(world);
     // One at a time, each pending before the next asks: the order they ask
     // in is the round's.
     let mut children: Vec<Child> = vec![];
@@ -226,6 +229,32 @@ fn one_round(
     let landed = finish(held);
     assert_eq!(landed["outcome"], "merged", "the holder's round: {landed}");
     children
+}
+
+/// Adds to the chain a barrier's place held by the process of the open
+/// round's first PR's turn: turns that ask wait pending while it runs, and
+/// the place goes as that process ends, as a dead owner's does.
+fn hold_pending(world: &World) {
+    let name = "refs/convoy/candidates/main";
+    loop {
+        let old = world.remote(&["rev-parse", name]);
+        let mut state = chain(world);
+        let owner = state["round"]["asked"][0]["owner"].clone();
+        assert!(owner.is_object(), "no round holds a turn: {state}");
+        let barriers = state["barriers"].as_array_mut().unwrap();
+        barriers.push(json!({"id": "held-by-the-holder", "owner": owner}));
+        let tree = world.remote(&["hash-object", "-w", "-t", "tree", "/dev/null"]);
+        let message = state.to_string();
+        let new = world.remote(&["commit-tree", &tree, "-p", &old, "-m", &message]);
+        let moved = Command::new("git")
+            .current_dir(&world.bare)
+            .args(["update-ref", name, &new, &old])
+            .status()
+            .unwrap();
+        if moved.success() {
+            return;
+        }
+    }
 }
 
 /// The pairs of the open round's pairing tree, each as its level and the
@@ -1717,6 +1746,10 @@ fn a_quiet_hosts_candidate_is_taken_over_past_the_lease_and_its_turn_learns_it_o
     assert_eq!(candidate_of(&world, 1)["owner"]["host"], "far");
     assert!(chain(&world)["heartbeats"]["far"].is_u64(), "its turn said it was alive");
     world.say_host_settings(here);
+    // A turn here would stack on its round, whose whole gate runs: a
+    // barrier's place of that far turn holds it pending instead, and goes
+    // with what the far host owns.
+    hold_pending(&world);
     let asleep = Held::stop(&far);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let beat = (now + 1000).to_string();
@@ -1872,6 +1905,8 @@ fn a_pending_turn_past_its_bound_ends_and_frees_its_place() {
     if first.try_wait().unwrap().is_some() {
         panic!("first turn exited: {}", finish(first));
     }
+    // It would stack on the round whose whole gate runs: a barrier holds it.
+    hold_pending(&world);
     let behind = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &b)
         .env("XDG_CACHE_HOME", world.cache())
@@ -1890,10 +1925,70 @@ fn a_pending_turn_past_its_bound_ends_and_frees_its_place() {
     });
     let answer = finish(behind);
     assert_eq!(answer["outcome"], "waited_past_bound", "{answer}");
-    assert!(answer["detail"].as_str().unwrap().contains("for its round"), "{answer}");
+    assert!(answer["detail"].as_str().unwrap().contains("for a barrier"), "{answer}");
     let pending = chain(&world)["pending"].clone();
     assert!(pending.as_array().is_none_or(Vec::is_empty), "its place is freed: {pending}");
     assert!(!world.root.join("start-b").exists(), "nothing of it ran");
     release(&world, "a", false);
     assert_eq!(finish(first)["outcome"], "merged");
+}
+
+/// A PR ready while a round's whole gate runs stacks on its root
+/// (sunfmin/control#1140): its merge onto the round's root-onto-tip commit
+/// is gated at once, beside the running gate, which is neither killed nor
+/// restarted. The round lands green: the PR's own round starts from that
+/// commit as the tip, its root has the stacked merge's tree, and that run on
+/// record answers for its gate. The round ends red: the stacked merge is
+/// discarded, its turn answers nothing of it, and it lands in a round of
+/// its own.
+#[test]
+fn a_pr_ready_while_a_round_s_whole_gate_runs_stacks_on_its_root() {
+    for red in [false, true] {
+        let world = world(3);
+        let (e, _) = worker(&world, 5, "e");
+        let (a, _) = worker(&world, 1, "a");
+        let _runner = world.host_held();
+        let held = start(&world, &e, &world.cache(), 5);
+        began(&world, "e");
+        let holder = candidate_of(&world, 5);
+        let stacking = start(&world, &a, &world.cache(), 1);
+        began(&world, "a");
+        let state = chain(&world);
+        assert_eq!(state["stacked"]["on"]["commit"], holder["commit"], "{state}");
+        let merge = state["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["pair"]["stacked"] == true)
+            .cloned()
+            .unwrap_or_else(|| panic!("no stacked merge: {state}"));
+        assert_eq!(merge["predecessor"], holder["commit"]);
+        let gate_e = std::fs::read_to_string(world.root.join("gate-e")).unwrap();
+        release(&world, "a", false);
+        until(|| {
+            let state = chain(&world);
+            let rows = state["candidates"].as_array().cloned().unwrap_or_default();
+            rows.iter().any(|c| c["id"] == merge["id"] && c["phase"] == "green")
+        });
+        let running = candidate_of(&world, 5);
+        assert_eq!(running["phase"], "validating", "the round's gate runs on: {running}");
+        assert_eq!(std::fs::read_to_string(world.root.join("gate-e")).unwrap(), gate_e);
+        release(&world, "e", red);
+        let first = finish(held);
+        let second = finish(stacking);
+        assert_eq!(second["outcome"], "merged", "{second}");
+        let landed = candidate_of(&world, 1);
+        if red {
+            assert_eq!(first["outcome"], "gate_red", "{first}");
+            let base = holder["predecessor"].clone();
+            assert_eq!(landed["predecessor"], base, "it paired anew on the tip: {landed}");
+        } else {
+            assert_eq!(first["outcome"], "merged", "{first}");
+            assert_eq!(landed["predecessor"], holder["commit"], "{landed}");
+            assert_eq!(landed["tree"], merge["tree"], "its root has the stacked merge's tree");
+            assert!(!landed["result"]["reused"].is_null(), "no second run: {landed}");
+        }
+        let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+        assert!(files.lines().any(|f| f == "a.txt"), "{files}");
+    }
 }
