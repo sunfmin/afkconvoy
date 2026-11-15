@@ -1405,6 +1405,38 @@ fn later_issue_comments_are_told_once_with_user_session_proof() {
 }
 
 #[test]
+fn an_issue_closed_under_its_busy_worker_is_told_to_it_once_on_the_next_tick() {
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    // The line typed at it starts no turn of its own: it is still at work.
+    world.with_orca(|orca| {
+        orca["notes"] = json!("taken");
+        orca["session_turn"] = json!(false);
+    });
+    world.close_issue(7);
+    world.with_gh(|gh| gh["issues"][0]["closed_by"] = json!("filer"));
+    let dir = worktree(&world);
+    let told = tick(&world, 1090);
+    let tells: Vec<&Value> =
+        told["did"].as_array().unwrap().iter().filter(|step| step["do"] == "tell").collect();
+    assert_eq!(tells.len(), 1, "{told}");
+    assert_eq!(tells[0]["outcome"], "done", "{told}");
+    assert_eq!(tells[0]["issue"], 7);
+    assert_eq!(typed(&world).len(), 2, "the brief, then the closing once");
+    let line = &typed(&world)[1];
+    assert!(line.contains("Issue #7 is closed, by @filer"), "{line}");
+    assert!(line.contains("push nothing") && line.contains("open no PR"), "{line}");
+    let mark = tells[0]["comment"].as_str().unwrap();
+    assert!(afkconvoy_core::harness::Harness::ClaudeCode.holds_note(&user_notes(&world), mark));
+    assert!(did(&told).iter().any(|step| step == "settle 7 waiting"), "{told}");
+    assert!(dir.is_dir(), "settling still waits for the worker to leave");
+
+    let again = tick(&world, 1180);
+    assert!(!again["did"].as_array().unwrap().iter().any(|step| step["do"] == "tell"), "{again}");
+    assert_eq!(typed(&world).len(), 2, "told once, across tick processes");
+}
+
+#[test]
 fn later_issue_body_edits_are_told_with_the_whole_new_body() {
     let world = fleet(1000);
     world.with_orca(|orca| orca["notes"] = json!("taken"));
