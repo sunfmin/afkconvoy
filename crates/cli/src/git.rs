@@ -10,6 +10,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::remote::{Remote, RemoteRecord, Seen, Wire};
 
+mod one_fetch;
+
 /// The remote every ref and branch is pushed to and fetched from.
 pub const REMOTE: &str = "origin";
 
@@ -326,12 +328,14 @@ impl Repo {
         Ok(listed.lines().map(str::to_string).filter(|name| !name.is_empty()).collect())
     }
 
-    /// One fetch whose failure the caller reads. At `FETCH_LIMIT` its process
-    /// group is ended and the call is a failure.
+    /// One fetch whose failure the caller reads, under the fetch lock of
+    /// this repository's object store (`one_fetch`). At `FETCH_LIMIT` its
+    /// process group is ended and the call is a failure.
     pub fn try_fetch(&self, args: &[&str]) -> Result<Ran> {
         if args.first() != Some(&"fetch") {
             bail!("Repo::try_fetch takes a git fetch command");
         }
+        let _lock = one_fetch::take(self.common_dir()?, true)?;
         run_within(&self.dir, args, &[], FETCH_LIMIT)
     }
 
@@ -364,17 +368,27 @@ impl Repo {
 
     /// Brings into this repo the commit `sha` the remote was seen to have at
     /// `refname`, when it is not here yet. An error when the remote no longer
-    /// has it there.
+    /// has it there. Lands that want the same commit at once make one fetch
+    /// of it: each waits for the fetch lock, and finds there what the one
+    /// before it fetched (`one_fetch::guarded`). A corrupt pack is fetched
+    /// again with `--refetch`, and one that stays corrupt backs off.
     pub fn bring(&self, sha: &str, refname: &str) -> Result<()> {
         if !self.object_here(sha)? {
-            self.fetch(&[
-                "fetch",
-                "--quiet",
-                "--no-write-fetch-head",
-                "--no-tags",
-                REMOTE,
+            let now = crate::gh_quota::now();
+            one_fetch::guarded(
+                self.common_dir()?,
                 refname,
-            ])?;
+                now,
+                || self.object_here(sha),
+                |refetch| {
+                    let mut fetch = vec!["fetch", "--quiet", "--no-write-fetch-head", "--no-tags"];
+                    if refetch {
+                        fetch.push("--refetch");
+                    }
+                    fetch.extend([REMOTE, refname]);
+                    run_within(&self.dir, &fetch, &[], FETCH_LIMIT)
+                },
+            )?;
             if !self.object_here(sha)? {
                 bail!("{refname} moved on the remote while it was read — run this again");
             }
