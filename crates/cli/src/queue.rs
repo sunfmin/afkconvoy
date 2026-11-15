@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use afkconvoy_core::exclusive::{Lanes, Snapshot, Ticket, snapshot};
+use afkconvoy_core::exclusive::{Halt, Lanes, Low, Snapshot, Ticket, snapshot};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -21,6 +21,10 @@ pub const WITHIN: Duration = Duration::from_secs(10);
 struct Answer {
     exclusive: Vec<Ticket>,
     exclusive_paused: Option<bool>,
+    /// What it last saw of the disk; `None` from an older runner, which
+    /// holds nothing for it.
+    #[serde(default)]
+    disk: Option<crate::disk::Seen>,
     host_runner: Identity,
 }
 
@@ -63,7 +67,14 @@ fn observe(fixed_now: Option<u64>) -> Result<Value> {
             let mut runner = answer.host_runner.rest;
             runner.insert("pid".into(), json!(answer.host_runner.pid));
             runner.insert("version".into(), json!(answer.host_runner.version));
-            (Value::Object(runner), Some((answer.exclusive, answer.exclusive_paused)))
+            (
+                Value::Object(runner),
+                Some((
+                    answer.exclusive,
+                    answer.exclusive_paused,
+                    answer.disk.and_then(|seen| seen.low()),
+                )),
+            )
         }
         None => (Value::Null, None),
     };
@@ -73,26 +84,29 @@ fn observe(fixed_now: Option<u64>) -> Result<Value> {
 }
 
 /// What a host runner says of its exclusive queue: its tickets and whether
-/// it paused new grants, the pause `None` where an older one does not say.
+/// it paused new grants, the pause `None` where an older one does not say;
+/// and the disk under its floor, where it grants nothing new for it (`disk`).
 /// `None` whole where no host runner listens.
-pub type Said = Option<(Vec<Ticket>, Option<bool>)>;
+pub type Said = Option<(Vec<Ticket>, Option<bool>, Option<Low>)>;
 
 /// The one observation of the exclusive queue that `queue`, doctor and the
 /// panel show, of what the host runner `said`.
 pub fn snapshot_of(said: &Said, lanes: Lanes, now: u64) -> Snapshot {
     // An older runner that does not say its pause has none to apply.
-    let (tickets, paused) = match said {
-        Some((tickets, paused)) => (tickets.as_slice(), paused.unwrap_or(false)),
-        None => (&[][..], false),
+    let (tickets, halt) = match said {
+        Some((tickets, paused, disk)) => {
+            (tickets.as_slice(), Halt { paused: paused.unwrap_or(false), disk: *disk })
+        }
+        None => (&[][..], Halt::default()),
     };
-    snapshot(tickets, lanes, paused, now)
+    snapshot(tickets, lanes, halt, now)
 }
 
 /// `snapshot_of` as `queue` and doctor answer it. A pause the runner did not
 /// say stays null.
 pub(crate) fn observation(said: Said, lanes: Lanes, now: u64) -> Value {
     let (status, paused) = match &said {
-        Some((_, paused)) => ("available", *paused),
+        Some((_, paused, _)) => ("available", *paused),
         None => ("no_runner", Some(false)),
     };
     let mut answer = observation_json(&snapshot_of(&said, lanes, now));
@@ -185,6 +199,7 @@ Exactly one JSON object, exit 0:
 - `status`: `available` when the runner answered, including a healthy empty queue; `no_runner` when no runner listens or holds the host. No runner is a successful observation with empty arrays and `host_runner: null`, not evidence of commands running outside the queue.
 - `host_runner`: the answering runner's `pid` and `version`, plus the identity fields it supplies: `log` (whole path), `panel` (address or null), and `foreground` where applicable. Null with no runner.
 - `paused`: whether the runner has paused new grants for a release move; false with no runner; null where an older runner does not say it, which pauses nothing.
+- `disk`: `{free, floor}`, in bytes, while the disk the host builds on is under its floor and the runner grants no new request for it; null otherwise, with no runner, or from an older runner. The floor is the measured one admission holds to (`afkconvoy run --help`, DISK); running requests keep their lanes.
 - `worker`: `{capacity, used, free}`. Capacity is the host setting `gate_lanes`, {const:GATE_LANES} by default; used counts running worker requests, free is capacity minus used, clamped to zero. Eligible reservations do not count as used.
 - `slow`: `{capacity, used, free}` of the slow lanes, where a round's slow gate runs: the host setting `slow_gate_lanes`, 1 by default (`afkconvoy run --help`).
 - `fast`: `{capacity, used, free}` of the fast lane, which only a worker's fast gate takes (`afkconvoy gate --fast`). Capacity is the host setting `fast_lanes`, {const:FAST_LANES} by default; used counts running fast gates. It is independent of worker capacity: no slow gate, turn or other command holds a place in it.
@@ -193,7 +208,7 @@ Exactly one JSON object, exit 0:
 - Each request adds `elapsed_seconds` (time since `ran`, null while waiting), `waiting_seconds` (time from `asked` to `ran` when running, otherwise to `observed_at`), and `scheduling`: `{number, state, reasons}`. State is `running`, `retained`, `eligible`, or `waiting`; reasons is empty for running, retained or eligible requests.
 - `retained`, null otherwise, is `{since, error}` of a request in `running` whose command ended and whose asker left, but whose cleanup the runner could not confirm (a candidate's, say, on a full disk): its state is `retained`, not `running`, its pid is gone, and it keeps its place, counted in `used`, until the runner confirms the cleanup. `since` is when its cleanup first failed, `error` what the last try said. The runner tries again each minute, and frees the place once it passes; `afkconvoy doctor` warns of one retained {const:RETAINED_SECONDS}s or longer.
 - `candidate` is true for independent candidate validation. `validation`, null for ordinary or unreported requests, is the turn's display copy of its remote candidate: {id, predecessor, commit, phase, waiting, cancelled_by, cause}. Phase follows building, validating, green, slow, landed, red, cancelling or cancelled. Waiting distinguishes constructing_worktree, validating, waiting_for_round, slow_gating, waiting_for_predecessor and confirming_process_exit; a waiting queue request without a candidate awaits capacity. Cancellation names its invalidating predecessor and cause. These copies explain current work and authorize no publication; reading queue makes no remote lookup.
-- Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity`, `fast_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause. `explanation` states the constraint in words.
+- Each reason has `kind`, `requests`, `capacity` and `explanation`. Kind `same_repo` means a running or earlier eligible request of this repo excludes this request in its lane, or across lanes when both are turns. `worker_capacity`, `fast_capacity` or `repo_capacity` means all places in that lane are occupied or reserved, with the limit in `capacity`. `paused` means new grants are paused. `disk` means the disk the host builds on is under its floor: no request is granted until space returns, whatever lane is free, and `explanation` says the bytes free and the floor. Other reasons have `capacity: null`. `requests` names each relevant `{number, state}`: `running` holds a place now, `eligible` reserves one earlier in FIFO order; it is empty for a pause or the disk. `explanation` states the constraint in words.
 
 Earlier eligible requests reserve capacity in scheduler order, with cuts before ordinary waiters and FIFO within each group. Blocked requests reserve nothing: with three worker lanes, ordinary requests of a running repo can leave two free while waiting, and a different repo can be eligible. Independently owned candidate worktrees of the same repo may validate together, and so may fast gates of the same repo, never with `same_repo` as a reason; ordinary heavy commands and serial barriers retain same-repo exclusion across worker and repo lanes. Older tickets lacking `repo` use their whole `dir` as the scheduler's fallback identity. `eligible` means allowed by this observation, not guaranteed to start next. Ordering is no fixed future start order or ETA; requests can leave and settings can change.
 
