@@ -28,6 +28,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::foreground::Holds;
 use crate::git::{REMOTE, Repo};
 use crate::look::Reading;
 use crate::worker_tmp;
@@ -1753,6 +1754,7 @@ impl Worktree {
         }
         self.forget(NUDGE_FILE)?;
         self.forget(BACKGROUND_FILE)?;
+        self.forget(crate::foreground::TTY_FILE)?;
         let command = niced(&worker_tmp::make(&self.path)?.display().to_string(), command);
         let selector = self.selector();
         let mut args = vec!["terminal", "create", "--worktree", &selector, "--command", &command];
@@ -1952,6 +1954,7 @@ impl Worktree {
             .and_then(|file| std::fs::read_to_string(file).ok())
             .is_some_and(|saved| saved == terminal);
         if !accepted {
+            self.typable(terminal)?;
             let sent =
                 orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"])?;
             if sent["send"]["accepted"] != true {
@@ -1983,9 +1986,26 @@ impl Worktree {
                 }
             }
             if typed.elapsed() >= bound {
-                if receipt.is_some() {
-                    return Ok(Handed::Queued);
+                if let Some(file) = receipt {
+                    // A harness that does not hold its terminal reads none of
+                    // the line: it is dropped, and typed again once it does.
+                    let reads = match self.holds()? {
+                        Holds::Background(_) => false,
+                        Holds::Unseen => !self.bare_shell()?,
+                        Holds::Foreground { .. } => true,
+                    };
+                    if reads {
+                        return Ok(Handed::Queued);
+                    }
+                    self.drop_unread();
+                    let _ = std::fs::remove_file(file);
+                    return Err(self.prompt_failure(
+                        terminal,
+                        "the worker harness does not hold its terminal: the line it was typed is \
+                         dropped, unread",
+                    ));
                 }
+                self.drop_unread();
                 return Err(self.prompt_failure(
                     terminal,
                     &format!(
@@ -2017,6 +2037,66 @@ impl Worktree {
             lines.extend(draft.lines().map(str::to_string));
         }
         Ok(lines)
+    }
+
+    /// How the harness here stands at its terminal (`foreground`). The
+    /// terminal it is on is kept beside the brief, where there is one.
+    pub(crate) fn holds(&self) -> Result<Holds> {
+        let holds = crate::foreground::holds(&crate::hot::listed_checked()?, &self.path)?;
+        if let Some(tty) = holds.tty()
+            && let Ok(file) = self.note(crate::foreground::TTY_FILE)
+            && std::fs::read_to_string(&file).ok().as_deref() != Some(tty)
+        {
+            std::fs::write(&file, tty)
+                .with_context(|| format!("cannot write {}", file.display()))?;
+        }
+        Ok(holds)
+    }
+
+    /// The terminal device the harness here was last seen on.
+    fn seen_tty(&self) -> Option<String> {
+        let file = self.note(crate::foreground::TTY_FILE).ok()?;
+        std::fs::read_to_string(file).ok().filter(|tty| !tty.is_empty())
+    }
+
+    /// Whether the terminal the harness here was last seen on is a bare
+    /// shell: its harness gone, and the shell that started it there still.
+    pub(crate) fn bare_shell(&self) -> Result<bool> {
+        let Some(tty) = self.seen_tty() else { return Ok(false) };
+        crate::foreground::bare_shell(&crate::hot::listed_checked()?, &self.path, &tty)
+    }
+
+    /// A line is typed only at a harness that would read it: one that holds
+    /// its terminal, or one this host cannot see. One in the background is
+    /// brought back first (`foreground::recover`); one nothing brings back,
+    /// or a bare shell its harness left, would leave the line to the shell.
+    fn typable(&self, terminal: &str) -> Result<()> {
+        match self.holds()? {
+            Holds::Foreground { .. } => Ok(()),
+            Holds::Background(held) => {
+                let fg = || self.press_key(terminal, crate::foreground::FG);
+                if crate::foreground::recover(&self.path, &held, fg)? {
+                    return Ok(());
+                }
+                Err(self.prompt_failure(
+                    terminal,
+                    &format!("{}, and nothing brought it back; no line was sent", held.evidence()),
+                ))
+            }
+            Holds::Unseen if self.bare_shell()? => Err(self.prompt_failure(
+                terminal,
+                "no worker harness runs on its terminal, a bare shell; no line was sent",
+            )),
+            Holds::Unseen => Ok(()),
+        }
+    }
+
+    /// Drops what was typed at the terminal here and not read yet: a line
+    /// not confirmed delivered is left to no shell (sunfmin/control#1150).
+    fn drop_unread(&self) {
+        if let Some(tty) = self.seen_tty() {
+            crate::foreground::drop_unread(&tty);
+        }
     }
 
     /// Types `key` at `terminal`, with no line of the operator's.
@@ -2265,14 +2345,20 @@ impl Worktree {
             Some(harness) => harness,
             None => agent_harness(&agent).or(self.recorded_harness()?).unwrap_or(Harness::DEFAULT),
         };
+        self.typable(terminal)?;
         let sent = orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"]);
         let sent = match sent {
             Err(error) => {
-                return if self.saw_turn(harness, earliest)? { Ok(()) } else { Err(error) };
+                if self.saw_turn(harness, earliest)? {
+                    return Ok(());
+                }
+                self.drop_unread();
+                return Err(error);
             }
             Ok(sent) => sent,
         };
         if sent["send"]["accepted"] != true {
+            self.drop_unread();
             return Err(PromptBlocked(
                 sent["send"]["blockedReason"]
                     .as_str()
@@ -2284,6 +2370,7 @@ impl Worktree {
         if self.prove(harness, earliest)? {
             return Ok(());
         }
+        self.drop_unread();
         let prompt = &sent["send"]["prompt"];
         Err(self.prompt_failure(
             terminal,
