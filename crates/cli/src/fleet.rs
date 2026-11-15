@@ -280,15 +280,38 @@ impl Fleet {
             }
             // A standing probe already checked these commands. Trusting it
             // keeps the named harness and starts nothing.
+            // Each harness is asked at once, on a thread of its own in this
+            // look: what its login shell answers takes most of a tick, and
+            // one harness's answers wait on no other's (sunfmin/control#1157).
             if !self.trust_launches {
-                let launches = crate::launch::Launches::foreseen(&self.repo);
-                kit.harnesses.retain(|held| {
-                    match crate::role::startable(&launches, held.harness, caller) {
-                        Ok(()) => true,
-                        Err(e) => {
-                            skipped.push((held.harness, format!("{e:#}")));
-                            false
-                        }
+                let (here, repo) = (crate::look::here(), &self.repo);
+                let refused: Vec<Option<String>> = std::thread::scope(|scope| {
+                    let asking: Vec<_> = kit
+                        .harnesses
+                        .iter()
+                        .map(|held| {
+                            let (here, harness) = (&here, held.harness);
+                            scope.spawn(move || {
+                                here.enter(|| {
+                                    let launches = crate::launch::Launches::foreseen(repo);
+                                    let started =
+                                        crate::role::startable(&launches, harness, caller);
+                                    started.err().map(|e| format!("{e:#}"))
+                                })
+                            })
+                        })
+                        .collect();
+                    let joined = asking.into_iter().map(|asked| asked.join());
+                    joined
+                        .map(|asked| asked.unwrap_or_else(|_| Some("its check panicked".into())))
+                        .collect()
+                });
+                let mut refused = refused.into_iter();
+                kit.harnesses.retain(|held| match refused.next().flatten() {
+                    None => true,
+                    Some(why) => {
+                        skipped.push((held.harness, why));
+                        false
                     }
                 });
             }
