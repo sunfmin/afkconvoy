@@ -942,20 +942,17 @@ fn stacked_merge(chain: &Chain) -> Option<Candidate> {
     merges.into_iter().find(|c| c.phase != Phase::Building && c.phase != Phase::Validating).cloned()
 }
 
+/// What two runs, the second stacked on the first, came to: what became of
+/// each one's changes, the second's stacked merge and what its forge was
+/// told it sent back.
+type Stacked = (Outcomes, Outcomes, Candidate, Vec<(u64, Option<Evidence>)>);
+type Outcomes = Vec<(u64, Outcome<String>)>;
+
 /// Lands `first` in one run whose round's slow gate holds, and, once it
 /// runs, `second` in another run, from a checkout of its own; lets the slow
 /// gate go once the second run's stacked merge is gated → what became of
 /// each, and the second run's stacked merge.
-fn stacked_on(
-    root: &Path,
-    work: &Path,
-    (first, second): (Change, Change),
-) -> (
-    Vec<(u64, Outcome<String>)>,
-    Vec<(u64, Outcome<String>)>,
-    Candidate,
-    Vec<(u64, Option<Evidence>)>,
-) {
+fn stacked_on(root: &Path, work: &Path, (first, second): (Change, Change)) -> Stacked {
     std::fs::write(root.join("hold"), "").unwrap();
     let other = another_checkout(root, "other");
     let worktrees = root.join("candidates");
