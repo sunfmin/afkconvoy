@@ -711,12 +711,13 @@ impl<N: Clone> Chain<N> {
         if let Some((alone, with)) = &carried {
             let mut both: Vec<u64> = alone.changes.iter().chain(&with.changes).copied().collect();
             both.sort_by_key(|&change| r.place(change));
-            let mine = alone
-                .changes
-                .iter()
-                .copied()
-                .filter(|&change| r.ask(change).is_some())
-                .max_by_key(|&change| r.place(change));
+            // The later-asked of its PRs still in the round.
+            let mut mine: Option<u64> = None;
+            for &change in &alone.changes {
+                if r.ask(change).is_some() && mine.is_none_or(|m| r.place(change) > r.place(m)) {
+                    mine = Some(change);
+                }
+            }
             if let Some(carrier) = mine {
                 let carry = Carry {
                     pair: None,
