@@ -656,25 +656,50 @@ fn spared(owner: u32) -> Vec<u32> {
         .collect()
 }
 
+/// How long a candidate this process found unconfirmed is only looked at
+/// again, not waited for: every lane taken on the host looks at the
+/// candidates of each slot's dead owner (`slots::recover`), and one that
+/// never exits would otherwise hold each of them for its whole bound.
+const UNCONFIRMED_FOR: Duration = Duration::from_secs(60);
+
+/// The candidates this process found unconfirmed, by id, as when.
+static UNCONFIRMED: std::sync::Mutex<BTreeMap<String, std::time::Instant>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
 /// Confirms candidate `c`'s killed `processes`, and its process scope, gone:
 /// waiting as long as the host's load gives them (`exit_bound`), killing
-/// what is left hard each second. Errors: `Unconfirmed`, what is left past
-/// that, which keeps its lane occupied.
+/// what is left hard each second. One found unconfirmed within
+/// `UNCONFIRMED_FOR` is looked at once, not waited for. Errors:
+/// `Unconfirmed`, what is left past that, which keeps its lane occupied.
 fn confirmed(c: &Candidate, processes: &[Process]) -> Result<()> {
     let scope = crate::process_scope::path(&c.worktree);
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
-    // An unread load is a loaded host's: the longest bound.
-    let load = crate::admission::load().unwrap_or(u64::MAX);
-    let bound = exit_bound(load, cores);
     let mut stopped = Stopped { processes, scope: &scope, owner: c.owner.pid, holders: vec![] };
     let began = std::time::Instant::now();
+    let mut found = UNCONFIRMED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let recent = found.get(&c.id).is_some_and(|at| at.elapsed() < UNCONFIRMED_FOR);
+    drop(found);
+    let bound = if recent {
+        Duration::ZERO
+    } else {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
+        // An unread load is a loaded host's: the longest bound.
+        exit_bound(crate::admission::load().unwrap_or(u64::MAX), cores)
+    };
     let mut clock = || {
         std::thread::sleep(Duration::from_millis(10));
         began.elapsed()
     };
-    match awaited(&mut stopped, bound, Duration::from_secs(1), &mut clock)? {
-        Ok(()) => Ok(()),
+    let left = awaited(&mut stopped, bound, Duration::from_secs(1), &mut clock)?;
+    found = UNCONFIRMED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match left {
+        Ok(()) => {
+            found.remove(&c.id);
+            Ok(())
+        }
         Err(pids) => {
+            if !recent {
+                found.insert(c.id.clone(), std::time::Instant::now());
+            }
             Err(Unconfirmed { candidate: c.id.clone(), pids, waited: began.elapsed().as_secs() }
                 .into())
         }
@@ -1961,6 +1986,18 @@ mod tests {
         assert_eq!(answer["pr"], 5);
         let detail = answer["detail"].as_str().unwrap();
         assert!(detail.contains("pids 41, 42") && detail.contains("candidate c7"), "{detail}");
+    }
+
+    /// A candidate found unconfirmed a moment ago is looked at once, not
+    /// waited for again: it holds no lane taken after it for its bound.
+    #[test]
+    fn a_candidate_found_unconfirmed_is_looked_at_again_not_waited_for() {
+        let mut never = dying(None);
+        assert_eq!(awaited(&mut never, std::time::Duration::ZERO), Err(vec![41, 42]));
+        assert_eq!(never.kills, 0);
+        assert_eq!(never.at.get(), std::time::Duration::from_millis(20), "its start and one look");
+        let mut gone = dying(Some(std::time::Duration::ZERO));
+        assert_eq!(awaited(&mut gone, std::time::Duration::ZERO), Ok(()), "gone since");
     }
 
     /// A holder of the candidate's process scope that its freeze never saw
