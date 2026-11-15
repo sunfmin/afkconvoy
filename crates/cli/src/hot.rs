@@ -60,10 +60,15 @@ pub struct Said {
 }
 
 /// The limits on this host for the fleet of the checkout `dir`: its shares
-/// (`Limits::of_host`) — of the disk `dir` is on — but for what it says.
+/// (`Limits::of_host`) — of the disk `dir` is on, free over its floor
+/// (`disk::headroom`) — but for what it says.
 pub fn limits(said: Said, dir: &Path) -> Limits {
     let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64);
-    limits_from(said, cores, memory(), free_disk(dir))
+    let headroom = crate::admission::disk(dir).ok().map(|disk| {
+        let settings = crate::host_settings::of_host().unwrap_or_default();
+        crate::disk::headroom(disk, crate::disk::reserve_of(&settings, &crate::disk::listed()))
+    });
+    limits_from(said, cores, memory(), headroom)
 }
 
 /// The limits derived from an existing host reading.
@@ -74,15 +79,6 @@ pub fn limits_from(said: Said, cores: u64, memory: Option<u64>, disk: Option<u64
         resident: said.resident.unwrap_or(shares.resident),
         written: said.written.unwrap_or(shares.written),
     }
-}
-
-/// The bytes free on the disk `dir` is on, as `df` says them; `None` where
-/// they cannot be read.
-fn free_disk(dir: &Path) -> Option<u64> {
-    let out = crate::process::output(Command::new("df").arg("-Pk").arg(dir)).ok()?;
-    let out = String::from_utf8_lossy(&out.stdout).into_owned();
-    let kib: u64 = out.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()?;
-    Some(kib.saturating_mul(1024))
 }
 
 /// The bytes the process `pid` has written to disk since it started, as the
@@ -1035,10 +1031,12 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            whole_repo: false,
             note: afkconvoy_core::exclusive::Note { issue: None, validation: None },
             gate: None,
             asked: 0,
             ran,
+            retained: None,
         };
         let queue = [ticket(1, 12, Some(0)), ticket(2, 20, None)];
         let under = crate::exclusive::running_work(&queue, &procs).pids;

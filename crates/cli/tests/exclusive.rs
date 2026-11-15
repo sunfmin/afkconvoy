@@ -156,6 +156,37 @@ fn a_gate_s_tests_are_held_to_their_share_of_the_cores_only_beside_another_comma
     assert_eq!(said().trim(), format!("jobs= tests={share}"), "beside a held lane: its share");
 }
 
+/// A gate's rustc keeps to one front-end thread, through `exclusive` or not:
+/// huacnlee/cargo would give each eight on nightly (sunfmin/control#1127). An
+/// environment that says how many keeps its own.
+#[test]
+fn a_gate_s_rustc_runs_one_front_end_thread_unless_its_environment_says_otherwise() {
+    let world = World::new();
+    let said = || std::fs::read_to_string(world.root.join("threads.txt")).unwrap();
+    let script = "echo \"threads=$CARGO_RUSTC_THREADS\" > ../threads.txt";
+    let through = afkconvoy_core::line::Line::new()
+        .program(env!("CARGO_BIN_EXE_afkconvoy"))
+        .fixed(" exclusive -- sh -c ")
+        .word(script)
+        .own();
+    let _host_runner = world.host_held();
+    for gate in [through, format!("sh -c '{script}'")] {
+        world.set_gate(&gate);
+        assert_eq!(world.afk(&["gate"]).ok()["status"], "green", "{gate}");
+        assert_eq!(said().trim(), "threads=1", "{gate}");
+        // another tree: a tree gated green is not gated again
+        world.set_gate(&format!("{gate}; :"));
+        let answer = world
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+            .env("CARGO_RUSTC_THREADS", "4")
+            .arg("gate")
+            .output()
+            .unwrap();
+        assert!(answer.status.success(), "{gate}: {}", text(&answer.stderr));
+        assert_eq!(said().trim(), "threads=4", "{gate}");
+    }
+}
+
 /// `afkconvoy exclusive -- sh -c <script>`, started in `world`'s checkout on
 /// the host whose cache is `cache`, as the worker of `issue`. The script
 /// names the cache `$CACHE`: a tick log keeps only the start of a long

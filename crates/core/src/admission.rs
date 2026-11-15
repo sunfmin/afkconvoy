@@ -15,6 +15,8 @@
 
 use serde::Serialize;
 
+use crate::disk::share_of;
+
 /// The shares of the host past which admission holds, each in percent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Shares {
@@ -46,6 +48,11 @@ pub struct Reading {
     pub memory_free: Option<u64>,
     /// The disk of the checkout's volume.
     pub disk: Option<Disk>,
+    /// The bytes the builds that may run at once on the host take, by
+    /// measurement (`disk::reserve`): the disk is held to it where it is more
+    /// than its share (`disk::floor`). `None`: none was measured, or the host
+    /// said its own disk share, which then stands alone.
+    pub reserve: Option<u64>,
 }
 
 /// A volume's free space and size, in bytes.
@@ -73,13 +80,10 @@ pub fn thresholds(shares: Shares, reading: &Reading) -> Thresholds {
         // Cores times a share in percent is the load in hundredths.
         load: reading.cores.saturating_mul(shares.load),
         memory_free: shares.memory,
-        disk_free: reading.disk.map(|disk| share_of(disk.size, shares.disk)),
+        disk_free: reading
+            .disk
+            .map(|disk| crate::disk::floor(disk.size, shares.disk, reading.reserve)),
     }
-}
-
-/// `percent` of `bytes`: divided first, for the product may not fit.
-fn share_of(bytes: u64, percent: u64) -> u64 {
-    (bytes / 100).saturating_mul(percent)
 }
 
 /// One threshold the host is past, with what was read of it.
@@ -135,6 +139,9 @@ pub const LANDING_LEAST: u64 = 3;
 pub struct Landing {
     pub conflicts: u64,
     pub landed: u64,
+    /// Of `conflicts`, the `speculative_conflict`s: a merge onto a candidate
+    /// ahead that conflicted, which the base alone may not have.
+    pub speculative: u64,
 }
 
 impl Landing {
@@ -154,8 +161,10 @@ impl Landing {
                 continue;
             }
             match outcome {
-                "conflict" | "speculative_conflict" => {
-                    landing.conflicts = landing.conflicts.saturating_add(1)
+                "conflict" => landing.conflicts = landing.conflicts.saturating_add(1),
+                "speculative_conflict" => {
+                    landing.conflicts = landing.conflicts.saturating_add(1);
+                    landing.speculative = landing.speculative.saturating_add(1);
                 }
                 "merged" => landing.landed = landing.landed.saturating_add(1),
                 _ => {}
@@ -169,6 +178,15 @@ impl Landing {
     /// and another worker would only add to them.
     pub fn contended(self) -> bool {
         self.conflicts >= LANDING_LEAST && self.conflicts > self.landed
+    }
+
+    /// Whether its chain is piled: its turns conflicted with the candidates
+    /// ahead of them, at `LANDING_LEAST` or more, more often than they
+    /// landed. Speculative stacks then only invalidate each other, so a turn
+    /// stacks on no candidate ahead: each lands alone on the base, oldest
+    /// first, until the landings catch up (sunfmin/control#1112).
+    pub fn piled(self) -> bool {
+        self.speculative >= LANDING_LEAST && self.speculative > self.landed
     }
 }
 
@@ -359,6 +377,7 @@ mod tests {
             load: Some(100),
             memory_free: Some(60),
             disk: Some(Disk { free: 500 * GIB, size: 1000 * GIB }),
+            reserve: None,
         }
     }
 
@@ -392,6 +411,14 @@ mod tests {
     }
 
     #[test]
+    fn the_disk_is_held_to_what_its_builds_take_where_that_is_more_than_its_share() {
+        let builds = Reading { reserve: Some(60 * GIB), ..idle() };
+        assert_eq!(thresholds(SHARES, &builds).disk_free, Some(60 * GIB));
+        let filling = Reading { disk: Some(Disk { free: 59 * GIB, size: 1000 * GIB }), ..builds };
+        assert_eq!(holds(SHARES, &filling), [Hold::Disk { free: 59 * GIB, floor: 60 * GIB }]);
+    }
+
+    #[test]
     fn disk_holds_only_once_under_its_floor() {
         let floor = 1000 * GIB / 100;
         let at = Reading { disk: Some(Disk { free: floor, size: 1000 * GIB }), ..idle() };
@@ -407,6 +434,7 @@ mod tests {
             load: Some(9000),
             memory_free: Some(3),
             disk: Some(Disk { free: GIB, size: 1000 * GIB }),
+            reserve: None,
         };
         let by: Vec<&str> = holds(SHARES, &busy)
             .iter()
@@ -422,7 +450,7 @@ mod tests {
 
     #[test]
     fn what_was_not_read_holds_nothing_back() {
-        let unread = Reading { cores: 1, load: None, memory_free: None, disk: None };
+        let unread = Reading { cores: 1, load: None, memory_free: None, disk: None, reserve: None };
         assert_eq!(holds(Shares { load: 0, memory: 100, disk: 100 }, &unread), []);
     }
 
@@ -535,16 +563,39 @@ mod tests {
             (now - 10, "speculative_conflict"),
         ];
         let landing = Landing::tally(said, now, LANDING_WINDOW);
-        assert_eq!(landing, Landing { conflicts: 3, landed: 1 }, "the first is past the hour");
+        assert_eq!(
+            landing,
+            Landing { conflicts: 3, landed: 1, speculative: 2 },
+            "the first is past the hour"
+        );
         assert_eq!(
             landing_hold(Some(landing), LANDING_WINDOW),
             Some(Hold::Landing { conflicts: 3, landed: 1, window: LANDING_WINDOW })
         );
-        let kept_up = Landing { conflicts: 3, landed: 3 };
+        let kept_up = Landing { conflicts: 3, landed: 3, speculative: 0 };
         assert_eq!(landing_hold(Some(kept_up), LANDING_WINDOW), None, "as many landed");
-        let few = Landing { conflicts: LANDING_LEAST - 1, landed: 0 };
+        let few = Landing { conflicts: LANDING_LEAST - 1, ..Landing::default() };
         assert_eq!(landing_hold(Some(few), LANDING_WINDOW), None, "the ordinary cost");
         assert_eq!(landing_hold(None, LANDING_WINDOW), None, "not read");
+    }
+
+    #[test]
+    fn a_chain_is_piled_once_its_speculative_conflicts_outnumber_its_landings() {
+        let now = 10_000;
+        let piled = [
+            (now - 40, "speculative_conflict"),
+            (now - 30, "speculative_conflict"),
+            (now - 20, "conflict"),
+            (now - 10, "speculative_conflict"),
+        ];
+        let landing = Landing::tally(piled, now, LANDING_WINDOW);
+        assert!(landing.piled(), "{landing:?}");
+        let landed = [(now - 5, "merged"), (now - 4, "merged"), (now - 3, "merged")];
+        let caught_up = piled.into_iter().chain(landed);
+        let landing = Landing::tally(caught_up, now, LANDING_WINDOW);
+        assert!(!landing.piled(), "as many landed alone: {landing:?}");
+        let on_the_base = [(now - 30, "conflict"), (now - 20, "conflict"), (now - 10, "conflict")];
+        assert!(!Landing::tally(on_the_base, now, LANDING_WINDOW).piled(), "no stack conflicted");
     }
 
     #[test]

@@ -160,6 +160,11 @@ pub(crate) fn answer_turn(
     // A pass asks after no landing a standing lock keeps it off: one that
     // stopped at a lock is asked here only once that lock is gone.
     let locks = crate::turn_answer::stopped_at_locks(&worktree)?;
+    // Its worker is stopped and its turn waits: what its builds made is
+    // dropped meanwhile, and a build makes it again should the worker be
+    // handed a turn's answer (sunfmin/control#1112). A drop that fails holds
+    // no turn back.
+    let _ = crate::measure::drop_built(&crate::git::Repo::new(worktree.path.clone()));
     crate::turn_answer::ask_again(&worktree, issue)?;
     if matches!(&answered, Answered::Said(outcome) if outcome == Ending::Locked.word()) {
         found.after_locks.push((issue, locks));

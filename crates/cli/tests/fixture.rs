@@ -105,11 +105,10 @@ fn a_repository_template_seed_is_kept_outside_the_checkout() {
     let seed = canonical(&common::repository_template(&files));
     let process_temp = canonical(&std::env::temp_dir());
     let checkout = this_checkout();
-    let build = this_build_output();
     let cache_at = if cache_existed { canonical(&cache) } else { cache.clone() };
 
     assert!(!seed.starts_with(&checkout), "the seed is inside the checkout: {}", seed.display());
-    assert!(!seed.starts_with(&build), "the seed is inside the build output: {}", seed.display());
+    assert!(!inside_build_output(&seed), "the seed is inside the build output: {}", seed.display());
     assert!(
         !seed.starts_with(&cache_at),
         "the seed is inside the fleet's cache directory: {}",
@@ -119,7 +118,7 @@ fn a_repository_template_seed_is_kept_outside_the_checkout() {
         assert!(!cache.exists(), "publishing a seed created the fleet's cache directory");
     }
     let temp_blocked = process_temp.starts_with(&checkout)
-        || process_temp.starts_with(&build)
+        || inside_build_output(&process_temp)
         || process_temp.starts_with(&cache_at);
     let allowed = if temp_blocked { canonical(Path::new("/tmp")) } else { process_temp };
     assert!(
@@ -152,7 +151,7 @@ fn a_seed_stays_outside_a_checkout_that_holds_the_process_temp() {
     let blocked = common::repository_template_home(
         inside.path(),
         Some(checkout.path()),
-        Some(build.path()),
+        &[build.path()],
         Some(cache.path()),
     );
     assert_eq!(blocked, PathBuf::from("/tmp/afkconvoy-repository-templates-v1"));
@@ -160,13 +159,13 @@ fn a_seed_stays_outside_a_checkout_that_holds_the_process_temp() {
     assert!(!path_is_inside(&blocked, build.path()));
     assert!(!path_is_inside(&blocked, cache.path()));
 
-    let kept = common::repository_template_home(outside.path(), Some(checkout.path()), None, None);
+    let kept = common::repository_template_home(outside.path(), Some(checkout.path()), &[], None);
     assert!(path_is_inside(&kept, outside.path()));
     assert!(!path_is_inside(&kept, checkout.path()));
 
-    let in_build = common::repository_template_home(build.path(), None, Some(build.path()), None);
+    let in_build = common::repository_template_home(build.path(), None, &[build.path()], None);
     assert!(!path_is_inside(&in_build, build.path()));
-    let in_cache = common::repository_template_home(cache.path(), None, None, Some(cache.path()));
+    let in_cache = common::repository_template_home(cache.path(), None, &[], Some(cache.path()));
     assert!(!path_is_inside(&in_cache, cache.path()));
 }
 
@@ -344,7 +343,7 @@ fn a_worktree_removes_after_a_repository_template_is_published() {
     assert!(!seed.starts_with(canonical(&linked)), "the seed landed in the worktree");
     assert!(!seed.starts_with(canonical(&main)), "the seed landed in the main checkout");
     assert!(!seed.starts_with(this_checkout()), "the seed landed in this checkout");
-    assert!(!seed.starts_with(this_build_output()), "the seed landed in the build output");
+    assert!(!inside_build_output(&seed), "the seed landed in the build output");
 
     let removed =
         Command::new("rm").args(["-rf", "--"]).arg(linked.join("target")).status().unwrap();
@@ -379,24 +378,13 @@ fn assert_read_only(dir: &Path) {
 }
 
 fn this_checkout() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let top = git(exe.parent().unwrap(), &["rev-parse", "--show-toplevel"]);
-    canonical(Path::new(&top))
+    canonical(&common::this_checkout().expect("this package is built from a checkout"))
 }
 
-fn this_build_output() -> PathBuf {
-    let exe = canonical(&std::env::current_exe().unwrap());
-    let mut dir = exe.parent().unwrap().to_path_buf();
-    loop {
-        let profile = dir.file_name().is_some_and(|name| name == "debug" || name == "release");
-        if profile {
-            let target = dir.parent().unwrap().to_path_buf();
-            assert_eq!(target.file_name().unwrap(), "target");
-            assert!(exe.starts_with(&target));
-            return target;
-        }
-        assert!(dir.pop(), "the test binary is outside a cargo target directory");
-    }
+fn inside_build_output(path: &Path) -> bool {
+    let outputs = common::build_outputs();
+    assert!(!outputs.is_empty(), "cargo named no build output");
+    outputs.iter().any(|output| path.starts_with(canonical(output)))
 }
 
 fn canonical(path: &Path) -> PathBuf {

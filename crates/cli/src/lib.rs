@@ -48,6 +48,8 @@ pub mod copies;
 pub mod cut;
 pub mod daybook;
 mod delivery;
+pub mod disk;
+mod disk_floor;
 pub mod dispatch;
 pub mod distill;
 pub mod doctor;
@@ -123,6 +125,7 @@ pub mod scaffold;
 pub mod serve;
 pub mod session;
 pub mod settle;
+mod shared_reading;
 mod skill;
 mod slots;
 pub mod slow_gate;
@@ -165,11 +168,12 @@ use fleet::Fleet;
 use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV, AGENT_GUARDS_ENV,
-    AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, EXCLUSIVE_SECONDS_ENV, HOST_NAME_ENV, HOT_CORES_ENV,
-    HOT_MEMORY_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, MAX_SHARE_OF_CORES_ENV,
-    MAX_SHARE_OF_MEMORY_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
-    jev_key_command_or_default, notify_command_or_default, percent_or_default, port_or_default,
-    thousandths_or_default, watch_dir_or_default, watch_every_or_default, whole_or_default,
+    AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, EXCLUSIVE_SECONDS_ENV, GITHUB_SHARE_ENV,
+    HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV,
+    MAX_SHARE_OF_CORES_ENV, MAX_SHARE_OF_MEMORY_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV,
+    WATCH_EVERY_ENV, jev_key_command_or_default, notify_command_or_default, percent_or_default,
+    port_or_default, thousandths_or_default, watch_dir_or_default, watch_every_or_default,
+    whole_or_default,
 };
 use launch::Launches;
 
@@ -616,6 +620,13 @@ enum Command {
         /// `default` removes it [default: none]
         #[arg(long, env = MAX_SHARE_OF_MEMORY_ENV, value_name = "PERCENT", value_parser = percent_or_default)]
         max_share_of_memory: Option<To<u64>>,
+        /// The share of the login's hourly GitHub quota the host's shared readings stay under, a
+        /// whole percent (`60%`): the `land` turns waiting on the host share one reading of the
+        /// fleet locks every 30 seconds, and read it again only after the quota resets once the
+        /// login has used this much of it, so that the workers' own `gh` calls keep the rest. A
+        /// host setting; `default` changes it back [default: 60%]
+        #[arg(long, env = GITHUB_SHARE_ENV, value_name = "PERCENT", value_parser = percent_or_default)]
+        github_share: Option<To<u64>>,
         /// Seconds a running exclusive command may hold others up, counting only while
         /// another waits: a host setting; `default` changes it back
         /// [default: {const:EXCLUSIVE_SECONDS}]
@@ -1672,6 +1683,7 @@ pub fn manual() -> agent_help::Help {
         .constant("BACKOFF_MOST_MINUTES", afkconvoy_core::host_runner::BACKOFF_MOST / 60)
         .constant("INSTALLED_LOOKED_SECONDS", host_runner::INSTALLED_LOOKED_EVERY.as_secs())
         .constant("QUEUE_SECONDS", queue::WITHIN.as_secs())
+        .constant("RETAINED_SECONDS", queue::RETAINED_SECONDS)
         .constant("MOVED_WITHIN_SECONDS", host_runner::MOVED_WITHIN.as_secs())
         .constant("MOVE_WAIT_SECONDS", host_runner::MOVE_WAIT_WITHIN.as_secs())
         .constant("PUBLISHED_LOOKED_MINUTES", published::LOOKED_EVERY.as_secs() / 60)
@@ -1965,6 +1977,7 @@ fn start_of(
         admit_inspect_after,
         max_share_of_cores,
         max_share_of_memory,
+        github_share,
         exclusive_seconds,
         jev_key_command,
         notify_command,
@@ -1999,6 +2012,7 @@ fn start_of(
         admit_inspect_after,
         max_share_of_cores,
         max_share_of_memory,
+        github_share,
         exclusive_seconds,
         gate_lanes,
         slow_gate_lanes: slow_gate_lanes.map(|lanes| *lanes),
@@ -2924,6 +2938,9 @@ mod tests {
         let capped = asked(&["--max-share-of-cores", "50%", "--max-share-of-memory", "40"]).1;
         assert_eq!(capped.max_share_of_cores, Some(To::Value(50)));
         assert_eq!(capped.max_share_of_memory, Some(To::Value(40)));
+        let shared = asked(&["--github-share", "60%"]).1;
+        assert_eq!(shared.github_share, Some(To::Value(60)));
+        assert!(Cli::try_parse_from(["afkconvoy", "run", "--github-share", "0"]).is_err());
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--max-share-of-cores", "0"]).is_err());
         // a host setting alone: nothing of the checkout's own start
         assert_eq!(start, asked(&line).0);

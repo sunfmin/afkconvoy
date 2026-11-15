@@ -44,9 +44,11 @@ fn ticket(command: &str, dir: &str, asked: u64, gate: Option<Gate>) -> Ticket {
         repo: Some(format!("{dir}/.git")),
         is_turn: false,
         candidate: false,
+        whole_repo: false,
         gate,
         asked,
         ran: None,
+        retained: None,
         note: Plain::default(),
     }
 }
@@ -308,4 +310,52 @@ fn its_public_api_names_no_fleet_concept() {
             }
         }
     }
+}
+
+/// What holds its whole repo is granted only at a quiet moment of that repo,
+/// and while it runs no other ticket of the repo is granted, in any lane; a
+/// ticket of another repo runs beside it (sunfmin/control#1101).
+#[test]
+fn a_ticket_holding_its_whole_repo_runs_only_while_nothing_else_of_it_does() {
+    let holder = Holder::new(OneEach);
+    let now = OneEach.now();
+    let whole = || {
+        let mut whole = ticket("git gc --auto", "/w/a", now, None);
+        whole.repo_lane = whole.repo.clone();
+        whole.whole_repo = true;
+        whole
+    };
+    // A fast gate of the repo runs: housekeeping is not granted, nor joined.
+    let (gate, _) = holder.join(ticket("./gate.sh fast", "/w/a", now, Some(Gate::Fast)));
+    assert!(matches!(holder.turn(gate), Turn::Runs(_)));
+    assert_eq!(holder.at_once(whole()), None);
+    assert_eq!(holder.observation().unwrap().0.len(), 1, "it was not joined");
+    holder.leave(gate);
+    // A waiting command of the repo is not passed over either.
+    let mut cut = ticket("cargo build", "/w/a", now, None);
+    cut.repo_lane = cut.repo.clone();
+    let (first, _) = holder.join(cut.clone());
+    let (second, _) = holder.join(cut);
+    assert!(matches!(holder.turn(first), Turn::Runs(_)));
+    holder.leave(first);
+    assert_eq!(holder.at_once(whole()), None, "the second still waits");
+    holder.leave(second);
+    // Nothing of the repo runs: it is granted, and holds every lane of it.
+    let housekeeping = holder.at_once(whole()).expect("a quiet moment");
+    let (fast, _) = holder.join(ticket("./gate.sh fast", "/w/a", now, Some(Gate::Fast)));
+    let (other, _) = holder.join(ticket("./gate.sh fast", "/w/b", now, Some(Gate::Fast)));
+    assert!(matches!(holder.turn(other), Turn::Runs(_)), "another repo runs beside it");
+    holder.leave(other);
+    let (granted, turned) = mpsc::channel();
+    let waiting = holder.clone();
+    let thread = std::thread::spawn(move || {
+        let turn = waiting.turn(fast);
+        granted.send(()).unwrap();
+        turn
+    });
+    assert!(turned.recv_timeout(Duration::from_millis(500)).is_err(), "its repo's gate waits");
+    holder.leave(housekeeping);
+    turned.recv_timeout(Duration::from_secs(5)).expect("granted once it left");
+    assert!(matches!(thread.join().unwrap(), Turn::Runs(_)));
+    holder.leave(fast);
 }

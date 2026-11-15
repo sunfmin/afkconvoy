@@ -429,6 +429,10 @@ pub struct Chain<N = Plain> {
 pub struct Barrier {
     pub id: String,
     pub owner: Process,
+    /// When its turn took the place, in seconds: how long it has waited
+    /// (sunfmin/control#1117). A place an older afkconvoy took says none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
 }
 
 impl<N> Default for Chain<N> {
@@ -471,7 +475,9 @@ impl<N: Clone> Chain<N> {
     pub fn owners(&self) -> Vec<&str> {
         let mut hosts: Vec<&str> = vec![];
         for c in &self.candidates {
-            if !c.stopped && !c.abandoned {
+            // A valid candidate of a batch round holds no gate process while
+            // it waits, but its turn does: its host owns it all the same.
+            if (!c.stopped || (c.batch && c.valid())) && !c.abandoned {
                 hosts.push(&c.owner.host);
             }
         }
@@ -794,7 +800,21 @@ impl<N: Clone> Chain<N> {
     /// The candidate whose running slow gate `id` waits on: the tip of the
     /// round now slow-gating, where `id` is valid and at or before it. A
     /// candidate behind it, or one with no round running, waits for the next.
+    /// A candidate of a batch round waits on its round's gate: the candidate
+    /// it runs at now, or else the one its round's next step is at
+    /// (`batch_step`), wherever on the chain it is.
     pub fn round_of(&self, id: &str) -> Option<&Candidate<N>> {
+        if self.candidates.iter().any(|c| c.id == id && c.batch && c.valid()) {
+            let gating = self
+                .candidates
+                .iter()
+                .find(|c| c.valid() && c.batch && c.phase == Phase::Validating);
+            let step = || {
+                let step = self.batch_step()?;
+                self.candidates.iter().find(|c| c.id == step.id())
+            };
+            return gating.or_else(step);
+        }
         let mut member = false;
         for c in self.candidates.iter().filter(|c| c.valid()) {
             member = member || c.id == id;
@@ -854,8 +874,9 @@ impl<N: Clone> Chain<N> {
     /// What a batch round does next (docs/adr/0068), over the valid
     /// candidates of the chain, every one assigned for it; `None` while a
     /// gate at one of them runs, where the chain holds none, or where it
-    /// holds one that is not the batch round's. With no red known, its tip
-    /// is gated, and once green it lands every candidate up to it. With a
+    /// holds one that is not the batch round's. With no red known, the last
+    /// candidate whose tree passed the whole gate lands, with every one
+    /// before it; where none has, its tip is gated. With a
     /// red known, the chain is bisected between the last candidate known
     /// green before it and the first known red: the middle one is gated,
     /// until the two are next to each other, and the red one is the first
@@ -883,8 +904,13 @@ impl<N: Clone> Chain<N> {
             }
         }
         if !red {
-            let id = tip.id.clone();
-            return Some(if tip.whole() { BatchStep::Land(id) } else { BatchStep::Gate(id) });
+            // A green candidate lands, with every one before it, before the
+            // candidates merged onto it since its gate began are gated: a
+            // round that turns join while it gates holds no green prefix back.
+            return Some(match valid.iter().rev().find(|c| c.whole()) {
+                Some(green) => BatchStep::Land(green.id.clone()),
+                None => BatchStep::Gate(tip.id.clone()),
+            });
         }
         let (first_red, before) = open.split_last()?;
         if before.is_empty() {
@@ -1248,7 +1274,11 @@ mod tests {
     }
 
     fn reserved(id: &str, host: &str) -> Barrier {
-        Barrier { id: id.into(), owner: Process { host: host.into(), pid: 9, started: "s".into() } }
+        Barrier {
+            id: id.into(),
+            owner: Process { host: host.into(), pid: 9, started: "s".into() },
+            since: None,
+        }
     }
 
     /// The Offices-MBP chain of 2026-11-01: a dead host's round tip slow-gating,
@@ -1357,7 +1387,7 @@ mod tests {
         let far = Candidate { predecessor: "base".into(), ..owned(candidate(3), "far") };
         let mut chain = Chain {
             candidates: vec![green, gating, behind, far],
-            pending: vec![Barrier { id: "p".into(), owner: gone.clone() }],
+            pending: vec![Barrier { id: "p".into(), owner: gone.clone(), since: None }],
             ..Chain::default()
         };
         assert_eq!(chain.processes("here"), [gone.clone(), behind_owner]);
@@ -1545,13 +1575,44 @@ mod tests {
         assert!(chain.candidates.iter().all(|c| c.valid()), "drops only a batch round's");
     }
 
+    /// Turns that join a batch round while its tip gates are merged onto
+    /// it: once that tip is green it lands, with every one before it, and
+    /// then the new tip is gated (sunfmin/control#1120).
+    #[test]
+    fn a_green_batch_candidate_lands_before_the_ones_merged_onto_it_are_gated() {
+        let mut chain = Chain { candidates: (0..2).map(batched).collect(), ..Chain::default() };
+        assert!(chain.start_batched("c1"));
+        chain.candidates.extend((2..4).map(batched));
+        assert_eq!(chain.round_of("c3").map(|c| c.id.as_str()), Some("c1"), "the gate it waits on");
+        chain.finish("c1", ran(true));
+        stop(&mut chain, "c1");
+        assert_eq!(chain.batch_step(), Some(BatchStep::Land("c1".into())));
+        assert!(chain.ripe("c1", "base"));
+        assert_eq!(chain.round_of("c3").map(|c| c.id.as_str()), Some("c1"), "its next step");
+        chain.land("c1");
+        assert_eq!(chain.batch_step(), Some(BatchStep::Gate("c3".into())));
+        assert_eq!(chain.round_of("c2").map(|c| c.id.as_str()), Some("c3"));
+    }
+
+    /// A candidate of a batch round waits with no gate process, but its
+    /// turn holds it: its host is an owner, read dead by the lease.
+    #[test]
+    fn a_waiting_batch_candidates_host_owns_it() {
+        let mut chain = Chain { candidates: vec![batched(0)], ..Chain::default() };
+        chain.candidates[0].owner.host = "there".into();
+        assert_eq!(chain.owners(), ["there"]);
+        chain.abandon("there");
+        assert_eq!(chain.candidates[0].cause.as_deref(), Some("owner_died"));
+        assert!(chain.owners().is_empty());
+    }
+
     #[test]
     fn a_round_waits_for_every_turn_that_asked_to_land() {
         let mut chain = Chain { candidates: (0..2).map(split).collect(), ..Chain::default() };
         chain.finish("c0", ran(true));
         chain.finish("c1", ran(true));
         let owner = chain.candidates[0].owner.clone();
-        chain.pending.push(Barrier { id: "waiting".into(), owner });
+        chain.pending.push(Barrier { id: "waiting".into(), owner, since: None });
         assert!(chain.round_tip().is_none(), "a PR still waiting for a lane is in the round");
         assert!(chain.can_assign(false), "the window is not bounded by the lanes");
         chain.pending.clear();
@@ -1645,7 +1706,11 @@ mod tests {
     #[test]
     fn a_pending_serial_barrier_drains_the_window_without_reserving_capacity() {
         let mut chain = Chain { candidates: vec![candidate(0)], ..Chain::default() };
-        chain.barriers.push(Barrier { id: "cut".into(), owner: chain.candidates[0].owner.clone() });
+        chain.barriers.push(Barrier {
+            id: "cut".into(),
+            owner: chain.candidates[0].owner.clone(),
+            since: None,
+        });
         assert!(!chain.can_assign(false));
         assert!(!chain.can_assign(true));
         chain.candidates[0].phase = Phase::Landed;
@@ -1659,7 +1724,7 @@ mod tests {
         let mut chain =
             Chain { candidates: (0..ROUND_FULL + 1).map(split).collect(), ..Chain::default() };
         let owner = chain.candidates[0].owner.clone();
-        chain.pending.push(Barrier { id: "waiting".into(), owner });
+        chain.pending.push(Barrier { id: "waiting".into(), owner, since: None });
         for n in 0..ROUND_FULL - 1 {
             chain.finish(&format!("c{n}"), ran(true));
         }
@@ -1681,13 +1746,13 @@ mod tests {
     fn a_fast_green_barrier_starts_its_round_beside_turns_it_holds_back() {
         let mut chain = Chain { candidates: vec![split(0)], ..Chain::default() };
         let owner = chain.candidates[0].owner.clone();
-        chain.pending.push(Barrier { id: "waiting".into(), owner: owner.clone() });
+        chain.pending.push(Barrier { id: "waiting".into(), owner: owner.clone(), since: None });
         chain.finish("c0", ran(true));
         assert!(chain.round_tip().is_none(), "a pending turn may still join");
         chain.candidates[0].barrier = true;
         assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c0"));
         chain.candidates[0].barrier = false;
-        chain.barriers.push(Barrier { id: "cut".into(), owner });
+        chain.barriers.push(Barrier { id: "cut".into(), owner, since: None });
         assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c0"), "a cut waits");
     }
 
@@ -1717,7 +1782,7 @@ mod tests {
     fn explore(made: fn(usize) -> Candidate) -> usize {
         let candidates: Vec<Candidate> = (0..3).map(made).collect();
         let owner = candidates[0].owner.clone();
-        let waiting = vec![Barrier { id: "pending".into(), owner }];
+        let waiting = vec![Barrier { id: "pending".into(), owner, since: None }];
         let initial =
             (Chain { candidates, pending: waiting, ..Chain::default() }, "base".to_string());
         let mut pending = VecDeque::from([initial]);

@@ -294,9 +294,14 @@ impl Host {
     ) -> Host {
         let settings = host_settings::of_host().unwrap_or_default();
         let (exclusive, watch) = match shared {
-            Ok(Some(shared)) => {
-                (Ok(Some((shared.exclusive, shared.exclusive_paused))), shared.watch)
-            }
+            Ok(Some(shared)) => (
+                Ok(Some((
+                    shared.exclusive,
+                    shared.exclusive_paused,
+                    shared.disk.and_then(|seen| seen.low()),
+                ))),
+                shared.watch,
+            ),
             Ok(None) => (Ok(None), None),
             Err(error) => (Err(error), None),
         };
@@ -928,6 +933,10 @@ fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
         State::Running => {
             format!("{kind} · running, for {}", lasted(request.elapsed_seconds.unwrap_or(0)))
         }
+        State::Retained => format!(
+            "{kind} · retained, its cleanup unconfirmed: {}",
+            ticket.retained.as_ref().map_or("", |retained| retained.error.as_str())
+        ),
         State::Eligible => format!(
             "{kind} · eligible now, waiting for grant, for {}",
             lasted(request.waiting_seconds)
@@ -951,10 +960,10 @@ fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
                             format!(
                                 "request {} ({})",
                                 holder.number,
-                                if holder.state == State::Running {
-                                    "running"
-                                } else {
-                                    "earlier reservation"
+                                match holder.state {
+                                    State::Running => "running",
+                                    State::Retained => "retained",
+                                    _ => "earlier reservation",
                                 }
                             )
                         })
@@ -1218,11 +1227,19 @@ fn exclusive(out: &mut String, host: &Host) {
     );
     match said {
         None => out.push_str("<p>No host runner holds the queue.</p>"),
-        Some((_, None)) => {
+        Some((_, None, _)) => {
             out.push_str("<p>The host runner does not say whether it paused new grants.</p>")
         }
-        Some((_, Some(true))) => out.push_str("<p>The host runner has paused new grants.</p>"),
-        Some((_, Some(false))) => {}
+        Some((_, Some(true), _)) => out.push_str("<p>The host runner has paused new grants.</p>"),
+        Some((_, Some(false), _)) => {}
+    }
+    if let Some(low) = observation.disk {
+        let _ = write!(
+            out,
+            "<p>The disk has {} free, under its floor of {}: no new command is granted until space returns.</p>",
+            crate::measure::said(low.free),
+            crate::measure::said(low.floor)
+        );
     }
     // The worker lane, as `lane` names a ticket of no repo lane, and the
     // fast lane, each shown where a request is in it.
@@ -1536,8 +1553,16 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
                 esc(text("cause")),
                 esc(text("cancelled_by"))
             );
-            if let Some(tip) = candidate["round"].as_str() {
-                let _ = write!(out, " · in the round slow-gating at <code>{}</code>", esc(tip));
+            match candidate["round"].as_str() {
+                Some(tip) if candidate["batch"] == true => {
+                    let _ =
+                        write!(out, " · batched in the round gating at <code>{}</code>", esc(tip));
+                }
+                Some(tip) => {
+                    let _ = write!(out, " · in the round slow-gating at <code>{}</code>", esc(tip));
+                }
+                None if candidate["batch"] == true => out.push_str(" · batched"),
+                None => {}
             }
             out.push_str("</li>");
         }
@@ -1802,6 +1827,7 @@ mod tests {
             load: Some(150),
             memory_free: Some(40),
             disk: Some(Disk { free: 5 << 30, size: 100 << 30 }),
+            reserve: None,
         };
         Host {
             name: "h1".into(),
@@ -1821,7 +1847,7 @@ mod tests {
                 memory: None,
                 landing: None,
             }),
-            exclusive: Ok(Some((vec![], Some(false)))),
+            exclusive: Ok(Some((vec![], Some(false), None))),
             lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
             kit: Ok(Kit::default()),
             worker_health: Ok(crate::health::Health::default()),
@@ -1920,6 +1946,21 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_candidate_says_it_is_batched_and_the_round_it_waits_on() {
+        let mut acme = part_of("acme", 1000);
+        acme.candidates = vec![serde_json::json!({"pr": 7, "target_branch": "main", "id": "c1",
+            "predecessor": "m0", "waiting": "waiting_for_batch_gate", "cause": null,
+            "cancelled_by": null, "round": "c3", "batch": true})];
+        let html = render(&page_of(host_of(1000), vec![acme]));
+        assert!(
+            html.contains(
+                "waiting_for_batch_gate ·   · batched in the round gating at <code>c3</code></li>"
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
     fn nothing_waiting_for_a_human_is_said_so_and_no_checkout_on_the_list_too() {
         let html = render(&page_of(host_of(1000), vec![part_of("acme", 1000)]));
         assert!(html.contains("<p class=\"none\">Nothing waits for a human.</p>"), "{html}");
@@ -1945,10 +1986,12 @@ mod tests {
                 repo: repo_lane.map(String::from),
                 is_turn: false,
                 candidate: false,
+                whole_repo: false,
                 note: afkconvoy_core::exclusive::Note { issue: None, validation: None },
                 gate: None,
                 asked: 900 + number,
                 ran,
+                retained: None,
             }
         };
         let said = Some((
@@ -1957,6 +2000,7 @@ mod tests {
                 ticket(2, None, None),
                 ticket(3, Some("/a/.git"), Some(960)),
             ],
+            None,
             None,
         ));
         let mut host = host_of(1000);
