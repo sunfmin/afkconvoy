@@ -109,13 +109,16 @@ impl Target {
 /// those whose worker ended first, then the idle, each the longest unwritten
 /// first. One that builds is never among them.
 pub fn to_reclaim(targets: &[Target], now: u64, idle_after: u64) -> Vec<(usize, Why)> {
-    let mut chosen: Vec<(usize, Why)> = targets
+    let mut chosen: Vec<(usize, Why, u64)> = targets
         .iter()
         .enumerate()
-        .filter_map(|(at, target)| target.reclaimable(now, idle_after).map(|why| (at, why)))
+        .filter_map(|(at, target)| {
+            let why = target.reclaimable(now, idle_after)?;
+            Some((at, why, target.written.unwrap_or(0)))
+        })
         .collect();
-    chosen.sort_by_key(|(at, why)| (*why != Why::Ended, targets[*at].written.unwrap_or(0)));
-    chosen
+    chosen.sort_by_key(|(_, why, written)| (*why != Why::Ended, *written));
+    chosen.into_iter().map(|(at, why, _)| (at, why)).collect()
 }
 
 /// How fast the disk's free space fell, in bytes a minute, by `samples` —
