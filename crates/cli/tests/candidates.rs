@@ -1876,3 +1876,63 @@ fn a_pending_turn_past_its_bound_ends_and_frees_its_place() {
     release(&world, "a", false);
     assert_eq!(finish(first)["outcome"], "merged");
 }
+
+/// A PR ready while a round's whole gate runs stacks on its root
+/// (sunfmin/control#1140): its merge onto the round's root-onto-tip commit
+/// is gated at once, beside the running gate, which is neither killed nor
+/// restarted. The round lands green: the PR's own round starts from that
+/// commit as the tip, its root has the stacked merge's tree, and that run on
+/// record answers for its gate. The round ends red: the stacked merge is
+/// discarded, its turn answers nothing of it, and it lands in a round of
+/// its own.
+#[test]
+fn a_pr_ready_while_a_round_s_whole_gate_runs_stacks_on_its_root() {
+    for red in [false, true] {
+        let world = world(3);
+        let (e, _) = worker(&world, 5, "e");
+        let (a, _) = worker(&world, 1, "a");
+        let _runner = world.host_held();
+        let held = start(&world, &e, &world.cache(), 5);
+        began(&world, "e");
+        let holder = candidate_of(&world, 5);
+        let stacking = start(&world, &a, &world.cache(), 1);
+        began(&world, "a");
+        let state = chain(&world);
+        assert_eq!(state["stacked"]["on"]["commit"], holder["commit"], "{state}");
+        let merge = state["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["pair"]["stacked"] == true)
+            .cloned()
+            .unwrap_or_else(|| panic!("no stacked merge: {state}"));
+        assert_eq!(merge["predecessor"], holder["commit"]);
+        let gate_e = std::fs::read_to_string(world.root.join("gate-e")).unwrap();
+        release(&world, "a", false);
+        until(|| {
+            let state = chain(&world);
+            let rows = state["candidates"].as_array().cloned().unwrap_or_default();
+            rows.iter().any(|c| c["id"] == merge["id"] && c["phase"] == "green")
+        });
+        let running = candidate_of(&world, 5);
+        assert_eq!(running["phase"], "validating", "the round's gate runs on: {running}");
+        assert_eq!(std::fs::read_to_string(world.root.join("gate-e")).unwrap(), gate_e);
+        release(&world, "e", red);
+        let first = finish(held);
+        let second = finish(stacking);
+        assert_eq!(second["outcome"], "merged", "{second}");
+        let landed = candidate_of(&world, 1);
+        if red {
+            assert_eq!(first["outcome"], "gate_red", "{first}");
+            let base = holder["predecessor"].clone();
+            assert_eq!(landed["predecessor"], base, "it paired anew on the tip: {landed}");
+        } else {
+            assert_eq!(first["outcome"], "merged", "{first}");
+            assert_eq!(landed["predecessor"], holder["commit"], "{landed}");
+            assert_eq!(landed["tree"], merge["tree"], "its root has the stacked merge's tree");
+            assert!(!landed["result"]["reused"].is_null(), "no second run: {landed}");
+        }
+        let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+        assert!(files.lines().any(|f| f == "a.txt"), "{files}");
+    }
+}
