@@ -271,6 +271,7 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
         "cancelled_by": c.cancelled_by,
         "round": chain.round_of(&c.id).map(|tip| &tip.id),
         "assigned": c.assigned,
+        "host": c.owner.host,
     });
     // A candidate of a batch round says so: its round is its batch round's gate.
     if c.batch {

@@ -498,7 +498,7 @@ The ordered candidates of one repo and target branch, each depending on its pred
 _Avoid_: landing train, speculative queue
 
 **Landing heartbeat**:
-A landing within the last 45 minutes, while green work waits: a valid candidate fast-green or gating, or `land` turns asked since the last landing. A fleet whose green work waited past that with none is stalled, `doctor`'s critical `landing_stalled`, which names the waiting PRs and tallies the last 20 `land` turns by outcome; the host's watch takes it as a stall to resolve, not fleet work to wait out.
+A landing of the repo within the last 45 minutes, while this fleet's green work waits: a valid candidate of this host fast-green or gating, or `land` turns asked since the last landing while its own claims have an open PR. The repo's landing is this host's last `merged` or the base branch's move, a peer's landing on the same remote included; an idle fleet, or one whose issues a peer holds or blockers hold back, waits for nothing (sunfmin/control#1143). A fleet whose green work waited past that with none is stalled, `doctor`'s critical `landing_stalled`, which names the waiting PRs and tallies the last 20 `land` turns by outcome; the host's watch takes it as a stall to resolve, not fleet work to wait out.
 _Avoid_: landing timeout, train health
 
 **Round**:
