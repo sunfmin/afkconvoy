@@ -78,7 +78,7 @@ Legacy recovery is resumable through issue-linked Orca workspaces. Conflicts and
 
 ## Rounds (sunfmin/control#240)
 
-Amended by ADR-0048. Where a candidate's commit declares a fast gate and a slow gate (ADR-0047), the candidate is validated by the fast gate, and its green does not land it. A **round** runs the slow gate once, on the commit of the chain's tip, when every candidate of the chain is fast-green, and its green lands every candidate up to the tip in the one atomic publication described above, which now verifies each of their source heads. That is an aggregate gate, which this ADR had none of: it is the one gate of more than one candidate. A candidate whose commit declares no gates keeps every rule above.
+Amended by ADR-0048, and replaced within a round by ADR-0083: a round's PRs are no longer a candidate chain whose red candidate cancels its suffix, but a pairing tree whose pairs are fast-gated alone; its root is merged onto the target tip and gated whole once. A barrier's candidate still lands alone by the rules here. Where a candidate's commit declares a fast gate and a slow gate (ADR-0047), the candidate is validated by the fast gate, and its green does not land it. A **round** runs the slow gate once, on the commit of the chain's tip, when every candidate of the chain is fast-green, and its green lands every candidate up to the tip in the one atomic publication described above, which now verifies each of their source heads. That is an aggregate gate, which this ADR had none of: it is the one gate of more than one candidate. A candidate whose commit declares no gates keeps every rule above.
 
 ## Fast gates (sunfmin/control#237)
 

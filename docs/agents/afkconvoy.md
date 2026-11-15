@@ -36,8 +36,9 @@ budget only with a deliberate baseline review; never raise it per run.
 The gate is two gates, run one after the other by `./gate.sh` (ADR-0047):
 the fast gate, which a worker passes before it opens or updates its PR, and
 the slow gate, which runs the tests `.config/slow-tests` marks slow. A landing
-turn runs the fast gate on each candidate and the slow gate once per round, at
-the candidate chain's tip (ADR-0048). Older versions skip this block, and land
+turn runs the fast gate on each pair of a round's pairing tree, and the whole
+gate, fast and slow, once per round, at its root merged onto the tip
+(ADR-0083). Older versions skip this block, and land
 on `gate_command`, both; this repo's fleet is upgraded by hand before it
 lands with rounds.
 

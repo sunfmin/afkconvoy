@@ -48,7 +48,7 @@ impl Drop for Fleet {
             let kept = std::fs::read_to_string(self.root.join(format!("{kind}-{name}")));
             kept.ok().map(|pid| pid.trim().to_string()).filter(|pid| !pid.is_empty())
         };
-        for name in ["a", "b", "c", "d"] {
+        for name in ["a", "b", "c", "d", "e"] {
             let (Some(gate), Some(group)) = (read("gate", name), read("group", name)) else {
                 continue;
             };
@@ -74,8 +74,8 @@ fn world(lanes: u64) -> Fleet {
 set -e
 root={root}
 name=
-for n in a b c d; do if test -f "$n.txt"; then name=$n; fi; done
-case "${{AFKCONVOY_ISSUE:-}}" in 1) name=a;; 2) name=b;; 3) name=c;; 4) name=d;; esac
+for n in a b c d e; do if test -f "$n.txt"; then name=$n; fi; done
+case "${{AFKCONVOY_ISSUE:-}}" in 1) name=a;; 2) name=b;; 3) name=c;; 4) name=d;; 5) name=e;; esac
 test -n "$name" || exit 0
 echo $$ > "$root/gate-$name"
 /bin/ps -o pgid= -p $$ | tr -d ' ' > "$root/group-$name"
@@ -172,16 +172,6 @@ fn chain(world: &World) -> Value {
     .unwrap()
 }
 
-fn green(world: &World, issue: u64) {
-    until(|| {
-        chain(world)["candidates"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["issue"] == issue && c["phase"] == "green")
-    });
-}
-
 fn gone(world: &World, name: &str) {
     for kind in ["gate", "child"] {
         let pid = std::fs::read_to_string(world.root.join(format!("{kind}-{name}"))).unwrap();
@@ -207,6 +197,80 @@ impl Held {
 impl Drop for Held {
     fn drop(&mut self) {
         let _ = Command::new("kill").args(["-CONT", &self.0]).status();
+    }
+}
+
+/// Starts the turns of `turns`, each a worker's checkout and its issue, into
+/// one round (docs/adr/0083): a turn of issue 5's worker, `e`, takes a round
+/// of its own first and holds it in its gate; the others ask during it and
+/// wait pending, in the order given; `release_holder` lets its gate go, it
+/// lands, and the next round takes them all.
+fn one_round(
+    world: &World,
+    holder: &Path,
+    turns: &[(&Path, u64)],
+    began_holder: impl Fn(),
+    release_holder: impl Fn(),
+) -> Vec<Child> {
+    let held = start(world, holder, &world.cache(), 5);
+    began_holder();
+    // One at a time, each pending before the next asks: the order they ask
+    // in is the round's.
+    let mut children: Vec<Child> = vec![];
+    for (dir, n) in turns {
+        children.push(start(world, dir, &world.cache(), *n));
+        let asked = children.len();
+        until(|| chain(world)["pending"].as_array().is_some_and(|p| p.len() == asked));
+    }
+    release_holder();
+    let landed = finish(held);
+    assert_eq!(landed["outcome"], "merged", "the holder's round: {landed}");
+    children
+}
+
+/// The pairs of the open round's pairing tree, each as its level and the
+/// PR whose turn gates it.
+fn pairs(world: &World) -> Vec<(u64, u64)> {
+    let state = chain(world);
+    let rows = state["candidates"].as_array().cloned().unwrap_or_default();
+    rows.iter()
+        .filter(|c| !c["pair"].is_null())
+        .map(|c| (c["pair"]["level"].as_u64().unwrap(), c["pr"].as_u64().unwrap()))
+        .collect()
+}
+
+/// The candidates of the chain, without the pairs beside it.
+fn chained(world: &World) -> Vec<Value> {
+    let state = chain(world);
+    let rows = state["candidates"].as_array().cloned().unwrap_or_default();
+    rows.into_iter().filter(|c| c["pair"].is_null()).collect()
+}
+
+/// Moves the head of the worker's branch in `dir` on by one commit, pushed.
+fn move_head(dir: &Path) {
+    commit(dir, "changed.txt", "new head");
+    git(dir, &["push", "-q", "origin", "HEAD"]);
+}
+
+/// The pids of the gate of `name` and of what it started, as it wrote them.
+fn gate_pids(world: &World, name: &str) -> Vec<String> {
+    ["gate", "child"]
+        .into_iter()
+        .map(|kind| {
+            let kept = std::fs::read_to_string(world.root.join(format!("{kind}-{name}"))).unwrap();
+            kept.trim().to_string()
+        })
+        .collect()
+}
+
+/// Every pid of `pids` has ended.
+fn ended_all(pids: &[String]) {
+    for pid in pids {
+        until(|| {
+            let ps = Command::new("ps").args(["-p", pid, "-o", "stat="]).output().unwrap();
+            let status = String::from_utf8_lossy(&ps.stdout);
+            status.trim().is_empty() || status.trim().starts_with('Z')
+        });
     }
 }
 
@@ -451,149 +515,120 @@ fn a_pr_retargeted_during_validation_is_invalidated_without_publishing() {
     assert_eq!(world.gh()["issues"][0]["state"], "open");
 }
 
+/// Four ready, mutually clean PRs (docs/adr/0083): the turn builds two
+/// pairs and fast-gates both at once, then their pair, then gates the root
+/// merged onto the tip whole once, and lands all four in one fast-forward;
+/// each issue closes.
 #[test]
-fn three_candidates_overlap_finish_out_of_order_and_publish_exact_commits_once() {
-    let world = world(3);
-    let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]
+fn four_ready_prs_pair_twice_gate_their_pair_and_land_in_one_fast_forward() {
+    let world = split_world(3);
+    let (e, _) = worker(&world, 5, "e");
+    let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
         .into_iter()
         .map(|(n, name)| worker(&world, n, name))
         .collect();
-    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let _runner = world.host_held();
-    let mut a = start(&world, &workers[0].0, &world.cache(), 1);
-    until(|| world.root.join("start-a").exists() || a.try_wait().unwrap().is_some());
-    if a.try_wait().unwrap().is_some() {
-        panic!("first turn exited: {}", finish(a));
+    let turns: Vec<(&Path, u64)> =
+        workers.iter().zip(1..).map(|((dir, _), n)| (dir.as_path(), n)).collect();
+    let children = one_round(
+        &world,
+        &e,
+        &turns,
+        || until(|| started(&world, "fast", "e")),
+        || {
+            let_go(&world, "fast", "e", false);
+            let_go(&world, "slow", "e", false);
+        },
+    );
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    // The two pairs gate at once, each by its later-asked PR's turn.
+    until(|| started(&world, "fast", "b") && started(&world, "fast", "d"));
+    assert!(!started(&world, "fast", "a") && !started(&world, "fast", "c"));
+    assert_eq!(pairs(&world), [(0, 20), (0, 40)]);
+    let_go(&world, "fast", "b", false);
+    let_go(&world, "fast", "d", false);
+    // Their pair, then the root's whole gate, at the last-asked PR's turn.
+    until(|| started(&world, "slow", "d"));
+    assert_eq!(pairs(&world), [(0, 20), (0, 40), (1, 40)]);
+    for name in ["a", "b", "c"] {
+        assert!(!started(&world, "slow", name), "the root is gated whole once");
     }
-    let b = start(&world, &workers[1].0, &world.cache(), 2);
-    began(&world, "b");
-    let c = start(&world, &workers[2].0, &world.cache(), 3);
-    began(&world, "c");
-    release(&world, "c", false);
-    green(&world, 3);
-    release(&world, "b", false);
-    green(&world, 2);
-    until(|| {
-        world.afk(&["queue"]).ok()["running"].as_array().is_some_and(|rows| {
-            rows.iter()
-                .any(|r| r["issue"] == 2 && r["validation"]["waiting"] == "waiting_for_predecessor")
-        })
-    });
-    let queue = world.afk(&["queue"]).ok();
-    let waiting = queue["running"].as_array().unwrap().iter().find(|r| r["issue"] == 2).unwrap();
-    assert_eq!(waiting["validation"]["predecessor"], chain(&world)["candidates"][0]["commit"]);
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
-    let before = chain(&world);
-    release(&world, "a", false);
-    let answers = [finish(a), finish(b), finish(c)];
-    for (i, answer) in answers.iter().enumerate() {
+    let rows = chained(&world);
+    assert_eq!(rows.len(), 4, "one candidate of the root per PR: {rows:?}");
+    assert_eq!(rows[0]["predecessor"], base);
+    for i in 1..4 {
+        assert_eq!(rows[i]["predecessor"], rows[i - 1]["commit"]);
+    }
+    let_go(&world, "slow", "d", false);
+    let answers: Vec<Value> = children.into_iter().map(finish).collect();
+    for answer in &answers {
         assert_eq!(answer["outcome"], "merged", "{answer}");
-        assert_eq!(answer["commit"], before["candidates"][i]["commit"]);
-        assert_eq!(git(&workers[i].0, &["rev-parse", "HEAD"]), workers[i].1);
-        assert_eq!(
-            world.remote(&["rev-parse", &format!("refs/heads/issue-{}", i + 1)]),
-            workers[i].1
-        );
-        if i > 0 {
-            assert_eq!(answer["merged"], answers[i - 1]["commit"]);
-        }
     }
+    assert_eq!(answers[3]["landed"], json!([10, 20, 30, 40]), "{}", answers[3]);
     assert_eq!(
         world.remote(&["rev-parse", "refs/heads/main"]),
-        answers[2]["commit"].as_str().unwrap()
+        rows[3]["commit"].as_str().unwrap()
     );
-    assert_eq!(
-        chain(&world)["candidates"].as_array().unwrap().len(),
-        3,
-        "no duplicate aggregate gate"
-    );
-    let landed = world.afk(&["doctor"]).json["candidates"][2].clone();
-    assert_eq!(landed["waiting"], "landed");
-    assert_eq!(landed["phase"], "landed");
-    assert!(landed.get("excerpt").is_none(), "{landed}");
-    assert!(landed.get("result").is_none(), "{landed}");
-    for key in ["phase", "commit", "issue", "pr", "predecessor", "waiting", "target_branch"] {
-        assert!(landed.get(key).is_some(), "{key} missing from {landed}");
+    let history =
+        world.remote(&["rev-list", "--first-parent", &format!("{base}..refs/heads/main")]);
+    assert_eq!(history.lines().count(), 4, "one fast-forward through a merge of each");
+    for n in 1..=4 {
+        assert_eq!(world.state(n), "closed");
+        assert_eq!(
+            git(&workers[n as usize - 1].0, &["rev-parse", "HEAD"]),
+            workers[n as usize - 1].1
+        );
     }
 }
 
+/// A pair whose fast gate is red stops no other pair (docs/adr/0083): its
+/// later-asked PR's turn is given the red run, its earlier one goes up
+/// unpaired, and the rest of the round lands.
 #[test]
-fn first_failure_invalidates_running_suffix_kills_children_and_rebuilds_from_original_heads() {
-    let world = world(3);
-    let (a, _) = worker(&world, 1, "a");
-    let (b, bh) = worker(&world, 2, "b");
-    let (c, ch) = worker(&world, 3, "c");
-    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+fn a_red_pair_stops_no_other_its_later_pr_gets_the_run_and_the_rest_lands() {
+    let world = split_world(3);
+    let (e, _) = worker(&world, 5, "e");
+    let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
+        .into_iter()
+        .map(|(n, name)| worker(&world, n, name))
+        .collect();
     let _runner = world.host_held();
-    let aa = start(&world, &a, &world.cache(), 1);
-    began(&world, "a");
-    let bb = start(&world, &b, &world.cache(), 2);
-    began(&world, "b");
-    let cc = start(&world, &c, &world.cache(), 3);
-    began(&world, "c");
-    release(&world, "a", true);
-    let answers = [finish(aa), finish(bb), finish(cc)];
-    eprintln!(
-        "CANDIDATE_DISCARDED_WORK={}",
-        json!({"cancelled_gate_seconds": answers[1..].iter().map(|a| a["seconds"].as_u64().unwrap_or(0)).sum::<u64>(), "gates": &answers[1..]})
+    let turns: Vec<(&Path, u64)> =
+        workers.iter().zip(1..).map(|((dir, _), n)| (dir.as_path(), n)).collect();
+    let mut children = one_round(
+        &world,
+        &e,
+        &turns,
+        || until(|| started(&world, "fast", "e")),
+        || {
+            let_go(&world, "fast", "e", false);
+            let_go(&world, "slow", "e", false);
+        },
     );
-    assert_eq!(answers[0]["outcome"], "gate_red", "{:?}", answers);
-    for answer in &answers[1..] {
-        assert_eq!(answer["outcome"], "cancelled", "{answer}");
-        assert_eq!(answer["cause"], "predecessor_failed");
-        assert_eq!(answer["cancelled_by"], answers[0]["candidate"]);
+    until(|| started(&world, "fast", "b") && started(&world, "fast", "d"));
+    let_go(&world, "fast", "b", true);
+    let b = children.remove(1);
+    let red = finish(b);
+    assert_eq!(red["outcome"], "gate_red", "{red}");
+    assert_eq!(red["gate"], "fast");
+    assert_eq!(red["pair"]["with"], json!([10]), "{red}");
+    assert!(red["detail"].as_str().unwrap().contains("#10"), "{red}");
+    let_go(&world, "fast", "d", false);
+    until(|| started(&world, "slow", "d"));
+    let_go(&world, "slow", "d", false);
+    for answer in children.into_iter().map(finish) {
+        assert_eq!(answer["outcome"], "merged", "{answer}");
     }
-    for name in ["a", "b", "c"] {
-        gone(&world, name);
-    }
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
-    assert_eq!(git(&b, &["rev-parse", "HEAD"]), bh);
-    assert_eq!(git(&c, &["rev-parse", "HEAD"]), ch);
-    release(&world, "b", false);
-    let rebuilt = finish(start(&world, &b, &world.cache(), 2));
-    assert_eq!(rebuilt["outcome"], "merged", "{rebuilt}");
-    assert_eq!(rebuilt["merged"], base);
-    assert!(
-        !world.remote(&["ls-tree", "--name-only", "refs/heads/main"]).lines().any(|f| f == "a.txt")
-    );
-    assert_eq!(world.remote(&["show", "refs/heads/main:b.txt"]), "b");
-}
-
-#[test]
-fn middle_failure_preserves_landed_prefix_and_a_green_descendant_is_ineligible() {
-    let world = world(3);
-    let (a, _) = worker(&world, 1, "a");
-    let (b, _) = worker(&world, 2, "b");
-    let (c, _) = worker(&world, 3, "c");
-    let _runner = world.host_held();
-    let aa = start(&world, &a, &world.cache(), 1);
-    began(&world, "a");
-    let bb = start(&world, &b, &world.cache(), 2);
-    began(&world, "b");
-    let cc = start(&world, &c, &world.cache(), 3);
-    began(&world, "c");
-    release(&world, "c", false);
-    green(&world, 3);
-    release(&world, "a", false);
-    let landed = finish(aa);
-    assert_eq!(landed["outcome"], "merged");
-    release(&world, "b", true);
-    let failed = finish(bb);
-    let cancelled = finish(cc);
-    assert_eq!(failed["outcome"], "gate_red", "{failed}");
-    assert_eq!(cancelled["outcome"], "cancelled", "{cancelled}");
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), landed["commit"].as_str().unwrap());
-    release(&world, "c", false);
-    let rebuilt = finish(start(&world, &c, &world.cache(), 3));
-    assert_eq!(rebuilt["outcome"], "merged", "{rebuilt}");
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
-    assert!(files.lines().any(|f| f == "a.txt"));
-    assert!(files.lines().any(|f| f == "c.txt"));
-    assert!(!files.lines().any(|f| f == "b.txt"));
+    for (name, landed) in [("a", true), ("b", false), ("c", true), ("d", true)] {
+        assert_eq!(files.lines().any(|f| f == format!("{name}.txt")), landed, "{files}");
+    }
+    assert_eq!(world.state(2), "open");
+    assert_eq!(git(&workers[1].0, &["rev-parse", "HEAD"]), workers[1].1, "its branch stays");
 }
 
 #[test]
-fn a_gate_timeout_invalidates_and_terminates_its_running_successor() {
+fn a_gate_past_its_limit_is_red_and_terminated() {
     let world = world(2);
     let config = std::fs::read_to_string(world.clone.join("docs/agents/afkconvoy.md"))
         .unwrap()
@@ -602,24 +637,13 @@ fn a_gate_timeout_invalidates_and_terminates_its_running_successor() {
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
     let (a, _) = worker(&world, 1, "a");
-    let (b, _) = worker(&world, 2, "b");
     let _runner = world.host_held();
     let aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
-    // a's turn watches its gate limit; frozen, it cannot time a out before b
-    // has begun, however long b takes to start on a loaded host.
-    let held = Held::stop(&aa);
-    let bb = start(&world, &b, &world.cache(), 2);
-    began(&world, "b");
-    drop(held);
     let failed = finish(aa);
-    let cancelled = finish(bb);
     assert_eq!(failed["outcome"], "gate_red", "{failed}");
     assert_eq!(failed["timed_out"], true);
-    assert_eq!(cancelled["outcome"], "cancelled", "{cancelled}");
-    assert_eq!(cancelled["cause"], "predecessor_failed");
     gone(&world, "a");
-    gone(&world, "b");
 }
 
 #[test]
@@ -678,36 +702,24 @@ fn a_stalled_gate_record_push_releases_the_lane_without_recording_green() {
 }
 
 #[test]
-fn a_changed_head_cancels_its_suffix_and_an_external_base_move_invalidates_the_chain() {
+fn a_changed_head_cancels_its_candidate_and_an_external_base_move_invalidates_the_chain() {
     for head_change in [true, false] {
         let world = world(2);
         let (a, _) = worker(&world, 1, "a");
-        let (b, bh) = worker(&world, 2, "b");
         let _runner = world.host_held();
         let aa = start(&world, &a, &world.cache(), 1);
         began(&world, "a");
-        let bb = start(&world, &b, &world.cache(), 2);
-        began(&world, "b");
         if head_change {
-            commit(&a, "changed.txt", "new head");
-            git(&a, &["push", "-q", "origin", "HEAD"]);
+            move_head(&a);
         } else {
             commit(&world.clone, "outside.txt", "outside");
             git(&world.clone, &["push", "-q", "origin", "HEAD"]);
         }
-        let answers = [finish(aa), finish(bb)];
-        assert!(
-            answers
-                .iter()
-                .all(|a| a["outcome"] == if head_change { "cancelled" } else { "target_moved" }),
-            "{:?}",
-            answers
-        );
-        for name in ["a", "b"] {
-            gone(&world, name);
-        }
-        assert_eq!(git(&b, &["rev-parse", "HEAD"]), bh);
-        assert_eq!(world.state(2), "open");
+        let answer = finish(aa);
+        let expected = if head_change { "cancelled" } else { "target_moved" };
+        assert_eq!(answer["outcome"], expected, "{answer}");
+        gone(&world, "a");
+        assert_eq!(world.state(1), "open");
     }
 }
 
@@ -730,42 +742,47 @@ fn dead_owner_is_cancelled_before_replacement_and_duplicate_requests_never_start
     assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
 }
 
+/// The PRs that asked to land are taken into a round as it starts, its root
+/// one chain of candidates; a PR asking during the round waits for the next
+/// (docs/adr/0083). An odd PR goes up a level unpaired.
 #[test]
-fn concurrent_assignment_is_a_single_chain_and_the_window_stays_bounded() {
+fn a_round_takes_the_prs_that_asked_and_one_asking_during_it_waits_for_the_next() {
     let world = world(3);
+    let (e, _) = worker(&world, 5, "e");
     let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
         .into_iter()
         .map(|(n, name)| worker(&world, n, name))
         .collect();
     let _runner = world.host_held();
-    let mut children: Vec<_> =
-        (0..3).map(|i| start(&world, &workers[i].0, &world.cache(), i as u64 + 1)).collect();
-    for name in ["a", "b", "c"] {
-        began(&world, name);
-    }
+    let turns: Vec<(&Path, u64)> =
+        workers[..3].iter().zip(1..).map(|((dir, _), n)| (dir.as_path(), n)).collect();
+    let children =
+        one_round(&world, &e, &turns, || began(&world, "e"), || release(&world, "e", false));
+    began(&world, "b");
+    assert_eq!(pairs(&world), [(0, 20)], "c goes up unpaired");
     let mut fourth = start(&world, &workers[3].0, &world.cache(), 4);
+    until(|| chain(&world)["pending"].as_array().is_some_and(|p| p.len() == 1));
+    release(&world, "b", false);
+    began(&world, "c");
+    assert_eq!(pairs(&world), [(0, 20), (1, 30)]);
     std::thread::sleep(Duration::from_millis(200));
-    let state = chain(&world);
-    let rows = state["candidates"].as_array().unwrap();
-    assert_eq!(rows.len(), 3);
-    for i in 1..3 {
-        assert_eq!(rows[i]["predecessor"], rows[i - 1]["commit"]);
-    }
     assert!(fourth.try_wait().unwrap().is_none());
-    assert!(!world.root.join("start-d").exists());
-    for name in ["a", "b", "c", "d"] {
-        release(&world, name, false);
-    }
-    children.push(fourth);
+    assert!(!world.root.join("start-d").exists(), "it asked during the round");
+    release(&world, "c", false);
     for child in children {
         let result = finish(child);
         assert_eq!(result["outcome"], "merged", "{result}");
     }
-    assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 4);
+    release(&world, "d", false);
+    assert_eq!(finish(fourth)["outcome"], "merged");
+    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+    for name in ["a", "b", "c", "d", "e"] {
+        assert!(files.lines().any(|f| f == format!("{name}.txt")), "{files}");
+    }
 }
 
 #[test]
-fn semantic_blockers_hold_a_cancelled_successor_and_a_live_lock_blocks_a_waiting_gate() {
+fn semantic_blockers_hold_a_pending_turn_and_a_live_lock_blocks_a_waiting_gate() {
     let world = world(1);
     let (a, _) = worker(&world, 1, "a");
     let (b, _) = worker(&world, 2, "b");
@@ -773,11 +790,7 @@ fn semantic_blockers_hold_a_cancelled_successor_and_a_live_lock_blocks_a_waiting
     let aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
     let bb = start(&world, &b, &world.cache(), 2);
-    until(|| {
-        world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"]
-            .as_array()
-            .is_some_and(|w| !w.is_empty())
-    });
+    until(|| chain(&world)["pending"].as_array().is_some_and(|p| !p.is_empty()));
     world.issue(9, &["fleet-lock"]);
     release(&world, "a", false);
     assert_eq!(finish(aa)["outcome"], "locked");
@@ -910,7 +923,6 @@ fn an_injected_clock_can_publish_its_own_fresh_record() {
 fn runner_restart_keeps_running_candidate_ownership_and_capacity() {
     let world = world(2);
     let (a, _) = worker(&world, 1, "a");
-    let (b, _) = worker(&world, 2, "b");
     let first_runner = world.host_held();
     let aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
@@ -933,15 +945,10 @@ fn runner_restart_keeps_running_candidate_ownership_and_capacity() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let bb = start(&world, &b, &world.cache(), 2);
-    began(&world, "b");
+    std::thread::sleep(Duration::from_millis(500));
     assert!(!ordinary_marker.exists(), "ordinary work retains repo exclusion after restart");
-    assert_eq!(chain(&world)["candidates"].as_array().unwrap().len(), 2);
-    release(&world, "b", false);
-    green(&world, 2);
     release(&world, "a", false);
     assert_eq!(finish(aa)["outcome"], "merged");
-    assert_eq!(finish(bb)["outcome"], "merged");
     assert!(ordinary.wait_with_output().unwrap().status.success());
     assert!(ordinary_marker.exists());
 }
@@ -1005,12 +1012,10 @@ fn restart_after_durable_cancellation_finishes_cleanup_before_rebuilding() {
     use std::os::unix::fs::PermissionsExt;
     let world = world(2);
     let (a, _) = worker(&world, 1, "a");
-    let (b, _) = worker(&world, 2, "b");
     let runner = world.host_held();
     let mut aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
-    let bb = start(&world, &b, &world.cache(), 2);
-    began(&world, "b");
+    let old = gate_pids(&world, "a");
     std::fs::write(world.root.join("owner"), aa.id().to_string()).unwrap();
     let hook = world.bare.join("hooks/post-receive");
     let script = format!(
@@ -1032,41 +1037,41 @@ done
     );
     std::fs::write(&hook, script).unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    release(&world, "a", true);
+    // Its head moves: its own turn cancels its candidate, durably, and is
+    // frozen and killed before it stops the gate.
+    move_head(&a);
     until(|| world.root.join("cancellation-durable").exists());
     aa.kill().unwrap();
     let _ = aa.wait();
     world.kill_host_runner("KILL");
     drop(runner);
     let _replacement = world.host_held();
-    assert_eq!(finish(bb)["outcome"], "cancelled");
-    gone(&world, "a");
-    gone(&world, "b");
+    // The next turn finishes the cleanup before it gates anything again.
+    let rebuilt = start(&world, &a, &world.cache(), 1);
+    ended_all(&old);
+    until(|| chain(&world)["candidates"][0]["phase"] == "cancelled");
     let state = chain(&world);
-    assert_eq!(state["candidates"][0]["phase"], "red");
-    assert_eq!(state["candidates"][0]["result"]["status"], "red");
-    release(&world, "b", false);
-    let rebuilt = finish(start(&world, &b, &world.cache(), 2));
+    let first = &state["candidates"][0];
+    assert_eq!(first["phase"], "cancelled", "{state}");
+    assert_eq!(first["cause"], "head_changed", "{state}");
+    release(&world, "a", false);
+    let rebuilt = finish(rebuilt);
     assert_eq!(rebuilt["outcome"], "merged", "{rebuilt}");
-    assert!(
-        !world.remote(&["ls-tree", "--name-only", "refs/heads/main"]).lines().any(|f| f == "a.txt")
-    );
+    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+    assert!(files.lines().any(|f| f == "changed.txt"), "its new head landed: {files}");
 }
 
 /// A cancellation that froze a gate and cannot record what it froze still
-/// kills it: the turns fail, and no gate, nor what it started, is left
+/// kills it: the turn fails, and no gate, nor what it started, is left
 /// stopped (sunfmin/control#508).
 #[test]
 fn a_cancellation_that_cannot_record_its_frozen_gate_still_kills_it() {
     use std::os::unix::fs::PermissionsExt;
     let world = world(2);
     let (a, _) = worker(&world, 1, "a");
-    let (b, _) = worker(&world, 2, "b");
     let _runner = world.host_held();
-    let aa = start(&world, &a, &world.cache(), 1);
+    let mut aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
-    let bb = start(&world, &b, &world.cache(), 2);
-    began(&world, "b");
     let hook = world.bare.join("hooks/pre-receive");
     let script = r#"#!/bin/sh
 while read old new ref; do
@@ -1080,19 +1085,17 @@ done
 "#;
     std::fs::write(&hook, script).unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    release(&world, "a", true);
-    for mut turn in [aa, bb] {
-        let began = Instant::now();
-        while turn.try_wait().unwrap().is_none() {
-            if began.elapsed() > Duration::from_secs(60) {
-                let _ = turn.kill();
-                let _ = turn.wait();
-                panic!("a turn whose cancellation cannot be recorded never ended");
-            }
-            std::thread::sleep(Duration::from_millis(20));
+    move_head(&a);
+    let began = Instant::now();
+    while aa.try_wait().unwrap().is_none() {
+        if began.elapsed() > Duration::from_secs(60) {
+            let _ = aa.kill();
+            let _ = aa.wait();
+            panic!("a turn whose cancellation cannot be recorded never ended");
         }
+        std::thread::sleep(Duration::from_millis(20));
     }
-    gone(&world, "b");
+    gone(&world, "a");
 }
 
 fn worktrees(world: &World) -> String {
@@ -1209,51 +1212,27 @@ impl Drop for Hold {
 }
 
 #[test]
-fn a_stopped_candidate_loses_its_worktree_and_a_gating_one_keeps_it() {
+fn a_gating_candidate_keeps_its_worktree_and_a_stopped_one_loses_it() {
     use std::os::unix::fs::PermissionsExt;
     let world = world(2);
     seal_gate(&world);
     let (issue_a, _) = worker(&world, 1, "a");
-    let (issue_b, _) = worker(&world, 2, "b");
     let _runner = world.host_held();
     let aa = start(&world, &issue_a, &world.cache(), 1);
     began(&world, "a");
-    let bb = start(&world, &issue_b, &world.cache(), 2);
-    began(&world, "b");
     let a_tree = candidate_path(&world, 1);
-    let b_tree = candidate_path(&world, 2);
-    assert_eq!(chain(&world)["candidates"][0]["phase"], "validating");
-    assert!(listed(&world, &a_tree), "a validating candidate stays listed");
-    assert!(listed(&world, &b_tree), "a validating candidate stays listed");
-    release(&world, "b", false);
-    green(&world, 2);
-    // Its gate run has ended: a green candidate waiting on its predecessor
-    // loses its worktree, the directory its gate sealed included, while the
-    // one ahead still gates in its own (sunfmin/control#1063).
-    until(|| !b_tree.exists() && !listed(&world, &b_tree));
+    assert_eq!(chained(&world)[0]["phase"], "validating");
     assert!(listed(&world, &a_tree), "a validating candidate stays listed");
     let hold = Hold(Command::new("sleep").arg("300").current_dir(&a_tree).spawn().unwrap());
     release(&world, "a", false);
     let landed_a = finish(aa);
-    let landed_b = finish(bb);
     assert_eq!(landed_a["outcome"], "merged", "{landed_a}");
-    assert_eq!(landed_b["outcome"], "merged", "{landed_b}");
     assert!(a_tree.is_dir(), "a worktree a process is working in stays");
     assert!(listed(&world, &a_tree));
-    assert!(!b_tree.exists(), "a landed candidate's worktree is gone, sealed directory included");
-    assert!(!listed(&world, &b_tree));
-    assert!(listed(&world, &issue_a) && listed(&world, &issue_b), "the issue worktrees stay");
-    let state = chain(&world);
-    for (issue, landed) in [(1, &landed_a), (2, &landed_b)] {
-        let candidate = state["candidates"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|candidate| candidate["issue"] == issue)
-            .unwrap();
-        assert_eq!(candidate["phase"], "landed");
-        assert_eq!(candidate["commit"], landed["commit"]);
-    }
+    assert!(listed(&world, &issue_a), "the issue worktree stays");
+    let candidate = chained(&world).into_iter().find(|c| c["issue"] == 1).unwrap();
+    assert_eq!(candidate["phase"], "landed");
+    assert_eq!(candidate["commit"], landed_a["commit"]);
     let gates = world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]);
     assert!(!gates.is_empty(), "the recorded gate run stays on the remote");
     let tip = chain_tip(&world);
@@ -1268,7 +1247,7 @@ fn a_stopped_candidate_loses_its_worktree_and_a_gating_one_keeps_it() {
         world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]),
         gates
     );
-    assert!(issue_a.is_dir() && issue_b.is_dir());
+    assert!(issue_a.is_dir());
     std::fs::create_dir_all(&a_tree).unwrap();
     let sealed = a_tree.join("sealed");
     std::fs::create_dir(&sealed).unwrap();
@@ -1288,28 +1267,20 @@ fn a_stopped_candidate_loses_its_worktree_and_a_gating_one_keeps_it() {
 }
 
 #[test]
-fn a_red_candidate_and_a_cancelled_one_lose_their_worktrees() {
+fn a_red_candidate_loses_its_worktree_and_the_chain_keeps_its_evidence() {
     let world = world(2);
     seal_gate(&world);
     let (issue_a, _) = worker(&world, 1, "a");
-    let (issue_b, _) = worker(&world, 2, "b");
     let _runner = world.host_held();
     world.watch_git();
     let aa = start(&world, &issue_a, &world.cache(), 1);
     began(&world, "a");
-    let bb = start(&world, &issue_b, &world.cache(), 2);
-    began(&world, "b");
     let a_tree = candidate_path(&world, 1);
-    let b_tree = candidate_path(&world, 2);
     release(&world, "a", true);
     let red = finish(aa);
-    let cancelled = finish(bb);
     assert_eq!(red["outcome"], "gate_red", "{red}");
-    assert_eq!(cancelled["outcome"], "cancelled", "{cancelled}");
     assert!(!a_tree.exists(), "a red candidate's worktree is gone");
     assert!(!listed(&world, &a_tree));
-    assert!(!b_tree.exists(), "a cancelled candidate's worktree is gone");
-    assert!(!listed(&world, &b_tree));
     let calls = world.git_calls();
     let wrote = calls
         .iter()
@@ -1319,28 +1290,12 @@ fn a_red_candidate_and_a_cancelled_one_lose_their_worktrees() {
         wrote.is_some_and(|wrote| reread.is_some_and(|reread| reread > wrote)),
         "a turn reads the chain it just wrote before it returns: {calls:#?}"
     );
-    assert!(listed(&world, &issue_a) && listed(&world, &issue_b), "the issue worktrees stay");
-    let state = chain(&world);
-    let failed = state["candidates"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|candidate| candidate["issue"] == 1)
-        .unwrap();
-    let suffix = state["candidates"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|candidate| candidate["issue"] == 2)
-        .unwrap();
+    assert!(listed(&world, &issue_a), "the issue worktree stays");
+    let failed = chained(&world).into_iter().find(|c| c["issue"] == 1).unwrap();
     assert_eq!(failed["phase"], "red");
     assert!(failed["result"]["excerpt"].is_array(), "the chain keeps the gate excerpt: {failed}");
     assert_eq!(failed["result"]["exit_code"], 1, "{failed}");
     assert!(failed["cause"].as_str().is_some_and(|cause| !cause.is_empty()), "{failed}");
-    assert_eq!(suffix["phase"], "cancelled");
-    assert_eq!(suffix["cancelled_by"], failed["id"]);
-    assert!(suffix["cause"].as_str().is_some_and(|cause| !cause.is_empty()), "{suffix}");
-    assert_eq!(suffix["cause"], "predecessor_failed");
 }
 
 #[test]
@@ -1406,8 +1361,8 @@ set -e
 root={root}
 part=$1
 name=
-for n in a b c d; do if test -f "$n.txt"; then name=$n; fi; done
-case "${{AFKCONVOY_ISSUE:-}}" in 1) name=a;; 2) name=b;; 3) name=c;; 4) name=d;; esac
+for n in a b c d e; do if test -f "$n.txt"; then name=$n; fi; done
+case "${{AFKCONVOY_ISSUE:-}}" in 1) name=a;; 2) name=b;; 3) name=c;; 4) name=d;; 5) name=e;; esac
 test -n "$name" || exit 0
 touch "$root/start-$part-$name"
 while test -d "$root" && test ! -f "$root/release-$part-$name"; do sleep 0.02; done
@@ -1443,28 +1398,31 @@ fn let_go(world: &World, part: &str, name: &str, red: bool) {
 }
 
 #[test]
-fn a_round_slow_gates_its_tip_once_and_lands_every_fast_green_candidate_together() {
+fn a_round_gates_its_pair_then_its_root_whole_once_and_lands_both_together() {
     let world = split_world(3);
+    let (e, _) = worker(&world, 5, "e");
     let (a, ah) = worker(&world, 1, "a");
     let (b, bh) = worker(&world, 2, "b");
     let _runner = world.host_held();
-    let aa = start(&world, &a, &world.cache(), 1);
-    until(|| started(&world, "fast", "a"));
-    let bb = start(&world, &b, &world.cache(), 2);
-    until(|| started(&world, "fast", "b"));
-    let_go(&world, "fast", "a", false);
-    green(&world, 1);
-    assert_eq!(
-        chain(&world)["candidates"][0]["slow"]["command"].as_str().map(|c| c.ends_with("slow")),
-        Some(true)
+    let mut children = one_round(
+        &world,
+        &e,
+        &[(&a, 1), (&b, 2)],
+        || until(|| started(&world, "fast", "e")),
+        || {
+            let_go(&world, "fast", "e", false);
+            let_go(&world, "slow", "e", false);
+        },
     );
+    until(|| started(&world, "fast", "b"));
+    assert!(!started(&world, "fast", "a"), "the pair is its later-asked PR's to gate");
     let_go(&world, "fast", "b", false);
     until(|| started(&world, "slow", "b"));
-    assert!(!started(&world, "slow", "a"), "only the round's tip runs the slow gate");
-    let candidates = chain(&world)["candidates"].clone();
-    assert_eq!(candidates[0]["phase"], "green");
-    assert_eq!(candidates[1]["phase"], "slow");
+    assert!(!started(&world, "slow", "a"), "only the round's last-asked PR runs its slow gate");
+    let candidates = chained(&world);
     let_go(&world, "slow", "b", false);
+    let bb = children.pop().unwrap();
+    let aa = children.pop().unwrap();
     let (landed_a, landed_b) = (finish(aa), finish(bb));
     assert_eq!(landed_a["outcome"], "merged", "{landed_a}");
     assert_eq!(landed_b["outcome"], "merged", "{landed_b}");
@@ -1486,161 +1444,30 @@ fn a_round_slow_gates_its_tip_once_and_lands_every_fast_green_candidate_together
     assert!(!started(&world, "whole", "b"), "the round's tip needed no certification run");
 }
 
-/// A split world whose config says `landing: batch` (docs/adr/0068): its
-/// turns land in batch rounds.
-fn batch_world(lanes: u64) -> World {
-    let world = split_world(lanes);
-    let file = world.clone.join("docs/agents/afkconvoy.md");
-    let config = std::fs::read_to_string(&file).unwrap();
-    let config = config.replacen("gate_seconds: 600\n", "gate_seconds: 600\nlanding: batch\n", 1);
-    std::fs::write(&file, config).unwrap();
-    git(&world.clone, &["commit", "-q", "-am", "land in batch rounds"]);
-    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
-    assert_eq!(world.afk(&["config"]).ok()["landing"], "batch");
-    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
-    world
-}
-
-/// The valid candidates of the chain, each as its PR and phase.
-fn valid(world: &World) -> Vec<(u64, String)> {
-    let chain = chain(world);
-    let valid = chain["candidates"].as_array().unwrap().iter().filter(|c| {
-        c["cancelled_by"].is_null()
-            && !["landed", "red", "cancelled"].contains(&c["phase"].as_str().unwrap())
-    });
-    valid.map(|c| (c["pr"].as_u64().unwrap(), c["phase"].as_str().unwrap().to_string())).collect()
-}
-
-/// Four turns of a batch repo: the first is gated alone, as nothing is
-/// merged onto it yet; the three that join while it gates are batched
-/// behind it, and once it lands the chain's tip runs the whole gate, fast
-/// then slow, once, and lands all three as one fast-forward, each turn
-/// answering `merged` (sunfmin/control#1120).
 #[test]
-fn a_batch_round_gates_its_tip_once_and_lands_every_turn_behind_it() {
-    let world = batch_world(3);
-    let workers: Vec<_> =
-        [(1, "a"), (2, "b"), (3, "c"), (4, "d")].map(|(n, name)| worker(&world, n, name)).to_vec();
-    let _runner = world.host_held();
-    let aa = start(&world, &workers[0].0, &world.cache(), 1);
-    until(|| started(&world, "fast", "a"));
-    // Each joins once the one before it is on the chain: the chain's order is theirs.
-    let rest: Vec<Child> = (1..4)
-        .map(|i| {
-            let turn = start(&world, &workers[i].0, &world.cache(), i as u64 + 1);
-            until(|| valid(&world).len() == i + 1);
-            turn
-        })
-        .collect();
-    let phases: Vec<String> = valid(&world).into_iter().map(|(_, phase)| phase).collect();
-    assert_eq!(phases, ["validating", "batched", "batched", "batched"]);
-    let doctor = world.afk(&["doctor"]).json["candidates"].clone();
-    let at_a = doctor[0]["id"].clone();
-    assert_eq!(doctor[3]["batch"], true, "{doctor}");
-    assert_eq!(doctor[3]["phase"], "batched", "{doctor}");
-    assert_eq!(doctor[3]["waiting"], "waiting_for_batch_gate", "{doctor}");
-    assert_eq!(doctor[3]["round"], at_a, "it waits on the gate at a: {doctor}");
-    let_go(&world, "fast", "a", false);
-    until(|| started(&world, "slow", "a"));
-    let_go(&world, "slow", "a", false);
-    let landed_a = finish(aa);
-    assert_eq!(landed_a["outcome"], "merged", "{landed_a}");
-    until(|| started(&world, "fast", "d"));
-    let_go(&world, "fast", "d", false);
-    until(|| started(&world, "slow", "d"));
-    let_go(&world, "slow", "d", false);
-    let answers: Vec<Value> = rest.into_iter().map(finish).collect();
-    for answer in &answers {
-        assert_eq!(answer["outcome"], "merged", "{answer}");
-    }
-    let tip = answers.iter().find(|a| a["landed"].as_array().is_some_and(|l| l.len() == 3));
-    let mut landed: Vec<u64> =
-        tip.map_or(vec![], |a| serde_json::from_value(a["landed"].clone()).unwrap());
-    landed.sort();
-    assert_eq!(landed, [20, 30, 40], "one fast-forward: {answers:?}; {}", chain(&world));
-    for name in ["b", "c"] {
-        for part in ["fast", "slow"] {
-            assert!(!started(&world, part, name), "{part} gate ran at {name}, which is batched");
-        }
-    }
-    assert!(!started(&world, "slow", "b"));
-    assert_eq!(
-        world.remote(&["rev-parse", "refs/heads/main"]),
-        tip.unwrap()["commit"].as_str().unwrap()
-    );
-    for (i, (_, head)) in workers.iter().enumerate() {
-        assert_eq!(&world.remote(&["rev-parse", &format!("refs/heads/issue-{}", i + 1)]), head);
-    }
-}
-
-/// A batch round red at its tip is bisected through the fleet's turns: the
-/// gate at the middle candidate is red too, so it is the round's first red
-/// one, and its turn answers `gate_red` with that run; the turn behind it
-/// merges again without it and lands (sunfmin/control#1120).
-#[test]
-fn a_red_batch_round_sends_back_its_first_red_turn_and_lands_the_rest() {
-    let world = batch_world(3);
-    let (a, _) = worker(&world, 1, "a");
-    let (b, bh) = worker(&world, 2, "b");
-    let (c, _) = worker(&world, 3, "c");
-    let _runner = world.host_held();
-    let aa = start(&world, &a, &world.cache(), 1);
-    until(|| started(&world, "fast", "a"));
-    let bb = start(&world, &b, &world.cache(), 2);
-    until(|| valid(&world).len() == 2);
-    let cc = start(&world, &c, &world.cache(), 3);
-    until(|| valid(&world).len() == 3);
-    let_go(&world, "fast", "a", false);
-    until(|| started(&world, "slow", "a"));
-    let_go(&world, "slow", "a", false);
-    assert_eq!(finish(aa)["outcome"], "merged");
-    // The tip's gate holds b and c: red.
-    until(|| started(&world, "fast", "c"));
-    let_go(&world, "fast", "c", true);
-    // Bisected: the gate at b, which holds b alone above the landed a.
-    until(|| started(&world, "fast", "b"));
-    assert!(!started(&world, "slow", "c"), "a red fast gate skips the slow one");
-    let_go(&world, "fast", "c", false);
-    let_go(&world, "fast", "b", true);
-    let failed = finish(bb);
-    assert_eq!(failed["outcome"], "gate_red", "{failed}");
-    assert!(failed["detail"].as_str().unwrap().contains("first red one"), "{failed}");
-    // c, rebuilt without b, passes the whole gate at its new candidate.
-    until(|| started(&world, "slow", "c"));
-    let_go(&world, "slow", "c", false);
-    let rebuilt = finish(cc);
-    assert_eq!(rebuilt["outcome"], "merged", "{rebuilt}");
-    assert_eq!(rebuilt["landed"], json!([30]), "{rebuilt}");
-    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
-    assert!(files.lines().any(|f| f == "a.txt"));
-    assert!(files.lines().any(|f| f == "c.txt"));
-    assert!(!files.lines().any(|f| f == "b.txt"));
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-2"]), bh);
-    let causes: Vec<Value> = chain(&world)["candidates"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| c["cause"].clone())
-        .collect();
-    assert!(causes.contains(&json!("rebuilt")), "{causes:?}");
-}
-
-#[test]
-fn a_red_round_is_fixed_whole_by_its_tip_and_its_other_candidates_stop() {
+fn a_red_root_is_fixed_whole_by_its_last_asked_pr_and_the_others_stop() {
     let world = split_world(3);
+    let (e, _) = worker(&world, 5, "e");
     let (a, _) = worker(&world, 1, "a");
     let (b, _) = worker(&world, 2, "b");
-    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let _runner = world.host_held();
-    let aa = start(&world, &a, &world.cache(), 1);
-    until(|| started(&world, "fast", "a"));
-    let bb = start(&world, &b, &world.cache(), 2);
-    until(|| started(&world, "fast", "b"));
-    let_go(&world, "fast", "a", false);
+    let mut children = one_round(
+        &world,
+        &e,
+        &[(&a, 1), (&b, 2)],
+        || until(|| started(&world, "fast", "e")),
+        || {
+            let_go(&world, "fast", "e", false);
+            let_go(&world, "slow", "e", false);
+        },
+    );
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let_go(&world, "fast", "b", false);
     until(|| started(&world, "slow", "b"));
-    let tip = chain(&world)["candidates"][1]["commit"].as_str().unwrap().to_string();
+    let tip = chained(&world)[1]["commit"].as_str().unwrap().to_string();
     let_go(&world, "slow", "b", true);
+    let bb = children.pop().unwrap();
+    let aa = children.pop().unwrap();
     let (stopped, red) = (finish(aa), finish(bb));
     assert_eq!(red["outcome"], "gate_red", "{red}");
     assert_eq!(red["gate"], "slow");
@@ -1667,98 +1494,78 @@ fn a_red_round_is_fixed_whole_by_its_tip_and_its_other_candidates_stop() {
     );
 }
 
+/// A PR that merges cleanly with no partner leaves the round for the next
+/// (docs/adr/0083); there, merged onto the tip that landed the other, it
+/// conflicts, and its worker resolves the conflict left in its worktree.
 #[test]
-fn a_conflict_with_the_candidate_ahead_is_left_for_the_worker_to_resolve() {
+fn a_pr_clean_with_no_partner_waits_for_the_next_round_and_resolves_its_conflict_there() {
     let world = split_world(3);
+    let (e, _) = worker(&world, 5, "e");
     let a = world.worker(1, "x.txt", "a");
     let b = world.worker(2, "x.txt", "b");
     let _runner = world.host_held();
-    let aa = start(&world, &a, &world.cache(), 1);
-    until(|| started(&world, "fast", "a"));
-    let conflict = finish(start(&world, &b, &world.cache(), 2));
-    assert_eq!(conflict["outcome"], "speculative_conflict", "{conflict}");
-    assert_eq!(conflict["files"], json!(["x.txt"]));
-    std::fs::write(b.join("x.txt"), "ab").unwrap();
-    git(&b, &["commit", "-q", "-am", "resolve"]);
-    let bb = start(&world, &b, &world.cache(), 2);
-    until(|| started(&world, "fast", "b"));
+    let mut children = one_round(
+        &world,
+        &e,
+        &[(&a, 1), (&b, 2)],
+        || until(|| started(&world, "fast", "e")),
+        || {
+            let_go(&world, "fast", "e", false);
+            let_go(&world, "slow", "e", false);
+        },
+    );
     for part in ["fast", "slow"] {
         let_go(&world, part, "a", false);
+    }
+    let conflict = finish(children.pop().unwrap());
+    assert_eq!(finish(children.pop().unwrap())["outcome"], "merged");
+    assert_eq!(conflict["outcome"], "conflict", "{conflict}");
+    assert_eq!(conflict["files"], json!(["x.txt"]));
+    assert!(pairs(&world).is_empty(), "the two pair with nothing");
+    std::fs::write(b.join("x.txt"), "ab").unwrap();
+    git(&b, &["commit", "-q", "-am", "resolve"]);
+    for part in ["fast", "slow"] {
         let_go(&world, part, "b", false);
     }
-    assert_eq!(finish(aa)["outcome"], "merged");
-    assert_eq!(finish(bb)["outcome"], "merged");
+    assert_eq!(finish(start(&world, &b, &world.cache(), 2))["outcome"], "merged");
     assert_eq!(world.remote(&["show", "refs/heads/main:x.txt"]), "ab");
 }
 
 #[test]
-fn ten_green_prs_whose_speculative_stacks_all_conflict_land_the_oldest_alone_within_one_round() {
-    let world = split_world(3);
-    let names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
-    let workers: Vec<PathBuf> =
-        (1..=10).map(|n| world.worker(n, "x.txt", names[n as usize - 1])).collect();
-    let _runner = world.host_held();
-    let oldest = start(&world, &workers[0], &world.cache(), 1);
-    until(|| started(&world, "fast", "a"));
-    // Each stack on the oldest conflicts: three of them pile the chain.
-    for n in 2..=4 {
-        let conflict = finish(start(&world, &workers[n as usize - 1], &world.cache(), n));
-        assert_eq!(conflict["outcome"], "speculative_conflict", "{conflict}");
-        git(&workers[n as usize - 1], &["merge", "--abort"]);
-    }
-    // Piled, no turn stacks on the oldest any more, nor waits on the chain.
-    for n in 2..=10 {
-        let waited = finish(start(&world, &workers[n as usize - 1], &world.cache(), n));
-        assert_eq!(waited["outcome"], "waiting_for_capacity", "{waited}");
-        assert!(waited["detail"].as_str().unwrap().contains("piled"), "{waited}");
-    }
-    let pending = chain(&world)["pending"].as_array().map_or(0, Vec::len);
-    assert_eq!(pending, 0, "a piled turn holds no place a round waits for");
-    let_go(&world, "fast", "a", false);
-    let_go(&world, "slow", "a", false);
-    let landed = finish(oldest);
-    assert_eq!(landed["outcome"], "merged", "{landed}");
-    assert_eq!(landed["landed"], json!([10]), "the oldest lands alone: {landed}");
-    assert_eq!(world.remote(&["show", "refs/heads/main:x.txt"]), "a");
-}
-
-#[test]
-fn with_one_lane_every_ready_pr_fast_gates_in_turn_and_lands_in_one_round() {
+fn with_one_lane_every_pair_gates_in_turn_and_the_round_lands_on_one_slow_gate() {
     let world = split_world(1);
+    let (e, _) = worker(&world, 5, "e");
     let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]
         .into_iter()
         .map(|(n, name)| worker(&world, n, name))
         .collect();
     let _runner = world.host_held();
-    let aa = start(&world, &workers[0].0, &world.cache(), 1);
-    until(|| started(&world, "fast", "a"));
-    let bb = start(&world, &workers[1].0, &world.cache(), 2);
-    let cc = start(&world, &workers[2].0, &world.cache(), 3);
-    until(|| chain(&world)["pending"].as_array().is_some_and(|p| p.len() == 2));
-    assert!(!started(&world, "fast", "b"), "one lane runs one gate");
-    let_go(&world, "fast", "a", false);
-    // A fast-green candidate frees its lane, and waits for the PRs still pending.
-    until(|| started(&world, "fast", "b") || started(&world, "fast", "c"));
-    assert!(!started(&world, "slow", "a"), "a round waits for every ready PR");
+    let turns: Vec<(&Path, u64)> =
+        workers.iter().zip(1..).map(|((dir, _), n)| (dir.as_path(), n)).collect();
+    let children = one_round(
+        &world,
+        &e,
+        &turns,
+        || until(|| started(&world, "fast", "e")),
+        || {
+            let_go(&world, "fast", "e", false);
+            let_go(&world, "slow", "e", false);
+        },
+    );
+    until(|| started(&world, "fast", "b"));
+    assert!(!started(&world, "fast", "c"), "c goes up unpaired");
     let_go(&world, "fast", "b", false);
+    until(|| started(&world, "fast", "c"));
     let_go(&world, "fast", "c", false);
-    let tip = if started(&world, "fast", "c") { "c" } else { "b" };
-    until(|| started(&world, "slow", "b") || started(&world, "slow", "c"));
-    assert!(!started(&world, "slow", "a"));
-    let_go(&world, "slow", "b", false);
+    until(|| started(&world, "slow", "c"));
+    assert!(!started(&world, "slow", "a") && !started(&world, "slow", "b"));
     let_go(&world, "slow", "c", false);
-    let answers = [finish(aa), finish(bb), finish(cc)];
+    let answers: Vec<Value> = children.into_iter().map(finish).collect();
     for answer in &answers {
         assert_eq!(answer["outcome"], "merged", "{answer}");
     }
-    let rows = chain(&world)["candidates"].as_array().unwrap().clone();
-    let slowed: Vec<_> = rows.iter().filter(|c| c["slowed"] == true).collect();
-    assert_eq!(slowed.len(), 1, "one slow gate run for the three: {rows:?}");
-    assert_eq!(
-        world.remote(&["rev-parse", "refs/heads/main"]),
-        rows[2]["commit"].as_str().unwrap()
-    );
-    let _ = tip;
+    assert_eq!(answers[2]["landed"], json!([10, 20, 30]), "one round: {}", answers[2]);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), answers[2]["commit"]);
 }
 
 /// A record past `ARG_MAX` is written all the same, and the ended candidates
@@ -1808,61 +1615,6 @@ fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
     assert!(history.lines().any(|sha| sha == seeded), "the seeded record stays reachable");
 }
 
-/// The FelixMBP14 case (sunfmin/control#459): a fast-green candidate's turn
-/// exited on a transient remote fault while a successor fast-gated. Its next
-/// turn takes ownership of the stopped candidate and its recorded evidence;
-/// the successor and the round are not cancelled, and no adopted turn is left
-/// pending to hold the round back.
-#[test]
-fn a_stopped_fast_green_candidate_is_adopted_without_cancelling_its_round() {
-    let world = split_world(2);
-    let (a, _) = worker(&world, 1, "a");
-    let (b, _) = worker(&world, 2, "b");
-    let _runner = world.host_held();
-    let mut first = start(&world, &a, &world.cache(), 1);
-    until(|| {
-        if first.try_wait().unwrap().is_some() {
-            let mut out = String::new();
-            std::io::Read::read_to_string(first.stdout.as_mut().unwrap(), &mut out).unwrap();
-            panic!("first turn exited early: {out}");
-        }
-        started(&world, "fast", "a")
-    });
-    let behind = start(&world, &b, &world.cache(), 2);
-    until(|| started(&world, "fast", "b"));
-    let_go(&world, "fast", "a", false);
-    green(&world, 1);
-    until(|| chain(&world)["candidates"][0]["stopped"] == true);
-    let original = chain(&world)["candidates"].clone();
-    let id = original[0]["id"].as_str().unwrap().to_string();
-    let commit = original[0]["commit"].as_str().unwrap().to_string();
-    assert!(original[0]["stopped"].as_bool().unwrap());
-    assert!(original[0]["result"]["recorded"].as_bool().unwrap());
-    let behind_held = Held::stop(&behind);
-
-    assert!(
-        Command::new("kill").args(["-KILL", &first.id().to_string()]).status().unwrap().success()
-    );
-    first.wait().unwrap();
-    let recovered = start(&world, &a, &world.cache(), 1);
-    std::thread::sleep(Duration::from_secs(2));
-    let adopting = chain(&world)["candidates"].clone();
-    assert_eq!(adopting[0]["id"], id, "the immutable candidate is retained: {adopting}");
-    assert_eq!(adopting[0]["owner"]["pid"], recovered.id(), "{adopting}");
-    assert_eq!(adopting[0]["cause"], Value::Null, "{adopting}");
-    assert_eq!(adopting[1]["cause"], Value::Null, "its successor stays valid: {adopting}");
-    assert_eq!(adopting[0]["result"], original[0]["result"], "its fast-gate evidence stands");
-
-    drop(behind_held);
-    let_go(&world, "fast", "b", false);
-    until(|| started(&world, "slow", "b"));
-    let_go(&world, "slow", "b", false);
-    assert_eq!(finish(recovered)["outcome"], "merged");
-    assert_eq!(finish(behind)["outcome"], "merged");
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), original[1]["commit"]);
-    assert!(world.remote(&["rev-list", "refs/heads/main"]).lines().any(|landed| landed == commit));
-}
-
 /// `land --issue n` in `dir` with its clock at `now`.
 fn start_at(world: &World, dir: &Path, n: u64, now: u64) -> Child {
     world
@@ -1885,10 +1637,11 @@ fn candidate_of(world: &World, issue: u64) -> Value {
 /// The Offices-MBP case (sunfmin/control#400): a host whose turn holds a
 /// candidate goes quiet — its lid closed, here its turn stopped — and its
 /// gate with it. While a fleet heartbeat of it is within the lease it is
-/// left alone; past the lease, the next turn here takes its candidate over,
-/// cancels the candidate behind it and stops that one's gate, and is
-/// assigned one of its own. When the quiet host comes back, its turn finds
-/// its candidate taken, stops its own gate, and answers cancelled.
+/// left alone, and a turn here waits for the next round; past the lease,
+/// the next turn here takes its candidate over and its round with it, and
+/// the turns here land in a round of their own. When the quiet host comes
+/// back, its turn finds its candidate taken, stops its own gate, and
+/// answers cancelled.
 #[test]
 fn a_quiet_hosts_candidate_is_taken_over_past_the_lease_and_its_turn_learns_it_on_waking() {
     use afkconvoy_core::lease::LEASE;
@@ -1914,19 +1667,18 @@ fn a_quiet_hosts_candidate_is_taken_over_past_the_lease_and_its_turn_learns_it_o
     world.afk(&["heartbeat", "--instance", "farfleet", "--host", "far", "--now", &beat]).ok();
 
     // The chain heard nothing of it for longer than the lease, but its fleet
-    // beat within it: it is alive, and a turn here lines up behind it.
+    // beat within it: it is alive, and a turn here waits for the next round.
     let behind = start_at(&world, &b, 2, now + LEASE + 100);
-    began(&world, "b");
+    until(|| chain(&world)["pending"].as_array().is_some_and(|p| p.len() == 1));
     let first = candidate_of(&world, 1);
     assert_eq!(
         (first["phase"].clone(), first["cancelled_by"].clone()),
         (json!("validating"), Value::Null)
     );
-    assert_eq!(candidate_of(&world, 2)["predecessor"], first["commit"]);
 
     // Past the lease on both counts: it is dead.
     let next = start_at(&world, &c, 3, now + 1001 + 2 * LEASE);
-    until(|| candidate_of(&world, 3)["phase"] == "validating");
+    began(&world, "c");
     let first = candidate_of(&world, 1);
     assert_eq!(
         (first["phase"].clone(), first["cause"].clone(), first["abandoned"].clone()),
@@ -1934,16 +1686,14 @@ fn a_quiet_hosts_candidate_is_taken_over_past_the_lease_and_its_turn_learns_it_o
         "{first}"
     );
     assert_eq!(first["stopped"], false, "nobody here confirmed its processes gone");
-    assert_eq!(candidate_of(&world, 3)["predecessor"], json!(base));
-    let cancelled = finish(behind);
-    assert_eq!(
-        (cancelled["outcome"].clone(), cancelled["cancelled_by"].clone()),
-        (json!("cancelled"), first["id"].clone()),
-        "the candidate behind it cancels as behind any failed predecessor: {cancelled}"
-    );
-    gone(&world, "b");
+    assert_eq!(pairs(&world), [(0, 30)], "the turns here pair in a round of their own");
     release(&world, "c", false);
+    assert_eq!(finish(behind)["outcome"], "merged");
     assert_eq!(finish(next)["outcome"], "merged");
+    assert_eq!(
+        chained(&world).iter().find(|c| c["issue"] == 2).unwrap()["predecessor"],
+        json!(base)
+    );
 
     // The far host wakes.
     drop(asleep);
@@ -1962,34 +1712,27 @@ fn a_quiet_hosts_candidate_is_taken_over_past_the_lease_and_its_turn_learns_it_o
     assert!(!world.root.join("release-a").exists(), "gate a was stopped, never released");
 }
 
-/// A candidate's fast gate red only on TIMEOUTs it cannot classify on an
+/// A candidate's gate red only on TIMEOUTs it cannot classify on an
 /// overloaded host says nothing of it (sunfmin/control#617): its turn answers
 /// `gate_unsettled`, naming the TIMEOUT and the load, nothing lands and
-/// nothing is recorded red, and the candidate merged onto it goes with it
-/// unsettled, not failed. Its next turn on a quieter host lands it.
+/// nothing is recorded red. Its next turn on a quieter host lands it.
 #[test]
 fn a_candidate_red_only_on_timeouts_under_overload_is_unsettled_not_red() {
     let world = world(2);
     let (a, _) = worker(&world, 1, "a");
-    let (b, _) = worker(&world, 2, "b");
     let base = world.remote(&["rev-parse", "refs/heads/main"]);
     let _runner = world.host_held();
     let aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
-    let bb = start(&world, &b, &world.cache(), 2);
-    began(&world, "b");
     let overloaded = world.root.join("overloaded-a");
     std::fs::write(&overloaded, "").unwrap();
     release(&world, "a", false);
-    let (unsettled, cancelled) = (finish(aa), finish(bb));
+    let unsettled = finish(aa);
     assert_eq!(unsettled["outcome"], "gate_unsettled", "{unsettled}");
     assert_eq!(unsettled["gate"], "fast");
     let detail = unsettled["detail"].as_str().unwrap();
     assert!(detail.contains("afkconvoy::cli dsh::the_line"), "{detail}");
     assert!(detail.contains("load 23.57, CPUs 12"), "{detail}");
-    assert_eq!(cancelled["outcome"], "cancelled", "{cancelled}");
-    assert_eq!(cancelled["cause"], "predecessor_unsettled");
-    assert_eq!(cancelled["cancelled_by"], unsettled["candidate"]);
     let candidates = chain(&world)["candidates"].clone();
     assert!(candidates.as_array().unwrap().iter().all(|c| c["phase"] != "red"), "{candidates}");
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base, "nothing landed");
@@ -2021,62 +1764,41 @@ fn a_candidate_red_on_a_timeout_the_gate_classified_is_gate_red() {
     assert!(red["unsettled"].is_null(), "{red}");
 }
 
-/// A round's slow gate red only on TIMEOUTs it cannot classify on an
-/// overloaded host fails no round (sunfmin/control#617): its tip answers
-/// `gate_unsettled`, the candidate before it is not stopped `round_red` but
-/// is the round's tip now, and its round lands it.
+/// A round's whole gate red only on TIMEOUTs it cannot classify on an
+/// overloaded host fails no round (sunfmin/control#617): its last-asked PR
+/// answers `gate_unsettled`, the candidate before it is not stopped
+/// `round_red` but is the round's tip now, and its whole gate lands it.
 #[test]
 fn an_unsettled_round_fails_no_round_and_the_candidate_before_it_lands() {
     let world = split_world(3);
+    let (e, _) = worker(&world, 5, "e");
     let (a, _) = worker(&world, 1, "a");
     let (b, _) = worker(&world, 2, "b");
     let _runner = world.host_held();
-    let aa = start(&world, &a, &world.cache(), 1);
-    until(|| started(&world, "fast", "a"));
-    let bb = start(&world, &b, &world.cache(), 2);
-    until(|| started(&world, "fast", "b"));
-    let_go(&world, "fast", "a", false);
+    let mut children = one_round(
+        &world,
+        &e,
+        &[(&a, 1), (&b, 2)],
+        || until(|| started(&world, "fast", "e")),
+        || {
+            let_go(&world, "fast", "e", false);
+            let_go(&world, "slow", "e", false);
+        },
+    );
     let_go(&world, "fast", "b", false);
     until(|| started(&world, "slow", "b"));
     std::fs::write(world.root.join("overloaded-slow-b"), "").unwrap();
     let_go(&world, "slow", "b", false);
-    let unsettled = finish(bb);
+    let unsettled = finish(children.pop().unwrap());
     assert_eq!(unsettled["outcome"], "gate_unsettled", "{unsettled}");
     assert_eq!(unsettled["gate"], "slow");
+    let_go(&world, "fast", "a", false);
     until(|| started(&world, "slow", "a"));
     let_go(&world, "slow", "a", false);
-    let landed = finish(aa);
+    let landed = finish(children.pop().unwrap());
     assert_eq!(landed["outcome"], "merged", "{landed}");
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
     assert!(files.lines().any(|f| f == "a.txt") && !files.lines().any(|f| f == "b.txt"));
-}
-
-/// A batch round's gate that reaches its limit is ended: its candidate
-/// stays valid while the round reads what its red says, so its gate is
-/// stopped by its own turn, which drops it and answers `gate_red`
-/// (sunfmin/control#1120).
-#[test]
-fn a_batch_gate_at_its_limit_is_ended_and_its_turn_answers_gate_red() {
-    let world = batch_world(2);
-    let file = world.clone.join("docs/agents/afkconvoy.md");
-    let config = std::fs::read_to_string(&file).unwrap();
-    let config = config.replacen(
-        "seconds: 300\n  budget_seconds: 200",
-        "seconds: 3\n  budget_seconds: 2",
-        1,
-    );
-    std::fs::write(&file, config).unwrap();
-    git(&world.clone, &["commit", "-q", "-am", "a fast gate of 3 seconds"]);
-    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
-    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
-    let (a, _) = worker(&world, 1, "a");
-    let _runner = world.host_held();
-    let began = Instant::now();
-    let failed = finish(start(&world, &a, &world.cache(), 1));
-    assert_eq!(failed["outcome"], "gate_red", "{failed}");
-    assert_eq!(failed["timed_out"], true, "{failed}");
-    assert!(began.elapsed() < Duration::from_secs(25), "{:?}", began.elapsed());
-    assert!(!started(&world, "slow", "a"));
 }
 
 /// The Studio64 case (sunfmin/control#1117): with the one lane taken by a
@@ -2112,7 +1834,7 @@ fn a_pending_turn_past_its_bound_ends_and_frees_its_place() {
     });
     let answer = finish(behind);
     assert_eq!(answer["outcome"], "waited_past_bound", "{answer}");
-    assert!(answer["detail"].as_str().unwrap().contains("for a lane on this host"), "{answer}");
+    assert!(answer["detail"].as_str().unwrap().contains("for its round"), "{answer}");
     let pending = chain(&world)["pending"].clone();
     assert!(pending.as_array().is_none_or(Vec::is_empty), "its place is freed: {pending}");
     assert!(!world.root.join("start-b").exists(), "nothing of it ran");

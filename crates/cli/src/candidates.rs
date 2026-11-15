@@ -18,9 +18,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use afkconvoy_landing::chain::BatchStep;
 use afkconvoy_landing::forge::{Change, Forge};
-use afkconvoy_landing::turn::{Declared, Landing, Next};
+use afkconvoy_landing::pairing::{self, Asks, Built, RoundNext};
+use afkconvoy_landing::turn::{Declared, Next};
 
 use crate::exclusive::Permit;
 use crate::forge::{Pulls, Refusal};
@@ -251,6 +251,7 @@ impl Drop for Reservation<'_> {
         let _ = change(self.repo, self.config, |chain| {
             chain.barriers.retain(|b| b.id != self.id);
             chain.pending.retain(|b| b.id != self.id);
+            chain.leave_round(|a| a.id == self.id);
         });
     }
 }
@@ -272,9 +273,12 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
         "round": chain.round_of(&c.id).map(|tip| &tip.id),
         "assigned": c.assigned,
     });
-    // A candidate of a batch round says so: its round is its batch round's gate.
+    // A candidate of a round's root says so; a pair says what it joins.
     if c.batch {
         row["batch"] = json!(true);
+    }
+    if let Some(pair) = &c.pair {
+        row["pair"] = json!(pair);
     }
     if matches!(c.phase, Phase::Validating | Phase::Slow)
         && let Some(result) = &c.result
@@ -301,9 +305,9 @@ pub(crate) fn view(
     Ok(json!(rows))
 }
 
-/// Whether a land turn of `branch` holds a candidate on the chain now: a
-/// valid one of that branch, in `records`, whose turn runs on this host and
-/// is alive. Such a turn waits on the chain — its gate, the candidates ahead,
+/// Whether a land turn of `branch` holds a candidate on the chain now — a
+/// valid one of that branch, in `records`, a pair among them — or is in a
+/// round, whose turn runs on this host and is alive. Such a turn waits on the chain — its gate, the candidates ahead,
 /// its round — however long that takes, and holds no lane while it waits for
 /// its round (sunfmin/control#244).
 pub(crate) fn landing(records: &[crate::remote::RemoteRecord], prefix: &str, branch: &str) -> bool {
@@ -311,14 +315,17 @@ pub(crate) fn landing(records: &[crate::remote::RemoteRecord], prefix: &str, bra
         .iter()
         .filter(|record| record.name.starts_with(prefix))
         .filter_map(|record| serde_json::from_str::<Chain>(&record.subject).ok());
+    let live = |owner: &Process| {
+        owner.host == crate::this_host()
+            && identity(owner.pid).ok().flatten().as_ref() == Some(owner)
+    };
     chains.into_iter().any(|chain| {
-        chain.candidates.iter().any(|c| {
-            c.valid()
-                && c.phase != Phase::Landed
-                && c.branch == branch
-                && c.owner.host == crate::this_host()
-                && identity(c.owner.pid).ok().flatten().as_ref() == Some(&c.owner)
-        })
+        let asked = chain.round.iter().flat_map(|r| &r.asked);
+        chain
+            .candidates
+            .iter()
+            .any(|c| c.valid() && c.phase != Phase::Landed && c.branch == branch && live(&c.owner))
+            || asked.into_iter().any(|a| a.asks.branch == branch && live(&a.owner))
     })
 }
 
@@ -344,14 +351,17 @@ pub(crate) fn pending_lands(
     for record in records {
         let Some(branch) = record.name.strip_prefix(prefix) else { continue };
         let Ok(chain) = serde_json::from_str::<Chain>(&record.subject) else { continue };
-        for b in &chain.pending {
-            if b.owner.host == crate::this_host()
-                && identity(b.owner.pid).ok().flatten().as_ref() == Some(&b.owner)
+        // A turn in a round without a candidate yet waits as a pending one does.
+        let asked = chain.round.iter().flat_map(|r| &r.asked).filter(|a| a.candidate.is_none());
+        let places = chain.pending.iter().map(|b| (&b.owner, b.since));
+        for (owner, since) in places.chain(asked.map(|a| (&a.owner, None))) {
+            if owner.host == crate::this_host()
+                && identity(owner.pid).ok().flatten().as_ref() == Some(owner)
             {
                 lands.push(PendingLand {
-                    pid: b.owner.pid,
+                    pid: owner.pid,
                     branch: branch.to_string(),
-                    waited: b.since.map(|since| now.saturating_sub(since)),
+                    waited: since.map(|since| now.saturating_sub(since)),
                 });
             }
         }
@@ -885,7 +895,7 @@ fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
                 != Some(&c.original_head)
             {
                 invalid.push((c.id.clone(), "head_changed"));
-            } else if !adopted_later(c) && !alive(&c.owner)? {
+            } else if !c.adoptable() && !alive(&c.owner)? {
                 invalid.push((c.id.clone(), "owner_died"));
             }
         }
@@ -895,12 +905,19 @@ fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
                 dead_barriers.push(barrier.id.clone());
             }
         }
+        for ask in updated.chain.round.iter().flat_map(|r| &r.asked) {
+            if !alive(&ask.owner)? {
+                dead_barriers.push(ask.id.clone());
+            }
+        }
         updated.chain.barriers.retain(|b| !dead_barriers.contains(&b.id));
         updated.chain.pending.retain(|b| !dead_barriers.contains(&b.id));
+        updated.chain.leave_round(|a| dead_barriers.contains(&a.id));
         updated.chain.observe_base(&updated.base);
         for (id, cause) in &invalid {
             updated.chain.invalidate(id, cause);
         }
+        updated.chain.advance_round();
         if before != updated.chain && !write(repo, config, &updated)? {
             continue;
         }
@@ -947,14 +964,6 @@ fn dead_hosts(
 }
 
 /// Used before queue capacity is released after a candidate owner dies.
-/// Whether a candidate whose owner is gone waits for its PR's next turn to
-/// adopt it: a fast-green one does. One of a batch round does not: its
-/// round's next step may be its own, which no other turn runs, so it goes
-/// `owner_died` and the round goes on without it.
-fn adopted_later(c: &Candidate) -> bool {
-    c.adoptable() && !c.batch
-}
-
 /// A stopped fast-green candidate has no process to clean up and is adopted
 /// by its next turn instead of cancelling its successors here.
 pub(crate) fn abandoned(dir: &str) -> Result<()> {
@@ -966,7 +975,7 @@ pub(crate) fn abandoned(dir: &str) -> Result<()> {
             record.name.strip_prefix(&prefix).context("invalid candidate ref")?.to_string();
         let chain: Chain = serde_json::from_str(&record.subject)?;
         for c in chain.candidates.iter().filter(|c| c.active()) {
-            if !adopted_later(c) && !alive(&c.owner)? {
+            if !c.adoptable() && !alive(&c.owner)? {
                 invalidate(&repo, &config, &c.id, "owner_died")?;
             }
         }
@@ -1014,13 +1023,6 @@ impl Gate<'_> {
         seconds: u64,
         termination: Option<afkconvoy_core::gate::Termination>,
     ) -> Result<()> {
-        // A batch candidate's red decides nothing behind it, and its round's
-        // next step waits for its turn's own `finish`: its gate is stopped
-        // here, as it stays valid and no cleanup would stop it.
-        let chain = read(self.repo, self.config)?.chain;
-        if chain.candidates.iter().any(|c| c.id == self.id && c.batch && c.valid()) {
-            return self.stop();
-        }
         let evidence = Evidence::red(exit_code, timed_out, seconds, termination);
         let chain =
             change(self.repo, self.config, |chain| chain.finish(self.id, evidence.clone()))?;
@@ -1409,10 +1411,23 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         );
         waited_past(answer, detail)
     };
+    // A pending turn says what it asks to land: the next round takes it in
+    // with it (docs/adr/0083).
+    let asks = (!barrier).then(|| Asks {
+        change: pr.number,
+        branch: pr.head_branch.clone(),
+        head: original.clone(),
+    });
     let reserve = |chain: &mut Chain| {
+        let in_round = chain.round.iter().flat_map(|r| &r.asked).any(|a| a.id == id);
         let places = if barrier { &mut chain.barriers } else { &mut chain.pending };
-        if !places.iter().any(|b| b.id == id) {
-            places.push(Barrier { id: id.clone(), owner: owner.clone(), since: Some(reserved) });
+        if !in_round && !places.iter().any(|b| b.id == id) {
+            places.push(Barrier {
+                id: id.clone(),
+                owner: owner.clone(),
+                since: Some(reserved),
+                asks: asks.clone(),
+            });
         }
         chain.beat(&here, clock());
     };
@@ -1456,12 +1471,16 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         // Another host read this one dead while it was away — it slept, or
         // lost the network — and dropped its place: it takes one again, at
         // the back.
-        if adopted.is_none() && !chain.barriers.iter().chain(&chain.pending).any(|b| b.id == id) {
+        let in_round = chain.round.iter().flat_map(|r| &r.asked).any(|a| a.id == id);
+        if adopted.is_none()
+            && !in_round
+            && !chain.barriers.iter().chain(&chain.pending).any(|b| b.id == id)
+        {
             chain = change(repo, config, reserve)?;
         }
         if let Some(c) = chain
-            .candidates
-            .iter()
+            .chained()
+            .into_iter()
             .rev()
             .find(|c| c.change == pr.number && c.original_head == original)
         {
@@ -1505,8 +1524,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         waiting.after(&chain);
     }
     let recovering = adopted.is_some();
+    // A turn that is no barrier lands through its round's pairing tree
+    // (docs/adr/0083): it takes a lane for each gate it runs there.
+    let rooted = !barrier && !recovering;
     let id = adopted.as_ref().map_or_else(|| id.clone(), |c| c.id.clone());
-    let mut permit = if recovering {
+    let mut permit = if recovering || rooted {
         None
     } else {
         match until {
@@ -1520,194 +1542,165 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             }
         }
     };
-    let turn = Turn {
-        repo,
-        config,
-        forge: &forge,
-        asked: &asked,
-        gh: &gh,
-        issue,
-        host,
-        heavy,
-        clock: &clock,
-    };
-    // A candidate of a batch round is its round's to decide (`batched`); one
-    // rebuilt without the round's red one is assigned again, here.
-    let mut rebuilt = false;
-    let candidate = loop {
-        let candidate = if let Some(candidate) = adopted.take() {
-            candidate
-        } else {
-            loop {
-                let locks = crate::lock::standing_locks(&gh, config)?;
-                if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
-                    return Ok(crate::turn::locked(answer, &locks));
-                }
-                let barrier = barrier || !locks.is_empty();
-                let mut snapshot = read(repo, config)?;
-                let current = snapshot.base.clone();
-                let fresh = snapshot.chain.unused_id(id.clone());
-                if snapshot.chain.candidates.iter().any(|c| c.change == pr.number && c.active()) {
-                    answer["outcome"] = json!(Ending::CandidateActive);
-                    answer["detail"] = json!(
-                        "this PR already has an active candidate; its owner alone may validate and publish it"
-                    );
-                    return Ok(answer);
-                }
-                let declared = crate::turn::tip_config(repo, &current)?;
-                let base_command = GateCommand::new(&declared.gate_command);
-                let base_tree =
-                    Tree::named(&repo.git(&["rev-parse", &format!("{current}^{{tree}}")])?);
-                let repairing = match issue.filter(|n| locks.contains(n)) {
-                    Some(n) => crate::repair::is_for(repo, &gh, n, &current, &config.base_branch)?,
-                    None => false,
-                };
-                if !repairing
-                    && crate::gate::recorded(repo, &base_tree, &base_command, clock())?.is_none()
-                {
-                    answer["outcome"] = json!(Ending::BaseUncertified);
-                    answer["detail"] = json!(
-                        "the base changed before assignment and needs certification; ask for another turn"
-                    );
-                    return Ok(answer);
-                }
-                // A barrier or an unconfirmed cancellation may hold the window.
-                if !snapshot.chain.can_assign(barrier) {
-                    drop(permit);
-                    answer["outcome"] = json!(Ending::WaitingForCapacity);
-                    answer["detail"] = json!("the candidate window is held; ask for another turn");
-                    return Ok(answer);
-                }
-                // A turn lands as the target's tip declares (docs/adr/0068); a
-                // barrier drains the chain and lands per candidate. A round of
-                // the other landing on the chain lands first.
-                let batch = !barrier && declared.landing == Landing::Batch;
-                if snapshot
-                    .chain
-                    .candidates
-                    .iter()
-                    .any(|c| c.valid() && !c.barrier && c.batch != batch)
-                {
-                    drop(permit);
-                    answer["outcome"] = json!(Ending::WaitingForCapacity);
-                    answer["detail"] = json!(
-                        "the chain holds a round of the other landing, which lands first; ask for another turn"
-                    );
-                    return Ok(answer);
-                }
-                snapshot.chain.observe_base(&current);
-                let predecessor = snapshot.chain.predecessor(&current);
-                let message = forge.message(&asked);
-                // A cut adds one commit: the set commit stays on the cut's branch.
-                // An issue turn and a watch still land a merge.
-                let built = match of {
-                    Of::Cut(_) => {
-                        crate::turn::cut_onto(repo, &predecessor, &original, &message, now)?
-                    }
-                    _ => crate::turn::merged_onto(repo, &predecessor, &original, &message, now)?,
-                };
-                let Some(commit) = built else {
-                    if predecessor != current {
-                        // The worker resolves it: its branch then carries the candidate ahead.
-                        let files =
-                            crate::turn::merge_in(repo, &predecessor, "the candidate ahead")?;
-                        answer["outcome"] = json!(Ending::SpeculativeConflict);
-                        answer["status"] = json!("conflict");
-                        answer["files"] = json!(files);
-                        answer["recorded"] = json!(false);
-                        answer["worktree"] = json!(repo.dir);
-                        answer["merging"] = json!(predecessor);
-                        answer["detail"] = json!(
-                            "merging onto the candidate ahead conflicts; resolve every file, git add it, COMMIT the merge, and ask for a turn again"
-                        );
-                        return Ok(answer);
-                    }
-                    let files = crate::turn::merge_in(repo, &current, "the base branch's tip")?;
-                    answer["outcome"] = json!(Ending::Conflict);
+    let path = root.join(&id);
+    let candidate = if let Some(candidate) = adopted {
+        candidate
+    } else if rooted {
+        let turn = InRound {
+            repo,
+            config,
+            gh: &gh,
+            forge: &forge,
+            asked: &asked,
+            pr,
+            of,
+            issue,
+            id: &id,
+            original: &original,
+            host,
+            root: &root,
+            heavy,
+            clock: &clock,
+        };
+        match in_round(&turn, answer.clone(), &reserve, &past, &pending_past)? {
+            Rounded::Answer(answer) => return Ok(answer),
+            Rounded::Assigned(candidate) => *candidate,
+        }
+    } else {
+        loop {
+            let locks = crate::lock::standing_locks(&gh, config)?;
+            if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
+                return Ok(crate::turn::locked(answer, &locks));
+            }
+            let barrier = barrier || !locks.is_empty();
+            let mut snapshot = read(repo, config)?;
+            let current = snapshot.base.clone();
+            if snapshot.chain.chained().into_iter().any(|c| c.change == pr.number && c.active()) {
+                answer["outcome"] = json!(Ending::CandidateActive);
+                answer["detail"] = json!(
+                    "this PR already has an active candidate; its owner alone may validate and publish it"
+                );
+                return Ok(answer);
+            }
+            let declared = crate::turn::tip_config(repo, &current)?;
+            let base_command = GateCommand::new(&declared.gate_command);
+            let base_tree = Tree::named(&repo.git(&["rev-parse", &format!("{current}^{{tree}}")])?);
+            let repairing = match issue.filter(|n| locks.contains(n)) {
+                Some(n) => crate::repair::is_for(repo, &gh, n, &current, &config.base_branch)?,
+                None => false,
+            };
+            if !repairing
+                && crate::gate::recorded(repo, &base_tree, &base_command, clock())?.is_none()
+            {
+                answer["outcome"] = json!(Ending::BaseUncertified);
+                answer["detail"] = json!(
+                    "the base changed before assignment and needs certification; ask for another turn"
+                );
+                return Ok(answer);
+            }
+            // A barrier or an unconfirmed cancellation may hold the window.
+            if !snapshot.chain.can_assign(barrier) {
+                drop(permit);
+                answer["outcome"] = json!(Ending::WaitingForCapacity);
+                answer["detail"] = json!("the candidate window is held; ask for another turn");
+                return Ok(answer);
+            }
+            snapshot.chain.observe_base(&current);
+            let predecessor = snapshot.chain.predecessor(&current);
+            let message = forge.message(&asked);
+            // A cut adds one commit: the set commit stays on the cut's branch.
+            // An issue turn and a watch still land a merge.
+            let built = match of {
+                Of::Cut(_) => crate::turn::cut_onto(repo, &predecessor, &original, &message, now)?,
+                _ => crate::turn::merged_onto(repo, &predecessor, &original, &message, now)?,
+            };
+            let Some(commit) = built else {
+                if predecessor != current {
+                    // The worker resolves it: its branch then carries the candidate ahead.
+                    let files = crate::turn::merge_in(repo, &predecessor, "the candidate ahead")?;
+                    answer["outcome"] = json!(Ending::SpeculativeConflict);
                     answer["status"] = json!("conflict");
                     answer["files"] = json!(files);
                     answer["recorded"] = json!(false);
                     answer["worktree"] = json!(repo.dir);
+                    answer["merging"] = json!(predecessor);
                     answer["detail"] = json!(
-                        "resolve every file, git add it, COMMIT the merge, and ask for a turn again"
-                    );
-                    return Ok(answer);
-                };
-                let declared = crate::turn::tip_config(repo, &commit)?;
-                if crate::config::heavy_gate(&declared.gate_command) && !heavy {
-                    answer["outcome"] = json!(Ending::GateLaneChanged);
-                    answer["detail"] = json!(
-                        "the predecessor changed the gate to a worker lane; request a new turn after it lands"
+                        "merging onto the candidate ahead conflicts; resolve every file, git add it, COMMIT the merge, and ask for a turn again"
                     );
                     return Ok(answer);
                 }
-                let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
-                // Where the commit splits its gate, the candidate runs the fast gate,
-                // and a round at it the slow one (docs/adr/0048).
-                let own = Declared {
-                    whole: declared.gate_command.clone(),
-                    seconds: declared.gate_seconds(),
-                    gates: declared.gates.clone(),
-                    landing: declared.landing,
-                }
-                .own();
-                let c = Candidate {
-                    id: fresh.clone(),
-                    change: pr.number,
-                    note: forge.note(&asked),
-                    branch: pr.head_branch.clone(),
-                    original_head: original.clone(),
-                    predecessor,
-                    commit,
-                    tree,
-                    command: own.command,
-                    seconds: own.seconds,
-                    phase: if batch { Phase::Batched } else { Phase::Building },
-                    owner: owner.clone(),
-                    gate: None,
-                    descendants: vec![],
-                    worktree: root.join(&fresh).to_string_lossy().into_owned(),
-                    barrier,
-                    cancelled_by: None,
-                    cause: None,
-                    stopped: batch,
-                    abandoned: false,
-                    result: None,
-                    slow: own.slow,
-                    slowed: false,
-                    batch,
-                    holds_red: false,
-                    assigned: Some(clock()),
-                };
-                snapshot.chain.assign(c.clone());
-                if write(repo, config, &snapshot)? {
-                    break c;
-                }
+                let files = crate::turn::merge_in(repo, &current, "the base branch's tip")?;
+                answer["outcome"] = json!(Ending::Conflict);
+                answer["status"] = json!("conflict");
+                answer["files"] = json!(files);
+                answer["recorded"] = json!(false);
+                answer["worktree"] = json!(repo.dir);
+                answer["detail"] = json!(
+                    "resolve every file, git add it, COMMIT the merge, and ask for a turn again"
+                );
+                return Ok(answer);
+            };
+            let declared = crate::turn::tip_config(repo, &commit)?;
+            if crate::config::heavy_gate(&declared.gate_command) && !heavy {
+                answer["outcome"] = json!(Ending::GateLaneChanged);
+                answer["detail"] = json!(
+                    "the predecessor changed the gate to a worker lane; request a new turn after it lands"
+                );
+                return Ok(answer);
             }
-        };
-        if !candidate.batch {
-            // One rebuilt from a batch round onto a tip that lands per
-            // candidate gates now, in a lane.
-            if rebuilt {
-                permit =
-                    Some(Permit::assigned(repo, "turn: validate candidate, record, land", heavy)?);
+            let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
+            // Where the commit splits its gate, the candidate runs the fast gate,
+            // and a round at it the slow one (docs/adr/0048).
+            let own = Declared {
+                whole: declared.gate_command.clone(),
+                seconds: declared.gate_seconds(),
+                gates: declared.gates.clone(),
             }
-            break candidate;
+            .own();
+            let c = Candidate {
+                id: id.clone(),
+                change: pr.number,
+                note: forge.note(&asked),
+                branch: pr.head_branch.clone(),
+                original_head: original.clone(),
+                predecessor,
+                commit,
+                tree,
+                command: own.command,
+                seconds: own.seconds,
+                phase: Phase::Building,
+                owner: owner.clone(),
+                gate: None,
+                descendants: vec![],
+                worktree: path.to_string_lossy().into_owned(),
+                barrier,
+                cancelled_by: None,
+                cause: None,
+                stopped: false,
+                abandoned: false,
+                result: None,
+                slow: own.slow,
+                slowed: false,
+                batch: false,
+                pair: None,
+                assigned: Some(clock()),
+            };
+            snapshot.chain.assign(c.clone());
+            if write(repo, config, &snapshot)? {
+                break c;
+            }
         }
-        // It waits holding no lane, and takes one to gate.
-        permit = None;
-        if let Some(answer) = batched(&turn, &candidate.id, answer.clone())? {
-            return Ok(answer);
-        }
-        rebuilt = true;
     };
+    // A round may take up a candidate this PR's earlier turn left.
     let id = candidate.id.clone();
-    let path = PathBuf::from(&candidate.worktree);
     answer["candidate"] = json!(id);
     answer["merged"] = json!(candidate.predecessor);
     answer["predecessor"] = json!(candidate.predecessor);
-    // A recovered candidate is fast-green: what its run said is not kept.
-    let (evidence, judged) = if recovering {
+    // A recovered candidate is fast-green: what its run said is not kept. A
+    // candidate of a round's root gates with the round, at its last.
+    let (evidence, judged) = if rooted {
+        (Evidence::default(), None)
+    } else if recovering {
         (candidate.result.clone().expect("a fast-green candidate has its gate result"), None)
     } else {
         add_candidate_worktree(repo, &path, &candidate.commit)?;
@@ -1731,8 +1724,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             }
         }
     };
-    let mut result = answered(&evidence, &answer);
-    let chain = if recovering {
+    let mut result = if rooted { answer.clone() } else { answered(&evidence, &answer) };
+    let chain = if recovering || rooted {
         read(repo, config)?.chain
     } else {
         let chain = change(repo, config, |chain| chain.finish(&id, evidence.clone()))?;
@@ -1799,6 +1792,23 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             invalidate(repo, config, &id, "fleet_lock")?;
             return Ok(crate::turn::locked(result, &locks));
         }
+        if next == Next::Whole {
+            let round_of = Round { repo, config, tracker, id: &id, host, issue, heavy };
+            if let Some(red) = whole(round_of, &clock)? {
+                for (key, value) in red.as_object().into_iter().flatten() {
+                    result[key] = value.clone();
+                }
+                return Ok(result);
+            }
+            // Its answer says what the round's whole gate said of its tree.
+            let chain = read(repo, config)?.chain;
+            let ran = chain.candidates.iter().find(|c| c.id == id).and_then(|c| c.result.clone());
+            if let Some(evidence) = ran {
+                result = answered(&evidence, &result);
+            }
+            green_at = std::time::Instant::now();
+            continue;
+        }
         if next == Next::Round {
             let round_of = Round { repo, config, tracker, id: &id, host, issue, heavy };
             if let Some(red) = round(round_of, clock)? {
@@ -1818,278 +1828,560 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             waiting.after(&chain);
             continue;
         }
-        if land_ripe(&turn, &id, &base, &mut result)? {
-            drop(permit);
-            return Ok(result);
+        match forge.may_land(&asked)? {
+            Ok(()) => {}
+            Err(Refusal::Blocked(blockers)) => {
+                invalidate(repo, config, &id, "issue_blocked")?;
+                result["outcome"] = json!(Ending::Blocked);
+                result["blocked_by"] = json!(blockers);
+                return Ok(result);
+            }
+            Err(Refusal::Retargeted) => bail!(RETARGETED),
+            // Closed while the candidate waited or validated: it lands nothing.
+            Err(Refusal::Closed(n)) => {
+                invalidate(repo, config, &id, "issue_closed")?;
+                bail!(crate::turn::closed(n));
+            }
         }
+        let current = forge.current(&asked)?.context(
+            "internal PR disappeared before publication; restore it before requesting another turn",
+        )?;
+        if let Err(error) =
+            crate::turn::ensure_target(current.number, &current.target, &config.base_branch)
+        {
+            invalidate(repo, config, &id, "pr_base_changed")?;
+            return Err(error);
+        }
+        let mut snapshot = read(repo, config)?;
+        let members: Vec<Candidate> = snapshot.chain.members(&id).into_iter().cloned().collect();
+        let Some(c) = members.last() else {
+            bail!("candidate record disappeared");
+        };
+        // The whole gate on its tree: its own gate, or its round's two parts.
+        let whole = GateCommand::new(afkconvoy_landing::turn::whole(c));
+        let tree = Tree::named(&c.tree);
+        let run = crate::gate::recorded(repo, &tree, &whole, clock())?;
+        let mut heads = true;
+        for m in &members {
+            let head = repo.remote().sha(&format!("refs/heads/{}", m.branch), Fresh::Live)?;
+            heads &= head.as_deref() == Some(&m.original_head);
+        }
+        let Some(publication) = snapshot.chain.publication(&id, &base, run.is_some(), heads) else {
+            invalidate(repo, config, &id, "publication_evidence_changed")?;
+            let chain = read(repo, config)?.chain;
+            let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
+            return Ok(cancelled(result, c, &chain));
+        };
+        let run = run.expect("publication requires green record");
+        let proof = Proven::by(&tree, &whole, &run, clock())
+            .ok_or_else(|| anyhow!("candidate green record expired"))?;
+        let landed = c.commit.clone();
+        snapshot.chain.land(&id);
+        let next = commit(repo, &snapshot)?;
+        let pushed = publish(repo, config, &members, &snapshot, &next, &proof, &publication)?;
+        if !pushed {
+            if crate::turn::base(repo, config)? != base {
+                continue;
+            }
+            if repo.remote().sha(&refname(repo, config), Fresh::Process)? == snapshot.sha {
+                result["outcome"] = json!(Ending::TargetMoved);
+                invalidate(repo, config, &id, "push_rejected")?;
+                return Ok(result);
+            }
+            continue;
+        }
+        settle(&forge, &asked, &landed, &mut result);
+        let published = snapshot.chain.candidates.iter().find(|c| c.id == id);
+        decided(&mut result, published.expect("the published candidate"));
+        result["commit"] = json!(landed);
+        result["landed"] = json!(members.iter().map(|m| m.change).collect::<Vec<_>>());
+        result["detail"] = json!(
+            "landed the exact recorded candidate as a fast-forward; source head preserved — stop"
+        );
+        let prs: Vec<String> = members.iter().map(|m| format!("#{}", m.change)).collect();
+        crate::acting::Acting::new("land").on_issue(issue).in_checkout(Some(repo.clone())).say(
+            crate::clock(),
+            format!("turn landed PR {} on {} at {landed}", prs.join(", "), config.base_branch),
+        );
+        drop(permit);
+        return Ok(result);
     }
 }
 
-/// What a turn runs with past its candidate's assignment.
-struct Turn<'a> {
+/// A turn in its round (docs/adr/0083): what it runs with.
+struct InRound<'a> {
     repo: &'a Repo,
     config: &'a Config,
+    gh: &'a GitHub,
     forge: &'a Pulls<'a>,
     asked: &'a Change,
-    gh: &'a GitHub,
+    pr: &'a PullRequest,
+    of: &'a Of,
     issue: Option<u64>,
+    /// Its place: pending, in the round, and its candidate's id.
+    id: &'a str,
+    original: &'a str,
     host: &'a str,
+    root: &'a Path,
     heavy: bool,
     clock: &'a dyn Fn() -> u64,
 }
 
-/// Lands the candidate `id`, ripe on `base`, with every member before it,
-/// as one atomic push → whether `result` is the turn's answer now: it
-/// landed, or the turn ends otherwise; `false` where the target or the
-/// record moved under it, and the turn looks at the chain again.
-fn land_ripe(turn: &Turn<'_>, id: &str, base: &str, result: &mut Value) -> Result<bool> {
-    let Turn { repo, config, forge, asked, issue, clock, .. } = *turn;
-    let base = base.to_string();
-    match forge.may_land(asked)? {
-        Ok(()) => {}
-        Err(Refusal::Blocked(blockers)) => {
-            invalidate(repo, config, id, "issue_blocked")?;
-            result["outcome"] = json!(Ending::Blocked);
-            result["blocked_by"] = json!(blockers);
-            return Ok(true);
-        }
-        Err(Refusal::Retargeted) => bail!(RETARGETED),
-        // Closed while the candidate waited or validated: it lands nothing.
-        Err(Refusal::Closed(n)) => {
-            invalidate(repo, config, id, "issue_closed")?;
-            bail!(crate::turn::closed(n));
-        }
-    }
-    let current = forge.current(asked)?.context(
-        "internal PR disappeared before publication; restore it before requesting another turn",
-    )?;
-    if let Err(error) =
-        crate::turn::ensure_target(current.number, &current.target, &config.base_branch)
-    {
-        invalidate(repo, config, id, "pr_base_changed")?;
-        return Err(error);
-    }
-    let mut snapshot = read(repo, config)?;
-    let members: Vec<Candidate> = snapshot.chain.members(id).into_iter().cloned().collect();
-    let Some(c) = members.last() else {
-        bail!("candidate record disappeared");
-    };
-    // The whole gate on its tree: its own gate, or its round's two parts.
-    let whole = GateCommand::new(afkconvoy_landing::turn::whole(c));
-    let tree = Tree::named(&c.tree);
-    let run = crate::gate::recorded(repo, &tree, &whole, clock())?;
-    let mut heads = true;
-    for m in &members {
-        let head = repo.remote().sha(&format!("refs/heads/{}", m.branch), Fresh::Live)?;
-        heads &= head.as_deref() == Some(&m.original_head);
-    }
-    let Some(publication) = snapshot.chain.publication(id, &base, run.is_some(), heads) else {
-        invalidate(repo, config, id, "publication_evidence_changed")?;
-        let chain = read(repo, config)?.chain;
-        let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
-        *result = cancelled(result.clone(), c, &chain);
-        return Ok(true);
-    };
-    let run = run.expect("publication requires green record");
-    let proof = Proven::by(&tree, &whole, &run, clock())
-        .ok_or_else(|| anyhow!("candidate green record expired"))?;
-    let landed = c.commit.clone();
-    snapshot.chain.land(id);
-    let next = commit(repo, &snapshot)?;
-    let pushed = publish(repo, config, &members, &snapshot, &next, &proof, &publication)?;
-    if !pushed {
-        if crate::turn::base(repo, config)? != base {
-            return Ok(false);
-        }
-        if repo.remote().sha(&refname(repo, config), Fresh::Process)? == snapshot.sha {
-            result["outcome"] = json!(Ending::TargetMoved);
-            invalidate(repo, config, id, "push_rejected")?;
-            return Ok(true);
-        }
-        return Ok(false);
-    }
-    settle(forge, asked, &landed, result);
-    let published = snapshot.chain.candidates.iter().find(|c| c.id == id);
-    decided(result, published.expect("the published candidate"));
-    result["commit"] = json!(landed);
-    result["landed"] = json!(members.iter().map(|m| m.change).collect::<Vec<_>>());
-    result["detail"] = json!(
-        "landed the exact recorded candidate as a fast-forward; source head preserved — stop"
-    );
-    let prs: Vec<String> = members.iter().map(|m| format!("#{}", m.change)).collect();
-    crate::acting::Acting::new("land").on_issue(issue).in_checkout(Some(repo.clone())).say(
-        crate::clock(),
-        format!("turn landed PR {} on {} at {landed}", prs.join(", "), config.base_branch),
-    );
-    Ok(true)
+/// What a turn's round came to: its answer, or its candidate of the round's
+/// root, on the chain.
+enum Rounded {
+    Answer(Value),
+    Assigned(Box<Candidate>),
 }
 
-/// The turn of `id`, a candidate of a batch round (docs/adr/0068), which
-/// runs every step of its round its chain names at it (`Chain::batch_step`):
-/// the round's gate at it, its tree's whole gate, fast then slow; its drop,
-/// as the round's first red candidate; and its landing, with every
-/// candidate before it. One runner over the whole round is its chain: each
-/// step is the turn's of the candidate it is at, and every other turn of the
-/// round waits → its answer, or `None` where the candidate was cancelled
-/// `rebuilt`, behind the round's first red one, for the turn to assign its
-/// change again without it.
-fn batched(turn: &Turn<'_>, id: &str, mut answer: Value) -> Result<Option<Value>> {
-    let Turn { repo, config, forge, asked, gh, issue, clock, .. } = *turn;
-    // What the red gate this turn ran at its candidate said, which its
-    // drop sends back.
-    let mut red: Option<String> = None;
+/// Takes the turn through its round, up to its candidate of the round's
+/// root (docs/adr/0083): it opens a round where none is open, pairs a level
+/// where it sees one to pair, gates each pair it is the later-asked PR of,
+/// and assigns its candidate once every PR of the root asked before it has
+/// one. A pair of its red answers `gate_red` with that pair's run; a round
+/// it leaves for the next takes it back pending.
+fn in_round(
+    turn: &InRound<'_>,
+    answer: Value,
+    reserve: &dyn Fn(&mut Chain),
+    past: &dyn Fn() -> bool,
+    pending_past: &dyn Fn(Value, &str) -> Value,
+) -> Result<Rounded> {
+    let InRound { repo, config, gh, issue, id, clock, .. } = *turn;
     let mut waiting = Waiting::new();
     loop {
         let chain = reconcile(repo, config, clock())?;
-        let c = chain.candidates.iter().find(|c| c.id == id).context("assigned candidate")?;
-        answer["candidate"] = json!(id);
-        answer["merged"] = json!(c.predecessor);
-        answer["predecessor"] = json!(c.predecessor);
-        let mut result =
-            c.result.as_ref().map_or_else(|| answer.clone(), |run| answered(run, &answer));
-        match chain.next(id).context("assigned candidate")? {
-            Next::Landed => {
-                settle(forge, asked, &c.commit, &mut result);
-                decided(&mut result, c);
-                result["commit"] = json!(c.commit);
-                result["detail"] = json!(
-                    "landed with its batch round, as a fast-forward; source head preserved — stop"
-                );
-                return Ok(Some(result));
-            }
-            Next::Ended if c.cause.as_deref() == Some("rebuilt") => return Ok(None),
-            Next::Ended if c.decision() == Some(Decision::Red) => {
-                decided(&mut result, c);
-                result["detail"] = json!(format!(
-                    "{}; every candidate of the batch round before it passed the whole gate: this change is the round's first red one — fix it, commit and ask for a turn again",
-                    red.as_deref().unwrap_or("the gate ran red at this candidate")
-                ));
-                return Ok(Some(result));
-            }
-            Next::Ended => return Ok(Some(cancelled(result, c, &chain))),
-            Next::Round | Next::Waiting => {}
-        }
-        let locks = crate::lock::standing_locks(gh, config)?;
+        // Asked again at each wait: one read for the host's waiting turns.
+        let locks = crate::lock::waited_locks(gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
-            invalidate(repo, config, id, "fleet_lock")?;
-            return Ok(Some(crate::turn::locked(result, &locks)));
+            return Ok(Rounded::Answer(crate::turn::locked(answer, &locks)));
         }
-        match chain.batch_step() {
-            Some(BatchStep::Gate(at)) if at == id => {
-                let Some((evidence, judged, gate)) = gate_batched(turn, id)? else { continue };
-                let chain = read(repo, config)?.chain;
-                let c =
-                    chain.candidates.iter().find(|c| c.id == id).context("assigned candidate")?;
-                if let Judged::Unsettled(said) = &judged
-                    && c.decision() == Some(Decision::Unsettled)
-                {
-                    let result = answered(&evidence, &answer);
-                    return Ok(Some(unsettled(result, (gate, c), said, repo, issue)));
-                }
-                red = match &judged {
-                    Judged::Red(said) if c.slow.is_none() => Some(said.said("the gate")),
-                    Judged::Red(said) => Some(said.said(&format!("the {gate} gate"))),
-                    Judged::Green | Judged::Unsettled(_) => None,
-                };
-            }
-            Some(BatchStep::Drop(at)) if at == id => {
-                let chain = change(repo, config, |chain| chain.drop_red(id))?;
-                cleanup(repo, config, &chain)?;
-            }
-            Some(BatchStep::Land(at)) if at == id => {
-                let base = crate::turn::base(repo, config)?;
-                if !chain.ripe(id, &base) {
-                    waiting.after(&chain);
+        let next = chain.round_next(id);
+        match next {
+            None => {
+                let mut opened = false;
+                let round = format!("round-{id}");
+                change(repo, config, |chain| {
+                    reserve(chain);
+                    opened = chain.open_round(&round);
+                })?;
+                if opened {
                     continue;
                 }
-                if land_ripe(turn, id, &base, &mut result)? {
-                    return Ok(Some(result));
-                }
             }
-            _ => waiting.after(&chain),
+            Some(RoundNext::Pair) => {
+                pair_level(turn, &chain)?;
+                continue;
+            }
+            Some(RoundNext::Gate(pair)) => {
+                gate_pair(turn, &pair)?;
+                continue;
+            }
+            Some(RoundNext::Assign) => {
+                if let Some(rounded) = assign_rooted(turn, answer.clone())? {
+                    return Ok(rounded);
+                }
+                continue;
+            }
+            Some(RoundNext::Assigned(candidate)) => {
+                let c = chain.candidates.iter().find(|c| c.id == candidate);
+                return Ok(Rounded::Assigned(Box::new(c.context("assigned candidate")?.clone())));
+            }
+            Some(RoundNext::Left(pairing::Left::Red(pair))) => {
+                let p = chain.candidates.iter().find(|c| c.id == pair).context("red pair")?;
+                return Ok(Rounded::Answer(pair_red(answer, p)));
+            }
+            Some(RoundNext::Left(pairing::Left::Unpaired | pairing::Left::Next)) => {
+                // It waits for the next round, pending again.
+                change(repo, config, |chain| {
+                    chain.leave_round(|a| a.id == id);
+                    reserve(chain);
+                })?;
+                continue;
+            }
+            Some(RoundNext::Left(pairing::Left::Conflict)) => {
+                let mut answer = answer;
+                answer["outcome"] = json!(Ending::Conflict);
+                answer["detail"] =
+                    json!("merging onto the round's candidates conflicted; ask for a turn again");
+                return Ok(Rounded::Answer(answer));
+            }
+            Some(RoundNext::Wait) => {}
         }
+        if past() {
+            return Ok(Rounded::Answer(pending_past(answer, "for its round")));
+        }
+        waiting.after(&chain);
     }
 }
 
-/// Runs the gate of the batch round at `id`, where its round gates it next:
-/// its whole gate on its commit, in a worktree of its own — its fast gate,
-/// and, that green, its slow gate, whose green run puts the whole gate on
-/// record for its tree — in a worker lane; and lets the chain decide what
-/// it says of the round → its evidence, what the gate judged, and which
-/// gate, `fast` or `slow`, said it; `None` where it was not this turn's to
-/// run.
-fn gate_batched(turn: &Turn<'_>, id: &str) -> Result<Option<(Evidence, Judged, &'static str)>> {
-    let Turn { repo, config, issue, host, heavy, clock, .. } = *turn;
-    let _lane = Permit::assigned(repo, "turn: a batch round's gate", heavy)?;
-    let mut started = false;
-    let chain = change(repo, config, |chain| started = chain.start_batched(id))?;
-    if !started {
-        return Ok(None);
-    }
-    let c = chain.candidates.iter().find(|c| c.id == id).context("assigned candidate")?.clone();
-    let path = PathBuf::from(&c.worktree);
-    add_candidate_worktree(repo, &path, &c.commit)?;
-    let checkout = Repo::new(path.clone());
-    let ran = |command: &str, seconds: u64, slow: bool| {
-        let hook = Gate { repo, config, id, slow, clock };
-        let command = GateCommand::new(command);
-        let at = clock();
-        crate::gate::candidate_gate(
-            &checkout,
-            &command,
-            host,
-            at,
-            Duration::from_secs(seconds),
-            issue,
-            &hook,
-        )
+/// The answer of a turn whose pair ran red on its fast gate: the pair's
+/// run, which this PR's worker is given (docs/adr/0083).
+fn pair_red(answer: Value, p: &Candidate) -> Value {
+    let mut result = match &p.result {
+        Some(evidence) => answered(evidence, &answer),
+        None => answer,
     };
-    let mut gate = "fast";
-    let mut ran_whole = ran(&c.command, c.seconds, false);
-    if let (Ok((evidence, _)), Some(slow)) = (&ran_whole, &c.slow)
-        && evidence.green()
-    {
-        // The fast gate's processes are gone: the slow gate's are owned
-        // through a scope of their own.
-        let scope = crate::process_scope::path(&c.worktree);
-        if scope.exists() {
-            ensure!(
-                crate::process_scope::free(&scope)?,
-                "the fast gate's processes are still alive"
-            );
-            std::fs::remove_file(&scope)?;
+    let partners: Vec<u64> =
+        p.pair.iter().flat_map(|q| q.joins()).copied().filter(|&n| n != p.change).collect();
+    result["outcome"] = json!(Ending::GateRed);
+    result["gate"] = json!("fast");
+    result["pair"] = json!({ "candidate": p.id, "commit": p.commit, "with": partners });
+    let with: Vec<String> = partners.iter().map(|n| format!("#{n}")).collect();
+    result["detail"] = json!(format!(
+        "the fast gate ran red on this PR's pair with {}, whose merge is `pair.commit`: each \
+         is green alone, and the failing tests fail with them together; fix this PR's change \
+         so that it passes with theirs, commit, and ask for a turn again",
+        with.join(", ")
+    ));
+    result
+}
+
+/// Pairs the round's level as `chain` names it (`Chain::to_pair`): each
+/// pair its two nodes' merge, which `git merge-tree` finds clean, as a
+/// commit of its own, its fast gate the one its commit declares.
+fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
+    let InRound { repo, config, root, clock, .. } = *turn;
+    let Some((round, level, nodes)) = chain.to_pair() else { return Ok(()) };
+    let mut merges: Vec<((usize, usize), String)> = vec![];
+    let made = pairing::pairs(nodes.len(), |a, b| {
+        let (Some(first), Some(second)) = (nodes.get(a), nodes.get(b)) else {
+            return Ok(false);
+        };
+        let named = |changes: &[u64]| {
+            changes.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ")
+        };
+        let message = format!("Pair {} with {}", named(&first.changes), named(&second.changes));
+        let merged =
+            crate::turn::merged_onto(repo, &first.commit, &second.commit, &message, clock())?;
+        Ok::<bool, anyhow::Error>(merged.map(|commit| merges.push(((a, b), commit))).is_some())
+    })?;
+    let mut built = vec![];
+    for (at, commit) in merges.into_iter().filter(|(at, _)| made.contains(at)) {
+        let declared = crate::turn::tip_config(repo, &commit)?;
+        let own = Declared {
+            whole: declared.gate_command.clone(),
+            seconds: declared.gate_seconds(),
+            gates: declared.gates.clone(),
         }
-        gate = "slow";
-        ran_whole = ran(&slow.command, slow.seconds, true).and_then(|(mut evidence, judged)| {
-            if evidence.green() {
-                let tree = Tree::named(&c.tree);
-                let parts = (
-                    &GateCommand::new(&slow.whole),
-                    &GateCommand::new(&c.command),
-                    &GateCommand::new(&slow.command),
-                );
-                if let Some(why) =
-                    crate::gate::record_whole(repo, &tree, &c.commit, parts, issue, clock())?
-                {
-                    evidence.recorded = false;
-                    evidence.not_recorded = Some(why);
-                }
-            }
-            Ok((evidence, judged))
+        .own();
+        let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
+        built.push(Built {
+            first: at.0,
+            second: at.1,
+            commit,
+            tree,
+            command: own.command,
+            seconds: own.seconds,
         });
     }
-    let (evidence, judged) = match ran_whole {
-        Ok(ran) => ran,
+    let worktree = |id: &str| root.join(id).to_string_lossy().into_owned();
+    let now = clock();
+    change(repo, config, |chain| {
+        chain.pair_level((&round, level), built.clone(), |_| Default::default(), worktree, now);
+    })?;
+    Ok(())
+}
+
+/// Runs the fast gate of `pair`, which this turn is the later-asked PR of,
+/// in a worktree of its own on this host and a lane of it, and lets the
+/// round carry on from what it said.
+fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
+    let InRound { repo, config, root, host, issue, heavy, clock, .. } = *turn;
+    let _lane = Permit::candidate(repo, "turn: a pair's fast gate", heavy)?;
+    // Whichever host paired it, its worktree is this host's.
+    let path = root.join(pair);
+    let mut started = None;
+    change(repo, config, |chain| {
+        started = None;
+        for c in chain.candidates.iter_mut().filter(|c| c.id == pair) {
+            if c.phase == Phase::Building && c.valid() && c.gate.is_none() {
+                c.worktree = path.to_string_lossy().into_owned();
+                started = Some(c.clone());
+            }
+        }
+    })?;
+    let Some(p) = started else { return Ok(()) };
+    add_candidate_worktree(repo, &path, &p.commit)?;
+    let checkout = Repo::new(path.clone());
+    let command = GateCommand::new(&p.command);
+    let hook = Gate { repo, config, id: pair, slow: false, clock };
+    let limit = Duration::from_secs(p.seconds);
+    let ran = crate::gate::candidate_gate(&checkout, &command, host, clock(), limit, issue, &hook);
+    let evidence = match ran {
+        Ok((evidence, _)) => evidence,
         Err(error) => {
-            invalidate(repo, config, id, "gate_interrupted")?;
+            invalidate(repo, config, pair, "gate_interrupted")?;
             return Err(error);
         }
     };
+    let chain = change(repo, config, |chain| chain.finish(pair, evidence.clone()))?;
+    cleanup(repo, config, &chain)?;
+    stop_candidate(repo, config, pair)?;
+    remove_ended_run(repo, &path, &p.worktree);
+    Ok(())
+}
+
+/// Assigns this turn's candidate of the round's root: its PR's original
+/// head merged onto the round's candidates so far, or the target tip, as
+/// one merge commit, gated with the round at its last (docs/adr/0083) →
+/// `None` once assigned, for the round to carry on; the turn's answer where
+/// it cannot be: a conflict, which the worker resolves, or a base or window
+/// not ready.
+fn assign_rooted(turn: &InRound<'_>, mut answer: Value) -> Result<Option<Rounded>> {
+    let InRound { repo, config, forge, asked, pr, of, id, original, root, heavy, clock, .. } =
+        *turn;
+    let mut snapshot = read(repo, config)?;
+    let current = snapshot.base.clone();
+    let declared = crate::turn::tip_config(repo, &current)?;
+    let base_command = GateCommand::new(&declared.gate_command);
+    let base_tree = Tree::named(&repo.git(&["rev-parse", &format!("{current}^{{tree}}")])?);
+    if crate::gate::recorded(repo, &base_tree, &base_command, clock())?.is_none() {
+        answer["outcome"] = json!(Ending::BaseUncertified);
+        answer["detail"] = json!(
+            "the base changed before assignment and needs certification; ask for another turn"
+        );
+        return Ok(Some(Rounded::Answer(answer)));
+    }
+    if !snapshot.chain.can_assign(false) {
+        answer["outcome"] = json!(Ending::WaitingForCapacity);
+        answer["detail"] = json!("the candidate window is held; ask for another turn");
+        return Ok(Some(Rounded::Answer(answer)));
+    }
+    snapshot.chain.observe_base(&current);
+    // One this PR's earlier turn left whole-green and unpublished is its.
+    if let Some(taken) = snapshot.chain.reuse(pr.number, original, true) {
+        snapshot.chain.root_assigned(id, &taken);
+        write(repo, config, &snapshot)?;
+        return Ok(None);
+    }
+    let predecessor = snapshot.chain.predecessor(&current);
+    let message = forge.message(asked);
+    let built = match of {
+        Of::Cut(_) => crate::turn::cut_onto(repo, &predecessor, original, &message, clock())?,
+        _ => crate::turn::merged_onto(repo, &predecessor, original, &message, clock())?,
+    };
+    let Some(commit) = built else {
+        change(repo, config, |chain| chain.leave(id, pairing::Left::Conflict))?;
+        let (what, ending) = if predecessor != current {
+            ("the round's candidates ahead", Ending::SpeculativeConflict)
+        } else {
+            ("the base branch's tip", Ending::Conflict)
+        };
+        // The worker resolves it: its branch then carries what it merged.
+        let files = crate::turn::merge_in(repo, &predecessor, what)?;
+        answer["outcome"] = json!(ending);
+        answer["status"] = json!("conflict");
+        answer["files"] = json!(files);
+        answer["recorded"] = json!(false);
+        answer["worktree"] = json!(repo.dir);
+        if predecessor != current {
+            answer["merging"] = json!(predecessor);
+        }
+        answer["detail"] =
+            json!("resolve every file, git add it, COMMIT the merge, and ask for a turn again");
+        return Ok(Some(Rounded::Answer(answer)));
+    };
+    let declared = crate::turn::tip_config(repo, &commit)?;
+    if crate::config::heavy_gate(&declared.gate_command) && !heavy {
+        answer["outcome"] = json!(Ending::GateLaneChanged);
+        answer["detail"] = json!(
+            "the predecessor changed the gate to a worker lane; request a new turn after it lands"
+        );
+        return Ok(Some(Rounded::Answer(answer)));
+    }
+    let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
+    let own = Declared {
+        whole: declared.gate_command.clone(),
+        seconds: declared.gate_seconds(),
+        gates: declared.gates.clone(),
+    }
+    .own();
+    let c = Candidate {
+        id: id.to_string(),
+        change: pr.number,
+        note: forge.note(asked),
+        branch: pr.head_branch.clone(),
+        original_head: original.to_string(),
+        predecessor,
+        commit,
+        tree,
+        command: own.command,
+        seconds: own.seconds,
+        phase: Phase::Batched,
+        owner: identity(std::process::id())?.context("cannot identify turn owner")?,
+        gate: None,
+        descendants: vec![],
+        worktree: root.join(id).to_string_lossy().into_owned(),
+        barrier: false,
+        cancelled_by: None,
+        cause: None,
+        stopped: true,
+        abandoned: false,
+        result: None,
+        slow: own.slow,
+        slowed: false,
+        batch: true,
+        pair: None,
+        assigned: Some(clock()),
+    };
+    snapshot.chain.assign(c);
+    snapshot.chain.root_assigned(id, id);
+    write(repo, config, &snapshot)?;
+    Ok(None)
+}
+
+/// Runs the round's whole gate at `id`, its root's last candidate, where it
+/// is the round's tip (`Chain::whole_tip`) → `None` when it is green, or was
+/// not this turn's to run; the turn's answer where it is red or said
+/// nothing. The whole gate's green run on record of its tree on this kind of
+/// machine answers for it; otherwise its fast gate runs, in a worker lane,
+/// and, green, its slow gate, in a slow lane, which puts the whole gate on
+/// record. Red is not bisected: the worker's branch is brought up to the
+/// round's tip, as a red round's is (docs/adr/0048).
+fn whole(round: Round<'_>, clock: &dyn Fn() -> u64) -> Result<Option<Value>> {
+    let Round { repo, config, tracker, id, host, issue, heavy } = round;
+    let mut started = false;
+    let chain = change(repo, config, |chain| started = chain.start_whole(id))?;
+    if !started {
+        return Ok(None);
+    }
+    let members: Vec<Candidate> = chain.members(id).into_iter().cloned().collect();
+    let tip = members.last().context("round tip disappeared")?.clone();
+    let whole_command = GateCommand::new(afkconvoy_landing::turn::whole(&tip));
+    let tree = Tree::named(&tip.tree);
+    let path = PathBuf::from(&tip.worktree);
+    let (evidence, judged, gate) =
+        match crate::gate::reusable(repo, &tree, &whole_command, clock())? {
+            Some(green) => {
+                let evidence = Evidence {
+                    command: Some(whole_command.text().to_string()),
+                    head: Some(tip.commit.clone()),
+                    recorded: true,
+                    reused: Some(afkconvoy_core::candidate::Reused::of(&green)),
+                    status: afkconvoy_core::candidate::Status::Green,
+                    ..Evidence::default()
+                };
+                (evidence, Judged::Green, "whole")
+            }
+            None => {
+                add_candidate_worktree(repo, &path, &tip.commit)?;
+                let checkout = Repo::new(path.clone());
+                let fast = GateCommand::new(&tip.command);
+                let ran = {
+                    let _lane = Permit::candidate(repo, "turn: a round's whole gate, fast", heavy)?;
+                    let hook = Gate { repo, config, id, slow: false, clock };
+                    let limit = Duration::from_secs(tip.seconds);
+                    crate::gate::candidate_gate(
+                        &checkout,
+                        &fast,
+                        host,
+                        clock(),
+                        limit,
+                        issue,
+                        &hook,
+                    )
+                };
+                let (fast_evidence, fast_judged) = match ran {
+                    Ok(ran) => ran,
+                    Err(error) => {
+                        invalidate(repo, config, id, "gate_interrupted")?;
+                        return Err(error);
+                    }
+                };
+                match &tip.slow {
+                    Some(slow) if fast_evidence.green() => {
+                        // The fast gate's processes are confirmed gone before the
+                        // slow gate's are owned through a scope of their own.
+                        let scope = crate::process_scope::path(&tip.worktree);
+                        if scope.exists() {
+                            ensure!(
+                                crate::process_scope::free(&scope)?,
+                                "the fast gate's processes are still alive"
+                            );
+                            std::fs::remove_file(&scope)?;
+                        }
+                        let _lane =
+                            Permit::slow_gate(repo, "turn: a round's whole gate, slow", heavy)?;
+                        let command = GateCommand::new(&slow.command);
+                        let hook = Gate { repo, config, id, slow: true, clock };
+                        let limit = Duration::from_secs(slow.seconds);
+                        let ran = crate::gate::candidate_gate(
+                            &checkout,
+                            &command,
+                            host,
+                            clock(),
+                            limit,
+                            issue,
+                            &hook,
+                        );
+                        let (mut evidence, judged) = match ran {
+                            Ok(ran) => ran,
+                            Err(error) => {
+                                invalidate(repo, config, id, "gate_interrupted")?;
+                                return Err(error);
+                            }
+                        };
+                        if evidence.green() {
+                            let parts = (&GateCommand::new(&slow.whole), &fast, &command);
+                            if let Some(why) = crate::gate::record_whole(
+                                repo,
+                                &tree,
+                                &tip.commit,
+                                parts,
+                                issue,
+                                clock(),
+                            )? {
+                                evidence.recorded = false;
+                                evidence.not_recorded = Some(why);
+                            }
+                        }
+                        (evidence, judged, "slow")
+                    }
+                    _ => (fast_evidence, fast_judged, "fast"),
+                }
+            }
+        };
     let chain = change(repo, config, |chain| chain.finish(id, evidence.clone()))?;
+    let mut result = json!(evidence);
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
-    remove_ended_run(repo, &path, &c.worktree);
-    Ok(Some((evidence, judged, gate)))
+    remove_ended_run(repo, &path, &tip.worktree);
+    let at = chain.candidates.iter().find(|c| c.id == id).context("round tip disappeared")?;
+    if let Judged::Unsettled(said) = &judged
+        && at.decision() == Some(Decision::Unsettled)
+    {
+        return Ok(Some(unsettled(result, (gate, at), said, repo, issue)));
+    }
+    if at.decision() != Some(Decision::Red) {
+        return Ok(None);
+    }
+    let files = crate::turn::merge_in(repo, &tip.commit, "the round's tip")?;
+    decided(&mut result, at);
+    result["gate"] = json!(gate);
+    result["round"] = json!(
+        members
+            .iter()
+            .map(|m| json!({"pr": m.change, "issue": m.note.issue.map(|n| tracker.issue(n))}))
+            .collect::<Vec<_>>()
+    );
+    result["files"] = json!(files);
+    let red = match &judged {
+        Judged::Red(red) => red.said(&format!("the {gate} gate on the round at this candidate")),
+        Judged::Green | Judged::Unsettled(_) => {
+            format!("the {gate} gate ran red on the round at this candidate")
+        }
+    };
+    result["detail"] = json!(if files.is_empty() {
+        format!(
+            "{red}; your branch now holds the round's tip, every change of it: do not split it; read the issues of `round` and the failing tests, fix the round, commit and ask for a turn again"
+        )
+    } else {
+        format!(
+            "{red}; bringing your branch up to the round's tip conflicts: resolve `files`, commit, then fix the round from the issues of `round` and the failing tests, and ask for a turn again"
+        )
+    });
+    Ok(Some(result))
 }
 
 /// What a round's slow gate runs with: the tip's turn.
@@ -2306,6 +2598,7 @@ mod tests {
                 id: "b".into(),
                 owner: super::identity(std::process::id()).unwrap().unwrap(),
                 since: None,
+                asks: None,
             }],
             ..super::Chain::default()
         };

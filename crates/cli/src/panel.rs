@@ -1949,12 +1949,12 @@ mod tests {
     fn a_batch_candidate_says_it_is_batched_and_the_round_it_waits_on() {
         let mut acme = part_of("acme", 1000);
         acme.candidates = vec![serde_json::json!({"pr": 7, "target_branch": "main", "id": "c1",
-            "predecessor": "m0", "waiting": "waiting_for_batch_gate", "cause": null,
+            "predecessor": "m0", "waiting": "waiting_for_round_gate", "cause": null,
             "cancelled_by": null, "round": "c3", "batch": true})];
         let html = render(&page_of(host_of(1000), vec![acme]));
         assert!(
             html.contains(
-                "waiting_for_batch_gate ·   · batched in the round gating at <code>c3</code></li>"
+                "waiting_for_round_gate ·   · batched in the round gating at <code>c3</code></li>"
             ),
             "{html}"
         );

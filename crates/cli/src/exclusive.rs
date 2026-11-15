@@ -236,11 +236,9 @@ impl Permit {
         Self::acquire_until(repo, command, heavy, true, true, None, Some(until))
     }
 
-    /// A worker lane for the turn of a candidate already on the chain: a
-    /// batch round's gate at it, or its gate once it was rebuilt from a batch
-    /// round (docs/adr/0068). It holds no pending place, and the round waits
-    /// on this gate whatever it waits for, so the wait has no bound.
-    pub(crate) fn assigned(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+    /// A candidate's lane, waited for as long as it takes: a gate of a
+    /// round's pair, or the fast part of its whole gate (docs/adr/0083).
+    pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
         Self::acquire(repo, command, heavy, true, true, None)
     }
 

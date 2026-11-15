@@ -59,9 +59,9 @@ pub trait Forge {
     /// forge, such as closing what it completes.
     fn landed(&self, change: &Change, commit: &str) -> Result<(), Self::Error>;
 
-    /// `change` is sent back from a batch round: its candidate was the
-    /// round's first red one, and `run` is the red run that found it
-    /// (docs/adr/0068). What follows of it on the forge, such as asking its
+    /// `change` is sent back from its round: it is the later-asked change of
+    /// a pair whose fast gate ran red, and `run` is that run
+    /// (docs/adr/0083). What follows of it on the forge, such as asking its
     /// author to fix it; nothing, unless the program says.
     fn sent_back(&self, change: &Change, run: Option<&Evidence>) -> Result<(), Self::Error> {
         let _ = (change, run);

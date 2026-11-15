@@ -1,10 +1,12 @@
 ---
-status: accepted
+status: superseded by ADR-0083
 ---
 
 # A batch round gates only the chain's tip and bisects on red
 
 Amends ADR-0048 and ADR-0060 (sunfmin/control#789; decided in sunfmin/control#693, Felix, 2026-11-12).
+
+Superseded by ADR-0083 (sunfmin/control#1135): the batch round and its bisection are gone. Every round now lands through a pairing tree, whose root is gated whole once as a batch round's tip was, and a red root is not bisected.
 
 A goal of Guild's is split into ten tasks, and each lands through a round: each candidate runs the fast gate alone, and the round's tip runs the slow gate (ADR-0048). What Felix asked of a goal is its lead time, from its split to its release; he named the remedy: "都 merge 到一个分支之后再跑再修" — merge them all onto one branch, then run, then fix.
 

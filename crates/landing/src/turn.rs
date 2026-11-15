@@ -3,11 +3,9 @@
 //! commit gates, where the chain is recorded, what a turn waiting on the
 //! chain does next, and what one atomic publication updates.
 
+use crate::chain::{Candidate, Chain, Phase, Publication, Slow};
 use afkconvoy_gate::declared::Gates;
 use afkconvoy_gate::layout::Layout;
-use serde::{Deserialize, Serialize};
-
-use crate::chain::{Candidate, Chain, Phase, Publication, Slow};
 
 /// The ref the candidate chain of `target` is recorded on, under `layout`:
 /// one record per target branch.
@@ -15,29 +13,14 @@ pub fn record_ref(layout: Layout, target: &str) -> String {
     layout.under(&format!("candidates/{target}"))
 }
 
-/// How a repo's rounds land (docs/adr/0068): each candidate gated alone,
-/// its fast gate, and a round's slow gate once at the chain's tip
-/// (docs/adr/0048); or as a batch round, where no candidate is gated alone,
-/// the chain's tip runs both gates, and a red one is bisected to its first
-/// red candidate. A program reads it from its repo's config, `landing:
-/// batch`, and a round's caller may ask for either.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Landing {
-    #[default]
-    PerCandidate,
-    Batch,
-}
-
 /// What a candidate's commit declares of its gate: the whole gate, with its
 /// limit, and where it splits it, its fast gate and its slow gate
-/// (docs/adr/0047); and how its repo's rounds land.
+/// (docs/adr/0047).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declared {
     pub whole: String,
     pub seconds: u64,
     pub gates: Option<Gates>,
-    pub landing: Landing,
 }
 
 /// The gate a candidate runs itself, and its limit; and the slow gate a
@@ -78,6 +61,9 @@ pub enum Next {
     Ended,
     /// It is the round's tip: its turn runs the round's slow gate now.
     Round,
+    /// It is the last candidate of a round's root: its turn runs the
+    /// round's whole gate now (`Chain::whole_tip`, docs/adr/0083).
+    Whole,
     /// It is valid and waits — for its round, or its predecessor — unless it
     /// is ripe to land on the target as it stands (`Chain::ripe`).
     Waiting,
@@ -103,6 +89,8 @@ impl<N: Clone> Chain<N> {
             Next::Ended
         } else if self.round_tip().is_some_and(|tip| tip.id == id) {
             Next::Round
+        } else if self.whole_tip().is_some_and(|tip| tip.id == id) {
+            Next::Whole
         } else {
             Next::Waiting
         })
