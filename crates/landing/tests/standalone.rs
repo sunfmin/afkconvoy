@@ -189,7 +189,8 @@ fn rewrite(work: &Path, edit: impl FnOnce(&mut Chain)) {
 
 /// The chain holds no two valid candidates of one change.
 fn one_each(chain: &Chain) {
-    let mut valid: Vec<u64> = chain.chained().filter(|c| c.valid()).map(|c| c.change).collect();
+    let mut valid: Vec<u64> =
+        chain.chained().into_iter().filter(|c| c.valid()).map(|c| c.change).collect();
     let all = valid.len();
     valid.sort_unstable();
     valid.dedup();
@@ -207,7 +208,7 @@ fn runs(ran: &Path) -> Vec<(String, String)> {
 
 /// The candidates of the chain, without the pairs beside it.
 fn chained(chain: &Chain) -> Vec<Candidate> {
-    chain.chained().cloned().collect()
+    chain.chained().into_iter().cloned().collect()
 }
 
 /// The pairs of the round's pairing trees the chain records.
@@ -726,7 +727,7 @@ fn the_chain_never_holds_two_valid_candidates_of_one_change() {
     let chain = recorded(&work);
     one_each(&chain);
     let landed = |n: u64| {
-        let c = chain.chained().find(|c| c.change == n && c.phase == Phase::Landed);
+        let c = chain.chained().into_iter().find(|c| c.change == n && c.phase == Phase::Landed);
         let c = c.unwrap_or_else(|| panic!("{outcomes:?} {chain:#?}"));
         c.commit.clone()
     };

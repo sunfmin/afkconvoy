@@ -77,6 +77,14 @@ pub type Outcomes<R> = Vec<(u64, Outcome<R>)>;
 /// it for the next.
 type Rounded<R> = (Outcomes<R>, Vec<Change>);
 
+/// A change's place in a round: the change as its forge has it, the place's
+/// id, and the head it asks to land.
+struct Place {
+    change: Change,
+    id: String,
+    head: String,
+}
+
 /// What a publication came to: the changes it landed, each with what its
 /// forge said when told; or the push that would land them refused, with
 /// the changes it would have landed and what git said.
@@ -651,7 +659,39 @@ where
         refused: &mut Refusals,
     ) -> Result<Rounded<F::Refusal>, Error<F::Error>> {
         let mut outcomes: Outcomes<F::Refusal> = vec![];
-        let mut places: Vec<(Change, String, String)> = vec![];
+        let places = self.places(asking, &mut outcomes)?;
+        let Some(first) = places.first() else { return Ok((outcomes, vec![])) };
+        let round = format!("round-{}-{}", (self.now)(), first.change.number);
+        let ids: Vec<String> = places.iter().map(|p| p.id.clone()).collect();
+        if !self.open(target, &places, &round)? {
+            // Another round is open, or a barrier holds the chain: nothing ran.
+            self.change(target, |chain| chain.pending.retain(|b| !ids.contains(&b.id)))?;
+            outcomes.extend(places.iter().map(|p| (p.change.number, Outcome::Waiting)));
+            return Ok((outcomes, vec![]));
+        }
+        while self.step(target, &round, &places, changes, refused, &mut outcomes)? {}
+        let chain = self.change(target, |_| {})?;
+        let mut next = vec![];
+        for place in &places {
+            match self.decided(&chain, place, refused)? {
+                Some(outcome) => outcomes.push((place.change.number, outcome)),
+                None => next.push(place.change.clone()),
+            }
+        }
+        let chain = self.change(target, |chain| chain.leave_round(|a| ids.contains(&a.id)))?;
+        self.remove_ended(&chain);
+        Ok((outcomes, next))
+    }
+
+    /// The places `asking` takes in a round, each change as its forge has
+    /// it now and its head; what became of one that may not land is put in
+    /// `outcomes`.
+    fn places(
+        &self,
+        asking: &[Change],
+        outcomes: &mut Outcomes<F::Refusal>,
+    ) -> Result<Vec<Place>, Error<F::Error>> {
+        let mut places: Vec<Place> = vec![];
         for change in asking {
             let Some(current) = self.forge.current(change).map_err(Error::Forge)? else {
                 outcomes.push((change.number, Outcome::Gone));
@@ -668,130 +708,151 @@ where
                 continue;
             };
             let id = format!("{}-{}-asks", current.number, (self.now)());
-            places.push((current, id, head));
+            places.push(Place { change: current, id, head });
         }
-        let Some((first, ..)) = places.first() else { return Ok((outcomes, vec![])) };
-        let round = format!("round-{}-{}", (self.now)(), first.number);
+        Ok(places)
+    }
+
+    /// Takes `places` pending and opens the round `round` of them →
+    /// whether it opened.
+    fn open(&self, target: &str, places: &[Place], round: &str) -> Result<bool, String> {
         let mut opened = false;
         self.change(target, |chain| {
-            for (change, id, head) in &places {
-                if !chain.pending.iter().any(|b| &b.id == id) {
+            for place in places {
+                if !chain.pending.iter().any(|b| b.id == place.id) {
                     chain.pending.push(Barrier {
-                        id: id.clone(),
+                        id: place.id.clone(),
                         owner: self.owner.clone(),
                         since: Some((self.now)()),
                         asks: Some(Asks {
-                            change: change.number,
-                            branch: change.source.clone(),
-                            head: head.clone(),
+                            change: place.change.number,
+                            branch: place.change.source.clone(),
+                            head: place.head.clone(),
                         }),
                     });
                 }
             }
-            opened = chain.open_round(&round);
+            opened = chain.open_round(round);
         })?;
-        let ids: Vec<String> = places.iter().map(|(_, id, _)| id.clone()).collect();
-        if !opened {
-            // Another round is open, or a barrier holds the chain: nothing ran.
-            self.change(target, |chain| chain.pending.retain(|b| !ids.contains(&b.id)))?;
-            outcomes.extend(places.iter().map(|(c, ..)| (c.number, Outcome::Waiting)));
-            return Ok((outcomes, vec![]));
+        Ok(opened)
+    }
+
+    /// Takes the round `round` one step on: pairs a level, gates a level's
+    /// pairs, assigns a candidate of its root, gates the root whole, or
+    /// lands it → whether there is more to do.
+    fn step(
+        &self,
+        target: &str,
+        round: &str,
+        places: &[Place],
+        changes: &[Change],
+        refused: &mut Refusals,
+        outcomes: &mut Outcomes<F::Refusal>,
+    ) -> Result<bool, Error<F::Error>> {
+        let read = self.read(target)?;
+        let chain = &read.chain;
+        let Some(open) = chain.round.as_ref().filter(|r| r.id == round) else { return Ok(false) };
+        if let Some(level) = chain.to_pair() {
+            self.pair(target, level)?;
+            return Ok(true);
         }
-        loop {
-            let read = self.read(target)?;
-            let chain = &read.chain;
-            let Some(open) = chain.round.as_ref().filter(|r| r.id == round) else { break };
-            if let Some(level) = chain.to_pair() {
-                self.pair(target, level)?;
-                continue;
-            }
-            let mut gates: Vec<String> = vec![];
-            let mut assign: Option<(String, u64)> = None;
-            for ask in &open.asked {
-                match chain.round_next(&ask.id) {
-                    Some(RoundNext::Gate(pair)) => gates.push(pair),
-                    Some(RoundNext::Assign) if assign.is_none() => {
-                        assign = Some((ask.id.clone(), ask.asks.change));
-                    }
-                    _ => {}
+        let mut gates: Vec<String> = vec![];
+        let mut assign: Option<(String, u64)> = None;
+        for ask in &open.asked {
+            match chain.round_next(&ask.id) {
+                Some(RoundNext::Gate(pair)) => gates.push(pair),
+                Some(RoundNext::Assign) if assign.is_none() => {
+                    assign = Some((ask.id.clone(), ask.asks.change));
                 }
-            }
-            if !gates.is_empty() {
-                self.gate_pairs(target, &gates)?;
-                continue;
-            }
-            if let Some((ask, number)) = assign {
-                let Some((change, ..)) = places.iter().find(|(c, ..)| c.number == number) else {
-                    self.change(target, |chain| chain.leave_round(|a| a.id == ask))?;
-                    continue;
-                };
-                match self.assign_as(change, Some(&ask))? {
-                    Ok(_) => {}
-                    Err(Outcome::Conflict) => {
-                        self.change(target, |chain| chain.leave(&ask, Left::Conflict))?;
-                    }
-                    Err(outcome) => {
-                        outcomes.push((number, outcome));
-                        self.change(target, |chain| chain.leave_round(|a| a.id == ask))?;
-                    }
-                }
-                continue;
-            }
-            if let Some(tip) = chain.whole_tip() {
-                let tip = tip.id.clone();
-                self.gate_whole(target, &tip)?;
-                continue;
-            }
-            let ripe =
-                chain.chained().rev().map(|c| c.id.clone()).find(|id| chain.ripe(id, &read.base));
-            let Some(ripe) = ripe else { break };
-            if self.publish_noting(target, &ripe, changes, refused)?.is_empty() {
-                let again = self.read(target)?;
-                if again.chain.ripe(&ripe, &again.base) {
-                    break;
-                }
+                _ => {}
             }
         }
-        let chain = self.change(target, |_| {})?;
-        let mut next = vec![];
-        for (change, id, _) in &places {
-            let Some(ask) = chain.round.iter().flat_map(|r| &r.asked).find(|a| &a.id == id) else {
-                continue;
-            };
-            let outcome = match (&ask.left, &ask.candidate) {
-                (Some(Left::Red(pair)), _) => {
-                    let run = chain
-                        .candidates
-                        .iter()
-                        .find(|c| &c.id == pair)
-                        .and_then(|c| c.result.as_ref());
-                    self.forge.sent_back(change, run).map_err(Error::Forge)?;
-                    Outcome::Decided(Decision::Red)
-                }
-                (Some(Left::Conflict), _) => Outcome::Conflict,
-                (Some(Left::Unpaired | Left::Next), _) => {
-                    next.push(change.clone());
-                    continue;
-                }
-                (None, Some(candidate)) => {
-                    match chain.candidates.iter().find(|c| &c.id == candidate) {
-                        Some(c) if c.phase == Phase::Landed => Outcome::Landed(c.commit.clone()),
-                        Some(c) => c.decision().map_or(Outcome::Waiting, Outcome::Decided),
-                        None => Outcome::Waiting,
-                    }
-                }
-                (None, None) => Outcome::Waiting,
-            };
-            let said = refused.iter().find(|(n, _)| *n == change.number).map(|(_, said)| said);
-            let outcome = match (outcome, said) {
-                (Outcome::Waiting, Some(said)) => Outcome::Unpublished(said.clone()),
-                (outcome, _) => outcome,
-            };
-            outcomes.push((change.number, outcome));
+        if !gates.is_empty() {
+            self.gate_pairs(target, &gates)?;
+            return Ok(true);
         }
-        let chain = self.change(target, |chain| chain.leave_round(|a| ids.contains(&a.id)))?;
-        self.remove_ended(&chain);
-        Ok((outcomes, next))
+        if let Some((ask, number)) = assign {
+            self.assign_root(target, (&ask, number), places, outcomes)?;
+            return Ok(true);
+        }
+        if let Some(tip) = chain.whole_tip() {
+            let tip = tip.id.clone();
+            self.gate_whole(target, &tip)?;
+            return Ok(true);
+        }
+        let mut ripe: Option<String> = None;
+        for c in chain.chained().into_iter().rev() {
+            if ripe.is_none() && chain.ripe(&c.id, &read.base) {
+                ripe = Some(c.id.clone());
+            }
+        }
+        let Some(ripe) = ripe else { return Ok(false) };
+        if self.publish_noting(target, &ripe, changes, refused)?.is_empty() {
+            let again = self.read(target)?;
+            return Ok(!again.chain.ripe(&ripe, &again.base));
+        }
+        Ok(true)
+    }
+
+    /// Assigns the candidate of the round's root of the change `number`,
+    /// whose place is `ask`: a conflict leaves the round; a change that may
+    /// no longer land leaves it, its outcome put in `outcomes`.
+    fn assign_root(
+        &self,
+        target: &str,
+        (ask, number): (&str, u64),
+        places: &[Place],
+        outcomes: &mut Outcomes<F::Refusal>,
+    ) -> Result<(), Error<F::Error>> {
+        let Some(place) = places.iter().find(|p| p.change.number == number) else {
+            self.change(target, |chain| chain.leave_round(|a| a.id == ask))?;
+            return Ok(());
+        };
+        match self.assign_as(&place.change, Some(ask))? {
+            Ok(_) => {}
+            Err(Outcome::Conflict) => {
+                self.change(target, |chain| chain.leave(ask, Left::Conflict))?;
+            }
+            Err(outcome) => {
+                outcomes.push((number, outcome));
+                self.change(target, |chain| chain.leave_round(|a| a.id == ask))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// What became of the change of `place` in its round, as `chain` says
+    /// it → `None` where it left the round for the next. A change sent
+    /// back from a red pair is told to its forge with that pair's run.
+    fn decided(
+        &self,
+        chain: &Chain<F::Note>,
+        place: &Place,
+        refused: &Refusals,
+    ) -> Result<Option<Outcome<F::Refusal>>, Error<F::Error>> {
+        let asked = chain.round.iter().flat_map(|r| &r.asked).find(|a| a.id == place.id);
+        let Some(ask) = asked else { return Ok(Some(Outcome::Waiting)) };
+        let outcome = match (&ask.left, &ask.candidate) {
+            (Some(Left::Red(pair)), _) => {
+                let red = chain.candidates.iter().find(|c| &c.id == pair);
+                let run = red.and_then(|c| c.result.as_ref());
+                self.forge.sent_back(&place.change, run).map_err(Error::Forge)?;
+                Outcome::Decided(Decision::Red)
+            }
+            (Some(Left::Conflict), _) => Outcome::Conflict,
+            (Some(Left::Unpaired | Left::Next), _) => return Ok(None),
+            (None, Some(candidate)) => match chain.candidates.iter().find(|c| &c.id == candidate) {
+                Some(c) if c.phase == Phase::Landed => Outcome::Landed(c.commit.clone()),
+                Some(c) => c.decision().map_or(Outcome::Waiting, Outcome::Decided),
+                None => Outcome::Waiting,
+            },
+            (None, None) => Outcome::Waiting,
+        };
+        let said = refused.iter().find(|(n, _)| *n == place.change.number).map(|(_, said)| said);
+        Ok(Some(match (outcome, said) {
+            (Outcome::Waiting, Some(said)) => Outcome::Unpublished(said.clone()),
+            (outcome, _) => outcome,
+        }))
     }
 
     /// Pairs the level `level` of the round, as `Chain::to_pair` names it:

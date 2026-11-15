@@ -214,12 +214,11 @@ enum Gated {
 }
 
 fn gated<N>(c: &Candidate<N>) -> Gated {
-    match c.decision() {
-        None if c.phase == Phase::Green => Gated::Green,
-        None => Gated::Gating,
-        Some(Decision::Red) => Gated::Red,
-        Some(_) => Gated::Nothing,
+    let decided = c.decision();
+    if decided.is_none() {
+        return if c.phase == Phase::Green { Gated::Green } else { Gated::Gating };
     }
+    if decided == Some(Decision::Red) { Gated::Red } else { Gated::Nothing }
 }
 
 impl<N: Clone> Chain<N> {
@@ -229,7 +228,7 @@ impl<N: Clone> Chain<N> {
     /// it drains the chain first; nor does a candidate of the chain whose
     /// gate runs.
     pub fn open_round(&mut self, id: &str) -> bool {
-        let gating = self.chained().any(|c| {
+        let gating = self.chained().into_iter().any(|c| {
             c.valid() && (c.barrier || matches!(c.phase, Phase::Validating | Phase::Slow))
         });
         if self.round.is_some() || !self.barriers.is_empty() || gating {
@@ -378,7 +377,7 @@ impl<N: Clone> Chain<N> {
                 return;
             }
             if !round.paired {
-                let round = self.round.as_mut().expect("the round");
+                let Some(round) = self.round.as_mut() else { return };
                 let present: Vec<u64> = round.asked.iter().map(|a| a.asks.change).collect();
                 round.nodes.retain(|n| n.changes.iter().any(|c| present.contains(c)));
                 if round.nodes.len() <= 1 {
@@ -388,7 +387,7 @@ impl<N: Clone> Chain<N> {
             }
             let pairs: Vec<Candidate<N>> = self.level_pairs().into_iter().cloned().collect();
             let gating = pairs.iter().any(|p| matches!(gated(p), Gated::Gating));
-            let round = self.round.as_mut().expect("the round");
+            let Some(round) = self.round.as_mut() else { return };
             let mut up: Vec<Node> = vec![];
             let mut left: Vec<(u64, Left)> = vec![];
             for node in &round.nodes {
@@ -399,7 +398,7 @@ impl<N: Clone> Chain<N> {
                     .find(|p| p.pair.as_ref().is_some_and(|q| q.second == node.changes));
                 match (first, second) {
                     (Some(p), _) | (None, Some(p)) => {
-                        let q = p.pair.as_ref().expect("a pair");
+                        let Some(q) = p.pair.as_ref() else { continue };
                         let owner = p.change;
                         let mine = node.changes.contains(&owner);
                         match gated(p) {
@@ -466,13 +465,14 @@ impl<N: Clone> Chain<N> {
                 .find(|p| p.change == ask.asks.change && p.phase == Phase::Building && p.valid());
             return Some(mine.map_or(RoundNext::Wait, |p| RoundNext::Gate(p.id.clone())));
         }
-        let rooted = round.rooted();
-        let before = rooted.iter().take_while(|a| a.id != id);
-        Some(if before.into_iter().all(|a| a.candidate.is_some()) {
-            RoundNext::Assign
-        } else {
-            RoundNext::Wait
-        })
+        let mut ready = true;
+        for a in round.rooted() {
+            if a.id == id {
+                break;
+            }
+            ready = ready && a.candidate.is_some();
+        }
+        Some(if ready { RoundNext::Assign } else { RoundNext::Wait })
     }
 
     /// The round's PR whose place is `id` leaves it: `why`.
@@ -497,8 +497,12 @@ impl<N: Clone> Chain<N> {
     /// its pairs still valid end with it, `round_ended`.
     pub fn leave_round(&mut self, gone: impl Fn(&Ask) -> bool) {
         let Some(round) = self.round.as_mut() else { return };
-        let leaving: Vec<u64> =
-            round.asked.iter().filter(|a| gone(a)).map(|a| a.asks.change).collect();
+        let mut leaving: Vec<u64> = vec![];
+        for a in &round.asked {
+            if gone(a) {
+                leaving.push(a.asks.change);
+            }
+        }
         if leaving.is_empty() && !round.asked.is_empty() {
             return;
         }

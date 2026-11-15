@@ -686,14 +686,15 @@ impl<N: Clone> Chain<N> {
 
     /// The candidates of the chain, in order: every one but the pairs of a
     /// round's pairing tree, which stand beside it.
-    pub fn chained(&self) -> impl DoubleEndedIterator<Item = &Candidate<N>> {
-        self.candidates.iter().filter(|c| !c.is_pair())
+    pub fn chained(&self) -> Vec<&Candidate<N>> {
+        self.candidates.iter().filter(|c| !c.is_pair()).collect()
     }
 
     /// The commit a candidate assigned now is merged onto: the last valid
     /// candidate's of the chain — a pair is none of its — or `base`.
     pub fn predecessor(&self, base: &str) -> String {
         self.chained()
+            .into_iter()
             .rev()
             .find(|c| c.valid())
             .map_or_else(|| base.to_string(), |c| c.commit.clone())
@@ -794,7 +795,7 @@ impl<N: Clone> Chain<N> {
     /// up to and including it, in chain order. Empty when `id` is not valid.
     pub fn members(&self, id: &str) -> Vec<&Candidate<N>> {
         let mut members = vec![];
-        for c in self.chained().filter(|c| c.valid()) {
+        for c in self.chained().into_iter().filter(|c| c.valid()) {
             members.push(c);
             if c.id == id {
                 return members;
@@ -816,7 +817,7 @@ impl<N: Clone> Chain<N> {
     /// guild's ten fast-green candidates of 2026-11-14 waited over an hour,
     /// each turn that asked again pending for the round they waited on.
     pub fn round_tip(&self) -> Option<&Candidate<N>> {
-        let valid: Vec<&Candidate<N>> = self.chained().filter(|c| c.valid()).collect();
+        let valid: Vec<&Candidate<N>> = self.chained().into_iter().filter(|c| c.valid()).collect();
         let head: Vec<&Candidate<N>> =
             valid.iter().copied().take_while(|c| c.phase == Phase::Green).collect();
         let tip = if head.len() == valid.len() && !self.joinable() {
@@ -845,7 +846,7 @@ impl<N: Clone> Chain<N> {
     /// candidate behind it, or one with no round running, waits for the next.
     pub fn round_of(&self, id: &str) -> Option<&Candidate<N>> {
         let mut member = false;
-        for c in self.chained().filter(|c| c.valid()) {
+        for c in self.chained().into_iter().filter(|c| c.valid()) {
             member = member || c.id == id;
             if c.phase == Phase::Slow {
                 return member.then_some(c);
@@ -908,7 +909,7 @@ impl<N: Clone> Chain<N> {
     /// chain gates alone, or the round's root is not all assigned
     /// (`Round::assigned`).
     pub fn whole_tip(&self) -> Option<&Candidate<N>> {
-        let valid: Vec<&Candidate<N>> = self.chained().filter(|c| c.valid()).collect();
+        let valid: Vec<&Candidate<N>> = self.chained().into_iter().filter(|c| c.valid()).collect();
         let tip = valid.last()?;
         let rooted = |c: &&Candidate<N>| c.batch && c.phase == Phase::Batched;
         let waiting = rooted(tip) && valid.iter().all(|c| rooted(c) || c.whole());
@@ -1010,7 +1011,7 @@ impl<N: Clone> Chain<N> {
     /// Atomic publication already records the landed prefix before its
     /// program settles what landed. An external move never promotes an unfinished candidate.
     pub fn observe_base(&mut self, base: &str) {
-        let first = self.chained().find(|c| c.valid());
+        let first = self.chained().into_iter().find(|c| c.valid());
         if let Some(c) = first
             && c.predecessor != base
         {

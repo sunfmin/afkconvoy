@@ -1474,8 +1474,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         {
             chain = change(repo, config, reserve)?;
         }
-        if let Some(c) =
-            chain.chained().rev().find(|c| c.change == pr.number && c.original_head == original)
+        if let Some(c) = chain
+            .chained()
+            .into_iter()
+            .rev()
+            .find(|c| c.change == pr.number && c.original_head == original)
         {
             if c.phase == Phase::Landed {
                 let mut result = match &c.result {
@@ -1568,7 +1571,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             let barrier = barrier || !locks.is_empty();
             let mut snapshot = read(repo, config)?;
             let current = snapshot.base.clone();
-            if snapshot.chain.chained().any(|c| c.change == pr.number && c.active()) {
+            if snapshot.chain.chained().into_iter().any(|c| c.change == pr.number && c.active()) {
                 answer["outcome"] = json!(Ending::CandidateActive);
                 answer["detail"] = json!(
                     "this PR already has an active candidate; its owner alone may validate and publish it"
