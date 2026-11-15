@@ -481,11 +481,69 @@ impl Drop for Frozen {
     }
 }
 
+/// What a cancellation found of a candidate's tree: the processes it froze,
+/// each to be killed, and those this user cannot kill — a setuid child, as
+/// `/bin/ps` on macOS is — which it never stops and waits for as they run
+/// (sunfmin/control#1096).
+pub(crate) struct Signalled {
+    frozen: Vec<Process>,
+    unkillable: Vec<u32>,
+}
+
+/// Whether this user can SIGKILL process `pid`, whose identity it read: on
+/// macOS one it may read is its own and not setuid, as libproc refuses
+/// another's; on Linux each of its real, effective and saved uids is this
+/// user's.
+fn killable(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: geteuid cannot fail.
+        let me = unsafe { libc::geteuid() };
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+            return false;
+        };
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Uid:"))
+            .is_some_and(|uids| uids.split_whitespace().take(3).all(|uid| uid.parse() == Ok(me)))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+/// Process `pid` as a cancellation may freeze it: one whose identity this
+/// user reads and that it can kill (`killable`). `None`: one gone, or one it
+/// must leave running, as stopped nothing of this user could end it.
+fn freezable(pid: u32) -> Result<Option<Process>> {
+    Ok(identity(pid)?.filter(|_| killable(pid)))
+}
+
+/// The processes of the process group `group`, by pid.
+fn in_group(group: u32) -> Result<Vec<u32>> {
+    let out =
+        crate::process::output(std::process::Command::new("ps").args(["-axo", "pid=,pgid="]))?;
+    ensure!(out.status.success(), "cannot list the gate's process group: ps failed");
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let pid: u32 = words.next()?.parse().ok()?;
+            (words.next()?.parse::<u32>().ok()? == group).then_some(pid)
+        })
+        .collect())
+}
+
 /// Freeze and durably identify the whole owned tree BEFORE killing any of it.
 /// Another process may finish this cancellation from the saved identities.
 /// Whatever it froze is killed before it returns, recorded or not: a failed
-/// record leaves the cancellation to finish, never a stopped gate.
-fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Process>> {
+/// record leaves the cancellation to finish, never a stopped gate. Each
+/// process is stopped on its own, never its group at once: a process this
+/// user cannot kill is never stopped, as nothing could end it then; it is
+/// left to run and is waited for (`Signalled::unkillable`).
+fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Signalled> {
     let scope = crate::process_scope::path(&candidate.worktree);
     let has_scope = scope.exists();
     ensure!(
@@ -511,12 +569,8 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
             && has_scope
             && crate::process_scope::owns(gate.pid, &scope)?
         {
+            // Its group is killed at the end, never stopped as one.
             frozen.group = Some(gate.pid);
-            // SAFETY: the group's identity belongs to this gate, with
-            // PID reuse excluded by its recorded process start time.
-            unsafe {
-                libc::kill(-(gate.pid as i32), libc::SIGSTOP);
-            }
             if !owned.contains(gate) {
                 frozen.stop(gate.clone());
             }
@@ -525,15 +579,21 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
     for p in owned {
         frozen.stop(p);
     }
+    let mut unkillable: Vec<u32> = vec![];
     loop {
         let all = crate::hot::listed_checked()?;
+        let grouped = frozen.group.map(in_group).transpose()?.unwrap_or_default();
         let spared = spared(candidate.owner.pid);
         let mut found = vec![];
         for p in &all {
-            if spared.contains(&p.pid) || frozen.owned.iter().any(|known| known.pid == p.pid) {
+            if spared.contains(&p.pid)
+                || frozen.owned.iter().any(|known| known.pid == p.pid)
+                || unkillable.contains(&p.pid)
+            {
                 continue;
             }
             if frozen.owned.iter().any(|known| known.pid == p.ppid)
+                || grouped.contains(&p.pid)
                 || p.line.split_whitespace().any(|word| word == marker)
                 || (has_scope && crate::process_scope::owns(p.pid, &scope)?)
             {
@@ -542,9 +602,13 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
         }
         let mut added = false;
         for pid in found {
-            if let Some(process) = identity(pid)? {
-                frozen.stop(process);
-                added = true;
+            match freezable(pid)? {
+                Some(process) => {
+                    frozen.stop(process);
+                    added = true;
+                }
+                // Gone, or one this user may not read or kill.
+                None => unkillable.push(pid),
             }
         }
         if !added {
@@ -562,21 +626,24 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
             }
         }
     })?;
-    Ok(frozen.owned.clone())
+    Ok(Signalled { frozen: frozen.owned.clone(), unkillable })
 }
 
 /// What a stopped candidate leaves while it exits.
 #[derive(Debug, Default)]
-struct Left {
+pub(crate) struct Left {
     /// Its processes still alive, by pid.
-    pids: Vec<u32>,
+    pub pids: Vec<u32>,
     /// Whether its process scope is still held.
-    held: bool,
+    pub held: bool,
+    /// Those of its processes this user cannot kill still running, by pid:
+    /// they are waited for, never signalled.
+    pub unkillable: Vec<u32>,
 }
 
 impl Left {
     fn gone(&self) -> bool {
-        self.pids.is_empty() && !self.held
+        self.pids.is_empty() && !self.held && self.unkillable.is_empty()
     }
 }
 
@@ -634,6 +701,9 @@ struct Stopped<'a> {
     scope: &'a Path,
     owner: u32,
     holders: Vec<Process>,
+    /// Its processes this user cannot kill still running, as `ps` said at
+    /// the last kill.
+    unkillable: Vec<u32>,
 }
 
 /// The processes a candidate's freeze and kill never signal, whatever they
@@ -656,7 +726,7 @@ impl Exiting for Stopped<'_> {
             }
         }
         let held = self.scope.exists() && !crate::process_scope::free(self.scope)?;
-        Ok(Left { pids, held })
+        Ok(Left { pids, held, unkillable: self.unkillable.clone() })
     }
 
     fn kill(&mut self) -> Result<()> {
@@ -682,22 +752,30 @@ impl Exiting for Stopped<'_> {
                 }
             }
         }
+        self.unkillable = crate::exits::running(&self.unkillable);
         Ok(())
     }
 
     fn long(&mut self, left: &Left, waited: Duration) -> Result<()> {
-        crate::exits::waiting(self.id, self.scope, &left.pids, left.held, waited)
+        crate::exits::waiting(self.id, self.scope, left, waited)
     }
 }
 
-/// Confirms candidate `c`'s killed `processes`, and its process scope, gone:
-/// waiting until they are, with no bound, killing what is left hard each
-/// second. A wait past `LONG_AFTER` is recorded for `doctor` as it goes on
-/// (`exits`), and its record goes once they are gone.
-fn confirmed(c: &Candidate, processes: &[Process]) -> Result<()> {
+/// Confirms candidate `c`'s killed processes, and its process scope, gone,
+/// and those of it this user cannot kill ended on their own: waiting until
+/// they are, with no bound, killing what it can hard each second. A wait
+/// past `LONG_AFTER` is recorded for `doctor` as it goes on (`exits`), and
+/// its record goes once they are gone.
+fn confirmed(c: &Candidate, signalled: &Signalled) -> Result<()> {
     let scope = crate::process_scope::path(&c.worktree);
-    let mut stopped =
-        Stopped { id: &c.id, processes, scope: &scope, owner: c.owner.pid, holders: vec![] };
+    let mut stopped = Stopped {
+        id: &c.id,
+        processes: &signalled.frozen,
+        scope: &scope,
+        owner: c.owner.pid,
+        holders: vec![],
+        unkillable: crate::exits::running(&signalled.unkillable),
+    };
     let began = std::time::Instant::now();
     let mut clock = || {
         std::thread::sleep(Duration::from_millis(10));
@@ -720,8 +798,8 @@ fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
     if c.stopped {
         return Ok(());
     }
-    let processes = signal(repo, config, c)?;
-    confirmed(c, &processes)?;
+    let signalled = signal(repo, config, c)?;
+    confirmed(c, &signalled)?;
     change(repo, config, |chain| {
         for c in &mut chain.candidates {
             if c.id == id {
@@ -747,9 +825,9 @@ fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
         }
         signalled.push((c.clone(), signal(repo, config, c)?));
     }
-    for (c, processes) in signalled {
+    for (c, found) in signalled {
         let id = c.id.clone();
-        confirmed(&c, &processes)?;
+        confirmed(&c, &found)?;
         change(repo, config, |chain| {
             for c in &mut chain.candidates {
                 if c.id == id && !c.valid() {
@@ -1961,7 +2039,8 @@ mod tests {
     impl super::Exiting for Dying {
         fn left(&mut self) -> anyhow::Result<super::Left> {
             let gone = self.at.get() >= self.exits;
-            Ok(super::Left { pids: if gone { vec![] } else { vec![41, 42] }, held: !gone })
+            let pids = if gone { vec![] } else { vec![41, 42] };
+            Ok(super::Left { pids, held: !gone, unkillable: vec![] })
         }
 
         fn kill(&mut self) -> anyhow::Result<()> {
@@ -2015,7 +2094,8 @@ mod tests {
         let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
         let scope = std::path::Path::new("/tmp/w.processes");
         let waited = std::time::Duration::from_secs(11 * 60);
-        crate::exits::waiting("c7", scope, &[child.id()], true, waited).unwrap();
+        let left = super::Left { pids: vec![child.id()], held: true, unkillable: vec![] };
+        crate::exits::waiting("c7", scope, &left, waited).unwrap();
         let found = crate::exits::findings(crate::clock());
         crate::exits::gone("c7");
         let after = crate::exits::findings(crate::clock());
@@ -2050,8 +2130,14 @@ mod tests {
         let parent = crate::process_scope::create(&scope, &mut command).unwrap();
         let mut child = command.spawn().unwrap();
         drop(parent);
-        let mut stopped =
-            super::Stopped { id: "c1", processes: &[], scope: &scope, owner: 0, holders: vec![] };
+        let mut stopped = super::Stopped {
+            id: "c1",
+            processes: &[],
+            scope: &scope,
+            owner: 0,
+            holders: vec![],
+            unkillable: vec![],
+        };
         let began = std::time::Instant::now();
         let mut clock = || {
             std::thread::sleep(Duration::from_millis(10));
@@ -2091,8 +2177,14 @@ mod tests {
         }
         let looks = crate::process_scope::owns(looker.id(), &scope).unwrap();
         let holds = crate::process_scope::owns(holder.id(), &scope).unwrap();
-        let mut stopped =
-            super::Stopped { id: "c1", processes: &[], scope: &scope, owner: 0, holders: vec![] };
+        let mut stopped = super::Stopped {
+            id: "c1",
+            processes: &[],
+            scope: &scope,
+            owner: 0,
+            holders: vec![],
+            unkillable: vec![],
+        };
         let mut clock = || {
             std::thread::sleep(Duration::from_millis(10));
             began.elapsed()
@@ -2130,8 +2222,14 @@ mod tests {
         std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
         std::fs::write(&lock, serde_json::json!({"pid": runner, "keeper": keeper}).to_string())
             .unwrap();
-        let mut stopped =
-            super::Stopped { id: "c1", processes: &[], scope: &scope, owner: 0, holders: vec![] };
+        let mut stopped = super::Stopped {
+            id: "c1",
+            processes: &[],
+            scope: &scope,
+            owner: 0,
+            holders: vec![],
+            unkillable: vec![],
+        };
         stopped.kill().unwrap();
         let gate = spawned[2].wait().unwrap();
         let alive: Vec<bool> =
@@ -2142,5 +2240,56 @@ mod tests {
         }
         assert_eq!(std::os::unix::process::ExitStatusExt::signal(&gate), Some(libc::SIGKILL));
         assert_eq!(alive, [true, true], "the host runner and its keeper are left alive");
+    }
+
+    /// A setuid child — `/bin/ps` on macOS — is never frozen: no kill of
+    /// this user could end it stopped. It is left to run and waited for
+    /// until it ends on its own, and never signalled (sunfmin/control#1096).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_setuid_child_is_never_frozen_and_is_waited_for_until_it_ends() {
+        use std::time::Duration;
+        let mut ps = std::process::Command::new("/bin/ps")
+            .args(["axeww", "-o", "command="])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Unread, its output fills the pipe and it blocks, running.
+        std::thread::sleep(Duration::from_millis(500));
+        let mut sleeper = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let ours = super::freezable(sleeper.id()).unwrap();
+        let setuid = super::freezable(ps.id()).unwrap();
+        let _ = sleeper.kill();
+        let _ = sleeper.wait();
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("w.processes");
+        let mut stopped = super::Stopped {
+            id: "c1",
+            processes: &[],
+            scope: &scope,
+            owner: 0,
+            holders: vec![],
+            unkillable: crate::exits::running(&[ps.id()]),
+        };
+        let waiting = stopped.unkillable.clone();
+        let output = ps.stdout.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            std::io::copy(&mut { output }, &mut std::io::sink()).unwrap();
+        });
+        let began = std::time::Instant::now();
+        let mut clock = || {
+            std::thread::sleep(Duration::from_millis(10));
+            began.elapsed()
+        };
+        let confirmed = super::awaited(&mut stopped, &mut clock);
+        reader.join().unwrap();
+        let ended = ps.wait().unwrap();
+        assert!(ours.is_some(), "a process of this user is frozen");
+        assert!(setuid.is_none(), "a setuid ps is never frozen");
+        assert_eq!(waiting, [ps.id()], "it is waited for");
+        confirmed.unwrap();
+        assert!(began.elapsed() >= Duration::from_millis(1400), "{:?}", began.elapsed());
+        assert!(ended.success(), "it ended on its own, never signalled: {ended:?}");
     }
 }
