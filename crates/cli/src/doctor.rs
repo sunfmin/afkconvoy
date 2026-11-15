@@ -224,8 +224,11 @@ kinds! {
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
+    ExitWaiting: Warning, "has waited for its processes to exit for";
     LandingContention: Warning, "its candidate chain cannot keep up";
     LandingStalled: Critical, "its fleet lands nothing";
+    PendingLands: Warning, "live lands hold pending turns";
+    FetchCorrupt: Warning, "a fetch of the remote keeps failing corrupt";
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which is ignored";
     KeptWorktree: Info, "is kept with no claim";
@@ -268,6 +271,7 @@ impl Kind {
                 | Kind::RepoUnreadable
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
+                | Kind::ExitWaiting
         )
     }
 
@@ -588,6 +592,9 @@ pub struct State {
     pub on_gone: Vec<OnGone>,
     /// Candidate state from the same remote listing as the working set.
     pub candidates: Value,
+    /// The pending places live lands of this host hold on its chains, from
+    /// the same listing.
+    pub(crate) pending: Vec<crate::candidates::PendingLand>,
     /// Jira deliveries from the same remote listing as the working set.
     pub deliveries: Vec<Value>,
 }
@@ -1694,6 +1701,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(state.left_watch.iter().map(|left| left_watch_finding(left, seen.now)));
             found.extend(state.not_ours.iter().map(not_ours_finding));
             found.extend(state.on_gone.iter().map(on_gone_finding));
+            found.extend(pending_finding(&state.pending));
         }
         Err(why) => found.push(finding(
             Kind::StateUnread,
@@ -2009,12 +2017,10 @@ fn finish_state(
         })
         .collect();
     let prefix = fleet.repo.layout().under("candidates/");
-    let candidates = crate::candidates::view(
-        &fleet.repo,
-        &fleet.config,
-        &fleet.records_at_open(&format!("{prefix}*")),
-    )
-    .unwrap_or_else(|error| json!({"error": error.to_string()}));
+    let chains = fleet.records_at_open(&format!("{prefix}*"));
+    let candidates = crate::candidates::view(&fleet.repo, &fleet.config, &chains)
+        .unwrap_or_else(|error| json!({"error": error.to_string()}));
+    let pending = crate::candidates::pending_lands(&chains, &prefix, now);
     let deliveries = report.deliveries_json();
     let state = State {
         wait_holders: crate::human_wait::holders(&fleet.scan, now),
@@ -2037,6 +2043,7 @@ fn finish_state(
         not_ours,
         on_gone,
         candidates,
+        pending,
         deliveries,
     };
     Ok((state, report))
@@ -2377,6 +2384,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         .filter(|entry| matches!(&entry.what, What::Command { command, .. } if command == "land"))
         .cloned()
         .collect();
+    bounded.extend(repo.failing_fetch().map(|failing| fetch_finding(repo, &failing)));
+    bounded.extend(crate::exits::findings(now));
     let lines = entries.as_deref().unwrap_or_default();
     let (instance, _started_with, ticks) = run_log::run(lines, host);
     let mut run = Run {
@@ -2642,6 +2651,67 @@ fn stalled_finding(candidates: &Value, entries: &[Entry], now: u64) -> Option<Fi
         ),
         "afkconvoy plan".to_string(),
     ))
+}
+
+/// How many live lands of one repo holding pending turns are a finding: a
+/// round waits for every pending turn, so these many hold it, and their
+/// polling spends the GitHub quota. On Studio64, 2026-11-15, 25 held
+/// sunfmin/guild's chain, one for 3 h 10 min (sunfmin/control#1117).
+const PENDING_MANY: usize = 20;
+
+/// `PENDING_MANY` or more live lands of this host holding pending turns on
+/// this repo's chains, each named with how long it has waited. Each ends
+/// itself once it waits past its bound; one that does not is of an older
+/// afkconvoy, or waits on what the queue shows.
+fn pending_finding(pending: &[crate::candidates::PendingLand]) -> Option<Finding> {
+    if pending.len() < PENDING_MANY {
+        return None;
+    }
+    let named: Vec<String> = pending
+        .iter()
+        .map(|land| {
+            let waited = land.waited.map_or("an unknown time".into(), |s| format!("{s}s"));
+            format!("pid {} on {} for {waited}", land.pid, land.branch)
+        })
+        .collect();
+    Some(finding(
+        Kind::PendingLands,
+        json!(["pending-lands"]),
+        format!(
+            "{} live lands hold pending turns: a round waits for every pending turn, and none \
+             starts while they wait",
+            pending.len()
+        ),
+        format!("the candidate chains hold pending places of {}", named.join(", ")),
+        "afkconvoy queue".to_string(),
+    ))
+}
+
+/// A fetch into this checkout's object store that failed on a corrupt pack
+/// even fetched again with `--refetch` (sunfmin/control#1102): every land
+/// and read that needs a commit not here yet waits out its backoff until a
+/// fetch succeeds. One fetched by hand ends it.
+fn fetch_finding(repo: &Repo, failing: &crate::git::Failing) -> Finding {
+    let checkout = repo.main_checkout().unwrap_or_else(|_| repo.dir.clone());
+    finding(
+        Kind::FetchCorrupt,
+        json!(["fetch-corrupt", failing.since]),
+        format!(
+            "a fetch of the remote keeps failing corrupt: {} failed {} time(s) since {}, and \
+             fetches wait until {}",
+            failing.refname,
+            failing.failures,
+            failing.since,
+            failing.next()
+        ),
+        format!("the last fetch, with --refetch, said: {}", failing.error),
+        format!(
+            "git -C {} fetch --refetch --no-tags {} {}",
+            checkout.display(),
+            crate::git::REMOTE,
+            failing.refname
+        ),
+    )
 }
 
 /// Watch log lines are the host's. `doctor --all` says each once.
@@ -3005,6 +3075,44 @@ A human wait taken by another host has `taken_by` naming that host and an info f
 
 #[cfg(test)]
 mod tests {
+    /// The Studio64 case (sunfmin/control#1117): 20 live lands of this host
+    /// holding pending turns on the chain are a finding naming each and how
+    /// long it has waited; 19 are not, nor is a place whose owner is gone.
+    #[test]
+    fn twenty_live_lands_holding_pending_turns_are_a_finding_naming_each() {
+        use crate::candidates::pending_lands;
+        use afkconvoy_core::candidate::{Barrier, Chain, Process};
+        let live = crate::candidates::identity(std::process::id()).unwrap().unwrap();
+        let gone = Process { started: "0.000000".into(), ..live.clone() };
+        let record = |n: u64| {
+            let mut pending: Vec<Barrier> = (0..n)
+                .map(|i| Barrier {
+                    id: format!("p{i}"),
+                    owner: live.clone(),
+                    since: Some(1000 + i),
+                })
+                .collect();
+            pending.push(Barrier { id: "gone".into(), owner: gone.clone(), since: Some(0) });
+            let chain: Chain = Chain { pending, ..Chain::default() };
+            crate::remote::RemoteRecord {
+                name: "refs/convoy/candidates/main".into(),
+                sha: "0".into(),
+                subject: serde_json::to_string(&chain).unwrap(),
+            }
+        };
+        let prefix = "refs/convoy/candidates/";
+        let nineteen = pending_lands(&[record(19)], prefix, 5000);
+        assert_eq!(nineteen.len(), 19, "a place whose owner is gone is no live land");
+        assert!(pending_finding(&nineteen).is_none());
+        let found = pending_finding(&pending_lands(&[record(20)], prefix, 5000)).unwrap();
+        assert_eq!(found.kind, Kind::PendingLands);
+        assert!(found.what.starts_with("20 live lands hold pending turns"), "{}", found.what);
+        let pid = live.pid;
+        assert!(found.evidence.contains(&format!("pid {pid} on main for 4000s")), "{found:?}");
+        assert!(found.evidence.contains(&format!("pid {pid} on main for 3981s")), "{found:?}");
+        assert!(!found.evidence.contains("for 5000s"), "{found:?}");
+    }
+
     use afkconvoy_core::patrol::Row;
     use afkconvoy_core::plan::{Dispatchable, Excluded, Mine, PeerClaim};
     use afkconvoy_core::worker::GRACE;
@@ -3013,6 +3121,33 @@ mod tests {
     use crate::log::Cause;
 
     const NOW: u64 = 100_000;
+
+    /// A fetch that keeps failing corrupt is a finding naming its ref, its
+    /// error and how long it has failed, whose fix fetches it with
+    /// `--refetch` (sunfmin/control#1102).
+    #[test]
+    fn a_fetch_failing_corrupt_names_its_error_and_the_refetch() {
+        let failing = crate::git::Failing {
+            refname: "refs/convoy/candidates/main".into(),
+            error: "fatal: pack has 4 unresolved deltas".into(),
+            since: NOW - 5400,
+            failures: 48,
+            last: NOW,
+        };
+        let found = fetch_finding(&Repo::new(PathBuf::from("/work/guild")), &failing);
+        assert_eq!(found.kind, Kind::FetchCorrupt);
+        assert!(
+            found.what.contains("refs/convoy/candidates/main failed 48 time(s)"),
+            "{}",
+            found.what
+        );
+        assert!(found.evidence.contains("4 unresolved deltas"), "{}", found.evidence);
+        assert!(
+            found.fix.ends_with("fetch --refetch --no-tags origin refs/convoy/candidates/main"),
+            "{}",
+            found.fix
+        );
+    }
 
     fn host() -> Host {
         Host {
@@ -3106,6 +3241,7 @@ mod tests {
             not_ours: vec![],
             on_gone: vec![],
             candidates: json!([]),
+            pending: vec![],
             deliveries: vec![],
         }
     }

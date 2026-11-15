@@ -228,7 +228,9 @@ fn the_binary_prints_what_it_was_built_from() {
         assert_eq!(afkconvoy::VERSION, VERSION);
         return;
     }
-    let described = git(&["describe", "--tags", "--long", "--always", "--match", "v*"]).unwrap();
+    // As the build describes it, but clean: a dirty tree says either.
+    let clean: Vec<&str> = build::DESCRIBE.into_iter().filter(|arg| *arg != "--dirty").collect();
+    let described = git(&clean).unwrap();
     let built = build::built_from(VERSION, Some(stdout(&described).trim()));
     let built_dirty =
         build::built_from(VERSION, Some(&format!("{}-dirty", stdout(&described).trim())));
@@ -318,7 +320,7 @@ fn a_build_sharing_a_target_directory_says_the_commit_it_is_built_from() {
             None => cargo.env_remove(build::COMMIT_ENV),
         };
         let said = stdout(&cargo.output().unwrap());
-        let described = git(dir, &["describe", "--tags", "--long", "--dirty", "--always"]);
+        let described = git(dir, &build::DESCRIBE);
         (said, build::built_from("0.1.0", Some(&described)))
     };
     let (said, built) = build(&main, None);
@@ -336,5 +338,103 @@ fn a_build_sharing_a_target_directory_says_the_commit_it_is_built_from() {
     for (dir, commit) in [(&main, &first), (&other, &merge), (&main, &first)] {
         let (said, built) = build(dir, Some(commit));
         assert_eq!(said, built, "a gate's build in {}", dir.display());
+    }
+}
+
+/// A worker's build after its candidate's gate built, in the worker's target
+/// directory, a merge whose workspace crate changed builds the worker's own
+/// crate, and is green (sunfmin/control#1114): cargo calls a workspace crate
+/// fresh by the times of its files alone, and the worker's are older than what
+/// the candidate built.
+#[test]
+fn a_workers_build_after_its_candidates_in_its_target_directory_builds_its_own_crates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("target");
+    // A workspace laid out as this one is: a crate with this workspace's
+    // build script, and a program that builds one of the crate's records.
+    let tree = |name: &str, record: &str, built: &str| -> std::path::PathBuf {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(dir.join("crates/core/src")).unwrap();
+        std::fs::create_dir_all(dir.join("crates/app/src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nresolver = \"3\"\nmembers = [\"crates/core\", \"crates/app\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("crates/commit.rs"), include_str!("../../commit.rs")).unwrap();
+        std::fs::write(
+            dir.join("crates/core/Cargo.toml"),
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+             build = \"../commit.rs\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("crates/core/src/lib.rs"), record).unwrap();
+        std::fs::write(
+            dir.join("crates/app/Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
+             [dependencies]\ncore = { path = \"../core\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("crates/app/src/main.rs"),
+            format!("fn main() {{ let record = {built}; print!(\"{{}}\", record.said); }}\n"),
+        )
+        .unwrap();
+        dir
+    };
+    let worker = tree(
+        "worker",
+        "pub struct Record { pub said: &'static str }\n",
+        "core::Record { said: \"worker\" }",
+    );
+    // What a gate's build in `dir` says, at `commit`, as `./gate.sh` names it.
+    let build = |dir: &Path, commit: &str| -> String {
+        let out = Command::new(env!("CARGO"))
+            .args(["run", "--quiet", "--offline", "-p", "app"])
+            .current_dir(dir)
+            .env("CARGO_TARGET_DIR", &target)
+            .env("AFKCONVOY_BUILD_COMMIT", commit)
+            .output()
+            .unwrap();
+        stdout(&out)
+    };
+    assert_eq!(build(&worker, "w"), "worker", "the worker's gate");
+    // Made after the worker's gate, as its candidate's worktree is by `land`.
+    let candidate = tree(
+        "candidate",
+        "pub struct Record { pub said: &'static str, pub changed: bool }\n",
+        "core::Record { said: \"candidate\", changed: true }",
+    );
+    assert_eq!(build(&candidate, "m"), "candidate", "its candidate's gate, at the merge");
+    assert_eq!(build(&worker, "w"), "worker", "the worker's gate after its candidate's");
+}
+
+/// Every package of this workspace has a build script that is run again at
+/// each commit the gate names, so each package is built again then
+/// (sunfmin/control#1114, #838).
+#[test]
+fn every_package_of_the_workspace_is_built_again_at_each_commit_the_gate_names() {
+    let out = Command::new(env!("CARGO"))
+        .args(["metadata", "--no-deps", "--offline", "--format-version", "1"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let packages = metadata["packages"].as_array().unwrap();
+    assert!(packages.len() > 1, "{metadata}");
+    for package in packages {
+        let name = package["name"].as_str().unwrap();
+        let script = package["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["kind"].as_array().unwrap().iter().any(|k| k == "custom-build"))
+            .unwrap_or_else(|| panic!("{name} has no build script"));
+        let source = std::fs::read_to_string(script["src_path"].as_str().unwrap()).unwrap();
+        assert!(
+            source.contains("const COMMIT_ENV: &str = \"AFKCONVOY_BUILD_COMMIT\";")
+                && source.contains("println!(\"cargo:rerun-if-env-changed={COMMIT_ENV}\");"),
+            "{name}'s build script is not run again at each commit the gate names"
+        );
     }
 }

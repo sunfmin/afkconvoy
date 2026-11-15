@@ -291,3 +291,26 @@ fn a_live_peers_board_is_left_alone() {
     assert!(!calls.iter().any(|call| call.contains("issues/7/") || call.contains("issues/8/")));
     assert!(!calls.iter().any(|call| call.contains("PATCH")), "{calls:?}");
 }
+
+#[test]
+fn with_rest_spent_a_board_is_edited_through_graphql() {
+    let world = fleet();
+    let id = board_id(&world);
+    world.with_gh(|gh| {
+        for comment in gh["comments"]["7"].as_array_mut().unwrap() {
+            if comment["id"] == id {
+                comment["body"] = json!("<!--convoy:status-->\nscribbled over");
+            }
+        }
+        gh["quota_fail"] = json!({"core": "gh: API rate limit already exceeded"});
+    });
+    std::fs::remove_dir_all(world.clone.join(".git/convoy-boards")).unwrap();
+    world.gh_calls();
+    at_work(&world, 1090);
+    assert_eq!(did(&tick(&world, 1090))[1], "board 7 done");
+    assert_eq!(ticked(&board(&world)), ["Claimed"]);
+    assert_eq!(board_id(&world), id, "edited in place");
+    let edits = world.gh_calls();
+    let edits = edits.iter().filter(|call| call.iter().any(|a| a.contains("updateIssueComment")));
+    assert_eq!(edits.count(), 1);
+}

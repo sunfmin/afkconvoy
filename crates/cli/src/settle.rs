@@ -39,6 +39,13 @@ fn landing_of(
     Ok(Some((join, at)))
 }
 
+/// Whether the work of `issue` is on the base branch: a closing its
+/// landing made is no closing under its worker.
+pub(crate) fn landed(fleet: &Fleet, issue: u64) -> Result<bool> {
+    let base_tip = fleet.task_tip(issue)?;
+    Ok(landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, issue)?.is_some())
+}
+
 /// The landing that put the still-open issue of `claim`, of `tracker`, on
 /// the base branch, when there is one and it is this claim's
 /// (`cut_landing`).

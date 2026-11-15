@@ -655,9 +655,22 @@ fn write(gh: &GitHub, args: &[&str]) -> Result<String> {
         mutation(gh, "createLabel", &input, "label { id }")?;
         return Ok(String::new());
     }
-    if let ["issues", number, tail @ ..] = pieces.as_slice() {
-        let number: u64 =
-            number.parse().context("write needs an issue number; no mutation attempted")?;
+    if let ["issues", "comments", comment] = pieces.as_slice()
+        && method == "PATCH"
+        && let Ok(comment) = comment.parse::<u64>()
+    {
+        let id = comment_node(gh, &repo, comment)?;
+        mutation(
+            gh,
+            "updateIssueComment",
+            &format!("id:{}, body:{}", json!(id), json!(text("body")?)),
+            "issueComment { id }",
+        )?;
+        return Ok(String::new());
+    }
+    if let ["issues", number, tail @ ..] = pieces.as_slice()
+        && let Ok(number) = number.parse::<u64>()
+    {
         let issue = graph_issue(gh, &repo, number)?;
         let id = issue["id"]
             .as_str()
@@ -719,8 +732,65 @@ fn write(gh: &GitHub, args: &[&str]) -> Result<String> {
         }
     }
     bail!(
-        "write {method} {path} has no supported equivalent GraphQL adapter (database-id dependency/comment edits require an authoritative node identity); confirmed primary rejection was not retried; inspect authoritative result and retry after REST reset"
+        "no GraphQL equivalent for {method} {path}; no mutation attempted; confirmed primary rejection was not retried; inspect authoritative result and retry after REST reset"
     )
+}
+
+/// The GraphQL node id of the issue comment whose REST id is `comment`.
+/// GraphQL looks nothing up by a REST id, but GitHub's node id is that id
+/// encoded: `IC_` and the unpadded URL-safe base64 of the MessagePack array
+/// `[0, repository databaseId, comment databaseId]`. The derived id is read
+/// back before any write: it must resolve to that very comment.
+fn comment_node(gh: &GitHub, repo: &str, comment: u64) -> Result<String> {
+    let repository = graph(gh, repo, "resource: databaseId", false)?
+        .pop()
+        .and_then(|id| id.as_u64())
+        .context("GitHub: missing repository database id; no mutation attempted")?;
+    let mut packed = vec![0x93, 0x00];
+    for n in [repository, comment] {
+        packed.extend(msgpack_uint(n));
+    }
+    let id = format!("IC_{}", base64_url(&packed));
+    let query = format!(
+        "query=query ConvoyQuotaNode {{ node(id:{}) {{ __typename ... on IssueComment {{ fullDatabaseId }} }} }}",
+        json!(id)
+    );
+    let out = gh.on_api(&["api", "graphql", "-f", &query], false)?;
+    let doc: Value = serde_json::from_str(&out).context("GitHub GraphQL: invalid node receipt")?;
+    let node = &doc["data"]["node"];
+    if node["__typename"] != "IssueComment"
+        || database_id(&node["fullDatabaseId"]).ok() != Some(json!(comment))
+    {
+        bail!(
+            "issue comment {comment} of {repo} has no GraphQL identity {id}: {}; no mutation attempted",
+            doc.get("errors").unwrap_or(node)
+        );
+    }
+    Ok(id)
+}
+
+/// `n` as a MessagePack unsigned integer, in its shortest form.
+fn msgpack_uint(n: u64) -> Vec<u8> {
+    match n {
+        0..=0x7f => vec![n as u8],
+        0x80..=0xff => vec![0xcc, n as u8],
+        0x100..=0xffff => [&[0xcd][..], &(n as u16).to_be_bytes()].concat(),
+        0x1_0000..=0xffff_ffff => [&[0xce][..], &(n as u32).to_be_bytes()].concat(),
+        _ => [&[0xcf][..], &n.to_be_bytes()].concat(),
+    }
+}
+
+/// `bytes` in unpadded URL-safe base64.
+fn base64_url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..=chunk.len() {
+            out.push(ALPHABET[(n >> (18 - 6 * i) & 0x3f) as usize] as char);
+        }
+    }
+    out
 }
 
 /// gh list bounds its result and embeds only the first 100 native closing
@@ -789,4 +859,29 @@ pub(crate) fn complete_listing(gh: &GitHub, args: &[&str], out: String) -> Resul
         row["since"] = time(&row["createdAt"]);
     }
     Ok(json!(rows).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_comment_node_id_is_github_s_encoding_of_its_rest_id() {
+        // sunfmin/control is repository 1432057979; its comment 6889160226
+        // is node IC_kwDOVVt4e88AAAABmqA-Ig, as GitHub answers.
+        let mut packed = vec![0x93, 0x00];
+        packed.extend(super::msgpack_uint(1432057979));
+        packed.extend(super::msgpack_uint(6889160226));
+        assert_eq!(super::base64_url(&packed), "kwDOVVt4e88AAAABmqA-Ig");
+    }
+
+    #[test]
+    fn a_write_with_no_graphql_equivalent_names_its_path() {
+        let gh = crate::gh::GitHub::in_no_checkout();
+        for (method, path) in [("DELETE", "issues/comments/42"), ("PUT", "pulls/3/merge")] {
+            let endpoint = format!("repos/acme/dev/{path}");
+            let args = ["api", "--method", method, &endpoint, "--silent"];
+            let error = super::write(&gh, &args).unwrap_err().to_string();
+            let named = format!("no GraphQL equivalent for {method} {path};");
+            assert!(error.starts_with(&named), "{error}");
+        }
+    }
 }

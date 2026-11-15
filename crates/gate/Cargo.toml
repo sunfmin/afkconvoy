@@ -4,6 +4,8 @@ description = "The gate and the exclusive queue, with no fleet concept in their 
 version.workspace = true
 edition.workspace = true
 publish = false
+# Built again at every commit the gate names (sunfmin/control#1114).
+build = "../commit.rs"
 
 [dependencies]
 # Flux's attributes and refinements of the standard library (../../Cargo.toml).
