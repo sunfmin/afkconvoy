@@ -14,6 +14,7 @@ cp "$root/.config/nextest.toml" "$tmp/repo/.config/nextest.toml"
 cat > "$tmp/home/.cargo/bin/cargo" <<'MOCK'
 #!/bin/sh
 case "$*" in
+metadata*) echo "{\"target_directory\":\"$PWD/target\",\"version\":1}" ;;
 *'nextest run'*) echo "$*" >"$NEXTEST_ARGS" ;;
 esac
 exit 0

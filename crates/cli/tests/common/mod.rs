@@ -410,6 +410,8 @@ impl World {
             // share of a gate in the world (sunfmin/control#245).
             "CARGO_BUILD_JOBS",
             "NEXTEST_TEST_THREADS",
+            // as are the threads of its rustc (sunfmin/control#1127)
+            "CARGO_RUSTC_THREADS",
         ] {
             cmd.env_remove(name);
         }
@@ -1301,19 +1303,21 @@ pub(crate) fn publish_scratch(scratch: &Path, kept: &Path) {
 
 /// Where repository template seeds are kept.
 ///
-/// The process temp directory, when that is outside the checkout, the test
-/// binary's build output and the fleet's cache directory. The gate points
-/// `TMPDIR` at a directory inside the checkout, and a read-only seed there
-/// stops `git worktree remove` with `Permission denied`. `/tmp` is outside
-/// the checkout. Nothing here reads or writes the fleet's cache directory:
-/// its path is only a place the seed must not be.
+/// The process temp directory, when that is outside the checkout, the build
+/// output and the fleet's cache directory. The gate points `TMPDIR` at a
+/// directory inside the checkout, and a read-only seed there stops `git
+/// worktree remove` with `Permission denied`. `/tmp` is outside the checkout.
+/// Nothing here reads or writes the fleet's cache directory: its path is only
+/// a place the seed must not be.
 fn repository_templates_dir() -> PathBuf {
-    let checkout = std::env::current_exe().ok().as_deref().and_then(enclosing_checkout);
+    let checkout = this_checkout();
     let fleet_cache = afkconvoy::copies::cache().ok();
+    let builds = build_outputs();
+    let builds: Vec<&Path> = builds.iter().map(PathBuf::as_path).collect();
     repository_template_home(
         &std::env::temp_dir(),
         checkout.as_deref(),
-        build_output().as_deref(),
+        &builds,
         fleet_cache.as_deref(),
     )
 }
@@ -1322,10 +1326,12 @@ fn repository_templates_dir() -> PathBuf {
 pub(crate) fn repository_template_home(
     process_temp: &Path,
     checkout: Option<&Path>,
-    build: Option<&Path>,
+    builds: &[&Path],
     fleet_cache: Option<&Path>,
 ) -> PathBuf {
-    let blocked = lies_inside(process_temp, &[checkout, build, fleet_cache]);
+    let roots: Vec<Option<&Path>> =
+        [checkout, fleet_cache].into_iter().chain(builds.iter().copied().map(Some)).collect();
+    let blocked = lies_inside(process_temp, &roots);
     let base = if blocked { PathBuf::from("/tmp") } else { process_temp.to_path_buf() };
     base.join("afkconvoy-repository-templates-v1")
 }
@@ -1339,6 +1345,12 @@ fn lies_inside(dir: &Path, roots: &[Option<&Path>]) -> bool {
 
 fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The checkout these tests are built from: the one that holds this
+/// package's manifest, which cargo names, wherever it put what it built.
+pub fn this_checkout() -> Option<PathBuf> {
+    enclosing_checkout(Path::new(env!("CARGO_MANIFEST_DIR")))
 }
 
 /// The checkout that holds `path`: the directory whose `.git` is its own,
@@ -1358,12 +1370,28 @@ fn enclosing_checkout(path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The cargo target directory of this test binary: the parent of the
-/// `debug` or `release` directory the binary sits under, whether cargo put
-/// it in `deps` or under the build script's output.
-fn build_output() -> Option<PathBuf> {
-    let exe = canonical(&std::env::current_exe().ok()?);
-    let mut dir = exe.parent()?.to_path_buf();
+/// Where cargo put what it built for these tests: the target directory
+/// that holds the `afkconvoy` it built, which cargo names, and the
+/// directory this test program runs from. They are one directory to
+/// rustup's cargo, and two to huacnlee/cargo, which builds a test program
+/// under `~/.cargo/targets` and puts the binaries in the workspace's
+/// `./target` (sunfmin/control#1127). Each is the parent of the `debug` or
+/// `release` directory its program sits under.
+pub fn build_outputs() -> Vec<PathBuf> {
+    let programs =
+        [Some(PathBuf::from(env!("CARGO_BIN_EXE_afkconvoy"))), std::env::current_exe().ok()];
+    let mut outputs: Vec<PathBuf> = Vec::new();
+    for program in programs.into_iter().flatten() {
+        if let Some(output) = build_output(&program).filter(|o| !outputs.contains(o)) {
+            outputs.push(output);
+        }
+    }
+    outputs
+}
+
+fn build_output(program: &Path) -> Option<PathBuf> {
+    let program = canonical(program);
+    let mut dir = program.parent()?.to_path_buf();
     loop {
         let profile = dir.file_name().is_some_and(|name| name == "debug" || name == "release");
         if profile {
