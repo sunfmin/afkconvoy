@@ -9,9 +9,12 @@
 //! lands in one fast-forward.
 //!
 //! A pair red on its fast gate stops no other pair: its later-asked PR
-//! leaves the round with that run, and the other side goes up unpaired. A
-//! PR that merges cleanly with no partner, or whose pair said nothing of its
-//! tree, leaves the round for the next.
+//! leaves the round carrying every other PR of it, handed that run and the
+//! pair's merge, and they leave carried by it. The last-asked node that
+//! conflicts with every other of its level carries the earliest-asked of
+//! them, one a level. A carrying PR asked again rejoins the round while no
+//! PR of its root has a candidate (`Chain::rejoin`). A PR whose pair said
+//! nothing of its tree leaves the round for the next.
 //!
 //! The rules are the chain's, on its one record, so every runner of a round
 //! follows them: afkconvoy's turns, one per PR, each gating the pairs it is
@@ -53,10 +56,19 @@ pub struct Ask {
 #[serde(rename_all = "snake_case")]
 pub enum Left {
     /// It is the later-asked PR of a pair whose fast gate ran red, the pair
-    /// named: its worker is given that run.
+    /// named, as a round recorded it before carrying (sunfmin/control#1136):
+    /// its worker is given that run, and carries nothing.
     Red(String),
+    /// It carries other PRs of its round (docs/adr/0083): its worker merges
+    /// theirs into its own, fixes or resolves it, passes its fast gate and
+    /// asks again; it rejoins the round while its root's whole gate has not
+    /// started (`Chain::rejoin`).
+    Carrying(Carry),
+    /// It is carried by the PR named: its change lands with that PR's, and
+    /// that PR's turn closes it once its head holds this one's.
+    Carried(u64),
     /// It merges cleanly with no other node of its level: it waits for the
-    /// next round.
+    /// next round. Written before carrying; a round now carries such a PR.
     Unpaired,
     /// A pair it was of said nothing of its tree, or was cancelled, before
     /// it passed: it waits for the next round.
@@ -64,6 +76,21 @@ pub enum Left {
     /// Its head merged onto the round's candidates, or the target tip,
     /// conflicts: its turn says so as it does of any conflict.
     Conflict,
+}
+
+/// What a carrying PR's worker is handed (`Left::Carrying`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Carry {
+    /// The pair whose fast gate ran red, by its candidate's id; none where
+    /// its PR merges cleanly with no other node of its level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pair: Option<String>,
+    /// The commits its worker merges into its own branch, in order: the red
+    /// pair's merge, or its own node's commit and then that of the
+    /// earliest-asked node it conflicts with.
+    pub merge: Vec<String>,
+    /// The PRs it carries, in the order they asked.
+    pub carried: Vec<u64>,
 }
 
 /// A node of a pairing tree: a PR's head, or a pair's merge, and the PRs it
@@ -112,6 +139,15 @@ pub struct Round {
     /// The tree's root, once there is one: what lands as the round.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<Node>,
+    /// The PRs that left it carrying others (`Left::Carrying`), each of
+    /// which rejoins it when it asks again before its root's whole gate
+    /// starts (`Chain::rejoin`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carrying: Vec<u64>,
+    /// The nodes that rejoined while its level's pairs gated: they go up
+    /// with what the level sends up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joining: Vec<Node>,
 }
 
 /// What the turn of one PR of the round does next (`Chain::round_next`).
@@ -145,13 +181,39 @@ pub struct Built {
     pub seconds: u64,
 }
 
+/// How a level of a pairing tree pairs (`pairs`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Pairing {
+    /// Its pairs, by the indexes of their two nodes, in asking order.
+    pub pairs: Vec<(usize, usize)>,
+    /// The last-asked node that conflicts with every other node of the
+    /// level, and the earliest-asked one no pair took: the first carries the
+    /// second
+    /// (docs/adr/0083). One a level.
+    pub carry: Option<(usize, usize)>,
+}
+
 /// The pairs of a level of `n` nodes, in asking order: each node not yet
 /// paired pairs with the first later one, not yet paired, that `clean` says
-/// it merges with cleanly; one left without a partner goes up unpaired.
+/// it merges with cleanly; one left without a partner goes up unpaired. The
+/// last-asked node `clean` says conflicts with every other carries the
+/// earliest-asked of them no pair took, where there is one: the later-asked
+/// carries, as of a red pair. `clean` is asked
+/// of each two nodes once.
 pub fn pairs<E>(
     n: usize,
     mut clean: impl FnMut(usize, usize) -> Result<bool, E>,
-) -> Result<Vec<(usize, usize)>, E> {
+) -> Result<Pairing, E> {
+    let mut known: Vec<((usize, usize), bool)> = vec![];
+    let mut merges = |a: usize, b: usize| -> Result<bool, E> {
+        let key = (a.min(b), a.max(b));
+        if let Some((_, said)) = known.iter().find(|(k, _)| *k == key) {
+            return Ok(*said);
+        }
+        let said = clean(key.0, key.1)?;
+        known.push((key, said));
+        Ok(said)
+    };
     let mut taken: Vec<usize> = vec![];
     let mut pairs = vec![];
     for first in 0..n {
@@ -162,7 +224,7 @@ pub fn pairs<E>(
             if second == first || taken.contains(&second) {
                 continue;
             }
-            if clean(first, second)? {
+            if merges(first, second)? {
                 taken.push(first);
                 taken.push(second);
                 pairs.push((first, second));
@@ -170,7 +232,25 @@ pub fn pairs<E>(
             }
         }
     }
-    Ok(pairs)
+    let mut carry = None;
+    for alone in (0..n).rev().filter(|x| !taken.contains(x)) {
+        let mut with = None;
+        let mut conflicts = true;
+        for other in (0..n).filter(|&y| y != alone) {
+            if merges(alone, other)? {
+                conflicts = false;
+                break;
+            }
+            if with.is_none() && !taken.contains(&other) {
+                with = Some(other);
+            }
+        }
+        if let Some(other) = with.filter(|_| conflicts) {
+            carry = Some((alone, other));
+            break;
+        }
+    }
+    Ok(Pairing { pairs, carry })
 }
 
 impl Round {
@@ -182,6 +262,26 @@ impl Round {
     /// Where `change` asked, among the round's PRs.
     fn place(&self, change: u64) -> usize {
         self.asked.iter().position(|a| a.asks.change == change).unwrap_or(usize::MAX)
+    }
+
+    /// `carrier` leaves the round carrying `carry.carried`, each of which
+    /// leaves carried by it; it may rejoin.
+    fn carry(&mut self, carrier: u64, carry: Carry) {
+        for ask in self.asked.iter_mut() {
+            if ask.asks.change == carrier {
+                ask.left.get_or_insert(Left::Carrying(carry.clone()));
+            } else if carry.carried.contains(&ask.asks.change) {
+                ask.left.get_or_insert(Left::Carried(carrier));
+            }
+        }
+        if !self.carrying.contains(&carrier) {
+            self.carrying.push(carrier);
+        }
+    }
+
+    /// Whether every PR of `node` has left the round.
+    fn gone(&self, node: &Node) -> bool {
+        node.changes.iter().all(|&change| self.ask(change).is_none_or(|a| a.left.is_some()))
     }
 
     /// The PRs of the root still in the round, in the order they asked.
@@ -258,8 +358,16 @@ impl<N: Clone> Chain<N> {
             .iter()
             .map(|a| Node { changes: vec![a.asks.change], commit: a.asks.head.clone() })
             .collect();
-        self.round =
-            Some(Round { id: id.to_string(), asked, level: 0, nodes, paired: false, root: None });
+        self.round = Some(Round {
+            id: id.to_string(),
+            asked,
+            level: 0,
+            nodes,
+            paired: false,
+            root: None,
+            carrying: vec![],
+            joining: vec![],
+        });
         self.advance_round();
         true
     }
@@ -276,14 +384,17 @@ impl<N: Clone> Chain<N> {
     /// The pairs `built` of the round `round`'s level `level`, as its
     /// runner made them: each a candidate beside the chain, of its
     /// later-asked PR, whose turn gates it, its note `note` and its worktree
-    /// at `worktree`, by its id. None made, and two nodes or more: they
-    /// merge with no partner, and the first is the root; the rest leave the
-    /// round for the next. A level already paired, or another round's, is
-    /// left as it is.
+    /// at `worktree`, by its id. `carry`, the indexes of a node that
+    /// conflicts with every other and the node it carries (`Pairing::carry`):
+    /// the first node's last-asked PR leaves the round carrying every other
+    /// PR of the two (`Left::Carrying`), each of which leaves carried by it
+    /// (`Left::Carried`). None made and none carried, and two nodes or more:
+    /// the first is the root; the rest leave the round for the next. A level
+    /// already paired, or another round's, is left as it is.
     pub fn pair_level(
         &mut self,
         (round, level): (&str, u32),
-        built: Vec<Built>,
+        (built, carry): (Vec<Built>, Option<(usize, usize)>),
         note: impl Fn(u64) -> N,
         worktree: impl Fn(&str) -> String,
         now: u64,
@@ -293,7 +404,22 @@ impl<N: Clone> Chain<N> {
             return;
         }
         r.paired = true;
-        if built.is_empty() {
+        let carried =
+            carry.and_then(|(x, y)| Some((r.nodes.get(x)?.clone(), r.nodes.get(y)?.clone())));
+        if let Some((alone, with)) = &carried {
+            let mut both: Vec<u64> = alone.changes.iter().chain(&with.changes).copied().collect();
+            both.sort_by_key(|&change| r.place(change));
+            let mine = alone.changes.iter().copied().max_by_key(|&change| r.place(change));
+            if let Some(carrier) = mine {
+                let carry = Carry {
+                    pair: None,
+                    merge: vec![alone.commit.clone(), with.commit.clone()],
+                    carried: both.iter().copied().filter(|&c| c != carrier).collect(),
+                };
+                r.carry(carrier, carry);
+            }
+        }
+        if built.is_empty() && carried.is_none() {
             let mut nodes = r.nodes.clone().into_iter();
             r.root = nodes.next();
             let rest: Vec<u64> = nodes.flat_map(|n| n.changes).collect();
@@ -367,9 +493,12 @@ impl<N: Clone> Chain<N> {
 
     /// Carries the round on from what its pairs' gates decided: once every
     /// pair of its level is decided, the next level's nodes are what went up
-    /// — each green pair's merge, each node no pair took, the earlier side
-    /// of each pair red or said nothing — and what left the round is told
-    /// why. A level of one node is the root.
+    /// — each green pair's merge, each node no pair took and no carrying
+    /// took, the earlier side of each pair that said nothing, and each node
+    /// that rejoined meanwhile — and what left the round is told why. A pair
+    /// red on its fast gate takes both its sides out: its later-asked PR
+    /// carries every other PR of it (docs/adr/0083). A level of one node is
+    /// the root.
     pub fn advance_round(&mut self) {
         loop {
             let Some(round) = self.round.as_ref() else { return };
@@ -390,6 +519,7 @@ impl<N: Clone> Chain<N> {
             let Some(round) = self.round.as_mut() else { return };
             let mut up: Vec<Node> = vec![];
             let mut left: Vec<(u64, Left)> = vec![];
+            let mut carries: Vec<(u64, Carry)> = vec![];
             for node in &round.nodes {
                 let first =
                     pairs.iter().find(|p| p.pair.as_ref().is_some_and(|q| q.first == node.changes));
@@ -403,32 +533,34 @@ impl<N: Clone> Chain<N> {
                         let mine = node.changes.contains(&owner);
                         match gated(p) {
                             Gated::Green if first.is_some() => {
-                                let changes = q.joins().copied().collect::<Vec<_>>();
-                                let mut changes = changes;
+                                let mut changes = q.joins().copied().collect::<Vec<_>>();
                                 changes.sort_by_key(|&c| round.place(c));
                                 up.push(Node { changes, commit: p.commit.clone() });
                             }
                             Gated::Green => {}
                             Gated::Red if mine => {
-                                for &c in &node.changes {
-                                    let why = if c == owner {
-                                        Left::Red(p.id.clone())
-                                    } else {
-                                        Left::Next
-                                    };
-                                    left.push((c, why));
-                                }
+                                let mut carried: Vec<u64> =
+                                    q.joins().copied().filter(|&c| c != owner).collect();
+                                carried.sort_by_key(|&c| round.place(c));
+                                let merge = vec![p.commit.clone()];
+                                let pair = Some(p.id.clone());
+                                carries.push((owner, Carry { pair, merge, carried }));
                             }
+                            Gated::Red => {}
                             Gated::Nothing if mine => {
                                 left.extend(node.changes.iter().map(|&c| (c, Left::Next)));
                             }
                             _ => up.push(node.clone()),
                         }
                     }
+                    (None, None) if round.gone(node) => {}
                     (None, None) => up.push(node.clone()),
                 }
             }
             // What left is told at once: a red pair stops no other.
+            for (carrier, carry) in carries {
+                round.carry(carrier, carry);
+            }
             for (change, why) in left {
                 for ask in round.asked.iter_mut().filter(|a| a.asks.change == change) {
                     ask.left.get_or_insert(why.clone());
@@ -437,11 +569,50 @@ impl<N: Clone> Chain<N> {
             if gating {
                 return;
             }
+            up.append(&mut round.joining);
             up.sort_by_key(|n| n.changes.first().map_or(usize::MAX, |&c| round.place(c)));
             round.nodes = up;
             round.level = round.level.saturating_add(1);
             round.paired = false;
         }
+    }
+
+    /// Takes the pending place `id` into the open round, where its change
+    /// left that round carrying others (`Left::Carrying`) and no PR of its
+    /// root has its candidate yet, so its whole gate has not started → whether
+    /// it did. It rejoins at the level pairing now, or, once the level's
+    /// pairs are on the chain, at the next; a root not yet assigned pairs
+    /// with it again.
+    pub fn rejoin(&mut self, id: &str) -> bool {
+        let Some(at) = self.pending.iter().position(|b| b.id == id) else { return false };
+        let Some(asks) = self.pending.get(at).and_then(|b| b.asks.clone()) else { return false };
+        let Some(round) = self.round.as_mut() else { return false };
+        let started = round.asked.iter().any(|a| a.candidate.is_some());
+        if started || !round.carrying.contains(&asks.change) {
+            return false;
+        }
+        let place = self.pending.remove(at);
+        round.carrying.retain(|&c| c != asks.change);
+        round.asked.retain(|a| a.asks.change != asks.change);
+        let node = Node { changes: vec![asks.change], commit: asks.head.clone() };
+        round.asked.push(Ask {
+            id: place.id,
+            owner: place.owner,
+            asks,
+            left: None,
+            candidate: None,
+        });
+        if let Some(root) = round.root.take() {
+            round.nodes = vec![root, node];
+            round.level = round.level.saturating_add(1);
+            round.paired = false;
+        } else if round.paired {
+            round.joining.push(node);
+        } else {
+            round.nodes.push(node);
+        }
+        self.advance_round();
+        true
     }
 
     /// What the turn of the round's PR whose place is `id` does next; `None`
@@ -574,6 +745,7 @@ mod tests {
         let (round, level, nodes) = chain.to_pair().expect("a level to pair");
         let made = pairs(nodes.len(), |a, b| Ok::<_, ()>(clean(&nodes[a], &nodes[b]))).unwrap();
         let built = made
+            .pairs
             .into_iter()
             .map(|(first, second)| Built {
                 first,
@@ -584,7 +756,14 @@ mod tests {
                 seconds: 1,
             })
             .collect();
-        chain.pair_level((&round, level), built, |_| Plain::default(), |id| format!("w/{id}"), 0);
+        let carry = made.carry;
+        chain.pair_level(
+            (&round, level),
+            (built, carry),
+            |_| Plain::default(),
+            |id| format!("w/{id}"),
+            0,
+        );
     }
 
     /// Gates the pair `id` of the round green or red.
@@ -613,10 +792,10 @@ mod tests {
     #[test]
     fn each_node_pairs_with_the_first_later_one_it_merges_with_cleanly() {
         let clean = |a: usize, b: usize| Ok::<_, ()>(!(a == 0 && b == 1));
-        assert_eq!(pairs(4, clean).unwrap(), [(0, 2), (1, 3)]);
-        assert_eq!(pairs(5, |_, _| Ok::<_, ()>(true)).unwrap(), [(0, 1), (2, 3)]);
-        assert_eq!(pairs(3, |_, _| Ok::<_, ()>(false)).unwrap(), []);
-        assert_eq!(pairs(1, |_, _| Ok::<_, ()>(true)).unwrap(), []);
+        assert_eq!(pairs(4, clean).unwrap().pairs, [(0, 2), (1, 3)]);
+        assert_eq!(pairs(5, |_, _| Ok::<_, ()>(true)).unwrap().pairs, [(0, 1), (2, 3)]);
+        assert_eq!(pairs(3, |_, _| Ok::<_, ()>(false)).unwrap().pairs, []);
+        assert_eq!(pairs(1, |_, _| Ok::<_, ()>(true)).unwrap().pairs, []);
     }
 
     /// Four ready, mutually clean PRs: two pairs, gated by their later-asked
@@ -650,33 +829,122 @@ mod tests {
         assert_eq!(chain.round_next("t2"), Some(RoundNext::Assign));
     }
 
-    /// A red pair stops no other: its later-asked PR leaves with the run,
-    /// its earlier one goes up unpaired, and the rest of the round goes on.
+    /// A red pair stops no other: its later-asked PR leaves carrying its
+    /// partner, handed the pair's merge, its partner leaves carried by it,
+    /// and the rest of the round goes on.
     #[test]
-    fn a_red_pair_sends_its_later_pr_back_and_its_earlier_one_goes_up() {
+    fn a_red_pair_has_its_later_pr_carry_its_partner_and_the_rest_goes_on() {
         let mut chain = asking(4);
         chain.open_round("r");
         pair(&mut chain, |_, _| true);
         let level0 = gating(&chain);
         gate(&mut chain, &level0[0].1, false);
-        assert_eq!(chain.round_next("t2"), Some(RoundNext::Left(Left::Red(level0[0].1.clone()))));
+        let carry = Carry {
+            pair: Some(level0[0].1.clone()),
+            merge: vec!["(h1+h2)".into()],
+            carried: vec![1],
+        };
+        assert_eq!(chain.round_next("t2"), Some(RoundNext::Left(Left::Carrying(carry))));
+        assert_eq!(chain.round_next("t1"), Some(RoundNext::Left(Left::Carried(2))));
         assert_eq!(chain.round_next("t4"), Some(RoundNext::Gate(level0[1].1.clone())));
         gate(&mut chain, &level0[1].1, true);
-        let nodes = chain.to_pair().unwrap().2;
-        assert_eq!(
-            nodes.iter().map(|n| n.changes.clone()).collect::<Vec<_>>(),
-            [vec![1], vec![3, 4]]
-        );
-        pair(&mut chain, |_, _| true);
-        let level1 = gating(&chain);
-        gate(&mut chain, &level1[0].1, true);
-        assert_eq!(root(&chain).unwrap().changes, [1, 3, 4]);
+        assert_eq!(chain.to_pair(), None, "neither side of the red pair goes up");
+        assert_eq!(root(&chain).unwrap().changes, [3, 4]);
+        assert_eq!(chain.round.as_ref().unwrap().carrying, [2]);
     }
 
-    /// An odd PR goes up unpaired; one that merges with no node leaves the
-    /// round for the next; a PR asking during a round waits for the next.
+    /// A red pair of pairs: its later-asked PR carries every other PR of it.
     #[test]
-    fn an_odd_pr_goes_up_unpaired_and_one_clean_with_none_leaves_for_the_next_round() {
+    fn a_red_pair_of_pairs_has_its_last_asked_pr_carry_the_other_three() {
+        let mut chain = asking(4);
+        chain.open_round("r");
+        pair(&mut chain, |_, _| true);
+        for (_, id) in gating(&chain) {
+            gate(&mut chain, &id, true);
+        }
+        pair(&mut chain, |_, _| true);
+        let level1 = gating(&chain);
+        gate(&mut chain, &level1[0].1, false);
+        let Some(RoundNext::Left(Left::Carrying(carry))) = chain.round_next("t4") else {
+            panic!("{:?}", chain.round_next("t4"))
+        };
+        assert_eq!(carry.carried, [1, 2, 3]);
+        assert_eq!(carry.merge, ["((h1+h2)+(h3+h4))"]);
+        for t in ["t1", "t2", "t3"] {
+            assert_eq!(chain.round_next(t), Some(RoundNext::Left(Left::Carried(4))));
+        }
+        assert_eq!(root(&chain), None, "nothing is left to land");
+    }
+
+    /// A node that conflicts with every other carries the earliest-asked
+    /// one no pair took: one at a time, the later-asked carrying the earlier.
+    #[test]
+    fn a_pr_conflicting_with_every_partner_carries_the_earliest_asked_one() {
+        // 0 conflicts with all; 1 and 2 pair; 3 is clean with 1 alone.
+        let clean = |a: usize, b: usize| Ok::<_, ()>(matches!((a, b), (1, 2) | (1, 3)));
+        assert_eq!(pairs(4, clean).unwrap(), Pairing { pairs: vec![(1, 2)], carry: Some((0, 3)) });
+        let none = |_: usize, _: usize| Ok::<_, ()>(false);
+        assert_eq!(pairs(3, none).unwrap(), Pairing { pairs: vec![], carry: Some((2, 0)) });
+        let all = |_: usize, _: usize| Ok::<_, ()>(true);
+        assert_eq!(pairs(3, all).unwrap().carry, None, "an odd node clean with one goes up");
+        let mut asked = 0;
+        let counted = pairs(4, |_, _| {
+            asked += 1;
+            Ok::<_, ()>(false)
+        });
+        assert_eq!(counted.unwrap().carry, Some((3, 0)));
+        assert_eq!(asked, 6, "each two nodes asked once");
+
+        // Three mutually conflicting PRs: 3 carries 1, and 2 is the root.
+        let mut chain = asking(3);
+        chain.open_round("r");
+        pair(&mut chain, |_, _| false);
+        let carry = Carry { pair: None, merge: vec!["h3".into(), "h1".into()], carried: vec![1] };
+        assert_eq!(chain.round_next("t3"), Some(RoundNext::Left(Left::Carrying(carry))));
+        assert_eq!(chain.round_next("t1"), Some(RoundNext::Left(Left::Carried(3))));
+        assert_eq!(root(&chain).unwrap().changes, [2]);
+    }
+
+    /// A carrying PR asked again rejoins its round while no PR of the root
+    /// has its candidate, the root pairing with it again; once one has, it
+    /// waits for the next round.
+    #[test]
+    fn a_carrying_pr_rejoins_its_round_until_the_roots_whole_gate_starts() {
+        let mut chain = asking(3);
+        chain.open_round("r");
+        pair(&mut chain, |_, _| false);
+        assert_eq!(root(&chain).unwrap().changes, [2]);
+        let again = |chain: &mut Chain, id: &str| {
+            chain.pending.push(Barrier {
+                id: id.into(),
+                owner: owner(3),
+                since: Some(9),
+                asks: Some(Asks { change: 3, branch: "b3".into(), head: "h3+h1".into() }),
+            });
+            chain.rejoin(id)
+        };
+        let mut later = chain.clone();
+        later.root_assigned("t2", "c2");
+        assert!(!again(&mut later, "t9"), "the root's whole gate began");
+        assert_eq!(later.pending.len(), 1, "it waits for the next round");
+        assert!(again(&mut chain, "t9"));
+        assert!(chain.pending.is_empty());
+        assert_eq!(chain.round_next("t9"), Some(RoundNext::Pair));
+        let nodes = chain.to_pair().unwrap().2;
+        let changes: Vec<Vec<u64>> = nodes.iter().map(|n| n.changes.clone()).collect();
+        assert_eq!(changes, [vec![2], vec![3]], "the root pairs with it again");
+        pair(&mut chain, |_, _| true);
+        let level = gating(&chain);
+        assert_eq!(level.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [3]);
+        gate(&mut chain, &level[0].1, true);
+        assert_eq!(root(&chain).unwrap().changes, [2, 3]);
+        assert!(chain.round.as_ref().unwrap().carrying.is_empty());
+    }
+
+    /// An odd PR goes up unpaired; a PR asking during a round waits for the
+    /// next.
+    #[test]
+    fn an_odd_pr_goes_up_unpaired_and_one_asking_during_a_round_waits_for_the_next() {
         let mut chain = asking(3);
         chain.open_round("r");
         pair(&mut chain, |_, _| true);
@@ -690,11 +958,12 @@ mod tests {
             asks: Some(Asks { change: 5, branch: "b5".into(), head: "h5".into() }),
         });
         gate(&mut chain, &level0[0].1, true);
-        // The pair and PR 3 conflict: 3 leaves for the next round.
-        pair(&mut chain, |_, _| false);
-        assert_eq!(root(&chain).unwrap().changes, [1, 2]);
-        assert_eq!(chain.round_next("t3"), Some(RoundNext::Left(Left::Unpaired)));
+        pair(&mut chain, |_, _| true);
+        let up = gating(&chain)[0].1.clone();
+        gate(&mut chain, &up, true);
+        assert_eq!(root(&chain).unwrap().changes, [1, 2, 3]);
         assert_eq!(chain.round_next("t5"), None, "it asked during the round");
+        assert!(!chain.rejoin("t5"), "it carries nothing");
         assert_eq!(chain.pending.len(), 1);
         // Its turns leave; the round closes, and the next one takes 5.
         chain.leave_round(|_| true);

@@ -6,9 +6,9 @@ use afkconvoy_core::claims::Claim;
 use afkconvoy_core::landing::{LandedPr, closes_grep};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::settle::{
-    Follow, SettleStep, cut_landing, follow, landed_comment, settle_steps,
+    Follow, SettleStep, carried_steps, cut_landing, follow, landed_comment, settle_steps,
 };
-use afkconvoy_core::worker::WorkerState;
+use afkconvoy_core::worker::{WorkerState, carried_by};
 use anyhow::{Result, bail};
 
 use crate::board::last_word;
@@ -174,11 +174,19 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Option<u64>> {
     let base_tip = fleet.task_tip(issue)?;
     let landed = landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, issue)?.is_some();
     let comments = fleet.gh.comments(issue)?;
+    // Another open PR carries its PR: its work goes on there (docs/adr/0083).
+    let by = carried_by(comments.iter().map(|c| c.body.as_str()));
+    let carried = match by {
+        Some(by) if !closed && !landed => fleet.gh.open_prs()?.iter().any(|pr| pr.number == by),
+        _ => false,
+    };
     let accounted = afkconvoy_core::account::left(comments.iter().map(|c| c.body.as_str()));
-    if let Some(end) = afkconvoy_core::account::settled_end(landed, accounted) {
+    if let Some(end) = afkconvoy_core::account::settled_end(landed, accounted).filter(|_| !carried)
+    {
         crate::account::leave(&fleet.repo, &fleet.gh, issue, end, fleet.now)?;
     }
-    for step in settle_steps(closed) {
+    let steps = if carried { carried_steps() } else { settle_steps(closed) };
+    for step in steps {
         match step {
             SettleStep::CloseIssue => {
                 let open = fleet.gh.open_prs()?;

@@ -1793,6 +1793,11 @@ impl GitHub {
         Ok(())
     }
 
+    /// One PR's description, open or closed.
+    pub fn pr_body(&self, number: u64) -> Result<String> {
+        self.read(&["pr", "view", &number.to_string(), "--json", "body", "--jq", ".body"])
+    }
+
     /// Closes one PR without merging it, with a comment saying why.
     pub fn close_pr(&self, number: u64, comment: &str) -> Result<()> {
         self.gh(&["pr", "close", &number.to_string(), "--comment", comment])?;

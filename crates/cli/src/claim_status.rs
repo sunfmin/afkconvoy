@@ -21,6 +21,8 @@ pub enum ClaimStatus {
     Closed,
     /// GitHub says the issue was deleted, or transferred to another repo, or has no such issue: nothing is left to settle, and the claim is let go.
     Gone,
+    /// Another open PR carries the issue's PR: a tick ends its worker, removes its worktree and releases the claim; the issue stays open until that PR lands.
+    Carried,
     /// In a bound repo, a claim on an open issue that is not a landing worker's, whatever PR is open: it was dispatched to a stage, and what that stage declares ends it.
     AtStage,
 }
@@ -33,6 +35,7 @@ impl From<Status> for ClaimStatus {
             Status::Landed => Self::Landed,
             Status::Closed => Self::Closed,
             Status::Gone => Self::Gone,
+            Status::Carried => Self::Carried,
             Status::AtStage => Self::AtStage,
         }
     }
@@ -46,6 +49,7 @@ impl From<ClaimStatus> for Status {
             ClaimStatus::Landed => Self::Landed,
             ClaimStatus::Closed => Self::Closed,
             ClaimStatus::Gone => Self::Gone,
+            ClaimStatus::Carried => Self::Carried,
             ClaimStatus::AtStage => Self::AtStage,
         }
     }
@@ -68,6 +72,7 @@ mod tests {
             Status::Landed,
             Status::Closed,
             Status::Gone,
+            Status::Carried,
             Status::AtStage,
         ];
         assert_eq!(statuses.len(), ClaimStatus::ENTRIES.len());

@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 use crate::chain::{
     Barrier, Candidate, Chain, Decision, Evidence, Observed, Phase, Process, Reused, Status,
 };
-use crate::forge::{Change, Forge, source_ref};
+use crate::forge::{self, Change, Forge, SentBack, source_ref};
 use crate::pairing::{self, Asks, Built, Left, RoundNext};
 use crate::turn::{self, Declared};
 
@@ -62,6 +62,13 @@ pub enum Outcome<R> {
     Gone,
     /// It is on the chain, valid, and not landed yet.
     Waiting,
+    /// It left its round carrying these changes (docs/adr/0083): its forge
+    /// was told (`Forge::sent_back`), and its author merges them into it,
+    /// fixes it and asks again.
+    Carrying(Vec<u64>),
+    /// It is carried by the change named: closed once that change's head
+    /// holds its own, it lands with it.
+    Carried(u64),
     /// It is ripe, and the push that would land it was refused: what git
     /// said. Its candidate stands, green, for the next run to publish.
     Unpublished(String),
@@ -135,6 +142,20 @@ struct Read<N> {
 /// One git call in `dir` that must succeed → its stdout, trimmed.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     git_in(dir, args, None)
+}
+
+/// Whether `head` holds `other`: `other` is `head` or an ancestor of it.
+fn contains(dir: &Path, head: &str, other: &str) -> Result<bool, String> {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(["merge-base", "--is-ancestor", other, head])
+        .output()
+        .map_err(|error| error.to_string())?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!("git merge-base: {}", String::from_utf8_lossy(&out.stderr).trim())),
+    }
 }
 
 /// One git call in `dir`, given `input`, that must succeed → its stdout,
@@ -710,7 +731,54 @@ where
             let id = format!("{}-{}-asks", current.number, (self.now)());
             places.push(Place { change: current, id, head });
         }
+        self.carry_held(&mut places, outcomes)?;
         Ok(places)
+    }
+
+    /// Carries each change of `places` whose head another's holds, and the
+    /// target does not (docs/adr/0083): that other change carries it
+    /// (`forge::carry`), and it leaves `places`, its outcome `Carried`.
+    fn carry_held(
+        &self,
+        places: &mut Vec<Place>,
+        outcomes: &mut Outcomes<F::Refusal>,
+    ) -> Result<(), Error<F::Error>> {
+        let Some(target) = places.first().map(|p| p.change.target.clone()) else { return Ok(()) };
+        let tip = self.fetched(&format!("refs/heads/{target}"))?;
+        let mut carried: Vec<(usize, usize)> = vec![];
+        for (b, held) in places.iter().enumerate() {
+            if tip
+                .as_deref()
+                .is_some_and(|tip| contains(self.dir(), tip, &held.head).unwrap_or(false))
+            {
+                continue;
+            }
+            for (a, by) in places.iter().enumerate() {
+                let taken = carried.iter().any(|&(x, y)| x == b || y == b || y == a);
+                if a != b
+                    && !taken
+                    && by.head != held.head
+                    && contains(self.dir(), &by.head, &held.head)?
+                {
+                    carried.push((a, b));
+                    break;
+                }
+            }
+        }
+        for &(a, b) in &carried {
+            let (Some(by), Some(held)) = (places.get(a), places.get(b)) else { continue };
+            forge::carry(self.forge, &by.change, &held.change, &held.head).map_err(Error::Forge)?;
+            outcomes.push((held.change.number, Outcome::Carried(by.change.number)));
+        }
+        let gone: Vec<usize> = carried.iter().map(|&(_, b)| b).collect();
+        let mut kept = vec![];
+        for (at, place) in std::mem::take(places).into_iter().enumerate() {
+            if !gone.contains(&at) {
+                kept.push(place);
+            }
+        }
+        *places = kept;
+        Ok(())
     }
 
     /// Takes `places` pending and opens the round `round` of them →
@@ -836,9 +904,18 @@ where
             (Some(Left::Red(pair)), _) => {
                 let red = chain.candidates.iter().find(|c| &c.id == pair);
                 let run = red.and_then(|c| c.result.as_ref());
-                self.forge.sent_back(&place.change, run).map_err(Error::Forge)?;
+                let sent = SentBack { run, merge: &[], carried: &[] };
+                self.forge.sent_back(&place.change, &sent).map_err(Error::Forge)?;
                 Outcome::Decided(Decision::Red)
             }
+            (Some(Left::Carrying(carry)), _) => {
+                let red = chain.candidates.iter().find(|c| Some(&c.id) == carry.pair.as_ref());
+                let run = red.and_then(|c| c.result.as_ref());
+                let sent = SentBack { run, merge: &carry.merge, carried: &carry.carried };
+                self.forge.sent_back(&place.change, &sent).map_err(Error::Forge)?;
+                Outcome::Carrying(carry.carried.clone())
+            }
+            (Some(Left::Carried(by)), _) => Outcome::Carried(*by),
             (Some(Left::Conflict), _) => Outcome::Conflict,
             (Some(Left::Unpaired | Left::Next), _) => return Ok(None),
             (None, Some(candidate)) => match chain.candidates.iter().find(|c| &c.id == candidate) {
@@ -872,7 +949,7 @@ where
             Ok::<bool, String>(tree.map(|tree| trees.push(((a, b), tree))).is_some())
         })?;
         let mut built = vec![];
-        for (a, b) in made {
+        for (a, b) in made.pairs {
             let (Some(first), Some(second)) = (nodes.get(a), nodes.get(b)) else { continue };
             let Some((_, tree)) = trees.iter().find(|(at, _)| *at == (a, b)) else { continue };
             let named = |changes: &[u64]| {
@@ -904,7 +981,7 @@ where
         let worktree = |id: &str| self.worktrees.join(id).to_string_lossy().into_owned();
         let now = (self.now)();
         self.change(target, |chain| {
-            chain.pair_level((&round, level), built.clone(), note, worktree, now);
+            chain.pair_level((&round, level), (built.clone(), made.carry), note, worktree, now);
         })?;
         Ok(())
     }

@@ -10,11 +10,13 @@ use afkconvoy_core::candidate::Note;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::landing::{Of, merge_message};
 use afkconvoy_core::plan::PullRequest;
+use afkconvoy_core::worker::carried_comment;
 use afkconvoy_landing::forge::{Change, Forge};
 use anyhow::Result;
 
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
+use crate::remote::Push;
 
 /// One turn's forge: the repo it lands in, routed to its target, and whose
 /// PR it is.
@@ -91,9 +93,56 @@ impl Forge for Pulls<'_> {
         Ok(Ok(()))
     }
 
-    fn landed(&self, _: &Change, _commit: &str) -> Result<()> {
+    /// Its issue closes, and so does each issue of a PR it carried, which
+    /// its description closes as well (docs/adr/0083).
+    fn landed(&self, change: &Change, _commit: &str) -> Result<()> {
         let Some(n) = self.issue() else { return Ok(()) };
         self.gh.close_issue(n)?;
-        crate::account::leave(self.repo, self.gh, n, End::Landed, (self.clock)())
+        crate::account::leave(self.repo, self.gh, n, End::Landed, (self.clock)())?;
+        let body = self.gh.pr_body(change.number)?;
+        if afkconvoy_landing::forge::carried_in(&body).is_empty() {
+            return Ok(());
+        }
+        for carried in self.tracker.closed_by(&body, &[], None).into_iter().filter(|&c| c != n) {
+            if !self.gh.issue(carried)?.is_closed() {
+                self.gh.close_issue(carried)?;
+                crate::account::leave(self.repo, self.gh, carried, End::Landed, (self.clock)())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn description(&self, change: &Change) -> Result<String> {
+        self.gh.pr_body(change.number)
+    }
+
+    fn describe(&self, change: &Change, description: &str) -> Result<()> {
+        self.gh.edit_pr_body(change.number, description)
+    }
+
+    fn close(&self, change: &Change, comment: &str) -> Result<()> {
+        self.gh.close_pr(change.number, comment)
+    }
+
+    /// A PR headed by a full ref has no branch of its own to delete.
+    fn delete_source(&self, change: &Change, head: &str) -> Result<()> {
+        if change.source.starts_with("refs/") {
+            return Ok(());
+        }
+        let branch = format!("refs/heads/{}", change.source);
+        self.repo.remote().push(&Push::delete(&branch).leased(head))
+    }
+
+    /// Each issue the carried PR closes is told it is carried, and on which
+    /// branch its work goes on: the fleet then ends the worker of a claim on
+    /// it and removes its worktree (`plan::Status::Carried`), holds it off
+    /// while `by` is open, and starts its next worker from that branch
+    /// should `by` close unlanded.
+    fn carried(&self, carried: &Change, by: &Change) -> Result<()> {
+        let body = self.gh.pr_body(carried.number)?;
+        for issue in self.tracker.closed_by(&body, &[], None) {
+            self.gh.comment(issue, &carried_comment(carried.number, by.number, &by.source))?;
+        }
+        Ok(())
     }
 }
