@@ -238,6 +238,10 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
         "cancelled_by": c.cancelled_by,
         "round": chain.round_of(&c.id).map(|tip| &tip.id),
     });
+    // A candidate of a batch round says so: its round is its batch round's gate.
+    if c.batch {
+        row["batch"] = json!(true);
+    }
     if matches!(c.phase, Phase::Validating | Phase::Slow)
         && let Some(result) = &c.result
     {
