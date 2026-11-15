@@ -126,6 +126,7 @@ fn main() {
         }
         ["api", "graphql", ..] if line.contains("ConvoyQuotaEquivalent") => equivalent_graph(&st),
         ["api", "graphql", ..] if line.contains("ConvoyQuotaWrite") => equivalent_write(&mut st),
+        ["api", "graphql", ..] if line.contains("ConvoyQuotaNode") => equivalent_node(&st),
         ["api", endpoint, "-H", "Accept: application/vnd.github.diff"] => {
             let (repo, number) =
                 endpoint.trim_start_matches("repos/").rsplit_once("/pulls/").unwrap();
@@ -1333,6 +1334,8 @@ fn equivalent_graph(st: &State) -> ! {
         let named = format!("{owner}/{repo}");
         let from = st.doc["repos"][&named].as_str().unwrap();
         json!({"target":{"oid":fake::git(&["-C",from,"rev-parse","HEAD"])}})
+    } else if query.contains("resource: databaseId") {
+        json!(REPO_DATABASE_ID)
     } else if query.contains("resource: id") {
         json!("repo-node")
     } else if query.contains("resource: ref(") {
@@ -1464,6 +1467,16 @@ fn equivalent_write(st: &mut State) -> ! {
             st.doc["issues"].as_array_mut().unwrap().push(json!({"number":number,"title":input(&query,"title"),"body":input(&query,"body"),"state":"open","labels":labels}));
             json!({"issue":{"number":number}})
         }
+        "updateIssueComment" => {
+            let node = input(&query, "id");
+            let Some((_, id)) = comment_of_node(node.as_str().unwrap()) else { unsupported(st) };
+            let body = input(&query, "body");
+            let every = st.doc["comments"].as_object_mut().unwrap().values_mut();
+            let mut rows = every.flat_map(|rows| rows.as_array_mut().unwrap().iter_mut());
+            let comment = rows.find(|comment| comment["id"] == id).expect("an edited comment");
+            comment["body"] = body;
+            json!({"issueComment":{"id":node}})
+        }
         "createLabel" => {
             let name = input(&query, "name");
             st.list("labels").push(name);
@@ -1475,6 +1488,63 @@ fn equivalent_write(st: &mut State) -> ! {
         st.finish("", 1, "unexpected end of JSON input")
     }
     st.finish(&json!({"data":{operation:data}}).to_string(), 0, "")
+}
+
+/// The fake repository's GitHub database id.
+const REPO_DATABASE_ID: u64 = 1432057979;
+
+/// GitHub's node id of an issue comment, `IC_` and the unpadded URL-safe
+/// base64 of MessagePack `[0, repository databaseId, comment databaseId]`
+/// → (repository, comment).
+fn comment_of_node(node: &str) -> Option<(u64, u64)> {
+    let text = node.strip_prefix("IC_")?;
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let digits =
+        text.chars().map(|c| alphabet.find(c).map(|d| d as u32)).collect::<Option<Vec<_>>>()?;
+    let mut bytes = vec![];
+    for chunk in digits.chunks(4) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, d)| n | d << (18 - 6 * i));
+        bytes.extend(n.to_be_bytes()[1..chunk.len()].iter());
+    }
+    let mut rest = bytes.strip_prefix(&[0x93, 0x00])?;
+    let mut uint = || -> Option<u64> {
+        let (width, skip) = match *rest.first()? {
+            n @ 0..=0x7f => {
+                rest = &rest[1..];
+                return Some(n.into());
+            }
+            0xcc => (1, 1),
+            0xcd => (2, 1),
+            0xce => (4, 1),
+            0xcf => (8, 1),
+            _ => return None,
+        };
+        let digits = rest.get(skip..skip + width)?;
+        rest = &rest[skip + width..];
+        Some(digits.iter().fold(0u64, |n, b| n << 8 | u64::from(*b)))
+    };
+    let ids = (uint()?, uint()?);
+    rest.is_empty().then_some(ids)
+}
+
+fn equivalent_node(st: &State) -> ! {
+    let query = st.argv.iter().find_map(|a| a.strip_prefix("query=")).unwrap();
+    let node = input(query, "node(id");
+    let found = comment_of_node(node.as_str().unwrap()).filter(|(repo, id)| {
+        *repo == REPO_DATABASE_ID
+            && st.doc["comments"]
+                .as_object()
+                .into_iter()
+                .flat_map(|all| all.values())
+                .flat_map(|rows| rows.as_array().into_iter().flatten())
+                .any(|c| c["id"] == *id)
+    });
+    let Some((_, id)) = found else {
+        let errors = json!([{"type":"NOT_FOUND","message":format!("Could not resolve to a node with the global id of '{node}'")}]);
+        st.finish(&json!({"data":{"node":null},"errors":errors}).to_string(), 0, "")
+    };
+    let node = json!({"__typename":"IssueComment","fullDatabaseId":id.to_string()});
+    st.finish(&json!({"data":{"node":node}}).to_string(), 0, "")
 }
 
 fn identity_login(st: &State) -> String {
