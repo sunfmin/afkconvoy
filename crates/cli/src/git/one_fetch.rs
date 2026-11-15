@@ -43,7 +43,9 @@ const HOUSEKEEP_LIMIT: Duration = Duration::from_secs(600);
 
 /// What git says of a pack it could not take in: the store, or the pack the
 /// remote sent, is corrupt, and fetching it the same way fails the same way.
-const CORRUPT: [&str; 6] = [
+const CORRUPT: [&str; 8] = [
+    "in the commit graph file but not in the object database",
+    "could not load pack",
     "unresolved deltas",
     "invalid index-pack output",
     "index-pack failed",
@@ -150,6 +152,7 @@ pub(crate) fn guarded(
     }
     let mut ran = run(false)?;
     if !ran.ok && corrupt(&ran.stderr) {
+        drop_indexes(common)?;
         ran = run(true)?;
     }
     let file = common.join(FAILING);
@@ -181,6 +184,37 @@ pub(crate) fn guarded(
             .with_context(|| format!("cannot write {}", file.display()))?;
     }
     anyhow::bail!("git fetch {refname} failed: {error}")
+}
+
+/// Removes the commit-graph and multi-pack-index of the store at `common`
+/// before a corrupt fetch is made again (sunfmin/control#1090). A repack cut
+/// short leaves them naming commits the store lost (`in the commit graph
+/// file but not in the object database`) or a pack that is gone (`could not
+/// load pack`), and every read then trusts them. Both only speed up reads:
+/// git reads each pack's own `.idx` without them, and housekeeping writes
+/// them again from what is there.
+fn drop_indexes(common: &Path) -> Result<()> {
+    let objects = common.join("objects");
+    let (info, pack) = (objects.join("info"), objects.join("pack"));
+    for index in [
+        info.join("commit-graph"),
+        info.join("commit-graphs"),
+        pack.join("multi-pack-index"),
+        pack.join("multi-pack-index.d"),
+    ] {
+        let gone = if index.is_dir() {
+            std::fs::remove_dir_all(&index)
+        } else {
+            std::fs::remove_file(&index)
+        };
+        match gone {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                return Err(err).with_context(|| format!("cannot remove {}", index.display()));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// The git config that keeps git's own housekeeping off a fleet's checkout:
@@ -359,6 +393,35 @@ mod tests {
         .unwrap();
         assert_eq!(asked, [false, true]);
         assert_eq!(failing_at(store.path()), None);
+    }
+
+    /// A fetch that says the store's multi-pack-index names a pack that is
+    /// gone is made again with `--refetch` once that index and the
+    /// commit-graph are dropped (sunfmin/control#1090).
+    #[test]
+    fn a_stale_index_is_dropped_before_the_refetch() {
+        let store = tempfile::tempdir().unwrap();
+        let (info, pack) = (store.path().join("objects/info"), store.path().join("objects/pack"));
+        std::fs::create_dir_all(info.join("commit-graphs")).unwrap();
+        std::fs::create_dir_all(&pack).unwrap();
+        std::fs::write(info.join("commit-graph"), "").unwrap();
+        std::fs::write(pack.join("multi-pack-index"), "").unwrap();
+        let mut asked = vec![];
+        guarded(
+            store.path(),
+            "refs/convoy/candidates/main",
+            100,
+            || Ok(false),
+            |refetch| {
+                asked.push(refetch);
+                Ok(if refetch { ran(true, "") } else { ran(false, "error: could not load pack 0") })
+            },
+        )
+        .unwrap();
+        assert_eq!(asked, [false, true]);
+        assert!(!info.join("commit-graph").exists());
+        assert!(!info.join("commit-graphs").exists());
+        assert!(!pack.join("multi-pack-index").exists());
     }
 
     /// A second corrupt failure, with `--refetch`, is noted for `doctor`, and
