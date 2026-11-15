@@ -808,6 +808,96 @@ fn the_loop_keeps_the_joining_claim_while_waiting_for_the_operator() {
     assert!(restarts(&world).is_empty());
 }
 
+/// A shell alone on a terminal of its own: what a worker's terminal is once
+/// its harness exits.
+struct BareShell {
+    shell: std::process::Child,
+    tty: String,
+}
+
+impl BareShell {
+    fn open() -> BareShell {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+        let (mut master, mut slave) = (0, 0);
+        let mut name = [0 as libc::c_char; 128];
+        // SAFETY: openpty writes two descriptors it opened and the slave's
+        // name into a buffer longer than any; null settings take defaults.
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                name.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0, "openpty: {}", std::io::Error::last_os_error());
+        // SAFETY: both were just opened, each owned once; the name is NUL-ended.
+        let (master, slave, name) = unsafe {
+            (
+                OwnedFd::from_raw_fd(master),
+                OwnedFd::from_raw_fd(slave),
+                std::ffi::CStr::from_ptr(name.as_ptr()).to_string_lossy().into_owned(),
+            )
+        };
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", "sleep 60"])
+            .stdin(Stdio::from(slave.try_clone().unwrap()))
+            .stdout(Stdio::from(slave.try_clone().unwrap()))
+            .stderr(Stdio::from(slave));
+        // SAFETY: setsid and ioctl alone run between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let shell = command.spawn().unwrap();
+        drop(master);
+        let tty = name.trim_start_matches("/dev/").to_string();
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let on = std::process::Command::new("ps").args(["-o", "pid=", "-t", &tty]).output();
+            if String::from_utf8_lossy(&on.unwrap().stdout).trim() == shell.id().to_string() {
+                return BareShell { shell, tty };
+            }
+            assert!(Instant::now() < until, "the shell never held {tty}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for BareShell {
+    fn drop(&mut self) {
+        let _ = self.shell.kill();
+        let _ = self.shell.wait();
+    }
+}
+
+#[test]
+fn a_bare_shell_its_harness_left_is_continued_by_restart_with_no_nudge() {
+    let world = joining();
+    let dir = worktree(&world);
+    let shell = BareShell::open();
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::write(notes.join("convoy-worker-tty"), &shell.tty).unwrap();
+
+    let continued = restart(&world, "1090").ok();
+    assert_eq!((&continued["action"], &continued["pr"]), (&json!("continued"), &json!(70)));
+    assert_eq!(restarts(&world), [] as [String; 0], "the PR's one restart is not taken");
+    let sent: Vec<Vec<String>> = world.orca_calls();
+    assert!(
+        !sent.iter().any(|call| call.starts_with(&["terminal".into(), "send".into()])
+            && call.iter().any(|arg| arg.contains("nudge"))),
+        "nothing is typed at the bare shell: {sent:?}"
+    );
+    assert!(!notes.join("convoy-worker-tty").exists(), "the new terminal is not the old one");
+}
+
 #[test]
 fn a_second_restart_is_refused_by_hand_and_by_any_host_that_reads_the_pr() {
     let world = joining();

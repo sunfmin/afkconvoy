@@ -17,6 +17,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use afkconvoy_core::harness::Keystroke;
 use anyhow::{Context, Result};
 
 use crate::hot::Proc;
@@ -25,6 +26,10 @@ use crate::hot::Proc;
 /// was last seen on, such as `ttys012`: where a bare shell is looked for once
 /// the harness is gone (`bare_shell`), and whose unread input is dropped.
 pub(crate) const TTY_FILE: &str = "convoy-worker-tty";
+
+/// What brings a job of a shell back to its terminal's foreground, typed at
+/// the shell.
+pub(crate) const FG: Keystroke = Keystroke { text: Some("fg"), enter: true };
 
 /// How long a harness brought back is given to hold its terminal again.
 const RECOVER_WAIT: Duration = Duration::from_secs(3);

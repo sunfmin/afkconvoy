@@ -910,7 +910,8 @@ pub fn reconcile(
         let busy_without_fault = worktree.agent_report()?.is_none()
             && state == WorkerState::Busy
             && classified(&worktree.health_report()?).is_none()
-            && error_of(&worktree)?.is_empty();
+            && error_of(&worktree)?.is_empty()
+            && !matches!(worktree.holds()?, crate::foreground::Holds::Background(_));
         let capacity_episode =
             book.workers.iter().any(|o| o.path == worktree.path && o.capacity.is_some());
         if state == WorkerState::Gone || (busy_without_fault && !capacity_episode) {
@@ -1004,6 +1005,7 @@ fn observe(
         return Ok(());
     };
     let state = worktree.state(fleet.now)?;
+    let background = foreground(fleet, me, issue.map(|n| n.to_string()).or(patrol.map(str::to_string)), worktree, &terminal)?;
     let orca = worktree.agent_report()?;
     let signal = error_of(worktree)?;
     // A delivery that failed after the runtime reported working still
@@ -1011,7 +1013,7 @@ fn observe(
     // An open session turn is healthy. Orca's `working` is not: a harness it
     // cannot observe never reports one, and a turn the session has ended is
     // idle however the runtime last labeled it.
-    let working = state == WorkerState::Busy && signal.is_empty();
+    let working = state == WorkerState::Busy && signal.is_empty() && background.is_none();
     // An open turn has no since, including a patrol's or a caster's, which
     // the claim loop above does not see. A later wait starts when seen again.
     if state == WorkerState::Busy {
@@ -1173,6 +1175,7 @@ fn observe(
         worktree,
         state,
         &structured,
+        background,
     );
     if let Err(e) = &result {
         observed.error = Some(format!("{e:#}"));
@@ -1199,6 +1202,54 @@ fn observe(
     }
     book.workers.push(observed);
     result
+}
+
+/// A harness alive on its terminal that does not hold it reads nothing typed
+/// there, however its session turn stands (sunfmin/control#1150): resumed in
+/// the background, it is brought back by `fg` typed at its shell, or, a
+/// stopped one holding the terminal, continued. Each recovery is a line of
+/// the tick log. One nothing brings back is a broken session: its diagnosis,
+/// which continues it.
+fn foreground(
+    fleet: &Fleet,
+    me: &Me,
+    on: Option<String>,
+    worktree: &Worktree,
+    terminal: &str,
+) -> Result<Option<Diagnosis>> {
+    let crate::foreground::Holds::Background(held) = worktree.holds()? else { return Ok(None) };
+    let fg = || worktree.press_key(terminal, crate::foreground::FG);
+    let recovered = crate::foreground::recover(&worktree.path, &held, fg)?;
+    let how = if held.shell_holds { "fg typed at its shell" } else { "SIGCONT" };
+    crate::log::Log::of(&fleet.repo)?.append(&crate::log::Entry {
+        at: fleet.now,
+        instance: me.instance.as_str().into(),
+        host: me.host.clone(),
+        what: crate::log::What::Command {
+            command: "worker_health".into(),
+            on,
+            by: "foreground rule".into(),
+            outcome: format!(
+                "{}; {}",
+                held.evidence(),
+                if recovered {
+                    format!("brought back to its terminal's foreground by {how}")
+                } else if held.shell_holds || held.stopped {
+                    format!("{how} did not bring it back: it is continued")
+                } else {
+                    "nothing brings it back: it is continued".to_string()
+                }
+            ),
+            failed: !recovered,
+        },
+    })?;
+    if recovered {
+        return Ok(None);
+    }
+    let mut diagnosis = classified_for(None, &json!({"code": "session_error"}))
+        .expect("a session error is always decided");
+    diagnosis.evidence = vec![held.evidence()];
+    Ok(Some(diagnosis))
 }
 
 fn escalate_observed(
@@ -1334,15 +1385,17 @@ fn decide(
     worktree: &Worktree,
     state: WorkerState,
     structured: &Value,
+    background: Option<Diagnosis>,
 ) -> Result<()> {
     let output = observed.snapshots.last().map(|s| s.output.as_slice()).unwrap_or_default();
     let terminal = terminal_rule(observed.harness, output);
-    if fleet.now < observed.next_check && terminal.is_none() {
+    if fleet.now < observed.next_check && terminal.is_none() && background.is_none() {
         return Ok(());
     }
     observed.judgment = None;
     let expired = fleet.now.saturating_sub(observed.window_started) >= RECOVERY_SECONDS;
     if terminal.is_none()
+        && background.is_none()
         && expired
         && (observed.error.is_some()
             || observed.action == "waiting for operator"
@@ -1351,9 +1404,12 @@ fn decide(
         return escalate_observed(observed, fleet, found, me, issue);
     }
     let raw_error = structured.get("error").unwrap_or(structured);
-    let rule = terminal.map(|rule| ("terminal rule", rule)).or_else(|| {
-        classified_for(Some(observed.harness), raw_error).map(|rule| ("structured rule", rule))
-    });
+    let rule = background
+        .map(|rule| ("foreground rule", rule))
+        .or_else(|| terminal.map(|rule| ("terminal rule", rule)))
+        .or_else(|| {
+            classified_for(Some(observed.harness), raw_error).map(|rule| ("structured rule", rule))
+        });
     let failed = observed.orca.as_ref().is_some_and(|orca| orca.failed());
     if !failed && rule.is_none() {
         // One read stamps the since the tick line and a later tick name.
