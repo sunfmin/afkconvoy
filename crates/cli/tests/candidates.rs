@@ -383,6 +383,52 @@ fn interleaved_targets_and_default_publish_only_to_their_own_chains() {
 }
 
 #[test]
+fn land_of_a_closed_issue_names_it_and_asks_for_no_turn() {
+    let world = World::new();
+    let gated = world.root.join("gated");
+    world.set_gate(&format!("touch {}", quote(&gated)));
+    let (source, _) = worker(&world, 1, "a");
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    world.close_issue(1);
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &source)
+        .args(["land", "--issue", "1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let error = answer["error"].as_str().unwrap();
+    assert!(error.contains("issue #1 is closed; nothing lands for it"), "{error}");
+    assert!(!gated.exists(), "no gate ran: the turn was never asked for");
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty(),
+        "no candidate was assigned"
+    );
+    assert_eq!(world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"], json!([]));
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
+}
+
+#[test]
+fn a_candidate_whose_issue_closed_during_validation_lands_nothing() {
+    let world = world(2);
+    let a = worker(&world, 1, "a").0;
+    let base = world.remote(&["rev-parse", "refs/heads/main"]);
+    let _runner = world.host_held();
+    let child = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    world.close_issue(1);
+    release(&world, "a", false);
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let said = error["error"].as_str().unwrap();
+    assert!(said.contains("issue #1 is closed; nothing lands for it"), "{error}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base, "nothing landed");
+    let candidate = candidate_of(&world, 1);
+    assert_ne!(candidate["phase"], "landed", "{candidate}");
+}
+
+#[test]
 fn a_pr_retargeted_during_validation_is_invalidated_without_publishing() {
     let world = world(2);
     git(&world.clone, &["push", "-q", "origin", "HEAD:delivery/one"]);
