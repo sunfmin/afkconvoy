@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::exclusive::{
-    Lanes, Ticket, ahead, excludes, in_order, limit, ready, same_lane, same_repo,
+    Lanes, Retained, Ticket, ahead, excludes, in_order, limit, ready, same_lane, same_repo,
 };
 
 /// How often a waiting turn looks again, besides being woken by a change.
@@ -58,11 +58,18 @@ pub trait Host<N>: Send + Sync {
         let _ = ticket;
     }
 
-    /// Done as `ticket` leaves the queue → whether it may leave: `false`
-    /// keeps its lane held, as what it ran could not be confirmed ended.
-    fn leaving(&self, ticket: &Ticket<N>) -> bool {
+    /// Done as `ticket` leaves the queue. Errors: what it ran could not be
+    /// confirmed ended, so it keeps its lane, `retained` with this error,
+    /// and its leaving is tried again every `retry_every` — its asker is
+    /// gone and does not leave again.
+    fn leaving(&self, ticket: &Ticket<N>) -> Result<(), String> {
         let _ = ticket;
-        true
+        Ok(())
+    }
+
+    /// How long a retained ticket waits before its leaving is tried again.
+    fn retry_every(&self) -> Duration {
+        Duration::from_secs(60)
     }
 }
 
@@ -113,6 +120,8 @@ struct Joined<N> {
     closed: bool,
     /// How long each running ticket has held others up.
     waited: BTreeMap<u64, Duration>,
+    /// When each retained ticket's leaving was last tried.
+    tried: BTreeMap<u64, Instant>,
     counted_at: Instant,
 }
 
@@ -124,6 +133,7 @@ impl<N> Joined<N> {
             paused: false,
             closed: false,
             waited: BTreeMap::new(),
+            tried: BTreeMap::new(),
             counted_at: Instant::now(),
         }
     }
@@ -236,6 +246,12 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
             if ahead(&joined.tickets, number).is_none() {
                 return Turn::Left;
             }
+            // A retained ticket may leave now: its lane could be this one's.
+            if self.due(&joined) {
+                drop(joined);
+                self.retry();
+                joined = self.joined();
+            }
             if !joined.paused {
                 let eligible: Vec<Ticket<N>> = self
                     .with_beside(&joined)
@@ -288,12 +304,21 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
     }
 
     /// Takes the ticket `number` out of the queue, where its host lets it
-    /// leave: the next runs, if it was the one that ran.
+    /// leave: the next runs, if it was the one that ran. Where its host
+    /// cannot confirm it may, it stays `retained` in its lane, and is tried
+    /// again (`retry`) without its asker.
     pub fn leave(&self, number: u64) {
         let leaving = self.joined().tickets.iter().find(|t| t.number == number).cloned();
         if let Some(ticket) = leaving
-            && !self.host.leaving(&ticket)
+            && let Err(error) = self.host.leaving(&ticket)
         {
+            let now = self.host.now();
+            let mut joined = self.joined();
+            joined.tried.insert(number, Instant::now());
+            for ticket in joined.tickets.iter_mut().filter(|ticket| ticket.number == number) {
+                let since = ticket.retained.as_ref().map_or(now, |retained| retained.since);
+                ticket.retained = Some(Retained { since, error: error.clone() });
+            }
             return;
         }
         let lanes = self.host.lanes();
@@ -301,8 +326,44 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
         joined.count(Instant::now(), lanes);
         joined.tickets.retain(|ticket| ticket.number != number);
         joined.waited.remove(&number);
+        joined.tried.remove(&number);
         drop(joined);
         self.held.1.notify_all();
+    }
+
+    /// Tries again the leaving of each retained ticket last tried
+    /// `retry_every` ago or longer: one that its host now lets leave frees
+    /// its lane. Each is tried by one caller at a time. The embedder calls
+    /// this on its own bound; a waiting turn does too.
+    pub fn retry(&self) {
+        let due: Vec<u64> = {
+            let mut joined = self.joined();
+            let due = self.due_of(&joined);
+            for number in &due {
+                joined.tried.insert(*number, Instant::now());
+            }
+            due
+        };
+        for number in due {
+            self.leave(number);
+        }
+    }
+
+    /// Whether a retained ticket's leaving is due to be tried again.
+    fn due(&self, joined: &Joined<N>) -> bool {
+        !self.due_of(joined).is_empty()
+    }
+
+    fn due_of(&self, joined: &Joined<N>) -> Vec<u64> {
+        let every = self.host.retry_every();
+        let mut due = vec![];
+        for ticket in &joined.tickets {
+            let tried = joined.tried.get(&ticket.number);
+            if ticket.retained.is_some() && tried.is_none_or(|tried| tried.elapsed() >= every) {
+                due.push(ticket.number);
+            }
+        }
+        due
     }
 
     /// Runs `work` in the lane of `ticket`, once its turn came, and leaves →
@@ -430,8 +491,84 @@ mod tests {
             gate: None,
             asked,
             ran: None,
+            retained: None,
             note: Plain::default(),
         }
+    }
+
+    /// A host of one worker lane whose cleanup fails as often as `fails`
+    /// says, then passes; it counts each leaving it is asked.
+    struct Failing {
+        fails: Mutex<u32>,
+        asked: Mutex<u32>,
+    }
+
+    impl Host<Plain> for Failing {
+        fn now(&self) -> u64 {
+            1_000
+        }
+        fn lanes(&self) -> Lanes {
+            Lanes { worker: 1, fast: 1, slow: 1 }
+        }
+        fn bound(&self) -> u64 {
+            3_600
+        }
+        fn leaving(&self, _: &Ticket) -> Result<(), String> {
+            *self.asked.lock().unwrap() += 1;
+            let mut fails = self.fails.lock().unwrap();
+            if *fails == 0 {
+                return Ok(());
+            }
+            *fails -= 1;
+            Err("git commit-tree: No space left on device".into())
+        }
+        fn retry_every(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    /// A lane retained for a failed cleanup is a retry, not a life sentence
+    /// (sunfmin/control#1122): once its cleanup passes, the lane is freed
+    /// and the next waiter granted, though its asker never leaves again.
+    #[test]
+    fn a_retained_lane_is_freed_once_its_cleanup_passes_without_its_asker() {
+        let holder = Holder::new(Failing { fails: Mutex::new(1), asked: Mutex::new(0) });
+        let (first, _) = holder.join(ticket("first", 1));
+        assert!(matches!(holder.turn(first), Turn::Runs(_)));
+        holder.leave(first);
+        let (standing, _) = holder.observation().unwrap();
+        let retained = standing[0].retained.clone().expect("its failed cleanup retains it");
+        assert_eq!(
+            (standing[0].number, retained.since, retained.error.as_str()),
+            (first, 1_000, "git commit-tree: No space left on device")
+        );
+        assert!(standing[0].running(), "it keeps its lane");
+
+        let (next, _) = holder.join(ticket("next", 2));
+        let waiter = {
+            let holder = holder.clone();
+            std::thread::spawn(move || holder.turn(next))
+        };
+        assert!(matches!(waiter.join().unwrap(), Turn::Runs(_)), "the next waiter is granted");
+        let (standing, _) = holder.observation().unwrap();
+        assert_eq!(standing.iter().map(|t| t.number).collect::<Vec<_>>(), vec![next]);
+        assert_eq!(*holder.host().asked.lock().unwrap(), 2, "tried once more, without its asker");
+    }
+
+    /// With nobody waiting, the embedder's own `retry` frees it; a cleanup
+    /// that fails again keeps the error it last said, from when it first failed.
+    #[test]
+    fn retry_keeps_a_failing_cleanup_retained_since_it_first_failed_then_frees_it() {
+        let holder = Holder::new(Failing { fails: Mutex::new(2), asked: Mutex::new(0) });
+        let (first, _) = holder.join(ticket("first", 1));
+        assert!(matches!(holder.turn(first), Turn::Runs(_)));
+        holder.leave(first);
+        holder.retry();
+        let (standing, _) = holder.observation().unwrap();
+        assert_eq!(standing[0].retained.as_ref().map(|r| r.since), Some(1_000));
+        holder.retry();
+        assert!(holder.observation().unwrap().0.is_empty(), "the lane is freed");
+        assert_eq!(*holder.host().asked.lock().unwrap(), 3);
     }
 
     const TWO: Lanes = Lanes { worker: 2, fast: 1, slow: 1 };
