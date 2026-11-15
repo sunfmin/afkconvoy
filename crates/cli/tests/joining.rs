@@ -856,16 +856,17 @@ impl BareShell {
                 Ok(())
             });
         }
-        let shell = command.spawn().unwrap();
         drop(master);
         let tty = name.trim_start_matches("/dev/").to_string();
+        let bare = BareShell { shell: command.spawn().unwrap(), tty };
         let until = Instant::now() + Duration::from_secs(10);
         loop {
-            let on = std::process::Command::new("ps").args(["-o", "pid=", "-t", &tty]).output();
-            if String::from_utf8_lossy(&on.unwrap().stdout).trim() == shell.id().to_string() {
-                return BareShell { shell, tty };
+            let on =
+                std::process::Command::new("ps").args(["-o", "pid=", "-t", &bare.tty]).output();
+            if String::from_utf8_lossy(&on.unwrap().stdout).trim() == bare.shell.id().to_string() {
+                return bare;
             }
-            assert!(Instant::now() < until, "the shell never held {tty}");
+            assert!(Instant::now() < until, "the shell never held {}", bare.tty);
             std::thread::sleep(Duration::from_millis(20));
         }
     }

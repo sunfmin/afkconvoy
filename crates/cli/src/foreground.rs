@@ -454,8 +454,11 @@ mod tests {
         assert_eq!(held.pid, harness);
         assert!(held.evidence().contains("not its terminal's foreground"), "{}", held.evidence());
 
-        let recovered =
-            recover(terminal.worktree.path(), &held, || Ok(terminal.type_line("fg"))).unwrap();
+        let fg = || {
+            terminal.type_line("fg");
+            Ok(())
+        };
+        let recovered = recover(terminal.worktree.path(), &held, fg).unwrap();
         assert!(recovered, "fg brings it back; screen: {:?}", terminal.output);
         assert!(matches!(terminal.holds(), Holds::Foreground { .. }));
         terminal.type_line("heard");
