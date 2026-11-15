@@ -340,12 +340,17 @@ pub fn start(
         let failed = started.err().map(|error| format!("{error:#}; ")).unwrap_or_default();
         bail!("{failed}its claim could not be given back: {kept:#}");
     }
-    let Some(record) = started? else { return Ok(Outcome::Lost) };
-    // A cut that starts answers an operator's ask for one now, whatever started it.
+    let started = started?;
+    // A cut that starts answers an operator's ask for one now, whatever
+    // started it; so does finding nothing left to cut. The cut is started
+    // already: an ask left standing only starts the next due cut sooner.
     let asked = fleet.scan.cut_ask.clone();
-    if let Some(ask) = &asked {
-        crate::claims::drop_cut_ask(&fleet.repo, &mut fleet.scan, ask)?;
+    if let Some(ask) = &asked
+        && let Err(error) = crate::claims::drop_cut_ask(&fleet.repo, &mut fleet.scan, ask)
+    {
+        eprintln!("warning: the ask for a cut now could not be deleted: {error:#}");
     }
+    let Some(record) = started else { return Ok(Outcome::Lost) };
     found.cut_said.push(What::CutStarted {
         version: record.version.clone(),
         said: record.line(),
