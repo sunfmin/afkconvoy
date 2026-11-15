@@ -1595,8 +1595,11 @@ fn brief(watch: &Watch) -> String {
          gate, record green and land its merge commit on the current base tip. \
          Resolve conflicts by merging, committing and asking again; never rebase. This is the watch's \
          landing path: its merge names a watch on this host and closes no issue. A \
-         fleet lock standing lands nothing: record what holds it back. Keep the branch and \
-         PR, and name the repo and PR in your record.\n\n\
+         fleet lock standing lands nothing: record what holds it back. Keep the PR and the \
+         branch you pushed, and name the repo and PR in your record. Landed, it removes \
+         your checkout and its local branch: run nothing more there. One you leave \
+         unlanded, everything in it pushed, a later tick removes once it has not moved \
+         for an hour.\n\n\
          ## Cut an installed fix, then check it\n\n\
          Landing code does not update an installed tool. When the \
          fix must reach an installed tool — afkconvoy itself, for example — wait until the \

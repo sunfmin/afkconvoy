@@ -228,6 +228,7 @@ kinds! {
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which is ignored";
     KeptWorktree: Info, "is kept with no claim";
+    LeftWatchCheckout: Info, "a watch left its checkout";
     TakenWorktree: Info, "is kept after its claim was taken";
     NoGateLimit: Info, "declares no gate limit";
     OtherAccount: Info, "works on this machine under another account";
@@ -575,6 +576,9 @@ pub struct State {
     pub tracker: Tracker,
     /// The worktrees on this host whose issue holds no claim.
     pub unclaimed: Vec<Unclaimed>,
+    /// The watch's checkouts on this host a watch left
+    /// (`watch_checkout::left`).
+    pub left_watch: Vec<crate::watch_checkout::Left>,
     /// The open ready issues held off, with no claim, only by an open PR
     /// that is not the fleet's (`plan::NOT_OURS`).
     pub not_ours: Vec<NotOurs>,
@@ -1387,6 +1391,33 @@ fn unclaimed_finding(unclaimed: &Unclaimed) -> Finding {
     )
 }
 
+/// A watch's checkout a watch left, past its grace: what keeps it, and the
+/// line that removes it — pushing first whatever only it holds
+/// (sunfmin/control#1063).
+fn left_watch_finding(left: &crate::watch_checkout::Left, now: u64) -> Finding {
+    let (path, branch) = (left.path.display(), &left.branch);
+    let remove = format!("orca worktree rm --worktree path:{path} --force");
+    let (holds, fix) = match &left.keeps {
+        None => ("nothing the remote does not; the next tick removes it".to_string(), remove),
+        Some(why) => (
+            why.clone(),
+            format!(
+                "git -C {path} status --short && git -C {path} log --oneline HEAD --not --remotes"
+            ),
+        ),
+    };
+    finding(
+        Kind::LeftWatchCheckout,
+        json!(["left-watch", left.path]),
+        format!(
+            "a watch left its checkout {path}, unmoved for {}: {holds}",
+            lasted(now.saturating_sub(left.moved))
+        ),
+        format!("{path}, on the branch {branch}; no watch round runs on this host"),
+        fix,
+    )
+}
+
 /// An open ready issue held off by a PR not the fleet's: the
 /// fleet never starts a second PR, and takes up only one of its own.
 fn not_ours_finding(held_off: &NotOurs) -> Finding {
@@ -1659,6 +1690,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             }
             found.extend(crate::blockers::findings(&state.set.unworked_blockers));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
+            found.extend(state.left_watch.iter().map(|left| left_watch_finding(left, seen.now)));
             found.extend(state.not_ours.iter().map(not_ours_finding));
             found.extend(state.on_gone.iter().map(on_gone_finding));
         }
@@ -1949,6 +1981,8 @@ fn finish_state(
     let (team, loaded) = read_team(repo, fleet.config.bound.is_some(), report.roles.as_ref());
     let held = read_held(&fleet, &set, &stood, loaded.as_ref());
     let unclaimed = read_unclaimed(&fleet);
+    let left_watch = crate::watch_checkout::left(&fleet.repo, &fleet.config.base_branch, now)
+        .unwrap_or_default();
     let ready_label = fleet.config.ready_label.clone();
     let tracker = fleet.gh.tracker.clone();
     let not_ours = set
@@ -1998,6 +2032,7 @@ fn finish_state(
         ready_label,
         tracker,
         unclaimed,
+        left_watch,
         not_ours,
         on_gone,
         candidates,
@@ -2971,6 +3006,7 @@ mod tests {
             ready_label: "ready-for-agent".into(),
             tracker: Tracker::Own,
             unclaimed: vec![],
+            left_watch: vec![],
             not_ours: vec![],
             on_gone: vec![],
             candidates: json!([]),

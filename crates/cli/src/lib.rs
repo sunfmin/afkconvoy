@@ -147,6 +147,7 @@ mod unbound_issue;
 mod unworked;
 pub mod wake;
 pub mod watch;
+pub(crate) mod watch_checkout;
 mod watch_daybook;
 pub mod watch_landing;
 mod watch_notify;

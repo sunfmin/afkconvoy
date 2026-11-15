@@ -915,9 +915,10 @@ fn prepare_worktree_root(repo: &Repo) -> Result<PathBuf> {
 /// Removes the worktree of every stopped candidate named by `records`.
 ///
 /// `records` are candidate chains already read: the look's listing, or a
-/// turn's re-read of the chain it just wrote. A landed, red, or cancelled
-/// candidate loses its worktree. One that is building, validating, green and
-/// waiting, or cancelling keeps it. So does one whose turn, another process,
+/// turn's re-read of the chain it just wrote. A candidate whose gate run has
+/// stopped loses its worktree: landed, red, cancelled, or green and waiting
+/// for its round or its predecessor (sunfmin/control#1063). One that is
+/// building, validating, in its round's slow gate, or cancelling keeps it. So does one whose turn, another process,
 /// still runs: a cancelled turn still runs git there before it answers
 /// (sunfmin/control#312), and removes it itself when it returns. A process
 /// that still has the directory as its working directory keeps it too; the
@@ -939,7 +940,10 @@ pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]
         }
         let chain: Chain = serde_json::from_str(&record.subject)?;
         for candidate in &chain.candidates {
-            if candidate.active() {
+            // A stopped candidate's gate run has ended, whatever its phase:
+            // a green one waiting for its round or its predecessor has no
+            // run in its worktree, and a round adds one again.
+            if candidate.active() && !candidate.stopped {
                 continue;
             }
             let path = PathBuf::from(&candidate.worktree);
@@ -987,6 +991,32 @@ fn candidate_directory(root: &Path, path: &Path, id: &str) -> bool {
     match (std::fs::canonicalize(parent), std::fs::canonicalize(root)) {
         (Ok(parent), Ok(root)) => parent == root,
         _ => false,
+    }
+}
+
+/// Adds the candidate's worktree at `path`, detached at `commit`, where it
+/// is not there yet: each gate run of the candidate, its fast gate or a
+/// round's slow gate, runs in one, which goes as that run ends
+/// (sunfmin/control#1063). It builds in its turn's worker's target
+/// directory (`Gate::target`), so a worktree added again builds warm.
+fn add_candidate_worktree(repo: &Repo, path: &Path, commit: &str) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(path.parent().context("candidate parent")?)?;
+    repo.git(&["worktree", "add", "--quiet", "--detach", &path.to_string_lossy(), commit])?;
+    Ok(())
+}
+
+/// Removes the worktree at `path` of a candidate whose gate run, this
+/// turn's, has just stopped, unless a process still works in it: then the
+/// next call of `remove_listed` does, once that process is gone.
+fn remove_ended_run(repo: &Repo, path: &Path, recorded: &str) {
+    match crate::hot::working_directories() {
+        Ok(busy) if !crate::hot::occupies(&busy, path) => {
+            remove_candidate_worktree(repo, path, recorded)
+        }
+        _ => {}
     }
 }
 
@@ -1299,15 +1329,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let (evidence, judged) = if recovering {
         (candidate.result.clone().expect("a fast-green candidate has its gate result"), None)
     } else {
-        std::fs::create_dir_all(path.parent().expect("candidate parent"))?;
-        repo.git(&[
-            "worktree",
-            "add",
-            "--quiet",
-            "--detach",
-            &path.to_string_lossy(),
-            &candidate.commit,
-        ])?;
+        add_candidate_worktree(repo, &path, &candidate.commit)?;
         let checkout = Repo::new(path.clone());
         let command = GateCommand::new(&candidate.command);
         let hook = Gate { repo, config, id: &id, slow: false, clock: &clock };
@@ -1335,6 +1357,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let chain = change(repo, config, |chain| chain.finish(&id, evidence.clone()))?;
         cleanup(repo, config, &chain)?;
         stop_candidate(repo, config, &id)?;
+        remove_ended_run(repo, &path, &candidate.worktree);
         chain
     };
     let current = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
@@ -1481,7 +1504,7 @@ struct Round<'a> {
 }
 
 /// Runs the round at the tip `id`: the slow gate, once, on the tip's commit,
-/// in the worktree its fast gate ran in → `None` when the round is green, or
+/// in a worktree added again where its fast gate's was → `None` when the round is green, or
 /// was not this turn's to run; the tip turn's answer when it is red.
 ///
 /// Green puts the whole gate on record for the tip's tree, from its fast
@@ -1504,7 +1527,11 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
     let members: Vec<Candidate> = chain.members(id).into_iter().cloned().collect();
     let tip = members.last().context("round tip disappeared")?.clone();
     let slow = tip.slow.clone().context("a round needs a slow gate")?;
-    let checkout = Repo::new(PathBuf::from(&tip.worktree));
+    // Its fast gate's worktree went when that gate ended: the slow gate
+    // gets one of its own, at the same place, and it goes when it ends.
+    let path = PathBuf::from(&tip.worktree);
+    add_candidate_worktree(repo, &path, &tip.commit)?;
+    let checkout = Repo::new(path.clone());
     // The fast gate's scope was confirmed free when it stopped; the slow
     // gate's processes are owned through a scope of their own.
     let scope = crate::process_scope::path(&tip.worktree);
@@ -1544,6 +1571,7 @@ fn round(round: Round<'_>, clock: impl Fn() -> u64) -> Result<Option<Value>> {
     let mut result = json!(evidence);
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, id)?;
+    remove_ended_run(repo, &path, &tip.worktree);
     let at = chain.candidates.iter().find(|c| c.id == id).context("round tip disappeared")?;
     if let Judged::Unsettled(said) = &judged
         && at.decision() == Some(Decision::Unsettled)

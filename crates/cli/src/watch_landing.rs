@@ -1,4 +1,5 @@
-//! A watch lands its own change in a turn, on no issue.
+//! A watch lands its own change in a turn, on no issue, and its checkout
+//! goes once it has landed.
 use crate::{gh::GitHub, git::Repo, host_watch::CHECKOUT, orca::Worktree};
 use afkconvoy_core::{config::Config, landing::Of};
 use anyhow::Result;
@@ -35,5 +36,13 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
         return Ok(crate::turn::locked(answer, &locks));
     }
     let of = Of::Watch(host.to_string());
-    crate::turn::join(repo, config, &gh.tracker, &pr, &of, answer, (host, now))
+    let mut answer = crate::turn::join(repo, config, &gh.tracker, &pr, &of, answer, (host, now))?;
+    // Landed, the watch's checkout goes, with its branch (sunfmin/control#1063).
+    if answer["outcome"] == "merged"
+        && let Some(commit) = answer["commit"].as_str().map(str::to_string)
+    {
+        answer["checkout"] =
+            crate::watch_checkout::landed(repo, &config.base_branch, &checkout, &commit);
+    }
+    Ok(answer)
 }

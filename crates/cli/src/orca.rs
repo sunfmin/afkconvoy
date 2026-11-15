@@ -679,6 +679,28 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 }
 
 /// The `head` orca lists for the worktree at `path`; empty when it lists none.
+/// Orca's rows of the linked worktrees of `source`, read once in this look:
+/// its main worktree and an archived one left out.
+pub(crate) fn linked_rows(source: &Source) -> Result<Vec<Value>> {
+    let listed = worktree_list()?;
+    let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            row["repoId"].as_str() == Some(source.id.as_str())
+                && row["isMainWorktree"] != true
+                && row["isArchived"] != true
+        })
+        .collect())
+}
+
+/// Whether orca lists a worktree at `path`, of any repo.
+pub(crate) fn lists(path: &Path) -> Result<bool> {
+    let listed = worktree_list()?;
+    let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
+    Ok(rows.iter().any(|row| row["path"].as_str().is_some_and(|at| same_dir(Path::new(at), path))))
+}
+
 pub(crate) fn listed_head(path: &Path) -> Result<String> {
     let listed = worktree_list()?;
     let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();

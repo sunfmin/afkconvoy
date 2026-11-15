@@ -199,10 +199,22 @@ where
     /// The record of `chain` as a commit on the record `sha`: its first
     /// parent the record before, and each candidate's commit a parent, so
     /// the record keeps them reachable. An ended candidate whose worktree is
-    /// gone is not carried on.
+    /// gone is not carried on past the record it ended in: its worktree goes
+    /// as its gate run ends (sunfmin/control#1063), and the record it ended
+    /// in still says how.
     fn commit(&self, sha: Option<&str>, chain: &Chain<F::Note>) -> Result<String, String> {
+        let before: Option<Chain<F::Note>> = match sha {
+            Some(sha) => {
+                let text = git(self.dir(), &["show", "-s", "--format=%B", sha])?;
+                serde_json::from_str(&text).ok()
+            }
+            None => None,
+        };
+        let ended_before = |id: &str| {
+            before.as_ref().is_some_and(|b| b.candidates.iter().any(|c| c.id == id && !c.active()))
+        };
         let mut chain = chain.clone();
-        chain.prune(|c| c.stopped && !Path::new(&c.worktree).exists());
+        chain.prune(|c| c.stopped && !Path::new(&c.worktree).exists() && ended_before(&c.id));
         let text = serde_json::to_string(&chain).map_err(|error| error.to_string())?;
         let tree = git(self.dir(), &["hash-object", "-t", "tree", "/dev/null"])?;
         let mut args = vec!["commit-tree", &tree, "-F", "-"];
@@ -423,7 +435,7 @@ where
         if !started {
             return Ok(chain);
         }
-        git(self.dir(), &["worktree", "add", "--quiet", "--detach", &c.worktree, &c.commit])?;
+        self.add_worktree(c)?;
         let evidence = self.run(c, &c.command, c.seconds);
         let evidence = match evidence {
             Ok(evidence) => evidence,
@@ -441,9 +453,9 @@ where
     }
 
     /// Runs the round at `id` when it is the round's tip: the slow gate,
-    /// once, on its commit, in the worktree its fast gate ran in; green, the
-    /// whole gate is put on record for its tree from its two parts → whether
-    /// it ran.
+    /// once, on its commit, in a worktree added again where its fast gate's
+    /// was; green, the whole gate is put on record for its tree from its two
+    /// parts → whether it ran.
     pub fn round(&self, target: &str, id: &str) -> Result<bool, String> {
         let mut started = false;
         let chain = self.change(target, |chain| {
@@ -454,6 +466,7 @@ where
             return Ok(false);
         }
         let tip = chain.candidates.iter().find(|c| c.id == id).ok_or("no such candidate")?;
+        self.add_worktree(tip)?;
         let evidence = match self.slow(tip) {
             Ok(evidence) => evidence,
             Err(said) => {
@@ -506,7 +519,7 @@ where
             return Ok(None);
         }
         let c = chain.candidates.iter().find(|c| c.id == id).ok_or("no such candidate")?;
-        git(self.dir(), &["worktree", "add", "--quiet", "--detach", &c.worktree, &c.commit])?;
+        self.add_worktree(c)?;
         let evidence = self.run(c, &c.command, c.seconds).and_then(|fast| match &c.slow {
             Some(_) if fast.green() => self.slow(c),
             _ => Ok(fast),
@@ -615,10 +628,22 @@ where
         Ok(Published::Landed(told.collect()))
     }
 
-    /// Removes the worktree of each candidate that has ended and stopped.
+    /// Adds the worktree of `c`, detached at its commit, where it is not
+    /// there yet: each gate run of it, its own gate or a round's slow gate,
+    /// runs in one, which goes as that run ends.
+    fn add_worktree(&self, c: &Candidate<F::Note>) -> Result<(), String> {
+        if !Path::new(&c.worktree).exists() {
+            git(self.dir(), &["worktree", "add", "--quiet", "--detach", &c.worktree, &c.commit])?;
+        }
+        Ok(())
+    }
+
+    /// Removes the worktree of each candidate whose gate run has stopped,
+    /// whatever its phase: landed, red, cancelled, or green and waiting for
+    /// its round or its predecessor (sunfmin/control#1063).
     fn remove_ended(&self, chain: &Chain<F::Note>) {
         for c in &chain.candidates {
-            if c.stopped && !c.valid() && Path::new(&c.worktree).exists() {
+            if c.stopped && Path::new(&c.worktree).exists() {
                 let _ = git(self.dir(), &["worktree", "remove", "--force", &c.worktree]);
             }
         }
