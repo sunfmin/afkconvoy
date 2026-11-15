@@ -3093,9 +3093,15 @@ mod tests {
                     id: format!("p{i}"),
                     owner: live.clone(),
                     since: Some(1000 + i),
+                    asks: None,
                 })
                 .collect();
-            pending.push(Barrier { id: "gone".into(), owner: gone.clone(), since: Some(0) });
+            pending.push(Barrier {
+                id: "gone".into(),
+                owner: gone.clone(),
+                since: Some(0),
+                asks: None,
+            });
             let chain: Chain = Chain { pending, ..Chain::default() };
             crate::remote::RemoteRecord {
                 name: "refs/convoy/candidates/main".into(),

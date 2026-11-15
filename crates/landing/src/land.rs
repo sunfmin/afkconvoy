@@ -1,10 +1,11 @@
 //! Landing with plain git (docs/adr/0060), for a program that has no runner
-//! of its own: one process assigns its changes' candidates, gates each,
-//! runs a round's slow gate once at its tip and lands the round as one
-//! atomic fast-forward, on the chain the remote records, through the turn's
-//! rules (`turn`) and the gate crate's plain gate runner
-//! (`afkconvoy_gate::run`). It asks its program's forge what it must
-//! (`Forge`).
+//! of its own: one process takes its changes into a round, pairs them and
+//! fast-gates each pair, its pairs' gates of one level at once, merges the
+//! round's root onto the target tip, gates it whole once and lands the round
+//! as one atomic fast-forward (docs/adr/0082), on the chain the remote
+//! records, through the round's rules (`pairing`), the turn's (`turn`) and
+//! the gate crate's plain gate runner (`afkconvoy_gate::run`). It asks its
+//! program's forge what it must (`Forge`).
 //!
 //! What afkconvoy's own runner adds is not here: lanes of a host's
 //! exclusive queue, a gate's processes owned, frozen and confirmed gone
@@ -23,10 +24,11 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::chain::{
-    BatchStep, Candidate, Chain, Decision, Evidence, Observed, Phase, Process, Reused,
+    Barrier, Candidate, Chain, Decision, Evidence, Observed, Phase, Process, Reused, Status,
 };
 use crate::forge::{Change, Forge, source_ref};
-use crate::turn::{self, Declared, Landing, Next};
+use crate::pairing::{self, Asks, Built, Left, RoundNext};
+use crate::turn::{self, Declared};
 
 /// How many of a run's last lines its evidence keeps.
 const EXCERPT_LINES: usize = 40;
@@ -71,6 +73,9 @@ pub type Assigned<R> = Result<String, Outcome<R>>;
 pub type Told<E> = Vec<(u64, Result<(), E>)>;
 /// What became of each change, by its number.
 pub type Outcomes<R> = Vec<(u64, Outcome<R>)>;
+/// What became of each change one round decided, and the changes that left
+/// it for the next.
+type Rounded<R> = (Outcomes<R>, Vec<Change>);
 
 /// What a publication came to: the changes it landed, each with what its
 /// forge said when told; or the push that would land them refused, with
@@ -199,9 +204,9 @@ where
     /// The record of `chain` as a commit on the record `sha`: its first
     /// parent the record before, and each candidate's commit a parent, so
     /// the record keeps them reachable. An ended candidate whose worktree is
-    /// gone is not carried on past the record it ended in: its worktree goes
-    /// as its gate run ends (sunfmin/control#1063), and the record it ended
-    /// in still says how.
+    /// gone and whose owner runs no more is not carried on past the record
+    /// it ended in: its worktree goes as its gate run ends
+    /// (sunfmin/control#1063), and the record it ended in still says how.
     fn commit(&self, sha: Option<&str>, chain: &Chain<F::Note>) -> Result<String, String> {
         let before: Option<Chain<F::Note>> = match sha {
             Some(sha) => {
@@ -213,8 +218,13 @@ where
         let ended_before = |id: &str| {
             before.as_ref().is_some_and(|b| b.candidates.iter().any(|c| c.id == id && !c.active()))
         };
+        // A process that runs still holds what it owns: its turn may yet
+        // read what became of it.
+        let held = |c: &Candidate<F::Note>| c.owner == self.owner || (self.running)(&c.owner);
         let mut chain = chain.clone();
-        chain.prune(|c| c.stopped && !Path::new(&c.worktree).exists() && ended_before(&c.id));
+        chain.prune(|c| {
+            c.stopped && !Path::new(&c.worktree).exists() && ended_before(&c.id) && !held(c)
+        });
         let text = serde_json::to_string(&chain).map_err(|error| error.to_string())?;
         let tree = git(self.dir(), &["hash-object", "-t", "tree", "/dev/null"])?;
         let mut args = vec!["commit-tree", &tree, "-F", "-"];
@@ -284,16 +294,18 @@ where
     /// from is invalidated first. What a process of this host that runs no
     /// more left gating is taken over first (`Chain::take_over`).
     pub fn assign(&self, change: &Change) -> Result<Assigned<F::Refusal>, Error<F::Error>> {
-        self.assign_as(change, false)
+        self.assign_as(change, None)
     }
 
-    /// Assigns `change` a candidate, for a batch round where `batch`: one
-    /// not gated alone, with no gate process to stop.
+    /// Assigns `change` a candidate; for the round's root where `ask` names
+    /// its place in the round (`Chain::root_assigned`): one not gated alone,
+    /// with no gate process to stop.
     fn assign_as(
         &self,
         change: &Change,
-        batch: bool,
+        ask: Option<&str>,
     ) -> Result<Assigned<F::Refusal>, Error<F::Error>> {
+        let batch = ask.is_some();
         let Some(change) = self.forge.current(change).map_err(Error::Forge)? else {
             return Ok(Err(Outcome::Gone));
         };
@@ -311,6 +323,13 @@ where
             read.chain.observe_base(&read.base);
             self.take_over(&mut read.chain);
             if let Some(id) = read.chain.reuse(change.number, &original, batch) {
+                // Taken up for a round, it is this run's to carry on.
+                if let Some(ask) = ask {
+                    read.chain.root_assigned(ask, &id);
+                    for c in read.chain.candidates.iter_mut().filter(|c| c.id == id) {
+                        c.owner = self.owner.clone();
+                    }
+                }
                 if before == read.chain
                     || self.write(&change.target, read.sha.as_deref(), &read.chain)?
                 {
@@ -370,9 +389,12 @@ where
                 slow: own.slow,
                 slowed: false,
                 batch,
-                holds_red: false,
+                pair: None,
                 assigned: Some((self.now)()),
             });
+            if let Some(ask) = ask {
+                read.chain.root_assigned(ask, &id);
+            }
             if self.write(&change.target, read.sha.as_deref(), &read.chain)? {
                 return Ok(Ok(id));
             }
@@ -384,34 +406,8 @@ where
     /// of it on the candidate's tree on this kind of machine, that run
     /// answers and nothing runs: the evidence names it (`Evidence::reused`).
     fn run(&self, c: &Candidate<F::Note>, command: &str, seconds: u64) -> Result<Evidence, String> {
-        let checkout = Git { worktree: PathBuf::from(&c.worktree), ..self.git.clone() };
-        let command = GateCommand::new(command);
-        let limit = std::time::Duration::from_secs(seconds);
         let on = (self.host.as_str(), self.machine.as_str());
-        let ran = run::gate(&checkout, &command, on, (self.now)(), limit, &[])?;
-        let (written, not_recorded, reused) = match &ran.settled {
-            run::Settled::Written { not_recorded, .. } => (true, not_recorded.clone(), None),
-            run::Settled::Reused(green) => (false, None, Some(Reused::of(green))),
-            run::Settled::Dropped | run::Settled::Left => (false, None, None),
-        };
-        let skip = ran.output.len().saturating_sub(EXCERPT_LINES);
-        let termination = match &ran.judged {
-            Judged::Red(Red { ended: Ended::Signalled(termination), .. }) => Some(*termination),
-            Judged::Green | Judged::Red(_) | Judged::Unsettled(_) => None,
-        };
-        Ok(Evidence::of(Observed {
-            command: command.text(),
-            ran: ran.ran,
-            judged: &ran.judged,
-            head: ran.head,
-            excerpt: ran.output.iter().skip(skip).cloned().collect(),
-            strays: ran.strays,
-            written,
-            not_recorded,
-            termination,
-            cancelled: false,
-            reused,
-        }))
+        gate_run(&self.git, on, (self.now)(), (&c.worktree, command, seconds))
     }
 
     /// Runs the candidate `id`'s own gate on its commit, in a worktree of
@@ -502,41 +498,6 @@ where
             }
         }
         Ok(evidence)
-    }
-
-    /// Runs the gate of the batch round at `id`, where the round gates it
-    /// next: its fast gate on its commit, in a worktree of its own, and,
-    /// that green, its slow gate, which puts the whole gate on record for
-    /// its tree; and lets the chain decide what it says of the round → the
-    /// chain, or `None` where it did not run.
-    pub fn gate_batched(&self, target: &str, id: &str) -> Result<Option<Chain<F::Note>>, String> {
-        let mut started = false;
-        let chain = self.change(target, |chain| {
-            started = chain.start_batched(id);
-            own(chain, id, started, &self.owner);
-        })?;
-        if !started {
-            return Ok(None);
-        }
-        let c = chain.candidates.iter().find(|c| c.id == id).ok_or("no such candidate")?;
-        self.add_worktree(c)?;
-        let evidence = self.run(c, &c.command, c.seconds).and_then(|fast| match &c.slow {
-            Some(_) if fast.green() => self.slow(c),
-            _ => Ok(fast),
-        });
-        let evidence = match evidence {
-            Ok(evidence) => evidence,
-            Err(said) => {
-                self.change(target, |chain| chain.invalidate(id, "gate_interrupted"))?;
-                return Err(said);
-            }
-        };
-        let chain = self.change(target, |chain| {
-            chain.finish(id, evidence.clone());
-            stop(chain, id);
-        })?;
-        self.remove_ended(&chain);
-        Ok(Some(chain))
     }
 
     /// Lands the candidate `id` on `target`, with every member before it,
@@ -650,193 +611,338 @@ where
     }
 
     /// Lands `changes`, which ask to land on one target, as this process
-    /// alone, in the landing its repo declares at the target's tip
-    /// (`Declared::landing`) → what became of each.
+    /// alone → what became of each. They are taken into a round in the order
+    /// given (docs/adr/0082): paired, each pair fast-gated, the pairs of one
+    /// level at once; the root merged onto the target's tip, one candidate
+    /// per change, and gated whole once at the last; green, the round lands
+    /// as one fast-forward. A change that left the round for the next is
+    /// taken into the next, while each round decides one change or more.
     pub fn land(&self, changes: &[Change]) -> Result<Outcomes<F::Refusal>, Error<F::Error>> {
-        self.land_with(changes, None)
-    }
-
-    /// Lands `changes` as `land` does, in the landing `landing` asks for
-    /// this round, whatever its repo declares; as its repo declares where
-    /// it is `None` (docs/adr/0068).
-    pub fn land_with(
-        &self,
-        changes: &[Change],
-        landing: Option<Landing>,
-    ) -> Result<Outcomes<F::Refusal>, Error<F::Error>> {
         let Some(target) = changes.first().map(|c| c.target.clone()) else {
             return Ok(vec![]);
         };
         self.change(&target, |chain| self.take_over(chain))?;
-        let landing = match landing {
-            Some(landing) => landing,
-            None => {
-                let base = self.read(&target)?.base;
-                (self.declared)(self.dir(), &base)?.landing
-            }
-        };
-        match landing {
-            Landing::PerCandidate => self.land_per_candidate(&target, changes),
-            Landing::Batch => self.land_batch(&target, changes),
-        }
-    }
-
-    /// Lands `changes` on `target` candidate by candidate: assigns each a
-    /// candidate in the order given — or takes up the one an earlier run left
-    /// it — gates each, runs the round at the chain's tip where their commits
-    /// split their gate, and lands what is ripe, in order, whichever run
-    /// assigned it → what became of each.
-    fn land_per_candidate(
-        &self,
-        target: &str,
-        changes: &[Change],
-    ) -> Result<Outcomes<F::Refusal>, Error<F::Error>> {
-        let target = target.to_string();
         let mut outcomes: Outcomes<F::Refusal> = vec![];
-        let mut ids: Vec<(u64, String)> = vec![];
         let mut refused: Refusals = vec![];
-        for change in changes {
-            match self.assign(change)? {
-                Ok(id) => ids.push((change.number, id)),
-                Err(outcome) => outcomes.push((change.number, outcome)),
-            }
-        }
-        for (_, id) in &ids {
-            self.gate(&target, id)?;
-        }
-        loop {
-            let read = self.read(&target)?;
-            let mine: Vec<&str> = ids.iter().map(|(_, id)| id.as_str()).collect();
-            let rounds: Vec<&str> = mine
-                .iter()
-                .copied()
-                .filter(|id| read.chain.next(id) == Some(Next::Round))
-                .collect();
-            if let Some(tip) = rounds.first() {
-                self.round(&target, tip)?;
-                continue;
-            }
-            // A ripe candidate lands whoever assigned it: one an earlier
-            // run gated and left unpublished is at the chain's head.
-            let ripe = read
-                .chain
-                .candidates
-                .iter()
-                .rev()
-                .map(|c| c.id.as_str())
-                .find(|id| read.chain.ripe(id, &read.base));
-            let Some(ripe) = ripe else { break };
-            let landed = self.publish_noting(&target, ripe, changes, &mut refused)?;
-            if landed.is_empty() && read.chain.next(ripe) == Some(Next::Waiting) {
+        let mut asking: Vec<Change> = changes.to_vec();
+        while !asking.is_empty() {
+            let before = asking.len();
+            let (decided, next) = self.land_round(&target, &asking, changes, &mut refused)?;
+            outcomes.extend(decided);
+            asking = next;
+            if asking.len() >= before {
                 break;
             }
         }
-        self.outcomes(&target, ids, outcomes, &refused)
-    }
-
-    /// Lands `changes` on `target` as a batch round (docs/adr/0068): assigns
-    /// each a candidate in the order given, none gated alone; gates the
-    /// chain's tip, and lands every candidate up to it once green; red,
-    /// bisects the chain to its first red candidate, drops it and sends its
-    /// change back with the red run, lands the candidates before it, and
-    /// assigns the changes behind it again, without it, for the round to go
-    /// on → what became of each.
-    fn land_batch(
-        &self,
-        target: &str,
-        changes: &[Change],
-    ) -> Result<Outcomes<F::Refusal>, Error<F::Error>> {
-        let mut outcomes: Outcomes<F::Refusal> = vec![];
-        let mut ids: Vec<(u64, String)> = vec![];
-        let mut asking: Vec<Change> = changes.to_vec();
-        let mut refused: Refusals = vec![];
-        loop {
-            let read = self.read(target)?;
-            // An ended candidate leaves the record once its worktree is
-            // gone: what became of it is taken as the chain decides it.
-            ids = settled(&read.chain, ids, &mut outcomes);
-            let step = read.chain.batch_step();
-            let Some(step) = step else {
-                if asking.is_empty() {
-                    break;
-                }
-                for change in std::mem::take(&mut asking) {
-                    match self.assign_as(&change, true)? {
-                        Ok(id) => ids.push((change.number, id)),
-                        Err(outcome) => outcomes.push((change.number, outcome)),
-                    }
-                }
-                continue;
-            };
-            // A step at a candidate an earlier run left — a gate it did not
-            // run, or a landing it did not publish — is this run's to take.
-            match step {
-                BatchStep::Gate(id) => {
-                    self.gate_batched(target, &id)?;
-                }
-                BatchStep::Drop(id) => {
-                    let again = self.drop_red(target, &id, changes)?;
-                    ids.retain(|(number, _)| !again.contains(number));
-                    for change in changes {
-                        if again.contains(&change.number) {
-                            asking.push(change.clone());
-                        }
-                    }
-                }
-                BatchStep::Land(id) => {
-                    let landed = self.publish_noting(target, &id, changes, &mut refused)?;
-                    let chain = self.read(target)?.chain;
-                    // A change asked again whose candidate an earlier run
-                    // left has landed with it: it is not assigned again.
-                    for change in asking.iter().filter(|c| landed.contains(&c.number)) {
-                        let mine = chain
-                            .candidates
-                            .iter()
-                            .rev()
-                            .find(|c| c.change == change.number && c.phase == Phase::Landed);
-                        if let Some(c) = mine {
-                            ids.push((change.number, c.id.clone()));
-                        }
-                    }
-                    asking.retain(|c| !landed.contains(&c.number));
-                    let again = chain.batch_step();
-                    if landed.is_empty() && again == Some(BatchStep::Land(id)) {
-                        break;
-                    }
-                }
-            }
-        }
-        let mut outcomes = self.outcomes(target, ids, outcomes, &refused)?;
+        outcomes.extend(asking.into_iter().map(|change| (change.number, Outcome::Waiting)));
         outcomes.sort_by_key(|(number, _)| {
             changes.iter().position(|c| c.number == *number).unwrap_or(usize::MAX)
         });
         Ok(outcomes)
     }
 
-    /// Drops `red`, the batch round's first red candidate, and sends its
-    /// change back with the red run → the changes behind it, to be assigned
-    /// again without it.
-    fn drop_red(
+    /// Lands `asking` on `target` as one round → what became of each change
+    /// the round decided, and the changes that left it for the next.
+    fn land_round(
         &self,
         target: &str,
-        red: &str,
+        asking: &[Change],
         changes: &[Change],
-    ) -> Result<Vec<u64>, Error<F::Error>> {
-        let chain = self.change(target, |chain| chain.drop_red(red))?;
-        let mut again = vec![];
-        for c in &chain.candidates {
-            if c.id == red {
-                let run = c.result.as_ref();
-                for change in changes.iter().filter(|change| change.number == c.change) {
-                    self.forge.sent_back(change, run).map_err(Error::Forge)?;
+        refused: &mut Refusals,
+    ) -> Result<Rounded<F::Refusal>, Error<F::Error>> {
+        let mut outcomes: Outcomes<F::Refusal> = vec![];
+        let mut places: Vec<(Change, String, String)> = vec![];
+        for change in asking {
+            let Some(current) = self.forge.current(change).map_err(Error::Forge)? else {
+                outcomes.push((change.number, Outcome::Gone));
+                continue;
+            };
+            if let Err(refusal) = self.forge.may_land(&current).map_err(Error::Forge)? {
+                outcomes.push((change.number, Outcome::Refused(refusal)));
+                continue;
+            }
+            // A source the remote has not is this change's outcome alone: the
+            // round goes on with the others.
+            let Some(head) = self.fetched(&source_ref(&current.source))? else {
+                outcomes.push((change.number, Outcome::Gone));
+                continue;
+            };
+            let id = format!("{}-{}-asks", current.number, (self.now)());
+            places.push((current, id, head));
+        }
+        let Some((first, ..)) = places.first() else { return Ok((outcomes, vec![])) };
+        let round = format!("round-{}-{}", (self.now)(), first.number);
+        let mut opened = false;
+        self.change(target, |chain| {
+            for (change, id, head) in &places {
+                if !chain.pending.iter().any(|b| &b.id == id) {
+                    chain.pending.push(Barrier {
+                        id: id.clone(),
+                        owner: self.owner.clone(),
+                        since: Some((self.now)()),
+                        asks: Some(Asks {
+                            change: change.number,
+                            branch: change.source.clone(),
+                            head: head.clone(),
+                        }),
+                    });
                 }
-            } else if c.cancelled_by.as_deref() == Some(red)
-                && c.cause.as_deref() == Some("rebuilt")
-            {
-                again.push(c.change);
+            }
+            opened = chain.open_round(&round);
+        })?;
+        let ids: Vec<String> = places.iter().map(|(_, id, _)| id.clone()).collect();
+        if !opened {
+            // Another round is open, or a barrier holds the chain: nothing ran.
+            self.change(target, |chain| chain.pending.retain(|b| !ids.contains(&b.id)))?;
+            outcomes.extend(places.iter().map(|(c, ..)| (c.number, Outcome::Waiting)));
+            return Ok((outcomes, vec![]));
+        }
+        loop {
+            let read = self.read(target)?;
+            let chain = &read.chain;
+            let Some(open) = chain.round.as_ref().filter(|r| r.id == round) else { break };
+            if let Some(level) = chain.to_pair() {
+                self.pair(target, level)?;
+                continue;
+            }
+            let mut gates: Vec<String> = vec![];
+            let mut assign: Option<(String, u64)> = None;
+            for ask in &open.asked {
+                match chain.round_next(&ask.id) {
+                    Some(RoundNext::Gate(pair)) => gates.push(pair),
+                    Some(RoundNext::Assign) if assign.is_none() => {
+                        assign = Some((ask.id.clone(), ask.asks.change));
+                    }
+                    _ => {}
+                }
+            }
+            if !gates.is_empty() {
+                self.gate_pairs(target, &gates)?;
+                continue;
+            }
+            if let Some((ask, number)) = assign {
+                let Some((change, ..)) = places.iter().find(|(c, ..)| c.number == number) else {
+                    self.change(target, |chain| chain.leave_round(|a| a.id == ask))?;
+                    continue;
+                };
+                match self.assign_as(change, Some(&ask))? {
+                    Ok(_) => {}
+                    Err(Outcome::Conflict) => {
+                        self.change(target, |chain| chain.leave(&ask, Left::Conflict))?;
+                    }
+                    Err(outcome) => {
+                        outcomes.push((number, outcome));
+                        self.change(target, |chain| chain.leave_round(|a| a.id == ask))?;
+                    }
+                }
+                continue;
+            }
+            if let Some(tip) = chain.whole_tip() {
+                let tip = tip.id.clone();
+                self.gate_whole(target, &tip)?;
+                continue;
+            }
+            let ripe =
+                chain.chained().rev().map(|c| c.id.clone()).find(|id| chain.ripe(id, &read.base));
+            let Some(ripe) = ripe else { break };
+            if self.publish_noting(target, &ripe, changes, refused)?.is_empty() {
+                let again = self.read(target)?;
+                if again.chain.ripe(&ripe, &again.base) {
+                    break;
+                }
             }
         }
-        Ok(again)
+        let chain = self.change(target, |_| {})?;
+        let mut next = vec![];
+        for (change, id, _) in &places {
+            let Some(ask) = chain.round.iter().flat_map(|r| &r.asked).find(|a| &a.id == id) else {
+                continue;
+            };
+            let outcome = match (&ask.left, &ask.candidate) {
+                (Some(Left::Red(pair)), _) => {
+                    let run = chain
+                        .candidates
+                        .iter()
+                        .find(|c| &c.id == pair)
+                        .and_then(|c| c.result.as_ref());
+                    self.forge.sent_back(change, run).map_err(Error::Forge)?;
+                    Outcome::Decided(Decision::Red)
+                }
+                (Some(Left::Conflict), _) => Outcome::Conflict,
+                (Some(Left::Unpaired | Left::Next), _) => {
+                    next.push(change.clone());
+                    continue;
+                }
+                (None, Some(candidate)) => {
+                    match chain.candidates.iter().find(|c| &c.id == candidate) {
+                        Some(c) if c.phase == Phase::Landed => Outcome::Landed(c.commit.clone()),
+                        Some(c) => c.decision().map_or(Outcome::Waiting, Outcome::Decided),
+                        None => Outcome::Waiting,
+                    }
+                }
+                (None, None) => Outcome::Waiting,
+            };
+            let said = refused.iter().find(|(n, _)| *n == change.number).map(|(_, said)| said);
+            let outcome = match (outcome, said) {
+                (Outcome::Waiting, Some(said)) => Outcome::Unpublished(said.clone()),
+                (outcome, _) => outcome,
+            };
+            outcomes.push((change.number, outcome));
+        }
+        let chain = self.change(target, |chain| chain.leave_round(|a| ids.contains(&a.id)))?;
+        self.remove_ended(&chain);
+        Ok((outcomes, next))
+    }
+
+    /// Pairs the level `level` of the round, as `Chain::to_pair` names it:
+    /// each pair its two nodes' merge, which `git merge-tree` finds clean,
+    /// as a commit of its own that its fast gate runs on.
+    fn pair(
+        &self,
+        target: &str,
+        (round, level, nodes): (String, u32, Vec<pairing::Node>),
+    ) -> Result<(), String> {
+        let mut trees: Vec<((usize, usize), String)> = vec![];
+        let made = pairing::pairs(nodes.len(), |a, b| {
+            let (Some(first), Some(second)) = (nodes.get(a), nodes.get(b)) else {
+                return Ok(false);
+            };
+            let tree = merged_tree(self.dir(), &first.commit, &second.commit)?;
+            Ok::<bool, String>(tree.map(|tree| trees.push(((a, b), tree))).is_some())
+        })?;
+        let mut built = vec![];
+        for (a, b) in made {
+            let (Some(first), Some(second)) = (nodes.get(a), nodes.get(b)) else { continue };
+            let Some((_, tree)) = trees.iter().find(|(at, _)| *at == (a, b)) else { continue };
+            let named = |changes: &[u64]| {
+                changes.iter().map(|n| format!("!{n}")).collect::<Vec<_>>().join(", ")
+            };
+            let message = format!("Pair {} with {}", named(&first.changes), named(&second.changes));
+            let commit = git(
+                self.dir(),
+                &["commit-tree", tree, "-p", &first.commit, "-p", &second.commit, "-m", &message],
+            )?;
+            let own = (self.declared)(self.dir(), &commit)?.own();
+            built.push(Built {
+                first: a,
+                second: b,
+                commit,
+                tree: tree.clone(),
+                command: own.command,
+                seconds: own.seconds,
+            });
+        }
+        let note = |number: u64| {
+            self.forge.note(&Change {
+                number,
+                source: String::new(),
+                target: target.to_string(),
+                title: String::new(),
+            })
+        };
+        let worktree = |id: &str| self.worktrees.join(id).to_string_lossy().into_owned();
+        let now = (self.now)();
+        self.change(target, |chain| {
+            chain.pair_level((&round, level), built.clone(), note, worktree, now);
+        })?;
+        Ok(())
+    }
+
+    /// Gates the pairs `ids`, each in a worktree of its own, all at once,
+    /// and lets the round carry on from what each said. This process owns
+    /// each while its gate runs.
+    fn gate_pairs(&self, target: &str, ids: &[String]) -> Result<(), String> {
+        let mut started: Vec<String> = vec![];
+        let chain = self.change(target, |chain| {
+            started.clear();
+            for c in chain
+                .candidates
+                .iter_mut()
+                .filter(|c| ids.contains(&c.id) && c.phase == Phase::Building && c.valid())
+            {
+                c.phase = Phase::Validating;
+                c.owner = self.owner.clone();
+                started.push(c.id.clone());
+            }
+        })?;
+        let mut runs: Vec<(String, String, String, u64)> = vec![];
+        for c in chain.candidates.iter().filter(|c| started.contains(&c.id)) {
+            self.add_worktree(c)?;
+            runs.push((c.id.clone(), c.worktree.clone(), c.command.clone(), c.seconds));
+        }
+        let on = (self.host.as_str(), self.machine.as_str());
+        let now = (self.now)();
+        let git = &self.git;
+        let ran: Vec<(String, Result<Evidence, String>)> = std::thread::scope(|scope| {
+            let running: Vec<_> = runs
+                .iter()
+                .map(|(id, worktree, command, seconds)| {
+                    scope.spawn(move || {
+                        (id.clone(), gate_run(git, on, now, (worktree, command, *seconds)))
+                    })
+                })
+                .collect();
+            running.into_iter().filter_map(|run| run.join().ok()).collect()
+        });
+        let mut failed = None;
+        for (id, evidence) in ran {
+            let chain = self.change(target, |chain| {
+                match &evidence {
+                    Ok(evidence) => chain.finish(&id, evidence.clone()),
+                    Err(_) => chain.invalidate(&id, "gate_interrupted"),
+                }
+                stop(chain, &id);
+                chain.advance_round();
+            })?;
+            self.remove_ended(&chain);
+            failed = failed.or(evidence.err());
+        }
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// Runs the round's whole gate at `id`, its root's last candidate, where
+    /// it is the round's tip (`Chain::whole_tip`): the whole gate's green
+    /// run on record of its tree, on this kind of machine, answers for it;
+    /// otherwise its fast gate and, that green, its slow gate, which puts the
+    /// whole gate on record for its tree.
+    fn gate_whole(&self, target: &str, id: &str) -> Result<(), String> {
+        let mut started = false;
+        let chain = self.change(target, |chain| {
+            started = chain.start_whole(id);
+            own(chain, id, started, &self.owner);
+        })?;
+        if !started {
+            return Ok(());
+        }
+        let c = chain.candidates.iter().find(|c| c.id == id).ok_or("no such candidate")?.clone();
+        let whole = GateCommand::new(turn::whole(&c));
+        let tree = Tree::named(&c.tree);
+        let evidence = match run::reusable(&self.git, &tree, &whole, &self.machine, (self.now)())? {
+            Some(green) => Ok(Evidence {
+                command: Some(whole.text().to_string()),
+                head: Some(c.commit.clone()),
+                recorded: true,
+                reused: Some(Reused::of(&green)),
+                status: Status::Green,
+                ..Evidence::default()
+            }),
+            None => {
+                self.add_worktree(&c)?;
+                self.run(&c, &c.command, c.seconds).and_then(|fast| match &c.slow {
+                    Some(_) if fast.green() => self.slow(&c),
+                    _ => Ok(fast),
+                })
+            }
+        };
+        let chain = self.change(target, |chain| {
+            match &evidence {
+                Ok(evidence) => chain.finish(id, evidence.clone()),
+                Err(_) => chain.invalidate(id, "gate_interrupted"),
+            }
+            stop(chain, id);
+        })?;
+        self.remove_ended(&chain);
+        evidence.map(|_| ())
     }
 
     /// Publishes the candidate `id` → the changes it landed; a refused push
@@ -857,65 +963,65 @@ where
             }
         }
     }
-
-    /// What became of each change of `ids`, by its candidate, after
-    /// `outcomes`, those that were assigned none; one still waiting whose
-    /// push was refused is `Unpublished`, with what git said (`refused`).
-    fn outcomes(
-        &self,
-        target: &str,
-        ids: Vec<(u64, String)>,
-        mut outcomes: Outcomes<F::Refusal>,
-        refused: &Refusals,
-    ) -> Result<Outcomes<F::Refusal>, Error<F::Error>> {
-        let chain = self.change(target, |_| {})?;
-        self.remove_ended(&chain);
-        for (number, id) in ids {
-            let c = chain.candidates.iter().find(|c| c.id == id);
-            let outcome = match c {
-                Some(c) if c.phase == Phase::Landed => Outcome::Landed(c.commit.clone()),
-                Some(c) => c.decision().map_or(Outcome::Waiting, Outcome::Decided),
-                None => Outcome::Waiting,
-            };
-            let said = refused.iter().find(|(n, _)| *n == number).map(|(_, said)| said);
-            let outcome = match (outcome, said) {
-                (Outcome::Waiting, Some(said)) => Outcome::Unpublished(said.clone()),
-                (outcome, _) => outcome,
-            };
-            outcomes.push((number, outcome));
-        }
-        Ok(outcomes)
-    }
 }
 
 /// The changes whose publication's push was refused, each with what git
 /// said.
 type Refusals = Vec<(u64, String)>;
 
-/// `ids` without the candidates `chain` has decided, each one's outcome put
-/// in `outcomes`; one cancelled `rebuilt` is to be assigned again, and is
-/// kept.
-fn settled<N, R>(
-    chain: &Chain<N>,
-    ids: Vec<(u64, String)>,
-    outcomes: &mut Outcomes<R>,
-) -> Vec<(u64, String)> {
-    let mut kept = vec![];
-    for (number, id) in ids {
-        let c = chain.candidates.iter().find(|c| c.id == id);
-        let rebuilt =
-            c.is_some_and(|c| c.cause.as_deref() == Some("rebuilt") && c.phase != Phase::Red);
-        match c.and_then(Candidate::decision) {
-            Some(_) if rebuilt => kept.push((number, id)),
-            Some(Decision::Landed) => {
-                let commit = c.map(|c| c.commit.clone()).unwrap_or_default();
-                outcomes.push((number, Outcome::Landed(commit)));
-            }
-            Some(decision) => outcomes.push((number, Outcome::Decided(decision))),
-            None => kept.push((number, id)),
-        }
+/// The tree of `first` and `second` merged, where `git merge-tree` finds
+/// their merge clean; `None` where it conflicts.
+fn merged_tree(dir: &Path, first: &str, second: &str) -> Result<Option<String>, String> {
+    let merged = Command::new("git")
+        .current_dir(dir)
+        .args(["merge-tree", "--write-tree", first, second])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !merged.status.success() {
+        return Ok(None);
     }
-    kept
+    let out = String::from_utf8_lossy(&merged.stdout);
+    Ok(out.split_whitespace().next().map(str::to_string))
+}
+
+/// Runs `command` in `worktree`, a checkout of `git`'s repo, under its limit
+/// of `seconds`, on the host and kind of machine `on`, recording its run →
+/// its evidence. Where the remote holds a green run of it on the worktree's
+/// tree on this kind of machine, that run answers and nothing runs: the
+/// evidence names it (`Evidence::reused`).
+fn gate_run(
+    git: &Git,
+    on: (&str, &str),
+    now: u64,
+    (worktree, command, seconds): (&str, &str, u64),
+) -> Result<Evidence, String> {
+    let checkout = Git { worktree: PathBuf::from(worktree), ..git.clone() };
+    let command = GateCommand::new(command);
+    let limit = std::time::Duration::from_secs(seconds);
+    let ran = run::gate(&checkout, &command, on, now, limit, &[])?;
+    let (written, not_recorded, reused) = match &ran.settled {
+        run::Settled::Written { not_recorded, .. } => (true, not_recorded.clone(), None),
+        run::Settled::Reused(green) => (false, None, Some(Reused::of(green))),
+        run::Settled::Dropped | run::Settled::Left => (false, None, None),
+    };
+    let skip = ran.output.len().saturating_sub(EXCERPT_LINES);
+    let termination = match &ran.judged {
+        Judged::Red(Red { ended: Ended::Signalled(termination), .. }) => Some(*termination),
+        Judged::Green | Judged::Red(_) | Judged::Unsettled(_) => None,
+    };
+    Ok(Evidence::of(Observed {
+        command: command.text(),
+        ran: ran.ran,
+        judged: &ran.judged,
+        head: ran.head,
+        excerpt: ran.output.iter().skip(skip).cloned().collect(),
+        strays: ran.strays,
+        written,
+        not_recorded,
+        termination,
+        cancelled: false,
+        reused,
+    }))
 }
 
 /// The candidate `id`, whose gate this run `started`, is `owner`'s while it

@@ -1,11 +1,11 @@
 //! The landing crate as another program uses it (docs/adr/0060): from
 //! outside, through its public API alone, with a fake forge and no fleet
-//! beside it. Two changes land on a local bare repo in one round — both
-//! fast-green, one slow gate at the round's tip, the target fast-forwarded
-//! through both candidates in order, and the forge told each landed. A red
-//! round lands nothing and cancels the chain. In a batch round only the
-//! chain's tip is gated, and a red one is bisected to its first red change,
-//! which is sent back while the rest lands (docs/adr/0068).
+//! beside it. Changes land on a local bare repo in a round through its
+//! pairing tree (docs/adr/0082) — each pair fast-gated, the pairs of a level
+//! at once, the root merged onto the target tip and gated whole once, the
+//! target fast-forwarded through one candidate per change in order, and the
+//! forge told each landed. A red pair sends its later-asked change back
+//! while the rest lands; a red root lands nothing and is not bisected.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -15,10 +15,10 @@ use afkconvoy_gate::declared;
 use afkconvoy_gate::gate::GateCommand;
 use afkconvoy_gate::layout::Layout;
 use afkconvoy_gate::run::{self, Git, Settled};
-use afkconvoy_landing::chain::{Chain, Decision, Evidence, Phase, Plain, Process};
+use afkconvoy_landing::chain::{Candidate, Chain, Decision, Evidence, Phase, Plain, Process};
 use afkconvoy_landing::forge::{Change, Forge};
 use afkconvoy_landing::land::{Lander, Outcome};
-use afkconvoy_landing::turn::{self, Declared, Landing};
+use afkconvoy_landing::turn::{self, Declared};
 
 /// A forge that lets every change land and remembers what it was told.
 #[derive(Default)]
@@ -69,9 +69,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
 const DECLARED: &str = "# The repo's gate\n\n```yaml gates\nfast:\n  command: ./gate.sh fast\n  seconds: 60\n  budget_seconds: 30\nslow:\n  command: ./gate.sh slow\n  seconds: 120\n  budget_seconds: 60\n```\n";
 
 /// A scratch repo whose gate notes each run in `ran` — which gate, on which
-/// commit — and whose slow gate is red on a tree that holds `breaks`;
-/// — or any file named `breaks…` — committed and pushed to a bare remote
-/// beside it.
+/// commit — whose slow gate is red on a tree that holds `breaks` — or any
+/// file named `breaks…` — and whose fast gate is red on one that holds both
+/// `red-x` and `red-y`, and notes in `order` when each fast run starts and
+/// ends, a second apart, where `concurrent` is there; committed and pushed
+/// to a bare remote beside it.
 fn scratch(root: &Path) -> (PathBuf, PathBuf) {
     let remote = root.join("remote.git");
     let work = root.join("work");
@@ -85,9 +87,10 @@ fn scratch(root: &Path) -> (PathBuf, PathBuf) {
     std::fs::write(work.join("gate.md"), DECLARED).unwrap();
     // Each run also notes how many worktrees the checkout lists as it runs.
     let script = format!(
-        "#!/bin/sh\necho \"$1 $(git rev-parse HEAD)\" >> {}\necho \"$1 $(git worktree list --porcelain | grep -c '^worktree ')\" >> {}\nif [ \"$1\" = slow ] && ls | grep -q '^breaks'; then echo FAIL; exit 1; fi\necho ok\n",
-        ran.display(),
-        root.join("listed").display()
+        "#!/bin/sh\necho \"$1 $(git rev-parse HEAD)\" >> {ran}\necho \"$1 $(git worktree list --porcelain | grep -c '^worktree ')\" >> {listed}\nif [ \"$1\" = fast ] && [ -e {root}/concurrent ]; then echo start >> {root}/order; sleep 1; echo end >> {root}/order; fi\nif [ \"$1\" = fast ] && [ -e red-x ] && [ -e red-y ]; then echo FAIL; exit 1; fi\nif [ \"$1\" = slow ] && ls | grep -q '^breaks'; then echo FAIL; exit 1; fi\necho ok\n",
+        ran = ran.display(),
+        listed = root.join("listed").display(),
+        root = root.display(),
     );
     std::fs::write(work.join("gate.sh"), script).unwrap();
     let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
@@ -115,13 +118,7 @@ fn change(work: &Path, number: u64, source: &str, file: &str) -> Change {
 fn declared(work: &Path, commit: &str) -> Result<Declared, String> {
     let text = git(work, &["show", &format!("{commit}:gate.md")]);
     let gates = declared::gates(&text, 180, None).map_err(|fault| fault.to_string())?;
-    // This program's config: a line of its own says how its rounds land.
-    let landing = if text.lines().any(|line| line == "landing: batch") {
-        Landing::Batch
-    } else {
-        Landing::PerCandidate
-    };
-    Ok(Declared { whole: "./gate.sh".into(), seconds: 180, gates, landing })
+    Ok(Declared { whole: "./gate.sh".into(), seconds: 180, gates })
 }
 
 /// The kind of machine every gate here runs on.
@@ -192,8 +189,7 @@ fn rewrite(work: &Path, edit: impl FnOnce(&mut Chain)) {
 
 /// The chain holds no two valid candidates of one change.
 fn one_each(chain: &Chain) {
-    let mut valid: Vec<u64> =
-        chain.candidates.iter().filter(|c| c.valid()).map(|c| c.change).collect();
+    let mut valid: Vec<u64> = chain.chained().filter(|c| c.valid()).map(|c| c.change).collect();
     let all = valid.len();
     valid.sort_unstable();
     valid.dedup();
@@ -209,8 +205,18 @@ fn runs(ran: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The candidates of the chain, without the pairs beside it.
+fn chained(chain: &Chain) -> Vec<Candidate> {
+    chain.chained().cloned().collect()
+}
+
+/// The pairs of the round's pairing trees the chain records.
+fn paired(chain: &Chain) -> Vec<Candidate> {
+    chain.candidates.iter().filter(|c| c.is_pair()).cloned().collect()
+}
+
 #[test]
-fn two_changes_land_in_one_round_with_one_slow_gate_at_its_tip() {
+fn two_changes_land_in_one_round_through_one_pair_and_one_whole_gate() {
     let root = tempfile::tempdir().unwrap();
     let (work, ran) = scratch(root.path());
     let base = git(&work, &["rev-parse", "main"]);
@@ -224,28 +230,30 @@ fn two_changes_land_in_one_round_with_one_slow_gate_at_its_tip() {
     let outcomes = lander.land(&[a, b]).unwrap();
 
     let chain = recorded(&work);
-    let [first, second] = &chain.candidates[..] else { panic!("{chain:?}") };
+    let [first, second] = &chained(&chain)[..] else { panic!("{chain:?}") };
+    let [pair] = &paired(&chain)[..] else { panic!("{chain:?}") };
     assert_eq!(
         outcomes,
         [(1, Outcome::Landed(first.commit.clone())), (2, Outcome::Landed(second.commit.clone()))]
     );
-    assert!(chain.candidates.iter().all(|c| c.phase == Phase::Landed && c.stopped));
-    // Both fast-green, and one slow gate, at the round's tip.
+    assert!(chained(&chain).iter().all(|c| c.phase == Phase::Landed && c.stopped && c.batch));
+    // The pair joins the two heads, and its fast gate ran; the root merged
+    // onto the tip holds the pair's tree, so the whole gate's fast part is
+    // the pair's run, reused (docs/adr/0069), and the slow part runs once.
+    let parents = |commit: &str| git(&work, &["show", "-s", "--format=%P", commit]);
+    assert_eq!(parents(&pair.commit), format!("{} {}", heads.0, heads.1));
+    assert_eq!(pair.change, 2, "the later-asked PR's turn gates it");
+    assert_eq!(pair.tree, second.tree);
     assert_eq!(
         runs(&ran),
-        [
-            ("fast".to_string(), first.commit.clone()),
-            ("fast".to_string(), second.commit.clone()),
-            ("slow".to_string(), second.commit.clone()),
-        ]
+        [("fast".to_string(), pair.commit.clone()), ("slow".to_string(), second.commit.clone())]
     );
-    assert!(first.slow.is_some() && !first.slowed && second.slowed);
+    assert!(!first.slowed && second.slowed);
     // The target fast-forwarded through both candidates, in order: each a
     // merge of its change's original head onto the one before it.
     git(&work, &["fetch", "--quiet", "origin"]);
     let tip = git(&work, &["rev-parse", "origin/main"]);
     assert_eq!(tip, second.commit);
-    let parents = |commit: &str| git(&work, &["show", "-s", "--format=%P", commit]);
     assert_eq!(parents(&second.commit), format!("{} {}", first.commit, heads.1));
     assert_eq!(parents(&first.commit), format!("{base} {}", heads.0));
     assert_eq!(git(&work, &["show", "-s", "--format=%s", &first.commit]), "Add a.txt (!1)");
@@ -255,11 +263,13 @@ fn two_changes_land_in_one_round_with_one_slow_gate_at_its_tip() {
         (git(&work, &["rev-parse", "origin/a"]), git(&work, &["rev-parse", "origin/b"])),
         heads
     );
-    assert!(!worktrees.join(&first.id).exists() && !worktrees.join(&second.id).exists());
+    assert!(chain.candidates.iter().all(|c| !worktrees.join(&c.id).exists()));
+    assert_eq!(chain.round, None, "the round closed");
+    assert!(paired(&chain).iter().all(|p| !p.valid()), "its pair ended with it");
 }
 
 #[test]
-fn a_candidate_s_worktree_goes_as_its_gate_run_ends_and_a_round_adds_one_again() {
+fn a_candidate_s_worktree_goes_as_its_gate_run_ends() {
     let root = tempfile::tempdir().unwrap();
     let (work, _) = scratch(root.path());
     let a = change(&work, 1, "a", "a.txt");
@@ -269,13 +279,10 @@ fn a_candidate_s_worktree_goes_as_its_gate_run_ends_and_a_round_adds_one_again()
 
     lander(&work, &worktrees, &forge).land(&[a, b]).unwrap();
 
-    // Every run, the second candidate's fast gate and the round's slow gate
-    // among them, saw the checkout and its own worktree alone: the first
-    // candidate's went as its fast gate ended, green, and the second's as
-    // its fast gate did, before the round added one again for its slow gate
-    // (sunfmin/control#1063).
+    // Every run, the pair's fast gate and the root's slow gate, saw the
+    // checkout and its own worktree alone (sunfmin/control#1063).
     let listed = std::fs::read_to_string(root.path().join("listed")).unwrap();
-    assert_eq!(listed, "fast 2\nfast 2\nslow 2\n");
+    assert_eq!(listed, "fast 2\nslow 2\n");
     let chain = recorded(&work);
     assert!(chain.candidates.iter().all(|c| !Path::new(&c.worktree).exists()));
     let all = git(&work, &["worktree", "list", "--porcelain"]);
@@ -283,11 +290,11 @@ fn a_candidate_s_worktree_goes_as_its_gate_run_ends_and_a_round_adds_one_again()
 }
 
 #[test]
-fn a_candidate_whose_tree_is_green_on_record_lands_without_a_second_fast_gate() {
+fn a_root_whose_tree_is_green_on_record_runs_no_second_fast_gate() {
     let root = tempfile::tempdir().unwrap();
     let (work, ran) = scratch(root.path());
     // The change's head already holds the target's tip, and its fast gate
-    // ran green on it: its candidate's tree is that head's.
+    // ran green on it: the root merged onto the tip has that head's tree.
     let a = change(&work, 1, "a", "a.txt");
     let head = git(&work, &["rev-parse", "a"]);
     git(&work, &["checkout", "--quiet", "a"]);
@@ -297,40 +304,51 @@ fn a_candidate_whose_tree_is_green_on_record_lands_without_a_second_fast_gate() 
     let worker = run::gate(&checkout, &fast, ("worker-host", MACHINE), now(), limit, &[]).unwrap();
     assert!(matches!(worker.settled, Settled::Written { not_recorded: None, .. }), "{worker:?}");
     git(&work, &["checkout", "--quiet", "main"]);
-    let b = change(&work, 2, "b", "b.txt");
     let forge = Fake::default();
     let worktrees = root.path().join("candidates");
 
-    let outcomes = lander(&work, &worktrees, &forge).land(&[a, b]).unwrap();
+    let outcomes = lander(&work, &worktrees, &forge).land(std::slice::from_ref(&a)).unwrap();
 
     let chain = recorded(&work);
-    let [first, second] = &chain.candidates[..] else { panic!("{chain:?}") };
-    assert_eq!(
-        outcomes,
-        [(1, Outcome::Landed(first.commit.clone())), (2, Outcome::Landed(second.commit.clone()))]
-    );
-    assert_eq!(first.tree, git(&work, &["rev-parse", &format!("{head}^{{tree}}")]));
-    // The first candidate's fast gate is the worker's run, reused: it did not run again.
-    assert_eq!(
-        runs(&ran),
-        [
-            ("fast".to_string(), head),
-            ("fast".to_string(), second.commit.clone()),
-            ("slow".to_string(), second.commit.clone()),
-        ]
-    );
-    let evidence = first.result.as_ref().expect("its evidence");
+    let [only] = &chained(&chain)[..] else { panic!("{chain:?}") };
+    assert!(paired(&chain).is_empty(), "a round of one is its own root");
+    assert_eq!(outcomes, [(1, Outcome::Landed(only.commit.clone()))]);
+    assert_eq!(only.tree, git(&work, &["rev-parse", &format!("{head}^{{tree}}")]));
+    // Its fast gate is the worker's run, reused: only the slow gate ran.
+    assert_eq!(runs(&ran), [("fast".to_string(), head), ("slow".to_string(), only.commit.clone())]);
+    let evidence = only.result.as_ref().expect("its evidence");
     assert!(evidence.green(), "{evidence:?}");
-    let reused = evidence.reused.as_ref().expect("its record says it reused the run");
+
+    // Asked again with its whole gate on record, nothing runs at all.
+    let b = change(&work, 2, "b", "b.txt");
+    git(&work, &["checkout", "--quiet", "b"]);
+    git(&work, &["merge", "--quiet", "--no-edit", "origin/main"]);
+    git(&work, &["push", "--quiet", "origin", "b"]);
+    git(&work, &["checkout", "--quiet", "--detach", "b"]);
+    let whole = GateCommand::new("./gate.sh");
+    for gate in [fast, GateCommand::new("./gate.sh slow")] {
+        run::gate(&checkout, &gate, ("worker-host", MACHINE), now(), limit, &[]).unwrap();
+    }
+    let tree = afkconvoy_gate::gate::Tree::named(&git(&work, &["rev-parse", "HEAD^{tree}"]));
+    let parts = (&whole, &GateCommand::new("./gate.sh fast"), &GateCommand::new("./gate.sh slow"));
+    let b_head = git(&work, &["rev-parse", "HEAD"]);
+    assert_eq!(run::record_whole(&checkout, &tree, &b_head, parts, &[], now()).unwrap(), None);
+    git(&work, &["checkout", "--quiet", "main"]);
+    let before = runs(&ran).len();
+
+    let outcomes = lander(&work, &worktrees, &forge).land(std::slice::from_ref(&b)).unwrap();
+
+    assert!(matches!(outcomes[..], [(2, Outcome::Landed(_))]), "{outcomes:?}");
+    assert_eq!(runs(&ran).len(), before, "the whole gate's run on record answered");
+    let chain = recorded(&work);
+    let last = chained(&chain).pop().unwrap();
+    let reused = last.result.as_ref().and_then(|e| e.reused.as_ref()).expect("reused");
     assert_eq!(reused.host.as_deref(), Some("worker-host"), "it names the run it stands on");
     assert_eq!(reused.machine.as_deref(), Some(MACHINE));
-    assert_eq!(evidence.command.as_deref(), Some("./gate.sh fast"));
-    assert_eq!(evidence.head.as_deref(), Some(first.commit.as_str()));
-    assert!(second.result.as_ref().unwrap().reused.is_none(), "the slow gate ran");
 }
 
 #[test]
-fn a_red_round_lands_nothing_and_cancels_the_chain() {
+fn a_red_root_lands_nothing_and_is_not_bisected() {
     let root = tempfile::tempdir().unwrap();
     let (work, ran) = scratch(root.path());
     let base = git(&work, &["rev-parse", "main"]);
@@ -345,13 +363,14 @@ fn a_red_round_lands_nothing_and_cancels_the_chain() {
     assert_eq!(
         outcomes,
         [(1, Outcome::Decided(Decision::RoundRed)), (2, Outcome::Decided(Decision::Red))],
-        "the round is not split: its tip keeps the failure"
+        "the round is not split: its last-asked PR keeps the failure"
     );
     let chain = recorded(&work);
     assert!(chain.candidates.iter().all(|c| !c.valid()), "{chain:?}");
-    assert_eq!(chain.candidates[0].cancelled_by.as_ref(), Some(&chain.candidates[1].id));
+    let [first, last] = &chained(&chain)[..] else { panic!("{chain:?}") };
+    assert_eq!(first.cancelled_by.as_ref(), Some(&last.id));
     let gates: Vec<String> = runs(&ran).into_iter().map(|(gate, _)| gate).collect();
-    assert_eq!(gates, ["fast", "fast", "slow"]);
+    assert_eq!(gates, ["fast", "slow"], "the pair's fast gate, the root's slow gate once");
     git(&work, &["fetch", "--quiet", "origin"]);
     assert_eq!(git(&work, &["rev-parse", "origin/main"]), base, "nothing landed");
     assert!(forge.landed.borrow().is_empty());
@@ -378,7 +397,7 @@ fn landed_files(work: &Path) -> Vec<String> {
     let listed = git(work, &["ls-tree", "--name-only", "origin/main"]);
     listed
         .lines()
-        .filter(|f| f.starts_with("file-") || f.starts_with("breaks"))
+        .filter(|f| f.starts_with("file-") || f.starts_with("breaks") || f.starts_with("red-"))
         .map(String::from)
         .collect()
 }
@@ -390,51 +409,71 @@ fn ended(outcomes: Vec<(u64, Outcome<String>)>) -> Vec<(u64, Option<Decision>)> 
         .map(|(number, outcome)| match outcome {
             Outcome::Landed(_) => (number, Some(Decision::Landed)),
             Outcome::Decided(decision) => (number, Some(decision)),
+            Outcome::Conflict => (number, None),
             other => panic!("change {number}: {other:?}"),
         })
         .collect()
 }
 
+/// Four ready, mutually clean changes: two pairs, fast-gated at once, then
+/// their pair, then the root merged onto the tip, gated whole once; all four
+/// land in one fast-forward, and the forge is told each landed.
 #[test]
-fn a_green_batch_round_lands_on_one_fast_gate_and_one_slow_gate_at_its_tip() {
+fn four_clean_changes_pair_twice_gate_their_pair_and_land_in_one_fast_forward() {
     let root = tempfile::tempdir().unwrap();
     let (work, ran) = scratch(root.path());
+    let base = git(&work, &["rev-parse", "main"]);
     let asked = changes(&work, 4, &[]);
     let forge = Fake::default();
     let worktrees = root.path().join("candidates");
-    let lander = lander(&work, &worktrees, &forge);
+    std::fs::write(root.path().join("concurrent"), "").unwrap();
 
-    // The repo declares no batch landing: its caller asks for one, for this
-    // round, with no commit to the repo.
-    let outcomes = lander.land_with(&asked, Some(Landing::Batch)).unwrap();
+    let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
 
-    let chain = recorded(&work);
-    let tip = chain.candidates.last().unwrap();
-    assert_eq!(chain.candidates.len(), 4);
-    assert!(chain.candidates.iter().all(|c| c.phase == Phase::Landed && c.batch));
-    assert_eq!(
-        runs(&ran),
-        [("fast".to_string(), tip.commit.clone()), ("slow".to_string(), tip.commit.clone())]
-    );
     assert_eq!(ended(outcomes), (1..=4).map(|n| (n, Some(Decision::Landed))).collect::<Vec<_>>());
+    let chain = recorded(&work);
+    let pairs = paired(&chain);
+    let levels: Vec<(u32, u64)> =
+        pairs.iter().map(|p| (p.pair.as_ref().unwrap().level, p.change)).collect();
+    assert_eq!(levels, [(0, 2), (0, 4), (1, 4)], "two pairs, then their pair");
+    // The two pairs of level 0 gated at once: both started before either ended.
+    let order = std::fs::read_to_string(root.path().join("order")).unwrap();
+    assert!(order.starts_with("start\nstart\nend\nend\n"), "{order}");
+    let chained = chained(&chain);
+    let tip = chained.last().unwrap();
+    assert_eq!(chained.len(), 4);
+    assert!(chained.iter().all(|c| c.phase == Phase::Landed && c.batch));
+    let gates: Vec<(String, String)> = runs(&ran);
+    let slow: Vec<&(String, String)> = gates.iter().filter(|(g, _)| g == "slow").collect();
+    assert_eq!(slow, [&("slow".to_string(), tip.commit.clone())], "gated whole once");
+    assert_eq!(gates.len(), 4, "three pairs' fast gates, the root's reused, one slow: {gates:?}");
     git(&work, &["fetch", "--quiet", "origin"]);
     assert_eq!(git(&work, &["rev-parse", "origin/main"]), tip.commit, "one fast-forward");
+    let history = git(&work, &["rev-list", "--first-parent", &format!("{base}..origin/main")]);
+    assert_eq!(history.lines().count(), 4, "one merge commit for each change");
     let told: Vec<u64> = forge.landed.borrow().iter().map(|(n, _)| *n).collect();
     assert_eq!(told, [1, 2, 3, 4]);
     assert!(forge.sent_back.borrow().is_empty());
 }
 
+/// A pair red on its fast gate stops no other pair: its later-asked change
+/// is sent back with the red run, its earlier one goes up unpaired, and the
+/// rest of the round lands.
 #[test]
-fn a_red_batch_round_is_bisected_to_its_red_change_which_is_sent_back_while_the_rest_lands() {
+fn a_red_pair_sends_its_later_change_back_and_the_rest_of_the_round_lands() {
     let root = tempfile::tempdir().unwrap();
-    let (work, ran) = scratch(root.path());
-    let base = git(&work, &["rev-parse", "main"]);
-    let asked = changes(&work, 4, &[2]);
+    let (work, _) = scratch(root.path());
+    // Each of the first two passes alone; together they break the fast gate.
+    let asked = vec![
+        change(&work, 1, "change-1", "red-x"),
+        change(&work, 2, "change-2", "red-y"),
+        change(&work, 3, "change-3", "file-3.txt"),
+        change(&work, 4, "change-4", "file-4.txt"),
+    ];
     let forge = Fake::default();
     let worktrees = root.path().join("candidates");
-    let lander = lander(&work, &worktrees, &forge);
 
-    let outcomes = lander.land_with(&asked, Some(Landing::Batch)).unwrap();
+    let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
 
     assert_eq!(
         ended(outcomes),
@@ -445,76 +484,62 @@ fn a_red_batch_round_is_bisected_to_its_red_change_which_is_sent_back_while_the_
             (4, Some(Decision::Landed)),
         ]
     );
-    // The tip red, then the middle candidate red, then the one before it
-    // green: three gates, ceil(log2 4)+1, find the red one; the rebuilt
-    // round's tip is the fourth.
-    let slow: Vec<String> =
-        runs(&ran).into_iter().filter(|(gate, _)| gate == "slow").map(|(_, c)| c).collect();
-    assert_eq!(slow.len(), 4, "{slow:?}");
     let sent = forge.sent_back.borrow();
     let [(2, Some(run))] = &sent[..] else { panic!("{sent:?}") };
     assert!(run.excerpt.iter().any(|line| line == "FAIL"), "sent back with its red run");
-    assert_eq!(landed_files(&work), ["file-1.txt", "file-3.txt", "file-4.txt"]);
-    // What landed is one fast-forward chain from the base, each candidate a
-    // merge onto the one before it, the first green prefix landed first.
-    let history = git(&work, &["rev-list", "--first-parent", &format!("{base}..origin/main")]);
-    assert_eq!(history.lines().count(), 3);
-    assert!(forge.landed.borrow().iter().map(|(n, _)| *n).eq([1, 3, 4]));
+    assert_eq!(landed_files(&work), ["file-3.txt", "file-4.txt", "red-x"]);
+    let chain = recorded(&work);
+    let levels: Vec<(u32, Vec<u64>, Vec<u64>)> = paired(&chain)
+        .iter()
+        .map(|p| {
+            let q = p.pair.as_ref().unwrap();
+            (q.level, q.first.clone(), q.second.clone())
+        })
+        .collect();
+    assert_eq!(
+        levels,
+        [(0, vec![1], vec![2]), (0, vec![3], vec![4]), (1, vec![1], vec![3, 4])],
+        "1 went up unpaired, and paired with 3 and 4"
+    );
 }
 
+/// An odd change goes up a level unpaired; one that merges cleanly with no
+/// node of its level leaves the round, and the next round finds it
+/// conflicting with the target.
 #[test]
-fn a_batch_round_with_two_red_changes_sends_both_back_and_lands_the_rest() {
+fn an_odd_change_goes_up_unpaired_and_one_clean_with_none_leaves_for_the_next_round() {
     let root = tempfile::tempdir().unwrap();
     let (work, _) = scratch(root.path());
-    let asked = changes(&work, 5, &[2, 4]);
-    let forge = Fake::default();
-    let worktrees = root.path().join("candidates");
-    let lander = lander(&work, &worktrees, &forge);
-
-    let outcomes = lander.land_with(&asked, Some(Landing::Batch)).unwrap();
-
-    let decided = ended(outcomes);
-    assert_eq!(
-        decided,
-        [
-            (1, Some(Decision::Landed)),
-            (2, Some(Decision::Red)),
-            (3, Some(Decision::Landed)),
-            (4, Some(Decision::Red)),
-            (5, Some(Decision::Landed)),
-        ]
-    );
-    let sent: Vec<u64> = forge.sent_back.borrow().iter().map(|(n, _)| *n).collect();
-    assert_eq!(sent, [2, 4]);
-    assert_eq!(landed_files(&work), ["file-1.txt", "file-3.txt", "file-5.txt"]);
-}
-
-#[test]
-fn a_repo_whose_config_says_batch_lands_its_rounds_as_batch_rounds() {
-    let root = tempfile::tempdir().unwrap();
-    let (work, ran) = scratch(root.path());
-    std::fs::write(work.join("gate.md"), format!("{DECLARED}\nlanding: batch\n")).unwrap();
-    git(&work, &["commit", "--quiet", "-am", "land in batch rounds"]);
-    git(&work, &["push", "--quiet", "origin", "main"]);
     let asked = changes(&work, 3, &[]);
     let forge = Fake::default();
     let worktrees = root.path().join("candidates");
-    let lander = lander(&work, &worktrees, &forge);
 
-    lander.land(&asked).unwrap();
+    let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
 
-    let gates: Vec<String> = runs(&ran).into_iter().map(|(gate, _)| gate).collect();
-    assert_eq!(gates, ["fast", "slow"], "the tip alone");
-    assert_eq!(landed_files(&work), ["file-1.txt", "file-2.txt", "file-3.txt"]);
-    // Asked per candidate for a round, the repo's batch landing gives way.
-    let more = vec![
+    assert_eq!(ended(outcomes), (1..=3).map(|n| (n, Some(Decision::Landed))).collect::<Vec<_>>());
+    let chain = recorded(&work);
+    let levels: Vec<(u32, Vec<u64>, Vec<u64>)> = paired(&chain)
+        .iter()
+        .map(|p| {
+            let q = p.pair.as_ref().unwrap();
+            (q.level, q.first.clone(), q.second.clone())
+        })
+        .collect();
+    assert_eq!(levels, [(0, vec![1], vec![2]), (1, vec![1, 2], vec![3])]);
+
+    // 6 conflicts with 4: it pairs with none, and leaves the round.
+    let asked = vec![
         change(&work, 4, "change-4", "file-4.txt"),
         change(&work, 5, "change-5", "file-5.txt"),
+        change(&work, 6, "change-6", "file-4.txt"),
     ];
-    std::fs::remove_file(&ran).unwrap();
-    lander.land_with(&more, Some(Landing::PerCandidate)).unwrap();
-    let gates: Vec<String> = runs(&ran).into_iter().map(|(gate, _)| gate).collect();
-    assert_eq!(gates, ["fast", "fast", "slow"]);
+    let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
+
+    assert_eq!(
+        ended(outcomes),
+        [(4, Some(Decision::Landed)), (5, Some(Decision::Landed)), (6, None)],
+        "6 conflicts with the target in the next round"
+    );
 }
 
 /// What the crate depends on: Flux's attributes, serde and the gate crate —
@@ -552,6 +577,7 @@ fn its_public_api_names_no_fleet_concept() {
         include_str!("../src/forge.rs"),
         include_str!("../src/land.rs"),
         include_str!("../src/lease.rs"),
+        include_str!("../src/pairing.rs"),
         include_str!("../src/turn.rs"),
     ];
     for source in sources {
@@ -699,8 +725,12 @@ fn the_chain_never_holds_two_valid_candidates_of_one_change() {
 
     let chain = recorded(&work);
     one_each(&chain);
-    let landed = |id: &str| chain.candidates.iter().find(|c| c.id == id).unwrap().commit.clone();
-    assert_eq!(outcomes, [(1, Outcome::Landed(landed(&a2))), (2, Outcome::Landed(landed(&b2)))]);
+    let landed = |n: u64| {
+        let c = chain.chained().find(|c| c.change == n && c.phase == Phase::Landed);
+        let c = c.unwrap_or_else(|| panic!("{outcomes:?} {chain:#?}"));
+        c.commit.clone()
+    };
+    assert_eq!(outcomes, [(1, Outcome::Landed(landed(1))), (2, Outcome::Landed(landed(2)))]);
     assert_eq!(landed_files(&work), ["file-1.txt", "file-2.txt"]);
 }
 
@@ -744,14 +774,14 @@ fn a_change_whose_source_is_a_full_ref_lands_as_a_branch_s_does() {
     let outcomes = lander(&work, &worktrees, &forge).land(&[a, b]).unwrap();
 
     let chain = recorded(&work);
-    let [first, second] = &chain.candidates[..] else { panic!("{chain:?}") };
+    let [first, second] = &chained(&chain)[..] else { panic!("{chain:?}") };
     assert_eq!(first.branch, "refs/pull/7/head");
     assert_eq!(second.branch, "b", "a bare source is still a branch");
     assert_eq!(
         outcomes,
         [(7, Outcome::Landed(first.commit.clone())), (8, Outcome::Landed(second.commit.clone()))]
     );
-    assert_eq!(runs(&ran).len(), 3, "both fast-gated, one slow gate at the tip");
+    assert_eq!(runs(&ran).len(), 2, "their pair fast-gated, one slow gate at the root");
     assert_eq!(landed_files(&work), ["file-1.txt", "file-2.txt"]);
     assert_eq!(git(&work, &["ls-remote", "origin", "refs/pull/7/head"]), head);
     assert!(
@@ -832,47 +862,44 @@ fn refuse_main(work: &Path, reason: Option<&str>) {
 /// chain, and the next run whose push takes lands it, gating nothing again.
 #[test]
 fn a_publication_whose_push_is_refused_is_unpublished_with_git_s_error_and_lands_at_the_next_run() {
-    for landing in [Landing::PerCandidate, Landing::Batch] {
-        let root = tempfile::tempdir().unwrap();
-        let (work, ran) = scratch(root.path());
-        let asked = changes(&work, 2, &[]);
-        let base = git(&work, &["rev-parse", "main"]);
-        let forge = Fake::default();
-        let worktrees = root.path().join("candidates");
-        let lander = lander(&work, &worktrees, &forge);
-        refuse_main(&work, Some("main is not yours to push"));
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    let asked = changes(&work, 2, &[]);
+    let base = git(&work, &["rev-parse", "main"]);
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    let lander = lander(&work, &worktrees, &forge);
+    refuse_main(&work, Some("main is not yours to push"));
 
-        let outcomes = lander.land_with(&asked, Some(landing)).unwrap();
+    let outcomes = lander.land(&asked).unwrap();
 
-        assert_eq!(outcomes.len(), 2, "{landing:?}: {outcomes:?}");
-        for (_, outcome) in &outcomes {
-            let Outcome::Unpublished(said) = outcome else { panic!("{landing:?}: {outcomes:?}") };
-            assert!(said.contains("main is not yours to push"), "{landing:?}: {said}");
-        }
-        let chain = recorded(&work);
-        assert!(chain.candidates.iter().all(|c| c.valid()), "{chain:?}");
-        let tip = chain.candidates.last().unwrap().clone();
-        assert!(chain.ripe(&tip.id, &base), "still ripe: {chain:?}");
-        git(&work, &["fetch", "--quiet", "origin"]);
-        assert_eq!(git(&work, &["rev-parse", "origin/main"]), base, "nothing landed");
-        assert!(forge.landed.borrow().is_empty());
-        let gated = runs(&ran);
-
-        refuse_main(&work, None);
-        let outcomes = lander.land_with(&asked, Some(landing)).unwrap();
-
-        let chain = recorded(&work);
-        let commits: Vec<String> = chain.candidates.iter().map(|c| c.commit.clone()).collect();
-        assert_eq!(chain.candidates.len(), 2, "no second candidate: {chain:?}");
-        assert_eq!(
-            outcomes,
-            [(1, Outcome::Landed(commits[0].clone())), (2, Outcome::Landed(commits[1].clone()))],
-            "{landing:?}"
-        );
-        assert_eq!(runs(&ran), gated, "{landing:?}: nothing gated again");
-        git(&work, &["fetch", "--quiet", "origin"]);
-        assert_eq!(git(&work, &["rev-parse", "origin/main"]), tip.commit);
-        let told: Vec<u64> = forge.landed.borrow().iter().map(|(n, _)| *n).collect();
-        assert_eq!(told, [1, 2]);
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    for (_, outcome) in &outcomes {
+        let Outcome::Unpublished(said) = outcome else { panic!("{outcomes:?}") };
+        assert!(said.contains("main is not yours to push"), "{said}");
     }
+    let chain = recorded(&work);
+    assert!(chained(&chain).iter().all(|c| c.valid()), "{chain:?}");
+    let tip = chained(&chain).last().unwrap().clone();
+    assert!(chain.ripe(&tip.id, &base), "still ripe: {chain:?}");
+    git(&work, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(&work, &["rev-parse", "origin/main"]), base, "nothing landed");
+    assert!(forge.landed.borrow().is_empty());
+    let gated = runs(&ran);
+
+    refuse_main(&work, None);
+    let outcomes = lander.land(&asked).unwrap();
+
+    let chain = recorded(&work);
+    let commits: Vec<String> = chained(&chain).iter().map(|c| c.commit.clone()).collect();
+    assert_eq!(commits.len(), 2, "no second candidate: {chain:?}");
+    assert_eq!(
+        outcomes,
+        [(1, Outcome::Landed(commits[0].clone())), (2, Outcome::Landed(commits[1].clone()))]
+    );
+    assert_eq!(runs(&ran), gated, "nothing gated again");
+    git(&work, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(&work, &["rev-parse", "origin/main"]), tip.commit);
+    let told: Vec<u64> = forge.landed.borrow().iter().map(|(n, _)| *n).collect();
+    assert_eq!(told, [1, 2]);
 }
