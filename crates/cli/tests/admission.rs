@@ -13,14 +13,12 @@ use std::time::{Duration, Instant};
 /// A load no host of any number of cores is under.
 const PAST_ANY: &str = "100000.00";
 
-#[test]
-fn queue_load_admits_but_load_outside_the_queue_holds() {
-    let world = backlog(&[3, 5]);
-    let _runner = world.host_held();
-    world.busy(PAST_ANY);
+/// A command of the exclusive queue, a `sh` that sleeps until it is
+/// dropped, running once `exclusive` was granted its turn. Its whole tree
+/// ends with the test, the `sh` and its `sleep` too, and not `exclusive`
+/// alone (sunfmin/control#508).
+fn queued(world: &World) -> common::FixtureProcess {
     let marker = world.root.join("running");
-    // Its whole tree ends with the test, the `sh` and its `sleep` too, and
-    // not `exclusive` alone (sunfmin/control#508).
     let command = common::FixtureProcess::spawn(
         world
             .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
@@ -34,17 +32,59 @@ fn queue_load_admits_but_load_outside_the_queue_holds() {
         assert!(start.elapsed() < Duration::from_secs(10));
         std::thread::sleep(Duration::from_millis(20));
     }
+    command
+}
+
+/// A load past admission's share of this host's cores, as `sysctl` says it:
+/// three times them, where twice holds.
+fn past_the_share() -> String {
+    let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get());
+    format!("{}.00", 3 * cores)
+}
+
+#[test]
+fn a_queue_busy_over_the_last_minute_and_idle_now_holds_its_lagging_load_and_admits() {
+    let world = backlog(&[3, 5]);
     let processes = world.root.join("admission-processes");
-    std::fs::write(&processes, format!("{} 1 0.0\n999999 {} 100.0\n", command.id(), command.id()))
-        .unwrap();
+    // Until the queue's work is said busy, no process takes any CPU.
+    std::fs::write(&processes, "999999 1 0.0\n").unwrap();
+    let _runner = world.host_held();
+    world.busy(PAST_ANY);
+    let command = queued(&world);
+    // Its tests start programs, which the host's scanning daemons check.
+    let busy = format!(
+        "{} 1 0.0\n999999 {} 60.0\n999997 1 40.0 /usr/libexec/syspolicyd\n",
+        command.id(),
+        command.id()
+    );
+    std::fs::write(&processes, busy).unwrap();
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(doctor["host"]["admission"]["reading"]["queue_load"], 100000.0, "{doctor}");
+    assert_eq!(doctor["host"]["admission"]["reading"]["other_load"], 0.0, "{doctor}");
+    // Between two of its phases the gate's tree takes nothing for a moment,
+    // while the load it made lags on, and something else takes a little.
+    world.busy(&past_the_share());
+    let idle = format!("{} 1 0.0\n999998 1 5.0\n", command.id());
+    std::fs::write(&processes, idle).unwrap();
+    std::thread::sleep(Duration::from_secs(1));
     let admitted = tick(&world, "1000");
     assert_eq!(dispatched(&admitted), [3, 5], "{admitted}");
-    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
-    assert_eq!(doctor["host"]["admission"]["reading"]["queue_load"], 100000.0);
-    assert_eq!(doctor["host"]["admission"]["reading"]["other_load"], 0.0);
+    drop(command);
+}
+
+#[test]
+fn load_outside_the_queue_throughout_holds_while_the_queue_runs() {
+    let world = backlog(&[3]);
+    let processes = world.root.join("admission-processes");
+    std::fs::write(&processes, "999998 1 100.0\n").unwrap();
+    let _runner = world.host_held();
+    world.busy(&past_the_share());
+    let command = queued(&world);
     std::fs::write(&processes, format!("{} 1 0.0\n999998 1 100.0\n", command.id())).unwrap();
-    world.issue(7, &["ready-for-agent"]);
-    let held = tick(&world, "1090");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(doctor["host"]["admission"]["reading"]["queue_load"], 0.0, "{doctor}");
+    std::thread::sleep(Duration::from_secs(1));
+    let held = tick(&world, "1000");
     assert!(dispatched(&held).is_empty(), "{held}");
     assert!(held["held_back_by"].to_string().contains("load"), "{held}");
     drop(command);

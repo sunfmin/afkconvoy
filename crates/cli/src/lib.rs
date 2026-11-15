@@ -108,6 +108,7 @@ mod process;
 mod process_scope;
 pub mod published;
 pub mod queue;
+pub mod queue_share;
 pub mod recovery;
 pub mod remote;
 mod repair;

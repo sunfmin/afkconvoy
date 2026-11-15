@@ -162,6 +162,9 @@ pub struct Shared {
     pub watch: crate::host_watch::Shared,
     /// The host runner's own CPU time, read once a minute.
     pub own_cpu: crate::own_cpu::Shared,
+    /// The exclusive queue's share of the host's CPU, averaged over the
+    /// minute the load average is (`queue_share`).
+    pub queue_share: crate::queue_share::Shared,
 }
 
 impl Shared {
@@ -173,6 +176,8 @@ impl Shared {
 
     fn checked_now(&self) -> Result<SharedNow> {
         let (exclusive, exclusive_paused) = self.queue.observation()?;
+        // Each reading admission takes is of the share as it is now.
+        self.queue_share.note(&exclusive);
         Ok(SharedNow {
             exclusive,
             exclusive_paused: Some(exclusive_paused),
@@ -181,6 +186,7 @@ impl Shared {
             published: self.published.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             watch: self.watch.running(),
             own_cpu: self.own_cpu.average(),
+            queue_share: self.queue_share.share(),
         })
     }
 
@@ -227,6 +233,11 @@ pub struct SharedNow {
     /// hour (`own_cpu`); `None`: too soon to say, or an older host runner.
     #[serde(default)]
     pub own_cpu: Option<crate::own_cpu::Average>,
+    /// The exclusive queue's share of the host's CPU over the last minute,
+    /// in ten-thousandths (`queue_share`); `None`: it has not run lately,
+    /// or an older host runner did not say.
+    #[serde(default)]
+    pub queue_share: Option<u64>,
 }
 
 /// The afkconvoy installed where the host runner was started from, once that
@@ -1002,9 +1013,16 @@ fn held_host(
     let lock_file = dir.join(LOCK);
     let still_ours = || std::fs::metadata(&lock_file).is_ok_and(|now| identity(&now) == ours);
     let mut left = None;
+    let mut queue_noted = Instant::now();
     while !stop.told() && left.is_none() {
         std::thread::sleep(WATCHED_EVERY);
         runner.shared.own_cpu.note();
+        if queue_noted.elapsed() >= crate::queue_share::NOTED_EVERY {
+            queue_noted = Instant::now();
+            if let Ok((queue, _)) = runner.shared.queue.observation() {
+                runner.shared.queue_share.note(&queue);
+            }
+        }
         if !stop.told() && !still_ours() {
             runner.log.say(
                 "host runner stopping: its lock file is gone, so another host runner may start",

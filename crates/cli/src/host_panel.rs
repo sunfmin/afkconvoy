@@ -120,6 +120,7 @@ impl HostPanel {
 /// during startup and once more for every checkout on the list.
 fn read_host(dir: &Path, shared: &Shared) -> Host {
     let snapshot = shared.now();
-    let readings = Readings::with_queue(&snapshot.exclusive, &snapshot.exclusive_ran);
+    let readings =
+        Readings::with_queue(&snapshot.exclusive, &snapshot.exclusive_ran, snapshot.queue_share);
     Host::read(dir, crate::clock(), Ok(Some(snapshot)), &readings)
 }

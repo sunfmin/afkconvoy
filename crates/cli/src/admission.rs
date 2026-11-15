@@ -56,20 +56,25 @@ impl Readings {
         match crate::host_runner::shared() {
             Ok(shared) => {
                 let shared = shared.unwrap_or_default();
-                Self::with_queue(&shared.exclusive, &shared.exclusive_ran)
+                Self::with_queue(&shared.exclusive, &shared.exclusive_ran, shared.queue_share)
             }
             Err(_) => Self::read(|_| None, None, None),
         }
     }
 
-    /// Reads against the runner's existing queue snapshot. Inside the runner
-    /// an RPC to itself can wait for a server that has not started yet.
-    pub(crate) fn with_queue(queue: &[Ticket], ran: &crate::exclusive::Ran) -> Readings {
+    /// Reads against the runner's existing queue snapshot, and its average
+    /// of the queue's share of the CPU, `share` (`queue_share`). Inside the
+    /// runner an RPC to itself can wait for a server that has not started yet.
+    pub(crate) fn with_queue(
+        queue: &[Ticket],
+        ran: &crate::exclusive::Ran,
+        share: Option<u64>,
+    ) -> Readings {
         let settings = host_settings::of_host().unwrap_or_default();
         let drain = drain_of(queue, ran, settings.lanes(), crate::clock());
         let cap = settings.cap();
         let own = (cap != Cap::default()).then(|| own_use(queue).ok()).flatten();
-        Self::read(|load| queue_load(load, queue).ok(), Some(drain), own)
+        Self::read(|load| queue_load(load, queue, share).ok(), Some(drain), own)
     }
 
     fn read(
@@ -466,11 +471,17 @@ fn own_of(procs: &[crate::hot::Proc], of: &std::collections::HashSet<u32>) -> Ow
     Own { cpu: share / 100, resident }
 }
 
-/// Attribute the one-minute load in proportion to CPU currently used by the
-/// queue's running work, as the exclusive queue finds it in one reading of
-/// the process table. This is an estimate: the kernel exposes no per-tree
-/// load average. On an unreadable queue or process table, subtract nothing.
-fn queue_load(load: u64, queue: &[Ticket]) -> Result<u64> {
+/// Attribute the one-minute load in proportion to the CPU the queue's work
+/// took over the same minute: `averaged`, the host runner's average of its
+/// share in ten-thousandths, where it keeps one (docs/adr/0078); else the
+/// CPU its running work uses now, as the exclusive queue finds it in one
+/// reading of the process table. This is an estimate: the kernel exposes no
+/// per-tree load average. On an unreadable queue or process table, subtract
+/// nothing.
+fn queue_load(load: u64, queue: &[Ticket], averaged: Option<u64>) -> Result<u64> {
+    if let Some(share) = averaged {
+        return Ok(averaged_load(load, share));
+    }
     if !queue.iter().any(Ticket::running) {
         return Ok(0);
     }
@@ -478,6 +489,13 @@ fn queue_load(load: u64, queue: &[Ticket]) -> Result<u64> {
     let work = crate::exclusive::running_work(queue, &procs);
     anyhow::ensure!(work.whole, "queue process table incomplete");
     Ok(share_of(load, &procs, &work.pids))
+}
+
+/// The part of `load` the queue took, by its share of the CPU over the
+/// minute, `share`, in ten-thousandths.
+fn averaged_load(load: u64, share: u64) -> u64 {
+    let share = share.min(crate::queue_share::WHOLE);
+    load.saturating_mul(share) / crate::queue_share::WHOLE
 }
 
 /// The part of `load` that the processes `of` take, by the share of a core
