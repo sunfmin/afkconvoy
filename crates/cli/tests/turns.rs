@@ -45,10 +45,12 @@ fn seed(world: &World) {
     assert_eq!(answer["recorded"], true, "{answer}");
 }
 
-fn workers_waiting(world: &World) -> usize {
-    world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"]
-        .as_array()
-        .map_or(0, |waiting| waiting.iter().filter(|request| request["lane"] == "worker").count())
+/// How many turns wait pending on the candidate chain of `main`: for the
+/// next round (docs/adr/0082).
+fn pending(world: &World) -> usize {
+    let record = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
+    let chain: Value = serde_json::from_str(&record).unwrap_or(Value::Null);
+    chain["pending"].as_array().map_or(0, Vec::len)
 }
 
 #[test]
@@ -67,11 +69,8 @@ fn two_turns_land_in_order_with_a_record_of_each_landed_tree_and_no_line() {
     let a = start(&world, &one, &world.cache(), 1);
     until(|| started.exists());
     let b = start(&world, &two, &world.cache(), 2);
-    until(|| {
-        world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"]
-            .as_array()
-            .is_some_and(|w| w.iter().any(|request| !request["repo_lane"].is_null()))
-    });
+    // It asked during the first's round: it waits for the next.
+    until(|| pending(&world) == 1);
     assert!(!second_started.exists(), "a worker without its turn runs no gate");
     std::fs::write(&release, "").unwrap();
     let (a, b) = (finish(a), finish(b));
@@ -194,7 +193,7 @@ fn two_worker_lanes_bound_candidates_and_leave_capacity_available_across_repos()
     let third = start(&b, &other_repo, &a.cache(), 3);
     until(|| b.root.join("started").exists());
     let second = start(&a, &another, &a.cache(), 2);
-    until(|| workers_waiting(&a) == 1);
+    until(|| pending(&a) == 1);
     assert!(!another.join("held.txt").exists(), "the second turn has not merged yet");
     let doctor = a.afk(&["doctor"]).json;
     assert_eq!(doctor["host"]["settings"]["in_force"]["gate_lanes"], 2);
@@ -248,11 +247,23 @@ fn the_exclusive_bound_ends_the_whole_turn_and_releases_the_next_one() {
     let _runner = world.host_held();
     let first = start(&world, &one, &world.cache(), 1);
     until(|| world.root.join("started").exists());
+    // The next turn waits for the next round, not in the queue; a command
+    // waiting in the queue is what the bound ends the turn for.
     let next = start(&world, &two, &world.cache(), 2);
+    until(|| pending(&world) == 1);
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+    command.env("XDG_CACHE_HOME", world.cache());
+    let queued = command
+        .args(["exclusive", "--", "true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let ended = first.wait_with_output().unwrap();
     assert_eq!(ended.status.code(), Some(124), "{}", String::from_utf8_lossy(&ended.stderr));
     let answer: Value = serde_json::from_slice(&ended.stdout).unwrap();
     assert!(answer["error"].as_str().unwrap().contains("exclusive bound of 1s"), "{answer}");
+    assert!(queued.wait_with_output().unwrap().status.success());
     assert_eq!(finish(next)["outcome"], "merged");
     assert!(!two.join("held.txt").exists(), "the red turn joined nothing");
 }

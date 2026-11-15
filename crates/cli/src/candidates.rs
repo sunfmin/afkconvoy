@@ -1795,6 +1795,12 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 }
                 return Ok(result);
             }
+            // Its answer says what the round's whole gate said of its tree.
+            let chain = read(repo, config)?.chain;
+            let ran = chain.candidates.iter().find(|c| c.id == id).and_then(|c| c.result.clone());
+            if let Some(evidence) = ran {
+                result = answered(&evidence, &result);
+            }
             green_at = std::time::Instant::now();
             continue;
         }
