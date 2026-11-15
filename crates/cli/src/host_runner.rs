@@ -441,6 +441,7 @@ fn about_instance(request: &Request, held: impl FnOnce(&str) -> HeldAs) -> Resul
         | Request::StopAll
         | Request::Checkouts
         | Request::Exclusive { .. }
+        | Request::WholeRepo { .. }
         | Request::Candidate { .. }
         | Request::Shared => {
             bail!("{request:?} is no question about one fleet instance")
@@ -1017,6 +1018,7 @@ fn held_host(
     while !stop.told() && left.is_none() {
         std::thread::sleep(WATCHED_EVERY);
         runner.shared.own_cpu.note();
+        runner.shared.queue.retry();
         if queue_noted.elapsed() >= crate::queue_share::NOTED_EVERY {
             queue_noted = Instant::now();
             if let Ok((queue, _)) = runner.shared.queue.observation() {
@@ -1444,6 +1446,7 @@ impl Runner {
             Request::StopAll => self.stop_all(),
             Request::Checkouts => Ok(self.checkouts()),
             Request::Exclusive { ticket } => return self.shared.queue.answer(ticket),
+            Request::WholeRepo { ticket } => return self.shared.queue.whole_repo(ticket),
             Request::Candidate { pid, validation } => {
                 self.shared.queue.validation(pid, validation);
                 Ok(json!({}))
@@ -2581,6 +2584,7 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
         let answered = match request {
             Request::Version => Ok(json!({})),
             Request::Exclusive { ticket } => return answerer.queue.answer(ticket),
+            Request::WholeRepo { ticket } => return answerer.queue.whole_repo(ticket),
             Request::Candidate { pid, validation } => {
                 answerer.queue.validation(pid, validation);
                 Ok(json!({}))

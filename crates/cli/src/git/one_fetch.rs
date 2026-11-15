@@ -13,8 +13,9 @@
 //! the error until a fetch succeeds.
 //!
 //! The fleet keeps git's own housekeeping off its checkout
-//! (`maintenance_off`) and repacks under the same lock (`housekeep`), so no
-//! repack rewrites the packs a fetch is reading.
+//! (`maintenance_off`) and packs the store itself (`housekeep`), under the
+//! same lock and while the host's exclusive queue holds the repository whole,
+//! so no repack rewrites the packs a fetch, a gate or a land is reading.
 
 use std::fs::File;
 use std::os::fd::AsRawFd;
@@ -43,7 +44,9 @@ const HOUSEKEEP_LIMIT: Duration = Duration::from_secs(600);
 
 /// What git says of a pack it could not take in: the store, or the pack the
 /// remote sent, is corrupt, and fetching it the same way fails the same way.
-const CORRUPT: [&str; 6] = [
+const CORRUPT: [&str; 8] = [
+    "in the commit graph file but not in the object database",
+    "could not load pack",
     "unresolved deltas",
     "invalid index-pack output",
     "index-pack failed",
@@ -150,6 +153,7 @@ pub(crate) fn guarded(
     }
     let mut ran = run(false)?;
     if !ran.ok && corrupt(&ran.stderr) {
+        drop_indexes(common)?;
         ran = run(true)?;
     }
     let file = common.join(FAILING);
@@ -183,6 +187,55 @@ pub(crate) fn guarded(
     anyhow::bail!("git fetch {refname} failed: {error}")
 }
 
+/// Removes the commit-graph and multi-pack-index of the store at `common`
+/// before a corrupt fetch is made again (sunfmin/control#1090). A repack cut
+/// short leaves them naming commits the store lost (`in the commit graph
+/// file but not in the object database`) or a pack that is gone (`could not
+/// load pack`), and every read then trusts them. Both only speed up reads:
+/// git reads each pack's own `.idx` without them, and housekeeping writes
+/// them again from what is there.
+fn drop_indexes(common: &Path) -> Result<()> {
+    let objects = common.join("objects");
+    let (info, pack) = (objects.join("info"), objects.join("pack"));
+    for index in [
+        info.join("commit-graph"),
+        info.join("commit-graphs"),
+        pack.join("multi-pack-index"),
+        pack.join("multi-pack-index.d"),
+    ] {
+        let gone = if index.is_dir() {
+            std::fs::remove_dir_all(&index)
+        } else {
+            std::fs::remove_file(&index)
+        };
+        match gone {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                return Err(err).with_context(|| format!("cannot remove {}", index.display()));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// How many packs a store holds before it is packed, where its
+/// `gc.autoPackLimit` says none: git's own default.
+const PACK_LIMIT: u64 = 50;
+
+/// How many loose objects a store holds before it is packed: git's own
+/// `gc.auto` default.
+const LOOSE: u64 = 6700;
+
+/// The names of the files in `dir`; none where it cannot be read.
+fn names(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect()
+}
+
 /// The git config that keeps git's own housekeeping off a fleet's checkout:
 /// no auto-gc after a fetch, no scheduled maintenance task that repacks.
 pub(crate) const MAINTENANCE_OFF: [(&str, &str); 6] = [
@@ -207,27 +260,70 @@ impl Repo {
         Ok(())
     }
 
-    /// Repacks this repository as git's auto-gc would, under the fetch lock
-    /// and only while nothing fetches: one that holds the lock leaves it to
-    /// a later call. → whether it ran.
+    /// Packs this repository's object store as git's auto-gc would, and
+    /// writes its commit-graph again, at a quiet moment: once it holds more
+    /// packs than `gc.autoPackLimit` or too many loose objects (`packing`),
+    /// under the fetch lock, taken only where no fetch holds it, and while the
+    /// host's exclusive queue holds the repository whole for it — no gate,
+    /// turn or land of it running or waiting (sunfmin/control#1101). One that
+    /// finds any of them leaves it to a later call. → whether it packed.
     pub fn housekeep(&self) -> Result<bool> {
+        self.housekeep_asking(&crate::copies::cache()?)
+    }
+
+    /// `housekeep`, asking the host runner whose socket is in `cache`.
+    pub(crate) fn housekeep_asking(&self, cache: &Path) -> Result<bool> {
+        let Some(limit) = self.packing()? else {
+            return Ok(false);
+        };
         let Some(_lock) = take(self.common_dir()?, false)? else {
             return Ok(false);
         };
+        let (loose, packs) = (format!("gc.auto={LOOSE}"), format!("gc.autoPackLimit={limit}"));
         let args = [
             "-c",
-            "gc.auto=6700",
+            &loose,
             "-c",
-            "gc.autoPackLimit=50",
+            &packs,
             "-c",
             "gc.autoDetach=false",
+            "-c",
+            "gc.writeCommitGraph=true",
             "gc",
             "--auto",
             "--quiet",
         ];
-        let ran = super::run_within(&self.dir, &args, &[], HOUSEKEEP_LIMIT)?;
+        let packed = crate::exclusive::whole_repo(cache, self, "git gc --auto", || {
+            super::run_within(&self.dir, &args, &[], HOUSEKEEP_LIMIT)
+        })?;
+        let Some(ran) = packed else {
+            return Ok(false);
+        };
+        let ran = ran?;
         ensure!(ran.ok, "git gc --auto failed: {}", ran.stderr.trim());
         Ok(true)
+    }
+
+    /// The pack limit this store is packed by, where it is past it or holds
+    /// more loose objects than git's auto-gc lets be (`LOOSE`, counted as git
+    /// counts them, in `objects/17`); `None`: it need not be packed. The
+    /// limit is the repository's `gc.autoPackLimit`, 50 where it says none;
+    /// 0 packs no store for its packs alone, as git's auto-gc does not.
+    fn packing(&self) -> Result<Option<u64>> {
+        let said = self.try_git(&["config", "--get", "gc.autoPackLimit"])?;
+        let limit = said.stdout.trim().parse().unwrap_or(PACK_LIMIT);
+        let objects = self.common_dir()?.join("objects");
+        let packs = names(&objects.join("pack"))
+            .iter()
+            .filter_map(|name| name.strip_suffix(".pack"))
+            .filter(|stem| !objects.join("pack").join(format!("{stem}.keep")).exists())
+            .count() as u64;
+        let loose = names(&objects.join("17"))
+            .iter()
+            .filter(|name| name.len() == 38 && name.bytes().all(|b| b.is_ascii_hexdigit()))
+            .count() as u64;
+        let past = (limit > 0 && packs > limit) || loose > LOOSE.div_ceil(256);
+        Ok(past.then_some(limit))
     }
 
     /// The fetch that keeps failing corrupt in this repository, if one does.
@@ -361,6 +457,35 @@ mod tests {
         assert_eq!(failing_at(store.path()), None);
     }
 
+    /// A fetch that says the store's multi-pack-index names a pack that is
+    /// gone is made again with `--refetch` once that index and the
+    /// commit-graph are dropped (sunfmin/control#1090).
+    #[test]
+    fn a_stale_index_is_dropped_before_the_refetch() {
+        let store = tempfile::tempdir().unwrap();
+        let (info, pack) = (store.path().join("objects/info"), store.path().join("objects/pack"));
+        std::fs::create_dir_all(info.join("commit-graphs")).unwrap();
+        std::fs::create_dir_all(&pack).unwrap();
+        std::fs::write(info.join("commit-graph"), "").unwrap();
+        std::fs::write(pack.join("multi-pack-index"), "").unwrap();
+        let mut asked = vec![];
+        guarded(
+            store.path(),
+            "refs/convoy/candidates/main",
+            100,
+            || Ok(false),
+            |refetch| {
+                asked.push(refetch);
+                Ok(if refetch { ran(true, "") } else { ran(false, "error: could not load pack 0") })
+            },
+        )
+        .unwrap();
+        assert_eq!(asked, [false, true]);
+        assert!(!info.join("commit-graph").exists());
+        assert!(!info.join("commit-graphs").exists());
+        assert!(!pack.join("multi-pack-index").exists());
+    }
+
     /// A second corrupt failure, with `--refetch`, is noted for `doctor`, and
     /// the fetches after it wait out a backoff that grows with each failure;
     /// one that succeeds clears the note.
@@ -424,9 +549,22 @@ mod tests {
         assert_eq!(failing_at(store.path()), None);
     }
 
-    /// Housekeeping does not run while a fetch holds the lock.
+    /// The packs of the store at `common`.
+    fn packs(common: &Path) -> usize {
+        names(&common.join("objects/pack")).iter().filter(|name| name.ends_with(".pack")).count()
+    }
+
+    /// Once a checkout holds more packs than its `gc.autoPackLimit`, it is
+    /// packed only while the host's exclusive queue holds the repository
+    /// whole, never while a gate of it runs or a fetch of it holds the
+    /// lock, and the pack leaves the store whole, with its commit-graph
+    /// written again (sunfmin/control#1101).
     #[test]
-    fn housekeeping_waits_for_no_fetch() {
+    fn a_store_past_its_pack_limit_is_packed_only_while_held_whole_and_no_fetch_runs() {
+        use crate::exclusive::Queue;
+        use crate::runner_socket::{self, Reply, Request};
+        use afkconvoy_core::exclusive::{Gate, Note, Ticket};
+
         let root = tempfile::tempdir().unwrap();
         git(root.path(), &["init", "-q", "-b", "main", "."]);
         let repo = Repo::new(root.path().to_path_buf());
@@ -434,10 +572,87 @@ mod tests {
         for (key, value) in MAINTENANCE_OFF {
             assert_eq!(git(root.path(), &["config", "--local", "--get", key]), value);
         }
-        let common = repo.common_dir().unwrap().to_path_buf();
+        git(root.path(), &["config", "--local", "gc.autoPackLimit", "3"]);
+        for at in 0..5 {
+            std::fs::write(root.path().join("file"), format!("{at}")).unwrap();
+            git(root.path(), &["add", "file"]);
+            let named = ["-c", "user.name=a", "-c", "user.email=a@example.com"];
+            git(root.path(), &[&named[..], &["commit", "-q", "-m", "a change"]].concat());
+            git(root.path(), &["repack", "-d", "-q"]);
+        }
+        let common = std::fs::canonicalize(repo.common_dir().unwrap()).unwrap();
+        assert_eq!(packs(&common), 5);
+
+        // No host runner holds the queue: nothing keeps the repo's gates off.
+        let nobody = tempfile::tempdir().unwrap();
+        assert!(!repo.housekeep_asking(nobody.path()).unwrap());
+
+        let cache = tempfile::tempdir().unwrap();
+        let queue = Queue::with_leases(false);
+        let listener = runner_socket::reached(cache.path(), runner_socket::SOCKET, |path| {
+            std::os::unix::net::UnixListener::bind(path)
+        });
+        let serving = queue.clone();
+        runner_socket::serve(
+            listener.unwrap(),
+            serde_json::json!({}),
+            move |request| match request {
+                Request::Exclusive { ticket } => serving.answer(ticket),
+                Request::WholeRepo { ticket } => serving.whole_repo(ticket),
+                _ => Reply::Line(serde_json::json!({})),
+            },
+        );
+        let settled = |count: usize| {
+            let until = std::time::Instant::now() + Duration::from_secs(5);
+            while queue.standing().len() != count && std::time::Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(queue.standing().len(), count, "{:?}", queue.standing());
+        };
+
+        // A fast gate of the repo runs: the store is not packed.
+        let gate = Ticket {
+            number: 0,
+            pid: std::process::id(),
+            command: "./gate.sh fast".into(),
+            dir: root.path().to_string_lossy().into_owned(),
+            cut: false,
+            repo_lane: None,
+            repo: Some(common.to_string_lossy().into_owned()),
+            is_turn: false,
+            candidate: false,
+            whole_repo: false,
+            note: Note::default(),
+            gate: Some(Gate::Fast),
+            asked: 0,
+            ran: None,
+            retained: None,
+        };
+        let asked = Request::Exclusive { ticket: gate };
+        let (_, running) =
+            runner_socket::keep_asking_in(cache.path(), &asked, Duration::from_secs(5)).unwrap();
+        let mut running = running.expect("kept on the line");
+        assert!(running.heard().unwrap().expect("its turn")["runs"].is_u64());
+        assert!(!repo.housekeep_asking(cache.path()).unwrap());
+        assert_eq!(packs(&common), 5, "not packed beside a gate of its repo");
+        settled(1);
+        drop(running);
+        settled(0);
+
+        // A fetch holds the lock: the store is not packed.
         let held = take(&common, true).unwrap();
-        assert!(!repo.housekeep().unwrap());
+        assert!(!repo.housekeep_asking(cache.path()).unwrap());
+        assert_eq!(packs(&common), 5, "not packed beside a fetch");
+        settled(0);
         drop(held);
-        assert!(repo.housekeep().unwrap());
+
+        // A quiet moment: packed, whole, its commit-graph written again.
+        assert!(repo.housekeep_asking(cache.path()).unwrap());
+        assert_eq!(packs(&common), 1);
+        git(root.path(), &["fsck", "--connectivity-only"]);
+        let info = common.join("objects/info");
+        assert!(info.join("commit-graph").exists() || info.join("commit-graphs").exists());
+        settled(0);
+        assert!(!repo.housekeep_asking(cache.path()).unwrap(), "within its limit now");
     }
 }

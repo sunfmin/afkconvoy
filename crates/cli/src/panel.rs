@@ -928,6 +928,10 @@ fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
         State::Running => {
             format!("{kind} · running, for {}", lasted(request.elapsed_seconds.unwrap_or(0)))
         }
+        State::Retained => format!(
+            "{kind} · retained, its cleanup unconfirmed: {}",
+            ticket.retained.as_ref().map_or("", |retained| retained.error.as_str())
+        ),
         State::Eligible => format!(
             "{kind} · eligible now, waiting for grant, for {}",
             lasted(request.waiting_seconds)
@@ -951,10 +955,10 @@ fn exclusive_says(request: &afkconvoy_core::exclusive::Observed) -> String {
                             format!(
                                 "request {} ({})",
                                 holder.number,
-                                if holder.state == State::Running {
-                                    "running"
-                                } else {
-                                    "earlier reservation"
+                                match holder.state {
+                                    State::Running => "running",
+                                    State::Retained => "retained",
+                                    _ => "earlier reservation",
                                 }
                             )
                         })
@@ -1968,10 +1972,12 @@ mod tests {
                 repo: repo_lane.map(String::from),
                 is_turn: false,
                 candidate: false,
+                whole_repo: false,
                 note: afkconvoy_core::exclusive::Note { issue: None, validation: None },
                 gate: None,
                 asked: 900 + number,
                 ran,
+                retained: None,
             }
         };
         let said = Some((

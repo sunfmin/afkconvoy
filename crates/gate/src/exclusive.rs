@@ -45,6 +45,12 @@ pub struct Ticket<N = Plain> {
     /// its repo. Ordinary commands and serial barriers retain exclusion.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub candidate: bool,
+    /// Holds its whole repo: no other ticket of its repo runs beside it, in
+    /// any lane, and it is granted only where none of its repo runs or
+    /// waits (`holder::Holder::at_once`) — the fleet's housekeeping of the
+    /// repo's object store (sunfmin/control#1101).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole_repo: bool,
     /// Which of the two gates (docs/adr/0047) the command runs, where it is
     /// one run alone: a fast gate takes the fast lane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,11 +60,26 @@ pub struct Ticket<N = Plain> {
     pub asked: u64,
     /// When it began to run; `None`: it waits.
     pub ran: Option<u64>,
+    /// Its asker left, but what its host must do before it leaves could not
+    /// be confirmed: it keeps its lane, its command no longer running, and
+    /// the holder tries its leaving again. `None`: it waits or runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained: Option<Retained>,
     /// What the program that holds the queue notes of the ticket, which no
     /// rule of the queue reads: its fields are the ticket's own when it is
     /// written and read.
     #[serde(flatten)]
     pub note: N,
+}
+
+/// Why a ticket whose asker left still holds its lane: its host could not
+/// confirm what it must do before the ticket leaves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retained {
+    /// When its leaving first failed, in epoch seconds.
+    pub since: u64,
+    /// What its host said, the last time its leaving failed.
+    pub error: String,
 }
 
 /// A ticket that notes nothing beside what the queue reads.
@@ -221,6 +242,18 @@ pub fn same_repo<N>(a: &Ticket<N>, b: &Ticket<N>) -> bool {
 /// Whether this ticket can start with the host's lane counts. Earlier
 /// requests reserve available lanes in order, but a second request of a
 /// running repo waits without holding another repo back from a free lane.
+/// Whether the admitted ticket `held` keeps `asking`, of the same repo, from
+/// its lane: they share a lane, or both are turns, unless both are candidates
+/// or both fast gates; and either that holds its whole repo always does.
+pub fn excludes<N>(held: &Ticket<N>, asking: &Ticket<N>) -> bool {
+    same_repo(held, asking)
+        && (held.whole_repo
+            || asking.whole_repo
+            || ((same_lane(held, asking) || (held.is_turn && asking.is_turn))
+                && !(held.candidate && asking.candidate)
+                && !(is_fast(held) && is_fast(asking))))
+}
+
 pub fn ready<N>(queue: &[Ticket<N>], number: u64, lanes: Lanes) -> bool {
     scheduling(queue, lanes, false)
         .iter()
@@ -233,8 +266,23 @@ pub fn ready<N>(queue: &[Ticket<N>], number: u64, lanes: Lanes) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Running,
+    /// It holds its place though its command ended and its asker left:
+    /// what its host must do before it leaves is unconfirmed
+    /// ([`Ticket::retained`]).
+    Retained,
     Eligible,
     Waiting,
+}
+
+/// The state of a ticket that holds or reserves a place.
+fn holding<N>(ticket: &Ticket<N>) -> State {
+    if !ticket.running() {
+        State::Eligible
+    } else if ticket.retained.is_some() {
+        State::Retained
+    } else {
+        State::Running
+    }
 }
 
 /// A request occupying capacity now, or reserving it earlier in FIFO order.
@@ -280,7 +328,7 @@ pub fn scheduling<N>(queue: &[Ticket<N>], lanes: Lanes, paused: bool) -> Vec<Sch
     let mut admitted: Vec<&Ticket<N>> = ordered.iter().copied().filter(|t| t.running()).collect();
     let mut decisions: Vec<Scheduling> = admitted
         .iter()
-        .map(|ticket| Scheduling { number: ticket.number, state: State::Running, reasons: vec![] })
+        .map(|ticket| Scheduling { number: ticket.number, state: holding(ticket), reasons: vec![] })
         .collect();
     for ticket in ordered.iter().copied().filter(|t| !t.running()) {
         let decision = reservation(ticket, &admitted, lanes, paused);
@@ -301,16 +349,7 @@ fn reservation<N>(
 ) -> Scheduling {
     let limit = limit(ticket, lanes);
     let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
-    let own: Vec<_> = admitted
-        .iter()
-        .copied()
-        .filter(|t| {
-            (same_lane(t, ticket) || (t.is_turn && ticket.is_turn))
-                && same_repo(t, ticket)
-                && !(t.candidate && ticket.candidate)
-                && !(is_fast(t) && is_fast(ticket))
-        })
-        .collect();
+    let own: Vec<_> = admitted.iter().copied().filter(|t| excludes(t, ticket)).collect();
     let mut reasons = vec![];
     if paused {
         reasons.push(Constraint {
@@ -361,13 +400,7 @@ pub fn limit<N>(ticket: &Ticket<N>, lanes: Lanes) -> u64 {
 }
 
 fn holders<N>(tickets: &[&Ticket<N>]) -> Vec<Holder> {
-    tickets
-        .iter()
-        .map(|ticket| Holder {
-            number: ticket.number,
-            state: if ticket.running() { State::Running } else { State::Eligible },
-        })
-        .collect()
+    tickets.iter().map(|ticket| Holder { number: ticket.number, state: holding(ticket) }).collect()
 }
 
 /// Actual occupancy counts only running requests, never reservations. Free
@@ -772,10 +805,12 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            whole_repo: false,
             note: Plain::default(),
             gate: None,
             asked,
             ran: None,
+            retained: None,
         }
     }
 

@@ -204,7 +204,24 @@ impl Permit {
         Self::acquire(repo, command, heavy, is_turn, false, None)
     }
 
-    pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+    /// A candidate's lane, waited for until `until` at most → `None`: its
+    /// place in the queue came no sooner, and it waits no more. A land that
+    /// waited without bound held its pending place on the chain, and every
+    /// round with it, for hours (sunfmin/control#1117).
+    pub(crate) fn candidate_until(
+        repo: &Repo,
+        command: &str,
+        heavy: bool,
+        until: Instant,
+    ) -> Result<Option<Self>> {
+        Self::acquire_until(repo, command, heavy, true, true, None, Some(until))
+    }
+
+    /// A worker lane for the turn of a candidate already on the chain: a
+    /// batch round's gate at it, or its gate once it was rebuilt from a batch
+    /// round (docs/adr/0068). It holds no pending place, and the round waits
+    /// on this gate whatever it waits for, so the wait has no bound.
+    pub(crate) fn assigned(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
         Self::acquire(repo, command, heavy, true, true, None)
     }
 
@@ -237,6 +254,21 @@ impl Permit {
         candidate: bool,
         gate: Option<Gate>,
     ) -> Result<Self> {
+        let permit = Self::acquire_until(repo, command, heavy, is_turn, candidate, gate, None)?;
+        permit.ok_or_else(|| anyhow::anyhow!("a wait with no bound passed its bound"))
+    }
+
+    /// As `acquire`, waiting in the queue until `until` at most → `None`:
+    /// the turn came no sooner.
+    fn acquire_until(
+        repo: &Repo,
+        command: &str,
+        heavy: bool,
+        is_turn: bool,
+        candidate: bool,
+        gate: Option<Gate>,
+        until: Option<Instant>,
+    ) -> Result<Option<Self>> {
         if held() {
             bail!("this command already holds a turn");
         }
@@ -250,6 +282,7 @@ impl Permit {
             repo: Some(canonical(repo.common_dir()?)),
             is_turn,
             candidate,
+            whole_repo: false,
             note: afkconvoy_core::exclusive::Note {
                 issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
                 validation: None,
@@ -257,10 +290,11 @@ impl Permit {
             gate,
             asked: crate::clock(),
             ran: None,
+            retained: None,
         };
         let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
         let stop = Arc::new(AtomicBool::new(false));
-        let monitor = match turn(&ticket, &acting, &crate::clock)? {
+        let monitor = match turn(&ticket, &acting, &crate::clock, until)? {
             Turn::Queued(place, _) => {
                 acting.say(crate::clock(), runs_line(&ticket, crate::clock(), 0));
                 let watch = Watch::new(place)?;
@@ -297,11 +331,12 @@ impl Permit {
                 }))
             }
             Turn::AtOnce(_) => None,
+            Turn::Expired => return Ok(None),
         };
         let slot = crate::slots::Slot::take(&ticket)?;
         SLOT.with_borrow_mut(|held| *held = Some(slot));
         HELD.set(true);
-        Ok(Self { stop, monitor })
+        Ok(Some(Self { stop, monitor }))
     }
 }
 
@@ -421,9 +456,9 @@ impl Host<Note> for Hosted {
         crate::slots::repo_available(ticket).unwrap_or(false)
     }
 
-    fn leaving(&self, ticket: &Ticket) -> bool {
+    fn leaving(&self, ticket: &Ticket) -> std::result::Result<(), String> {
         if !ticket.candidate {
-            return true;
+            return Ok(());
         }
         let checkout = ticket
             .repo
@@ -432,17 +467,18 @@ impl Host<Note> for Hosted {
             .and_then(Path::to_str)
             .unwrap_or(&ticket.dir);
         match crate::candidates::abandoned(checkout) {
-            Ok(_) => true,
+            Ok(_) => Ok(()),
             Err(error) => {
+                let error = format!("{error:#}");
                 eprintln!("[afkconvoy] candidate cleanup unconfirmed; lane retained: {error}");
-                false
+                Err(error)
             }
         }
     }
 }
 
 impl Queue {
-    fn with_leases(leases: bool) -> Self {
+    pub(crate) fn with_leases(leases: bool) -> Self {
         let hosted = Hosted { leases, validations: Mutex::default(), ran: Mutex::default() };
         Self { holder: Holder::new(hosted) }
     }
@@ -467,6 +503,12 @@ impl Queue {
     /// Waiting commands rejoin the replacement with their original ask time.
     pub fn pause(&self) -> usize {
         self.holder.pause()
+    }
+
+    /// Tries again to free each lane retained for a cleanup it could not
+    /// confirm, on the holder's bound: the host runner calls it each check.
+    pub fn retry(&self) {
+        self.holder.retry();
     }
 
     /// Lets commands start again if the installed release changed before
@@ -512,6 +554,31 @@ impl Queue {
         let (number, ahead) = self.holder.join(ticket);
         let queue = self.clone();
         Reply::Kept(json!({"ahead": ahead}), Box::new(move |kept| queue.hold(number, kept)))
+    }
+
+    /// Answers housekeeping asking to hold `ticket`'s whole repo
+    /// (`Ticket::whole_repo`): held at once where nothing of the repo runs or
+    /// waits, until its asker's line closes; else `busy`, and it never joins.
+    pub fn whole_repo(&self, ticket: Ticket) -> Reply {
+        if let Err(error) = crate::slots::recover() {
+            return Reply::Line(
+                json!({"error": format!("candidate cleanup unconfirmed: {error}")}),
+            );
+        }
+        let ticket = Ticket { whole_repo: true, ..ticket };
+        let Some(number) = self.holder.at_once(ticket) else {
+            return Reply::Line(json!({"busy": true}));
+        };
+        let queue = self.clone();
+        Reply::Kept(
+            json!({"runs": number}),
+            Box::new(move |kept| {
+                kept.on_close(move || {
+                    queue.ended(number);
+                    queue.holder.leave(number);
+                });
+            }),
+        )
     }
 
     /// Holds the ticket `number` for its asker on `kept`, telling it once
@@ -581,6 +648,56 @@ impl Drop for Watch {
     }
 }
 
+/// Runs `work` while this host's exclusive queue holds `repo` whole for it —
+/// no gate, turn or other command of the repo runs beside it, in any lane —
+/// asking the host runner whose socket is in `cache` → what `work` returned;
+/// `None`, `work` not run, where something of the repo runs or waits, or no
+/// host runner holds the queue: nothing could keep the repo's commands off.
+/// It never waits for a turn (sunfmin/control#1101). Errors: the host runner
+/// could not be asked, or it cannot hold the repo whole — an older one.
+pub(crate) fn whole_repo<T>(
+    cache: &Path,
+    repo: &Repo,
+    command: &str,
+    work: impl FnOnce() -> T,
+) -> Result<Option<T>> {
+    let common = canonical(repo.common_dir()?);
+    let ticket = Ticket {
+        number: 0,
+        pid: std::process::id(),
+        command: command.into(),
+        dir: canonical(&repo.dir),
+        cut: false,
+        repo_lane: Some(common.clone()),
+        repo: Some(common),
+        is_turn: false,
+        candidate: false,
+        whole_repo: true,
+        note: Note::default(),
+        gate: None,
+        asked: crate::clock(),
+        ran: None,
+        retained: None,
+    };
+    let asked = Request::WholeRepo { ticket };
+    match runner_socket::keep_asking_in(cache, &asked, PLACED_WITHIN)? {
+        (Reached::Answer(answer), Some(held)) if answer.get("runs").is_some() => {
+            let done = work();
+            drop(held);
+            Ok(Some(done))
+        }
+        (Reached::Answer(answer), _) if answer.get("busy").is_some() => Ok(None),
+        (Reached::Answer(answer), _) => {
+            bail!("the host runner cannot hold the repo whole: {}", answer["error"])
+        }
+        (Reached::Nobody, _) => Ok(None),
+        (Reached::Closed, _) => bail!("the host runner closed the line before it answered"),
+        (Reached::Unanswered, _) => {
+            bail!("the host runner did not answer within {}s", PLACED_WITHIN.as_secs())
+        }
+    }
+}
+
 /// The host's exclusive queue, as its host runner says it, in the order it
 /// runs; empty where no host runner runs. Errors: the host runner could not
 /// be asked, or said no queue it holds.
@@ -615,14 +732,42 @@ enum Turn {
     Queued(Conversation, usize),
     /// It runs in no queue, as this says why.
     AtOnce(String),
+    /// Its bound came before its turn: it left the queue, and runs nothing.
+    Expired,
+}
+
+/// Ends `conversation` at `until`, unless `cancel` is told first → whether
+/// it ended it. The asker waiting on its line hears it closed.
+fn ending_at(
+    conversation: &Conversation,
+    until: Instant,
+) -> Result<(mpsc::Sender<()>, std::thread::JoinHandle<bool>)> {
+    let end = conversation.ender()?;
+    let (cancel, cancelled) = mpsc::channel::<()>();
+    let timer = std::thread::spawn(move || {
+        let left = until.saturating_duration_since(Instant::now());
+        let due = matches!(cancelled.recv_timeout(left), Err(mpsc::RecvTimeoutError::Timeout));
+        if due {
+            end();
+        }
+        due
+    });
+    Ok((cancel, timer))
 }
 
 /// Waits in the host runner's queue for `ticket`'s turn, saying to `acting`
 /// and stderr how it waits. One whose host runner ends as it waits asks the
 /// next, as it first asked, for `REACHED_WITHIN`; one that finds no host
-/// runner, or one that cannot hold it, runs at once. Errors: the host runner
-/// could not be asked, or what it said could not be read.
-fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn> {
+/// runner, or one that cannot hold it, runs at once. One given `until` waits
+/// no later: `Turn::Expired`. Errors: the host runner could not be asked, or
+/// what it said could not be read.
+fn turn(
+    ticket: &Ticket,
+    acting: &Acting,
+    now: &dyn Fn() -> u64,
+    until: Option<Instant>,
+) -> Result<Turn> {
+    let expired = || until.is_some_and(|until| Instant::now() >= until);
     let asked = Request::Exclusive { ticket: ticket.clone() };
     // Since when it has asked with no host runner placing it.
     let mut lost: Option<Instant> = None;
@@ -643,15 +788,31 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
                     eprintln!("[afkconvoy] exclusive: {line}");
                     acting.say(now(), line);
                 }
+                let timer = until.map(|until| ending_at(&conversation, until)).transpose()?;
                 // What it cannot read, a newer host runner's, is passed over.
+                let mut runs = None;
                 while let Some(said) = conversation.heard()? {
                     if said.get("runs").is_some() {
-                        let ahead_of = said["ahead_of"].as_u64().unwrap_or(0);
-                        return Ok(Turn::Queued(
-                            conversation,
-                            usize::try_from(ahead_of).unwrap_or(usize::MAX),
-                        ));
+                        runs = Some(said["ahead_of"].as_u64().unwrap_or(0));
+                        break;
                     }
+                }
+                // A line its bound ended is no place: it ran nothing, even
+                // where its turn came as it ended.
+                if let Some((cancel, timer)) = timer {
+                    let _ = cancel.send(());
+                    if timer.join().unwrap_or(true) {
+                        return Ok(Turn::Expired);
+                    }
+                }
+                if let Some(ahead_of) = runs {
+                    return Ok(Turn::Queued(
+                        conversation,
+                        usize::try_from(ahead_of).unwrap_or(usize::MAX),
+                    ));
+                }
+                if expired() {
+                    return Ok(Turn::Expired);
                 }
                 let line = rejoins_line(ticket);
                 eprintln!("[afkconvoy] exclusive: {line}");
@@ -661,6 +822,7 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
             (Reached::Nobody, _) if lost.is_none() && !crate::host_runner::runs() => {
                 return Ok(Turn::AtOnce("no host runner runs on this host".to_string()));
             }
+            _ if expired() => return Ok(Turn::Expired),
             _ => {
                 let since = *lost.get_or_insert_with(Instant::now);
                 if since.elapsed() >= REACHED_WITHIN {
@@ -715,6 +877,7 @@ pub fn exclusive(
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         is_turn: false,
         candidate: false,
+        whole_repo: false,
         note: afkconvoy_core::exclusive::Note {
             issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
             validation: None,
@@ -722,9 +885,10 @@ pub fn exclusive(
         gate: told_gate(),
         asked: now(),
         ran: None,
+        retained: None,
     };
     let acting = Acting::new("exclusive").on_own_issue().in_checkout(checkout);
-    let place = match turn(&ticket, &acting, &now) {
+    let place = match turn(&ticket, &acting, &now, None) {
         Ok(Turn::Queued(place, ahead_of)) => {
             let started = now();
             acting.say(started, runs_line(&ticket, started, ahead_of));
@@ -735,6 +899,9 @@ pub fn exclusive(
             eprintln!("[afkconvoy] exclusive: {line}");
             acting.say(now(), line);
             None
+        }
+        Ok(Turn::Expired) => {
+            return failed("its wait in the queue passed a bound it was not given");
         }
         Err(error) => return failed(&format!("{error:#}")),
     };
@@ -937,10 +1104,12 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            whole_repo: false,
             note: afkconvoy_core::exclusive::Note { issue: Some(7), validation: None },
             gate: None,
             asked,
             ran: None,
+            retained: None,
         }
     }
 

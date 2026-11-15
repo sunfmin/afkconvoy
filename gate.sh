@@ -45,7 +45,10 @@ export PATH RUSTUP_TOOLCHAIN
 # Every build names the commit it is of to the build script, which stamps the
 # binary with it: a candidate's gate builds in its worker's target directory,
 # from a worktree whose paths the script did not last watch, and at a merge
-# that may have its branch's tree (sunfmin/control#838).
+# that may have its branch's tree (sunfmin/control#838). Every other package's
+# build script, crates/commit.rs, is run again at each commit it names, so
+# that the worker's next build does not find the crates its candidate built
+# from another tree fresh (sunfmin/control#1114).
 AFKCONVOY_BUILD_COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
 export AFKCONVOY_BUILD_COMMIT
 # Each step's seconds, said as the gate ends, green or red: the fleet times

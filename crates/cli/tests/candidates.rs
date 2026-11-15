@@ -1692,6 +1692,37 @@ fn a_conflict_with_the_candidate_ahead_is_left_for_the_worker_to_resolve() {
 }
 
 #[test]
+fn ten_green_prs_whose_speculative_stacks_all_conflict_land_the_oldest_alone_within_one_round() {
+    let world = split_world(3);
+    let names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+    let workers: Vec<PathBuf> =
+        (1..=10).map(|n| world.worker(n, "x.txt", names[n as usize - 1])).collect();
+    let _runner = world.host_held();
+    let oldest = start(&world, &workers[0], &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    // Each stack on the oldest conflicts: three of them pile the chain.
+    for n in 2..=4 {
+        let conflict = finish(start(&world, &workers[n as usize - 1], &world.cache(), n));
+        assert_eq!(conflict["outcome"], "speculative_conflict", "{conflict}");
+        git(&workers[n as usize - 1], &["merge", "--abort"]);
+    }
+    // Piled, no turn stacks on the oldest any more, nor waits on the chain.
+    for n in 2..=10 {
+        let waited = finish(start(&world, &workers[n as usize - 1], &world.cache(), n));
+        assert_eq!(waited["outcome"], "waiting_for_capacity", "{waited}");
+        assert!(waited["detail"].as_str().unwrap().contains("piled"), "{waited}");
+    }
+    let pending = chain(&world)["pending"].as_array().map_or(0, Vec::len);
+    assert_eq!(pending, 0, "a piled turn holds no place a round waits for");
+    let_go(&world, "fast", "a", false);
+    let_go(&world, "slow", "a", false);
+    let landed = finish(oldest);
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(landed["landed"], json!([10]), "the oldest lands alone: {landed}");
+    assert_eq!(world.remote(&["show", "refs/heads/main:x.txt"]), "a");
+}
+
+#[test]
 fn with_one_lane_every_ready_pr_fast_gates_in_turn_and_lands_in_one_round() {
     let world = split_world(1);
     let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]
@@ -2046,4 +2077,45 @@ fn a_batch_gate_at_its_limit_is_ended_and_its_turn_answers_gate_red() {
     assert_eq!(failed["timed_out"], true, "{failed}");
     assert!(began.elapsed() < Duration::from_secs(25), "{:?}", began.elapsed());
     assert!(!started(&world, "slow", "a"));
+}
+
+/// The Studio64 case (sunfmin/control#1117): with the one lane taken by a
+/// gate, a turn behind it holds a pending place as it waits for a lane. Past
+/// its bound it ends `waited_past_bound`, and the chain holds its place no
+/// more; the gate ahead lands as before.
+#[test]
+fn a_pending_turn_past_its_bound_ends_and_frees_its_place() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let mut first = start(&world, &a, &world.cache(), 1);
+    until(|| world.root.join("start-a").exists() || first.try_wait().unwrap().is_some());
+    if first.try_wait().unwrap().is_some() {
+        panic!("first turn exited: {}", finish(first));
+    }
+    let behind = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &b)
+        .env("XDG_CACHE_HOME", world.cache())
+        .env("AFKCONVOY_ISSUE", "2")
+        .env("AFKCONVOY_PENDING_SECONDS", "3")
+        .args(["land", "--issue", "2"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let pid = behind.id();
+    until(|| {
+        chain(&world)["pending"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|b| b["owner"]["pid"] == pid && b["since"].is_u64()))
+    });
+    let answer = finish(behind);
+    assert_eq!(answer["outcome"], "waited_past_bound", "{answer}");
+    assert!(answer["detail"].as_str().unwrap().contains("for a lane on this host"), "{answer}");
+    let pending = chain(&world)["pending"].clone();
+    assert!(pending.as_array().is_none_or(Vec::is_empty), "its place is freed: {pending}");
+    assert!(!world.root.join("start-b").exists(), "nothing of it ran");
+    release(&world, "a", false);
+    assert_eq!(finish(first)["outcome"], "merged");
 }

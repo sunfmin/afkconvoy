@@ -49,8 +49,12 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — the limits past which a worker is hot, the shares admission holds back at, afkconvoy's own share of its cores and memory (`--max-share-of-cores`, `--max-share-of-memory`, none by default), the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments, and an optional shell command that sends the human decisions a watch reports once per condition episode (`--notify-command`, none by default; `default` removes it), and where the **agent setup** is declared (`--agent-instructions`, `--agent-skills`, `--agent-guards`, none by default) — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — the limits past which a worker is hot, the shares admission holds back at, afkconvoy's own share of its cores and memory (`--max-share-of-cores`, `--max-share-of-memory`, none by default), the share of the login's hourly GitHub quota its **shared readings** stay under (`--github-share`, 60% by default), the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments, and an optional shell command that sends the human decisions a watch reports once per condition episode (`--notify-command`, none by default; `default` removes it), and where the **agent setup** is declared (`--agent-instructions`, `--agent-skills`, `--agent-guards`, none by default) — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
+
+**Shared reading**:
+A GitHub reading every process on the host waiting on the same thing shares: one of them reads it at most once every 30 seconds, under a file lock beside the login's quota note, and the others answer from what it read, a failed read among it. Once the login has used the host's `--github-share` of the hour's quota, what was read answers until the quota resets. A `land` turn waiting for its round, its predecessor or a red base asks whether a fleet lock stands this way (ADR-0079).
+_Avoid_: shared poll
 
 **Tick**:
 One reconciliation pass: rebuild the working set from fleet state, then perform every transition it calls for, without waiting for the workers it started.
@@ -73,7 +77,7 @@ A repository's one way to read and write the remote's refs. A read names how fre
 _Avoid_: remote cache, ref cache
 
 **Fetch lock**:
-The lock in a repository's git dir that every fetch of the fleet into its one object store takes, so the lands, reads and gates of all its worktrees fetch one at a time: a land that wants a commit another is fetching waits for that fetch and finds the commit there. A fetch that fails on a corrupt pack is made again once with `--refetch`; one that fails so again is noted, `doctor` names it, and the fetches that bring a commit wait out a backoff that doubles from a minute to half an hour until one succeeds. git's own maintenance and auto-gc are off for a fleet's checkout; each tick repacks it under the fetch lock, only while nothing fetches (ADR-0079).
+The lock in a repository's git dir that every fetch of the fleet into its one object store takes, so the lands, reads and gates of all its worktrees fetch one at a time: a land that wants a commit another is fetching waits for that fetch and finds the commit there. A fetch that fails on a corrupt pack is made again once with `--refetch`; one that fails so again is noted, `doctor` names it, and the fetches that bring a commit wait out a backoff that doubles from a minute to half an hour until one succeeds. git's own maintenance and auto-gc are off for a fleet's checkout; a tick packs it once it holds more packs than `gc.autoPackLimit` or too many loose objects, at a quiet moment: under the fetch lock, only while nothing fetches, and while the exclusive queue holds the repository whole — no gate, turn or land of it running or waiting (ADR-0079, ADR-0081).
 _Avoid_: fetch cache, git lock (git's own `index.lock` and ref locks)
 
 **Fleet state**:
@@ -478,7 +482,7 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Turn**:
-One command's construction, validation and ordered landing of an open PR's candidate. Red, a conflict, invalidation or a rejected push ends it with nothing landed.
+One command's construction, validation and ordered landing of an open PR's candidate. Red, a conflict, invalidation or a rejected push ends it with nothing landed. Its waits on the candidate chain are bounded: a turn that holds a pending place and no candidate frees it past a fixed bound, and one whose green candidate waits for the candidates ahead or its round past its gate limit leaves that candidate stopped for the next turn of its PR; either ends `waited_past_bound`, and the fleet asks for the turn again.
 _Avoid_: landing slot, merge queue
 
 **Candidate**:
@@ -486,8 +490,12 @@ An immutable merge of a PR's original head onto its assigned predecessor, valida
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:
-The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed. It holds at most one valid candidate of a change: a change asked to land again takes up the one it has, where it was merged from the change's head now. A candidate is wedged once it stood valid past its whole gate's seconds.
+The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed. It holds at most one valid candidate of a change: a change asked to land again takes up the one it has, where it was merged from the change's head now. A candidate is wedged once it stood valid past its whole gate's seconds. A chain is **piled** while this host's `land` turns of its repo answered `speculative_conflict` in the last hour three times or more and more often than `merged`: a turn then stacks on no other PR's candidate, and each lands alone on the base, oldest first, until the landings catch up (sunfmin/control#1112).
 _Avoid_: landing train, speculative queue
+
+**Landing heartbeat**:
+A landing within the last 45 minutes, while green work waits: a valid candidate fast-green or gating, or `land` turns asked since the last landing. A fleet whose green work waited past that with none is stalled, `doctor`'s critical `landing_stalled`, which names the waiting PRs and tallies the last 20 `land` turns by outcome; the host's watch takes it as a stall to resolve, not fleet work to wait out.
+_Avoid_: landing timeout, train health
 
 **Round**:
 One run of the slow gate on a candidate chain's tip, once every PR that asked to land is a fast-green candidate, that lands every candidate up to the tip together. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.

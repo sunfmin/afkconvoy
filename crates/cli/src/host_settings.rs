@@ -55,6 +55,10 @@ pub struct Settings {
     /// `--max-share-of-memory`: the share of the host's memory afkconvoy may
     /// hold resident itself, a whole percent.
     pub max_share_of_memory: Option<u64>,
+    /// `--github-share`: the share of the login's hourly GitHub quota the
+    /// host's shared readings stay under, a whole percent, so that the workers'
+    /// own `gh` calls keep the rest (sunfmin/control#1111).
+    pub github_share: Option<u64>,
     /// `--exclusive-seconds`: seconds a running command may hold others up.
     pub exclusive_seconds: Option<u64>,
     /// `--gate-lanes`: worker commands that may run across different repos.
@@ -122,6 +126,7 @@ pub struct Named {
     pub admit_inspect_after: Option<To<u64>>,
     pub max_share_of_cores: Option<To<u64>>,
     pub max_share_of_memory: Option<To<u64>>,
+    pub github_share: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
     pub gate_lanes: Option<To<u64>>,
     pub slow_gate_lanes: Option<To<u64>>,
@@ -277,6 +282,7 @@ impl Settings {
         lay(&mut self.admit_inspect_after, named.admit_inspect_after.as_ref());
         lay(&mut self.max_share_of_cores, named.max_share_of_cores.as_ref());
         lay(&mut self.max_share_of_memory, named.max_share_of_memory.as_ref());
+        lay(&mut self.github_share, named.github_share.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.gate_lanes, named.gate_lanes.as_ref());
         lay(&mut self.slow_gate_lanes, named.slow_gate_lanes.as_ref());
@@ -316,6 +322,12 @@ impl Settings {
     /// The port it has the host runner serve the panel on.
     pub fn panel_port(&self) -> u16 {
         self.panel.unwrap_or(PANEL_PORT)
+    }
+
+    /// The share of the hour's GitHub quota the host's shared readings stay
+    /// under, a whole percent (`crate::shared_reading`).
+    pub fn github_share(&self) -> u64 {
+        self.github_share.unwrap_or(crate::shared_reading::GITHUB_SHARE)
     }
 
     /// The exclusive bound, counting only time with another command waiting.
@@ -408,6 +420,7 @@ impl Settings {
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
             "max_share_of_cores": self.max_share_of_cores,
             "max_share_of_memory": self.max_share_of_memory,
+            "github_share": self.github_share(),
             "exclusive_seconds": self.exclusive_seconds(),
             "gate_lanes": self.gate_lanes(),
             "slow_gate_lanes": self.slow_gate_lanes(),
@@ -529,6 +542,7 @@ pub const ADMIT_DISK_ENV: &str = "AFKCONVOY_ADMIT_DISK";
 pub const ADMIT_INSPECT_AFTER_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
 pub const MAX_SHARE_OF_CORES_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_CORES";
 pub const MAX_SHARE_OF_MEMORY_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_MEMORY";
+pub const GITHUB_SHARE_ENV: &str = "AFKCONVOY_GITHUB_SHARE";
 pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
 pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";

@@ -429,6 +429,10 @@ pub struct Chain<N = Plain> {
 pub struct Barrier {
     pub id: String,
     pub owner: Process,
+    /// When its turn took the place, in seconds: how long it has waited
+    /// (sunfmin/control#1117). A place an older afkconvoy took says none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
 }
 
 impl<N> Default for Chain<N> {
@@ -1270,7 +1274,11 @@ mod tests {
     }
 
     fn reserved(id: &str, host: &str) -> Barrier {
-        Barrier { id: id.into(), owner: Process { host: host.into(), pid: 9, started: "s".into() } }
+        Barrier {
+            id: id.into(),
+            owner: Process { host: host.into(), pid: 9, started: "s".into() },
+            since: None,
+        }
     }
 
     /// The Offices-MBP chain of 2026-11-01: a dead host's round tip slow-gating,
@@ -1379,7 +1387,7 @@ mod tests {
         let far = Candidate { predecessor: "base".into(), ..owned(candidate(3), "far") };
         let mut chain = Chain {
             candidates: vec![green, gating, behind, far],
-            pending: vec![Barrier { id: "p".into(), owner: gone.clone() }],
+            pending: vec![Barrier { id: "p".into(), owner: gone.clone(), since: None }],
             ..Chain::default()
         };
         assert_eq!(chain.processes("here"), [gone.clone(), behind_owner]);
@@ -1604,7 +1612,7 @@ mod tests {
         chain.finish("c0", ran(true));
         chain.finish("c1", ran(true));
         let owner = chain.candidates[0].owner.clone();
-        chain.pending.push(Barrier { id: "waiting".into(), owner });
+        chain.pending.push(Barrier { id: "waiting".into(), owner, since: None });
         assert!(chain.round_tip().is_none(), "a PR still waiting for a lane is in the round");
         assert!(chain.can_assign(false), "the window is not bounded by the lanes");
         chain.pending.clear();
@@ -1698,7 +1706,11 @@ mod tests {
     #[test]
     fn a_pending_serial_barrier_drains_the_window_without_reserving_capacity() {
         let mut chain = Chain { candidates: vec![candidate(0)], ..Chain::default() };
-        chain.barriers.push(Barrier { id: "cut".into(), owner: chain.candidates[0].owner.clone() });
+        chain.barriers.push(Barrier {
+            id: "cut".into(),
+            owner: chain.candidates[0].owner.clone(),
+            since: None,
+        });
         assert!(!chain.can_assign(false));
         assert!(!chain.can_assign(true));
         chain.candidates[0].phase = Phase::Landed;
@@ -1712,7 +1724,7 @@ mod tests {
         let mut chain =
             Chain { candidates: (0..ROUND_FULL + 1).map(split).collect(), ..Chain::default() };
         let owner = chain.candidates[0].owner.clone();
-        chain.pending.push(Barrier { id: "waiting".into(), owner });
+        chain.pending.push(Barrier { id: "waiting".into(), owner, since: None });
         for n in 0..ROUND_FULL - 1 {
             chain.finish(&format!("c{n}"), ran(true));
         }
@@ -1734,13 +1746,13 @@ mod tests {
     fn a_fast_green_barrier_starts_its_round_beside_turns_it_holds_back() {
         let mut chain = Chain { candidates: vec![split(0)], ..Chain::default() };
         let owner = chain.candidates[0].owner.clone();
-        chain.pending.push(Barrier { id: "waiting".into(), owner: owner.clone() });
+        chain.pending.push(Barrier { id: "waiting".into(), owner: owner.clone(), since: None });
         chain.finish("c0", ran(true));
         assert!(chain.round_tip().is_none(), "a pending turn may still join");
         chain.candidates[0].barrier = true;
         assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c0"));
         chain.candidates[0].barrier = false;
-        chain.barriers.push(Barrier { id: "cut".into(), owner });
+        chain.barriers.push(Barrier { id: "cut".into(), owner, since: None });
         assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c0"), "a cut waits");
     }
 
@@ -1770,7 +1782,7 @@ mod tests {
     fn explore(made: fn(usize) -> Candidate) -> usize {
         let candidates: Vec<Candidate> = (0..3).map(made).collect();
         let owner = candidates[0].owner.clone();
-        let waiting = vec![Barrier { id: "pending".into(), owner }];
+        let waiting = vec![Barrier { id: "pending".into(), owner, since: None }];
         let initial =
             (Chain { candidates, pending: waiting, ..Chain::default() }, "base".to_string());
         let mut pending = VecDeque::from([initial]);

@@ -1,8 +1,8 @@
 //! A stopped candidate's processes that take long to exit. Its turn waits
 //! for them with no bound (`candidates::confirmed`); past
 //! `candidates::LONG_AFTER` it records here what is left, each pid with its
-//! state and command, for as long as it waits, and `doctor` says each wait
-//! whose turn is alive as a finding of the host for its watch
+//! user, state and command, for as long as it waits, and `doctor` says each
+//! wait whose turn is alive as a finding of the host for its watch
 //! (sunfmin/control#1096). The record goes once they are gone.
 use std::path::PathBuf;
 use std::process::Command;
@@ -20,7 +20,8 @@ use crate::doctor::{Finding, Kind, finding};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Left {
     pub pid: u32,
-    /// Its state: `U` or `D` is uninterruptible I/O.
+    pub user: String,
+    /// Its state: `U` or `D` is uninterruptible I/O, `T` stopped.
     pub state: String,
     pub command: String,
 }
@@ -40,7 +41,11 @@ pub(crate) struct Waiting {
     pub held: bool,
     /// Its process scope, the file its processes hold.
     pub scope: String,
+    /// What is left that is killed hard each second.
     pub left: Vec<Left>,
+    /// What is left that this user cannot kill: a setuid child, such as
+    /// `/bin/ps`, which only its owner, or root, can end.
+    pub unkillable: Vec<Left>,
 }
 
 /// The lane candidate `id` keeps while its processes exit.
@@ -56,13 +61,12 @@ fn file(id: &str) -> Result<PathBuf> {
     Ok(dir()?.join(format!("{id}.json")))
 }
 
-/// Records that candidate `id`'s processes `pids`, and its `scope` where
-/// `held`, are still there after `waited`.
+/// Records that what candidate `id` leaves, `left`, of its `scope`, is still
+/// there after `waited`.
 pub(crate) fn waiting(
     id: &str,
     scope: &std::path::Path,
-    pids: &[u32],
-    held: bool,
+    left: &crate::candidates::Left,
     waited: Duration,
 ) -> Result<()> {
     let waiter = crate::candidates::identity(std::process::id())?
@@ -72,9 +76,10 @@ pub(crate) fn waiting(
         lane: lane(id),
         since: crate::clock().saturating_sub(waited.as_secs()),
         waiter,
-        held,
+        held: left.held,
         scope: scope.to_string_lossy().into_owned(),
-        left: listed(pids),
+        left: listed(&left.pids),
+        unkillable: listed(&left.unkillable),
     };
     let path = file(id)?;
     std::fs::create_dir_all(dir()?)?;
@@ -93,28 +98,45 @@ pub(crate) fn gone(id: &str) {
     }
 }
 
+/// Those of `pids` that still run, as `ps` lists them: a zombie has ended.
+/// Soft: where `ps` cannot say, each is taken to run still.
+pub(crate) fn running(pids: &[u32]) -> Vec<u32> {
+    match said_by_ps(pids) {
+        Some(listed) => listed
+            .into_iter()
+            .filter(|left| !left.state.starts_with('Z'))
+            .map(|left| left.pid)
+            .collect(),
+        None => pids.to_vec(),
+    }
+}
+
 /// `pids` as `ps` says them; one it no longer lists is left out.
 fn listed(pids: &[u32]) -> Vec<Left> {
+    said_by_ps(pids).unwrap_or_default()
+}
+
+fn said_by_ps(pids: &[u32]) -> Option<Vec<Left>> {
     if pids.is_empty() {
-        return vec![];
+        return Some(vec![]);
     }
     let asked: Vec<String> = pids.iter().map(u32::to_string).collect();
-    let Ok(out) = crate::process::output(Command::new("ps").args([
+    let out = crate::process::output(Command::new("ps").args([
         "-o",
-        "pid=,stat=,command=",
+        "pid=,user=,stat=,command=",
         "-p",
         &asked.join(","),
-    ])) else {
-        return vec![];
-    };
-    String::from_utf8_lossy(&out.stdout).lines().filter_map(parsed).collect()
+    ]))
+    .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).lines().filter_map(parsed).collect())
 }
 
 fn parsed(line: &str) -> Option<Left> {
     let mut words = line.split_whitespace();
     let pid = words.next()?.parse().ok()?;
+    let user = words.next()?.to_string();
     let state = words.next()?.to_string();
-    Some(Left { pid, state, command: words.collect::<Vec<_>>().join(" ") })
+    Some(Left { pid, user, state, command: words.collect::<Vec<_>>().join(" ") })
 }
 
 /// Each long wait whose waiter is alive, as a finding of the host. Soft: a
@@ -135,31 +157,40 @@ pub(crate) fn findings(now: u64) -> Vec<Finding> {
         .collect()
 }
 
-/// The finding `record` is at `now`.
+/// The finding `record` is at `now`. One this user cannot kill is named
+/// with what ends it, `sudo kill -9`, which is then its `fix`.
 pub(crate) fn said(record: &Waiting, now: u64) -> Finding {
     let minutes = now.saturating_sub(record.since) / 60;
-    let left: Vec<String> = record
-        .left
-        .iter()
-        .map(|left| format!("pid {} ({}) `{}`", left.pid, left.state, left.command))
-        .collect();
-    let mut evidence = if left.is_empty() {
+    let named = |left: &Left| {
+        format!("pid {} ({}, {}) `{}`", left.pid, left.user, left.state, left.command)
+    };
+    let mut said: Vec<String> = record.left.iter().map(named).collect();
+    said.extend(record.unkillable.iter().map(|left| {
+        format!(
+            "{}, which this user cannot kill: it needs `sudo kill -9 {}`",
+            named(left),
+            left.pid
+        )
+    }));
+    let mut evidence = if said.is_empty() {
         "no process it can name is left".to_string()
     } else {
-        left.join("; ")
+        said.join("; ")
     };
     if record.held {
-        evidence.push_str("; its process scope is still held");
+        evidence.push_str(&format!("; its process scope {} is still held", record.scope));
     }
     evidence.push_str(&format!(
-        "; pid {} keeps waiting, killing them hard each second",
+        "; pid {} keeps waiting, killing what it can hard each second",
         record.waiter.pid
     ));
-    let pids: Vec<String> = record.left.iter().map(|left| left.pid.to_string()).collect();
-    let fix = if pids.is_empty() {
-        format!("lsof {}", record.scope)
+    let pids = |lefts: &[Left]| lefts.iter().map(|left| left.pid.to_string()).collect::<Vec<_>>();
+    let fix = if !record.unkillable.is_empty() {
+        format!("sudo kill -9 {}", pids(&record.unkillable).join(" "))
+    } else if !record.left.is_empty() {
+        format!("ps -o pid,user,stat,wchan,command -p {}", pids(&record.left).join(","))
     } else {
-        format!("ps -o pid,stat,wchan,user,command -p {}", pids.join(","))
+        format!("sudo lsof {}", record.scope)
     };
     finding(
         Kind::ExitWaiting,
@@ -180,15 +211,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ps_says_each_left_process_with_its_state_and_command() {
+    fn ps_says_each_left_process_with_its_user_state_and_command() {
         assert_eq!(
-            parsed("  4242 U    /usr/bin/xcrun simctl boot  X"),
+            parsed("  4242 root   TN   /bin/ps axeww -o pid="),
             Some(Left {
                 pid: 4242,
-                state: "U".into(),
-                command: "/usr/bin/xcrun simctl boot X".into()
+                user: "root".into(),
+                state: "TN".into(),
+                command: "/bin/ps axeww -o pid=".into()
             })
         );
         assert_eq!(parsed("garbage"), None);
+    }
+
+    /// A scope holder this user cannot kill is named with what ends it.
+    #[test]
+    fn an_unkillable_holder_is_named_with_sudo_kill() {
+        let waiter = crate::candidates::identity(std::process::id()).unwrap().unwrap();
+        let record = Waiting {
+            candidate: "c9".into(),
+            lane: lane("c9"),
+            since: 1000,
+            waiter,
+            held: true,
+            scope: "/w.processes".into(),
+            left: vec![],
+            unkillable: vec![Left {
+                pid: 61330,
+                user: "root".into(),
+                state: "TN".into(),
+                command: "/bin/ps axeww".into(),
+            }],
+        };
+        let finding = said(&record, 1000 + 4 * 3600);
+        assert!(finding.what.contains("240 min"), "{}", finding.what);
+        assert!(
+            finding.evidence.contains("pid 61330 (root, TN) `/bin/ps axeww`, which this user cannot kill: it needs `sudo kill -9 61330`"),
+            "{}",
+            finding.evidence
+        );
+        assert_eq!(finding.fix, "sudo kill -9 61330");
     }
 }
