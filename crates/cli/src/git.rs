@@ -328,11 +328,61 @@ impl Repo {
 
     /// One fetch whose failure the caller reads. At `FETCH_LIMIT` its process
     /// group is ended and the call is a failure.
+    ///
+    /// A fetch that fails because this repository lost objects its
+    /// commit-graph or refs still name (sunfmin/control#1090) repairs it from
+    /// the remote and runs again: the commit-graph, which only speeds up
+    /// reads, is dropped, and if the fetch still finds objects missing it
+    /// fetches again with `--refetch`, which sends every object anew. Every
+    /// worktree of the repository shares its object store, so one lost
+    /// object would otherwise stop every gate and land on the host.
     pub fn try_fetch(&self, args: &[&str]) -> Result<Ran> {
         if args.first() != Some(&"fetch") {
             bail!("Repo::try_fetch takes a git fetch command");
         }
-        run_within(&self.dir, args, &[], FETCH_LIMIT)
+        let ran = run_within(&self.dir, args, &[], FETCH_LIMIT)?;
+        if ran.ok || !lost_objects(&ran.stderr) {
+            return Ok(ran);
+        }
+        self.drop_commit_graph()?;
+        let ran = run_within(&self.dir, args, &[], FETCH_LIMIT)?;
+        if ran.ok || !lost_objects(&ran.stderr) {
+            return Ok(ran);
+        }
+        let mut refetch = vec!["fetch", "--refetch"];
+        refetch.extend(&args[1..]);
+        let ran = run_within(&self.dir, &refetch, &[], FETCH_LIMIT)?;
+        if ran.ok || !lost_objects(&ran.stderr) {
+            return Ok(ran);
+        }
+        let mut stderr = ran.stderr;
+        stderr.push_str(&format!(
+            "\n{} lost objects its refs name, and refetching them from {REMOTE} did not \
+             restore them: repair it with `git fsck`, deleting the refs it names broken, \
+             then `git fetch --refetch {REMOTE}`",
+            self.dir.display()
+        ));
+        Ok(Ran { stderr, ..ran })
+    }
+
+    /// Removes this repository's commit-graph, which names commits its object
+    /// store lost. git writes it again from what is there on a later `gc`.
+    fn drop_commit_graph(&self) -> Result<()> {
+        let info = self.common_dir()?.join("objects").join("info");
+        for graph in [info.join("commit-graph"), info.join("commit-graphs")] {
+            let gone = if graph.is_dir() {
+                std::fs::remove_dir_all(&graph)
+            } else {
+                std::fs::remove_file(&graph)
+            };
+            match gone {
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(err).with_context(|| format!("removing {}", graph.display()));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// One fetch that must succeed → its stdout, trimmed.
@@ -574,6 +624,22 @@ impl Repo {
     }
 }
 
+/// Whether a failed fetch says this repository lost objects that its
+/// commit-graph or refs name, which the remote can send again.
+fn lost_objects(stderr: &str) -> bool {
+    [
+        "in the commit graph file but not in the object database",
+        "did not send all necessary objects",
+        "fatal: bad object",
+        "is corrupt",
+        "missing blob",
+        "missing tree",
+        "missing commit",
+    ]
+    .iter()
+    .any(|said| stderr.contains(said))
+}
+
 /// The ref a failed fetch says the remote does not have, if that is why
 /// it failed.
 fn vanished(stderr: &str) -> Option<&str> {
@@ -732,6 +798,65 @@ mod tests {
             let read = repo.git_dir().unwrap();
             assert_eq!(read.canonicalize().unwrap(), Path::new(&said).canonicalize().unwrap());
         }
+    }
+
+    /// sunfmin/control#1090: a checkout whose commit-graph names a commit its
+    /// object store lost fails every fetch of that commit. The fetch drops the
+    /// commit-graph, fetches again and brings the commit back.
+    #[test]
+    fn a_fetch_repairs_a_commit_graph_naming_a_lost_object() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote.git");
+        let local = root.path().join("local");
+        git(root.path(), &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        git(root.path(), &["init", "-q", "-b", "main", local.to_str().unwrap()]);
+        git(&local, &["remote", "add", REMOTE, remote.to_str().unwrap()]);
+        for n in ["one", "two"] {
+            git(
+                &local,
+                &[
+                    "-c",
+                    "user.name=a",
+                    "-c",
+                    "user.email=a@b",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    n,
+                ],
+            );
+        }
+        git(&local, &["push", "-q", REMOTE, "main", "HEAD:refs/convoy/candidates/main"]);
+        git(&local, &["commit-graph", "write", "--reachable"]);
+        let repo = Repo::new(local.clone());
+        let tip = repo.git(&["rev-parse", "HEAD"]).unwrap();
+        std::fs::remove_file(local.join(".git/objects").join(&tip[..2]).join(&tip[2..])).unwrap();
+        assert!(!repo.try_git(&["cat-file", "-e", &tip]).unwrap().ok);
+
+        repo.fetch(&[
+            "fetch",
+            "--quiet",
+            "--no-write-fetch-head",
+            "--no-tags",
+            REMOTE,
+            "refs/convoy/candidates/main",
+        ])
+        .unwrap();
+
+        assert!(repo.try_git(&["cat-file", "-e", &tip]).unwrap().ok);
+        assert!(!local.join(".git/objects/info/commit-graph").exists());
+    }
+
+    #[test]
+    fn lost_objects_are_told_from_other_fetch_failures() {
+        assert!(lost_objects(
+            "fatal: You are attempting to fetch c0e6d135, which is in the commit graph file \
+             but not in the object database."
+        ));
+        assert!(lost_objects("error: remote did not send all necessary objects"));
+        assert!(!lost_objects("fatal: couldn't find remote ref refs/heads/gone"));
+        assert!(!lost_objects("fatal: unable to access 'https://github.com/': timed out"));
     }
 
     #[test]
