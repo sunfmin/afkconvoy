@@ -106,7 +106,7 @@ impl Ending {
                 "the candidate ahead of this PR changes the gate to one that runs in a worker lane, which this turn did not take; nothing ran: ask for a turn again after that predecessor lands; no gate failure or rework occurred"
             }
             Ending::WaitingForCapacity => {
-                "the bounded candidate window was full; nothing ran: ask for a turn again; no gate failure or rework occurred"
+                "the bounded candidate window was full, or the candidate chain is piled and a candidate is ahead of this PR (`detail` says which); nothing ran: ask for a turn again; no gate failure or rework occurred"
             }
             Ending::Blocked => {
                 "`blocked_by` lists the issue dependencies still open; nothing landed: the fleet does not ask again while they all stay open and the issue's blocked-by list is unchanged; it asks again once one closes or the list changes"
