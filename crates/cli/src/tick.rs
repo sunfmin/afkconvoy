@@ -158,6 +158,11 @@ pub fn tick(
     // A harness held since the agent setup was last given gets it now
     // (sunfmin/control#528); with none declared this reads the settings alone.
     let _ = crate::kit::give_new_agent_setup(repo, me.instance.as_str(), &me.host, me.now);
+    // The object store is repacked while nothing fetches into it, as git's
+    // auto-gc would (sunfmin/control#1102). A failure costs the tick nothing.
+    if let Err(error) = repo.housekeep() {
+        eprintln!("warning: housekeeping of the object store will retry: {error:#}");
+    }
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
     // This is independent of the previous tick's log view: retry failed
     // closes, and cover a runner that restarted after the host woke.

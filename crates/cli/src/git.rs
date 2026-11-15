@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use crate::remote::{Remote, RemoteRecord, Seen, Wire};
 
 mod one_fetch;
+pub(crate) use one_fetch::Failing;
 
 /// The remote every ref and branch is pushed to and fetched from.
 pub const REMOTE: &str = "origin";
