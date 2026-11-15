@@ -63,6 +63,11 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     let (Some(worktree), Some(state)) = (worktree, state) else {
         bail!("issue #{issue}: a worker that stopped has a worktree and a state");
     };
+    // A bare shell its harness left reads a nudge as a command: its worker
+    // is gone (sunfmin/control#1150).
+    if state != afkconvoy_core::worker::WorkerState::Busy && worktree.bare_shell()? {
+        return Ok(Some(Asked::Gone));
+    }
     let prs = fleet.gh.open_prs()?;
     let Some(pr) = closing_pr(&prs, issue).map(|pr| pr.number) else {
         return Ok(Some(Asked::NoPr));
@@ -224,9 +229,20 @@ fn restart_worker(
 /// `afkconvoy restart`: replace the silent worker of one of my claims whose
 /// PR is waiting to land. Refused for any worker the tick would not restart
 /// — at work, heard from within grace, not nudged yet — and for a PR whose
-/// join already had its restart.
+/// join already had its restart. A worker gone — its terminal closed, or a
+/// bare shell its harness left — is continued at once, as the tick would,
+/// with no nudge first and no restart of the PR's taken.
 pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Value> {
-    let Some(Asked::Stopped(stopped)) = ask_after(fleet, me, issue)? else {
+    let asked = ask_after(fleet, me, issue)?;
+    if let Some(Asked::Gone) = asked
+        && let Some(pr) = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number)
+    {
+        let found = &mut Found::default();
+        let started = dispatch(fleet, found, me, agent, issue, StartFrom::Auto)?.answer;
+        return Ok(json!({"issue": issue, "pr": pr, "action": "continued",
+            "terminal": started["terminal"], "prompt": started["prompt"]}));
+    }
+    let Some(Asked::Stopped(stopped)) = asked else {
         bail!(
             "issue #{issue} has no stopped worker of {} on this host with a PR joining the \
              train; nothing was restarted",
@@ -323,9 +339,9 @@ It records the restart in the fleet's comment on the PR, then starts a new worke
 
 ## What it answers
 
-{"issue", "pr", "action": "restarted", "restarted", "terminal", "prompt"} — restarted is the time, in epoch seconds; prompt is the brief the new worker got.
+{"issue", "pr", "action": "restarted", "restarted", "terminal", "prompt"} — restarted is the time, in epoch seconds; prompt is the brief the new worker got. A worker gone — its terminal closed, or a bare shell whose harness exited — needs no nudge first: it is continued at once, as a tick would, and the answer is {"issue", "pr", "action": "continued", "terminal", "prompt"}; the PR's one restart is not taken.
 
-Errors, each with nothing changed: "has no stopped worker" — the instance holds no claim on the issue, its worker is at work or gone, or the issue has no open PR; "is not restarted" — the PR's landing worker already had its restart, the worker was not nudged yet, or it showed a sign of life within the grace period; the claim is another instance's.
+Errors, each with nothing changed: "has no stopped worker" — the instance holds no claim on the issue, its worker is at work, or the issue has no open PR; "is not restarted" — the PR's landing worker already had its restart, the worker was not nudged yet, or it showed a sign of life within the grace period; the claim is another instance's.
 
 ## What trips you up
 

@@ -1045,6 +1045,12 @@ afkconvoy-landing::standalone two_changes_land_in_one_round_through_one_pair_and
 # Checked alone on macstudio-jp: 7.06s (a land process waited on) and 4.96s (ticks of a busy fleet).
 afkconvoy::cli candidates::a_candidate_whose_issue_closed_during_validation_lands_nothing
 afkconvoy::cli cutting::an_operator_s_cut_now_starts_the_due_cut_at_the_next_tick_while_busy
+# Measured 2.3s, 2.4s and 3.0s in the fast gate on macstudio-jp: a login zsh on a pty of its own, and its harness stopped, continued or ended.
+afkconvoy foreground::tests::a_harness_stopped_and_continued_under_a_login_zsh_is_backgrounded_and_brought_back
+afkconvoy foreground::tests::an_undelivered_line_leaves_nothing_a_shell_reads_after_the_harness_exits
+afkconvoy::cli joining::a_bare_shell_its_harness_left_is_continued_by_restart_with_no_nudge
+# Checked alone on macstudio-jp: 7.31s (two landing turns over a gate that says the host is overloaded).
+afkconvoy::cli turns::a_base_tip_red_only_on_timeouts_under_overload_is_not_recorded_red
 # The stacked round (sunfmin/control#1140): each lands two rounds, one stacked on the other's whole gate; measured 11.8s, 7.3s for both standalone ones.
 afkconvoy::cli candidates::a_pr_ready_while_a_round_s_whole_gate_runs_stacks_on_its_root
 afkconvoy-landing::standalone a_change_asked_while_a_round_s_whole_gate_runs_stacks_on_its_root_and_runs_only_its_slow_gate
