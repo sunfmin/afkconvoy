@@ -81,16 +81,25 @@ fn waited_past(mut answer: Value, detail: String) -> Value {
 struct Waiting {
     seen: Option<Chain>,
     next: Duration,
+    waited: bool,
 }
 
 impl Waiting {
     fn new() -> Waiting {
-        Waiting { seen: None, next: EVERY }
+        Waiting { seen: None, next: EVERY, waited: false }
     }
 
     /// Waits after reading `chain`.
     fn after(&mut self, chain: &Chain) {
         std::thread::sleep(self.wait(chain));
+        self.waited = true;
+    }
+
+    /// How fresh the turn's next look at the chain must be: live once it
+    /// has waited since its last look, and as it knows it otherwise
+    /// (`Read`).
+    fn fresh(&mut self) -> Read {
+        if std::mem::take(&mut self.waited) { Read::Live } else { Read::Known }
     }
 
     /// How long to wait after reading `chain`.
@@ -121,14 +130,73 @@ fn refname(repo: &Repo, config: &Config) -> String {
     afkconvoy_landing::turn::record_ref(repo.layout(), &config.base_branch)
 }
 
+#[derive(Clone)]
 pub(crate) struct Snapshot {
     sha: Option<String>,
     base: String,
     pub chain: Chain,
 }
 
-fn read(repo: &Repo, config: &Config) -> Result<Snapshot> {
+/// How fresh a turn's read of the chain must be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Read {
+    /// Asked of the remote now: the first look of a turn, a look after it
+    /// waited — slept, gated, or waited for a lane — and every look a gate
+    /// makes while it runs, which is how a cancellation reaches it.
+    Live,
+    /// As this turn last read or wrote it (`Known`), where it has: the look
+    /// that follows a step of the turn, which waited on nothing since. The
+    /// remote is asked where this turn has not read it yet, or its last
+    /// write did not take. A step decides on it as on a live read made a
+    /// moment earlier: every write of the chain extends the record it was
+    /// read at, so one made on a chain another turn moved meanwhile is
+    /// refused, and the turn reads it live and edits it again (`change`).
+    Known,
+}
+
+/// The chain as this turn last read it live or wrote it, by the checkout
+/// and record ref it was read through: what a `Read::Known` look answers
+/// from. A write that took leaves what it wrote; one that did not, nothing.
+/// One land of a single PR asked the remote for its chain 31 times, each a
+/// `git ls-remote`, mostly to read again what it had just read or written
+/// (sunfmin/control#1158).
+struct Known;
+
+thread_local! {
+    static KNOWN: std::cell::RefCell<Option<(String, Snapshot)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+impl Known {
+    fn key(repo: &Repo, state_ref: &str) -> String {
+        format!("{}\n{state_ref}", repo.dir.display())
+    }
+
+    fn get(repo: &Repo, state_ref: &str) -> Option<Snapshot> {
+        let key = Known::key(repo, state_ref);
+        KNOWN.with_borrow(|known| {
+            known.as_ref().filter(|(at, _)| *at == key).map(|(_, snapshot)| snapshot.clone())
+        })
+    }
+
+    fn set(repo: &Repo, state_ref: &str, snapshot: &Snapshot) {
+        let key = Known::key(repo, state_ref);
+        KNOWN.with_borrow_mut(|known| *known = Some((key, snapshot.clone())));
+    }
+
+    fn forget() {
+        KNOWN.with_borrow_mut(|known| *known = None);
+    }
+}
+
+fn read(repo: &Repo, config: &Config, fresh: Read) -> Result<Snapshot> {
     let state_ref = refname(repo, config);
+    if fresh == Read::Known
+        && let Some(known) = Known::get(repo, &state_ref)
+    {
+        announce(&known.chain);
+        return Ok(known);
+    }
     let base_ref = format!("refs/heads/{}", config.base_branch);
     // Live: a write follows this read, and must start from the remote as it is.
     let refs = repo.remote().refs(&[&state_ref, &base_ref], Fresh::Live)?;
@@ -146,7 +214,9 @@ fn read(repo: &Repo, config: &Config) -> Result<Snapshot> {
         None => Chain::default(),
     };
     announce(&chain);
-    Ok(Snapshot { sha, base, chain })
+    let snapshot = Snapshot { sha, base, chain };
+    Known::set(repo, &state_ref, &snapshot);
+    Ok(snapshot)
 }
 
 thread_local! { static ANNOUNCED: std::cell::RefCell<Option<(afkconvoy_core::candidate::Validation, std::time::Instant)>> = const { std::cell::RefCell::new(None) }; }
@@ -188,7 +258,9 @@ fn announce(chain: &Chain) {
 /// once it held 258 candidates, and nothing landed (sunfmin/control#308).
 /// A candidate nothing holds any more is not carried on: the previous
 /// record, its first parent, keeps its commit reachable.
-fn commit(repo: &Repo, snapshot: &Snapshot) -> Result<String> {
+/// → the record's commit, and the snapshot the remote holds once it is
+/// written.
+fn commit(repo: &Repo, snapshot: &Snapshot) -> Result<(String, Snapshot)> {
     let tree = repo.git(&["hash-object", "-t", "tree", "/dev/null"])?;
     let mut chain = snapshot.chain.clone();
     chain.prune(released);
@@ -200,7 +272,9 @@ fn commit(repo: &Repo, snapshot: &Snapshot) -> Result<String> {
     for c in &chain.candidates {
         args.extend(["-p", &c.commit]);
     }
-    repo.git_with_input(&args, &text)
+    let next = repo.git_with_input(&args, &text)?;
+    let written = Snapshot { sha: Some(next.clone()), base: snapshot.base.clone(), chain };
+    Ok((next, written))
 }
 
 /// Nothing holds an ended candidate any more: its owner, a turn of this host,
@@ -212,14 +286,20 @@ fn released(c: &Candidate) -> bool {
     gone && !Path::new(&c.worktree).exists() && !crate::process_scope::path(&c.worktree).exists()
 }
 
+/// Writes `snapshot`'s chain as the record after the one it was read at →
+/// whether it took; `false` where another writer moved the record first.
+/// What it wrote is what this turn knows of the chain (`Known`); a write
+/// that did not take leaves it knowing nothing.
 fn write(repo: &Repo, config: &Config, snapshot: &Snapshot) -> Result<bool> {
-    let next = commit(repo, snapshot)?;
+    Known::forget();
+    let (next, written) = commit(repo, snapshot)?;
     let name = refname(repo, config);
     let moved = || Ok(repo.remote().sha(&name, Fresh::Process)? != snapshot.sha);
     // Tried again only while the remote's own fault refused the record
     // (sunfmin/control#246); a record moved meanwhile is contention.
     let pushed = repo.remote().try_push_retried(&Push::set(&next, &name), None, moved)?;
     if pushed.ok {
+        Known::set(repo, &name, &written);
         return Ok(true);
     }
     if moved()? {
@@ -228,12 +308,29 @@ fn write(repo: &Repo, config: &Config, snapshot: &Snapshot) -> Result<bool> {
     bail!("candidate record could not be written: {}; run land again", pushed.stderr.trim())
 }
 
+/// Edits the chain with `edit` and writes it → the chain as it then is.
+/// The edit starts from the chain this turn knows (`Read::Known`): where
+/// another turn moved it meanwhile the write is refused, and it starts
+/// again from the chain read live. An edit that changes nothing writes
+/// nothing, and is made again on the chain read live, unless that is what
+/// it was made on: what it answers is the chain as the remote holds it.
 fn change(repo: &Repo, config: &Config, mut edit: impl FnMut(&mut Chain)) -> Result<Chain> {
+    let mut known = Known::get(repo, &refname(repo, config));
     loop {
-        let mut snapshot = read(repo, config)?;
+        let (mut snapshot, was_known) = match known.take() {
+            Some(snapshot) => (snapshot, true),
+            None => (read(repo, config, Read::Live)?, false),
+        };
         let before = snapshot.chain.clone();
         edit(&mut snapshot.chain);
-        if before == snapshot.chain || write(repo, config, &snapshot)? {
+        if before == snapshot.chain {
+            if was_known {
+                continue;
+            }
+            announce(&snapshot.chain);
+            return Ok(snapshot.chain);
+        }
+        if write(repo, config, &snapshot)? {
             announce(&snapshot.chain);
             return Ok(snapshot.chain);
         }
@@ -812,7 +909,8 @@ fn confirmed(c: &Candidate, signalled: &Signalled) -> Result<()> {
 }
 
 fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
-    let chain = read(repo, config)?.chain;
+    // Live: what it signals is no write a moved chain refuses.
+    let chain = read(repo, config, Read::Live)?.chain;
     let c = chain
         .candidates
         .iter()
@@ -838,22 +936,18 @@ fn stop_candidate(repo: &Repo, config: &Config, id: &str) -> Result<()> {
 
 /// Invalidate the suffix atomically, signal ALL its gates, then confirm each
 /// exit. A slow root's cleanup cannot postpone signalling its descendants.
+///
+/// What it signals is no write a moved chain refuses: where `chain` names a
+/// candidate to stop, the chain is read live, and only what that names is
+/// stopped. Another turn may have stopped one meanwhile, its scope gone
+/// with its gate (`Read::Known`).
 fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
+    if to_stop(chain)?.is_empty() {
+        return Ok(());
+    }
+    let live = read(repo, config, Read::Live)?.chain;
     let mut signalled = vec![];
-    for c in
-        chain.candidates.iter().filter(|c| !c.stopped && !c.valid() && c.phase != Phase::Landed)
-    {
-        if c.owner.host != crate::this_host() || (c.gate.is_none() && alive(&c.owner)?) {
-            continue;
-        }
-        // A pair or stacked merge beside the chain is its live turn's to
-        // stop: its gate asks whether it was cancelled and stops itself, and
-        // its turn stops it as its gate returns. Signalled from here as well,
-        // as a red round's turn invalidates a stacked merge just stopping,
-        // its scope may go between the two (sunfmin/control#1140).
-        if c.is_pair() && alive(&c.owner)? {
-            continue;
-        }
+    for c in to_stop(&live)? {
         signalled.push((c.clone(), signal(repo, config, c)?));
     }
     for (c, found) in signalled {
@@ -873,6 +967,29 @@ fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
     Ok(())
 }
 
+/// The candidates of `chain` this turn's cleanup stops: each ended but not
+/// yet stopped, of this host, and with a gate or no live owner.
+fn to_stop(chain: &Chain) -> Result<Vec<&Candidate>> {
+    let mut stopping = vec![];
+    for c in
+        chain.candidates.iter().filter(|c| !c.stopped && !c.valid() && c.phase != Phase::Landed)
+    {
+        if c.owner.host != crate::this_host() || (c.gate.is_none() && alive(&c.owner)?) {
+            continue;
+        }
+        // A pair or stacked merge beside the chain is its live turn's to
+        // stop: its gate asks whether it was cancelled and stops itself, and
+        // its turn stops it as its gate returns. Signalled from here as well,
+        // as a red round's turn invalidates a stacked merge just stopping,
+        // its scope may go between the two (sunfmin/control#1140).
+        if c.is_pair() && alive(&c.owner)? {
+            continue;
+        }
+        stopping.push(c);
+    }
+    Ok(stopping)
+}
+
 pub(crate) fn invalidate(repo: &Repo, config: &Config, id: &str, cause: &str) -> Result<()> {
     let chain = change(repo, config, |chain| chain.invalidate(id, cause))?;
     cleanup(repo, config, &chain)
@@ -885,10 +1002,12 @@ pub(crate) fn invalidate(repo: &Repo, config: &Config, id: &str, cause: &str) ->
 /// drops this host's dead barriers and pending
 /// turns, and stops this host's invalid candidates (`cleanup`): its own too,
 /// when another host took it over while this one was away.
-fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
+fn reconcile(repo: &Repo, config: &Config, now: u64, fresh: Read) -> Result<Chain> {
     let here = crate::this_host();
+    let mut fresh = fresh;
     loop {
-        let snapshot = read(repo, config)?;
+        let snapshot = read(repo, config, fresh)?;
+        fresh = Read::Live;
         let mut updated = snapshot;
         let before = updated.chain.clone();
         updated.chain.beat(&here, now);
@@ -899,10 +1018,11 @@ fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
             }
         }
         let mut invalid = vec![];
-        for c in updated.chain.candidates.iter().filter(|c| c.valid()) {
-            if repo.remote().sha(&format!("refs/heads/{}", c.branch), Fresh::Live)?.as_deref()
-                != Some(&c.original_head)
-            {
+        let valid: Vec<&Candidate> =
+            updated.chain.candidates.iter().filter(|c| c.valid()).collect();
+        let heads = heads_of(repo, valid.iter().map(|c| c.branch.as_str()))?;
+        for c in valid {
+            if heads.get(&c.branch).map(String::as_str) != Some(c.original_head.as_str()) {
                 invalid.push((c.id.clone(), "head_changed"));
             } else if !c.adoptable() && !alive(&c.owner)? {
                 invalid.push((c.id.clone(), "owner_died"));
@@ -931,8 +1051,33 @@ fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
             continue;
         }
         cleanup(repo, config, &updated.chain)?;
-        return Ok(read(repo, config)?.chain);
+        // What it read, wrote, or cleanup wrote after it: nothing waited.
+        return Ok(read(repo, config, Read::Known)?.chain);
     }
+}
+
+/// The tip each of `branches` has on the remote now, by branch, in one
+/// read of the remote; a branch it does not have is absent.
+fn heads_of<'a>(
+    repo: &Repo,
+    branches: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<String, String>> {
+    let names: std::collections::BTreeSet<String> =
+        branches.into_iter().map(|branch| format!("refs/heads/{branch}")).collect();
+    if names.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let patterns: Vec<&str> = names.iter().map(String::as_str).collect();
+    Ok(repo
+        .remote()
+        .refs(&patterns, Fresh::Live)?
+        .into_iter()
+        .filter(|record| names.contains(&record.name))
+        .filter_map(|record| {
+            let branch = record.name.strip_prefix("refs/heads/")?.to_string();
+            Some((branch, record.sha))
+        })
+        .collect())
 }
 
 /// The hosts but `here` that own a member of `chain` and stamped it no
@@ -1015,7 +1160,7 @@ impl Gate<'_> {
     }
 
     pub fn scope(&self) -> Result<std::path::PathBuf> {
-        let chain = read(self.repo, self.config)?.chain;
+        let chain = read(self.repo, self.config, Read::Known)?.chain;
         let candidate = chain
             .candidates
             .iter()
@@ -1066,7 +1211,8 @@ impl Gate<'_> {
     }
 
     pub fn cancelled(&self) -> Result<bool> {
-        let chain = reconcile(self.repo, self.config, (self.clock)())?;
+        // Asked live at each look: a cancellation reaches the gate so.
+        let chain = reconcile(self.repo, self.config, (self.clock)(), Read::Live)?;
         Ok(!chain.candidates.iter().any(|c| c.id == self.id && c.valid()))
     }
 }
@@ -1377,7 +1523,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     }
     let root = prepare_worktree_root(repo)?;
     let barrier = !locks.is_empty() || !matches!(of, Of::Issue(_));
-    let starting = read(repo, config)?;
+    let starting = read(repo, config, Read::Live)?;
     let base_config = crate::turn::tip_config(repo, &starting.base)?;
     let heavy = crate::config::heavy_gate(&config.gate_command)
         || crate::config::heavy_gate(&base_config.gate_command)
@@ -1445,7 +1591,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let _reservation = Reservation { repo, config, id: id.clone() };
     // A fast-green candidate's gate is confirmed gone, so a later turn of its
     // PR can own its immutable evidence without cancelling its successors.
-    let existing = read(repo, config)?
+    let existing = read(repo, config, Read::Known)?
         .chain
         .candidates
         .iter()
@@ -1477,7 +1623,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     // another invocation of this PR. Dead owners are reconciled first.
     let mut waiting = Waiting::new();
     loop {
-        let mut chain = reconcile(repo, config, clock())?;
+        let mut chain = reconcile(repo, config, clock(), waiting.fresh())?;
         // Another host read this one dead while it was away — it slept, or
         // lost the network — and dropped its place: it takes one again, at
         // the back.
@@ -1588,7 +1734,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 return Ok(crate::turn::locked(answer, &locks));
             }
             let barrier = barrier || !locks.is_empty();
-            let mut snapshot = read(repo, config)?;
+            // Live: it may have waited for its lane.
+            let mut snapshot = read(repo, config, Read::Live)?;
             let current = snapshot.base.clone();
             if snapshot.chain.chained().into_iter().any(|c| c.change == pr.number && c.active()) {
                 answer["outcome"] = json!(Ending::CandidateActive);
@@ -1741,7 +1888,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     };
     let mut result = if rooted { answer.clone() } else { answered(&evidence, &answer) };
     let chain = if recovering || rooted {
-        read(repo, config)?.chain
+        read(repo, config, Read::Known)?.chain
     } else {
         let chain = change(repo, config, |chain| chain.finish(&id, evidence.clone()))?;
         cleanup(repo, config, &chain)?;
@@ -1785,7 +1932,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     };
     let mut waiting = Waiting::new();
     loop {
-        let chain = reconcile(repo, config, clock())?;
+        let chain = reconcile(repo, config, clock(), waiting.fresh())?;
         let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
         let next = chain.next(&id).expect("assigned candidate");
         // A round at a candidate behind this one may have landed it.
@@ -1815,7 +1962,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 return Ok(result);
             }
             // Its answer says what the round's whole gate said of its tree.
-            let chain = read(repo, config)?.chain;
+            let chain = read(repo, config, Read::Known)?.chain;
             let ran = chain.candidates.iter().find(|c| c.id == id).and_then(|c| c.result.clone());
             if let Some(evidence) = ran {
                 result = answered(&evidence, &result);
@@ -1865,7 +2012,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             invalidate(repo, config, &id, "pr_base_changed")?;
             return Err(error);
         }
-        let mut snapshot = read(repo, config)?;
+        let mut snapshot = read(repo, config, Read::Known)?;
         let members: Vec<Candidate> = snapshot.chain.members(&id).into_iter().cloned().collect();
         let Some(c) = members.last() else {
             bail!("candidate record disappeared");
@@ -1874,14 +2021,13 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         let whole = GateCommand::new(afkconvoy_landing::turn::whole(c));
         let tree = Tree::named(&c.tree);
         let run = crate::gate::recorded(repo, &tree, &whole, clock())?;
-        let mut heads = true;
-        for m in &members {
-            let head = repo.remote().sha(&format!("refs/heads/{}", m.branch), Fresh::Live)?;
-            heads &= head.as_deref() == Some(&m.original_head);
-        }
+        let tips = heads_of(repo, members.iter().map(|m| m.branch.as_str()))?;
+        let heads = members
+            .iter()
+            .all(|m| tips.get(&m.branch).map(String::as_str) == Some(m.original_head.as_str()));
         let Some(publication) = snapshot.chain.publication(&id, &base, run.is_some(), heads) else {
             invalidate(repo, config, &id, "publication_evidence_changed")?;
-            let chain = read(repo, config)?.chain;
+            let chain = read(repo, config, Read::Known)?.chain;
             let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
             return Ok(cancelled(result, c, &chain));
         };
@@ -1890,9 +2036,12 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             .ok_or_else(|| anyhow!("candidate green record expired"))?;
         let landed = c.commit.clone();
         snapshot.chain.land(&id);
-        let next = commit(repo, &snapshot)?;
+        let (next, written) = commit(repo, &snapshot)?;
+        Known::forget();
         let pushed = publish(repo, config, &members, &snapshot, &next, &proof, &publication)?;
-        if !pushed {
+        if pushed {
+            Known::set(repo, &refname(repo, config), &Snapshot { base: landed.clone(), ..written });
+        } else {
             if crate::turn::base(repo, config)? != base {
                 continue;
             }
@@ -1969,7 +2118,7 @@ fn in_round(
     let me = identity(std::process::id())?.context("cannot identify turn owner")?;
     let mut waiting = Waiting::new();
     loop {
-        let mut chain = reconcile(repo, config, clock())?;
+        let mut chain = reconcile(repo, config, clock(), waiting.fresh())?;
         // No gate of this turn runs between its steps: a pair or stacked
         // merge of it that ended unstarted has no process to wait for.
         let unstarted = |c: &Candidate| {
@@ -2064,7 +2213,7 @@ fn in_round(
 /// PRs it carried.
 fn carry_held(turn: &InRound<'_>, head: &str) -> Result<Vec<u64>> {
     let InRound { repo, config, gh, forge, asked, pr, .. } = *turn;
-    let base = read(repo, config)?.base;
+    let base = read(repo, config, Read::Known)?.base;
     let holds = |head: &str, other: &str| -> Result<bool> {
         Ok(repo.try_git(&["merge-base", "--is-ancestor", other, head])?.ok)
     };
@@ -2301,7 +2450,11 @@ fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
         // discarded (sunfmin/control#1140) — it ends with nothing to say:
         // the round carries on without it.
         Err(_)
-            if read(repo, config)?.chain.candidates.iter().any(|c| c.id == pair && !c.valid()) =>
+            if read(repo, config, Read::Live)?
+                .chain
+                .candidates
+                .iter()
+                .any(|c| c.id == pair && !c.valid()) =>
         {
             stop_candidate(repo, config, pair)?;
             remove_ended_run(repo, &path, &p.worktree);
@@ -2328,7 +2481,7 @@ fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
 fn assign_rooted(turn: &InRound<'_>, mut answer: Value) -> Result<Option<Rounded>> {
     let InRound { repo, config, forge, asked, pr, of, id, original, root, heavy, clock, .. } =
         *turn;
-    let mut snapshot = read(repo, config)?;
+    let mut snapshot = read(repo, config, Read::Known)?;
     let current = snapshot.base.clone();
     let declared = crate::turn::tip_config(repo, &current)?;
     let base_command = GateCommand::new(&declared.gate_command);

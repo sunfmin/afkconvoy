@@ -1257,8 +1257,10 @@ impl Worktree {
     /// landed, before settling removes the worktree: its terminals and
     /// process tree, confirmed gone. One not yet confirmed is `Unconfirmed`,
     /// not an error: settling waits for it, and a later tick tries again.
-    pub(crate) fn end_settled(&self) -> Result<Ended> {
-        self.end_worker("tick", "a later tick removes it")
+    /// → with it, the listing of the host's processes that confirmed the
+    /// end, where it signalled none: what else is here is read from it.
+    pub(crate) fn end_settled(&self) -> Result<(Ended, Option<Vec<crate::hot::Proc>>)> {
+        self.ending_worker("tick", "a later tick removes it")
     }
 
     /// Ends each stopped orphan working here, and what it started
@@ -1266,12 +1268,21 @@ impl Worktree {
     /// delivered, then SIGKILL a second later. Each one ended is a line of
     /// the tick log. One still there after five seconds is left: settling
     /// waits on it as on any process in the worktree (sunfmin/control#837).
-    pub(crate) fn end_stopped_orphans(&self) -> Result<()> {
+    /// Its first look is `listed` where one is given, read just now.
+    /// → the listing of the host's processes it found none in, where it
+    /// ended none: what is still working here is read from it, not again.
+    pub(crate) fn end_stopped_orphans(
+        &self,
+        mut listed: Option<Vec<crate::hot::Proc>>,
+    ) -> Result<Option<Vec<crate::hot::Proc>>> {
         let clock = TerminationTime::new();
         let until = clock.now() + Duration::from_secs(5);
         let mut ending = BTreeMap::<u32, Ending>::new();
         loop {
-            let processes = crate::hot::listed_checked()?;
+            let processes = match listed.take() {
+                Some(processes) => processes,
+                None => crate::hot::listed_checked()?,
+            };
             let orphans = crate::hot::stopped_orphans(&processes, &self.path)?;
             for proc in &processes {
                 let under = ending.contains_key(&proc.ppid);
@@ -1295,8 +1306,11 @@ impl Worktree {
                 }
             }
             let left = processes.iter().any(|proc| ending.contains_key(&proc.pid));
+            if ending.is_empty() {
+                return Ok(Some(processes));
+            }
             if !left || clock.now() >= until {
-                return Ok(());
+                return Ok(None);
             }
             clock.sleep(Duration::from_millis(100));
         }
@@ -1307,14 +1321,30 @@ impl Worktree {
     /// `consequence`. Each process ended is a line of the tick log, under
     /// `command`.
     fn end_worker(&self, command: &str, consequence: &str) -> Result<Ended> {
+        Ok(self.ending_worker(command, consequence)?.0)
+    }
+
+    /// `end_worker`, with the listing that confirmed the end where it
+    /// signalled no process: nothing it did changed it.
+    fn ending_worker(
+        &self,
+        command: &str,
+        consequence: &str,
+    ) -> Result<(Ended, Option<Vec<crate::hot::Proc>>)> {
         let before = crate::hot::listed_checked()?;
         let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
-        self.close_terminals()?;
+        let closed = self.close_any()?;
         let clock = TerminationTime::new();
         let until = clock.now() + Duration::from_secs(5);
         let mut ending = BTreeMap::<u32, Ending>::new();
+        // Where there was no terminal to close and no process of the worker
+        // to end, the listing before is the one after: nothing was closed.
+        let mut unchanged = (!closed && pids.is_empty()).then_some(before);
         loop {
-            let processes = crate::hot::listed_checked()?;
+            let processes = match unchanged.take() {
+                Some(processes) => processes,
+                None => crate::hot::listed_checked()?,
+            };
             let writers = crate::hot::tree(&processes, &self.path);
             for proc in &processes {
                 if pids.contains(&proc.pid)
@@ -1346,7 +1376,7 @@ impl Worktree {
             let agents = report["agents"].as_array();
             let agent_alive = agents.is_some_and(|agents| agents.iter().any(agent_running));
             if self.terminal()?.is_none() && writers.is_empty() && !old_alive && !agent_alive {
-                return Ok(Ended::Confirmed);
+                return Ok((Ended::Confirmed, ending.is_empty().then_some(processes)));
             }
             if clock.now() >= until {
                 let survivors = ending
@@ -1358,15 +1388,18 @@ impl Worktree {
                     })
                     .collect::<Vec<_>>()
                     .join("; ");
-                return Ok(Ended::Unconfirmed(format!(
-                    "old worker termination is unconfirmed in {}; {consequence}{}",
-                    self.path.display(),
-                    if survivors.is_empty() {
-                        String::new()
-                    } else {
-                        format!("; survived SIGKILL: {survivors}")
-                    }
-                )));
+                return Ok((
+                    Ended::Unconfirmed(format!(
+                        "old worker termination is unconfirmed in {}; {consequence}{}",
+                        self.path.display(),
+                        if survivors.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; survived SIGKILL: {survivors}")
+                        }
+                    )),
+                    None,
+                ));
             }
             clock.sleep(Duration::from_millis(100));
         }
@@ -2045,7 +2078,7 @@ impl Worktree {
     /// as on a host that cannot see its harness. Only what is seen holds a
     /// line back.
     pub(crate) fn holds(&self) -> Result<Holds> {
-        let Ok(procs) = crate::hot::listed_checked() else { return Ok(Holds::Unseen) };
+        let Ok(procs) = crate::hot::on_terminals() else { return Ok(Holds::Unseen) };
         let Ok(holds) = crate::foreground::holds(&procs, &self.path) else {
             return Ok(Holds::Unseen);
         };
@@ -2069,7 +2102,7 @@ impl Worktree {
     /// shell: its harness gone, and the shell that started it there still.
     pub(crate) fn bare_shell(&self) -> Result<bool> {
         let Some(tty) = self.seen_tty() else { return Ok(false) };
-        let Ok(procs) = crate::hot::listed_checked() else { return Ok(false) };
+        let Ok(procs) = crate::hot::on_terminals() else { return Ok(false) };
         Ok(crate::foreground::bare_shell(&procs, &self.path, &tty).unwrap_or(false))
     }
 
