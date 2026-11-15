@@ -298,7 +298,7 @@ A repo whose config names a team is a bound repo, and answers three keys more: {
 
 Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?, "minor_paths"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored. Optional `minor_paths`, a list such as `["decisions/"]`, makes a cut minor where a PR landed since the newest tag adds or changes a file under one of them (`afkconvoy cut --help`). Where it splits its gate, one more: {"gates": {"fast", "slow"}}, each {"command", "seconds", "budget_seconds"}.
 
-Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish`, `initial`, `busy_after_seconds` and `minor_paths`, lacks a required step, a step names nothing to run, `initial` is not X.Y.Z, or `minor_paths` names an empty path; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml heavy-commands block has a key but `commands`, an empty pattern or one declared twice; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout", or git's own words for a checkout it refuses.
+Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish`, `initial`, `busy_after_seconds` and `minor_paths`, lacks a required step, a step names nothing to run, `initial` is not X.Y.Z, or `minor_paths` names an empty path; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml heavy-commands block has a key but `commands`, an empty pattern or one declared twice; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; a `landing`, which a config says no more: every round lands through a pairing tree, and the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout", or git's own words for a checkout it refuses.
 
 ## What trips you up
 
@@ -408,6 +408,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(valid.gate_budget_seconds, Some(600));
+    }
+
+    #[test]
+    fn a_landing_key_is_refused_with_the_pairing_tree_adr() {
+        let said = format!(
+            "{:#}",
+            parse("```yaml\nbase_branch: main\ngate_command: make\nlanding: batch\n```\n")
+                .unwrap_err()
+        );
+        assert!(said.contains("docs/adr/0083"), "{said}");
+        assert!(said.contains("delete the line `landing: batch`"), "{said}");
     }
 
     #[test]
