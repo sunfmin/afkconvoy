@@ -482,8 +482,12 @@ An immutable merge of a PR's original head onto its assigned predecessor, valida
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:
-The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed. It holds at most one valid candidate of a change: a change asked to land again takes up the one it has, where it was merged from the change's head now. A candidate is wedged once it stood valid past its whole gate's seconds.
+The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed. It holds at most one valid candidate of a change: a change asked to land again takes up the one it has, where it was merged from the change's head now. A candidate is wedged once it stood valid past its whole gate's seconds. A chain is **piled** while this host's `land` turns of its repo answered `speculative_conflict` in the last hour three times or more and more often than `merged`: a turn then stacks on no other PR's candidate, and each lands alone on the base, oldest first, until the landings catch up (sunfmin/control#1112).
 _Avoid_: landing train, speculative queue
+
+**Landing heartbeat**:
+A landing within the last 45 minutes, while green work waits: a valid candidate fast-green or gating, or `land` turns asked since the last landing. A fleet whose green work waited past that with none is stalled, `doctor`'s critical `landing_stalled`, which names the waiting PRs and tallies the last 20 `land` turns by outcome; the host's watch takes it as a stall to resolve, not fleet work to wait out.
+_Avoid_: landing timeout, train health
 
 **Round**:
 One run of the slow gate on a candidate chain's tip, once every PR that asked to land is a fast-green candidate, that lands every candidate up to the tip together. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.
