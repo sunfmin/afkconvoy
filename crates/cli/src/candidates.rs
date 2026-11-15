@@ -301,9 +301,9 @@ pub(crate) fn view(
     Ok(json!(rows))
 }
 
-/// Whether a land turn of `branch` holds a candidate on the chain now: a
-/// valid one of that branch, in `records`, whose turn runs on this host and
-/// is alive. Such a turn waits on the chain — its gate, the candidates ahead,
+/// Whether a land turn of `branch` holds a candidate on the chain now — a
+/// valid one of that branch, in `records`, a pair among them — or is in a
+/// round, whose turn runs on this host and is alive. Such a turn waits on the chain — its gate, the candidates ahead,
 /// its round — however long that takes, and holds no lane while it waits for
 /// its round (sunfmin/control#244).
 pub(crate) fn landing(records: &[crate::remote::RemoteRecord], prefix: &str, branch: &str) -> bool {
@@ -311,14 +311,17 @@ pub(crate) fn landing(records: &[crate::remote::RemoteRecord], prefix: &str, bra
         .iter()
         .filter(|record| record.name.starts_with(prefix))
         .filter_map(|record| serde_json::from_str::<Chain>(&record.subject).ok());
+    let live = |owner: &Process| {
+        owner.host == crate::this_host()
+            && identity(owner.pid).ok().flatten().as_ref() == Some(owner)
+    };
     chains.into_iter().any(|chain| {
-        chain.candidates.iter().any(|c| {
-            c.valid()
-                && c.phase != Phase::Landed
-                && c.branch == branch
-                && c.owner.host == crate::this_host()
-                && identity(c.owner.pid).ok().flatten().as_ref() == Some(&c.owner)
-        })
+        let asked = chain.round.iter().flat_map(|r| &r.asked);
+        chain
+            .candidates
+            .iter()
+            .any(|c| c.valid() && c.phase != Phase::Landed && c.branch == branch && live(&c.owner))
+            || asked.into_iter().any(|a| a.asks.branch == branch && live(&a.owner))
     })
 }
 
@@ -1681,6 +1684,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             }
         }
     };
+    // A round may take up a candidate this PR's earlier turn left.
+    let id = candidate.id.clone();
     answer["candidate"] = json!(id);
     answer["merged"] = json!(candidate.predecessor);
     answer["predecessor"] = json!(candidate.predecessor);
@@ -2068,7 +2073,7 @@ fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
 /// round carry on from what it said.
 fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
     let InRound { repo, config, root, host, issue, heavy, clock, .. } = *turn;
-    let _lane = Permit::take(repo, "turn: a pair's fast gate", heavy, true)?;
+    let _lane = Permit::candidate(repo, "turn: a pair's fast gate", heavy)?;
     // Whichever host paired it, its worktree is this host's.
     let path = root.join(pair);
     let mut started = None;
@@ -2249,8 +2254,7 @@ fn whole(round: Round<'_>, clock: &dyn Fn() -> u64) -> Result<Option<Value>> {
                 let checkout = Repo::new(path.clone());
                 let fast = GateCommand::new(&tip.command);
                 let ran = {
-                    let _lane =
-                        Permit::take(repo, "turn: a round's whole gate, fast", heavy, true)?;
+                    let _lane = Permit::candidate(repo, "turn: a round's whole gate, fast", heavy)?;
                     let hook = Gate { repo, config, id, slow: false, clock };
                     let limit = Duration::from_secs(tip.seconds);
                     crate::gate::candidate_gate(

@@ -217,6 +217,12 @@ impl Permit {
         Self::acquire_until(repo, command, heavy, true, true, None, Some(until))
     }
 
+    /// A candidate's lane, waited for as long as it takes: a gate of a
+    /// round's pair, or the fast part of its whole gate (docs/adr/0082).
+    pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, true, true, None)
+    }
+
     /// A cut's gate of its own commit (docs/adr/0028), in a worker lane. Its
     /// worktree holds one commit nothing moves while it runs, as a
     /// candidate's does: it shares its repo with candidates, and so holds no
