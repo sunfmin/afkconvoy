@@ -409,7 +409,12 @@ impl<N: Clone> Chain<N> {
         if let Some((alone, with)) = &carried {
             let mut both: Vec<u64> = alone.changes.iter().chain(&with.changes).copied().collect();
             both.sort_by_key(|&change| r.place(change));
-            let mine = alone.changes.iter().copied().max_by_key(|&change| r.place(change));
+            let mine = alone
+                .changes
+                .iter()
+                .copied()
+                .filter(|&change| r.ask(change).is_some())
+                .max_by_key(|&change| r.place(change));
             if let Some(carrier) = mine {
                 let carry = Carry {
                     pair: None,
@@ -436,7 +441,11 @@ impl<N: Clone> Chain<N> {
             let mut joins: Vec<u64> =
                 first.changes.iter().chain(&second.changes).copied().collect();
             joins.sort_by_key(|&change| r.place(change));
-            let Some(owner) = joins.last().and_then(|&change| r.ask(change)) else { continue };
+            // The later-asked PR still in the round: one whose turn ended has no
+            // place, and sorts last.
+            let Some(owner) = joins.iter().rev().find_map(|&change| r.ask(change)) else {
+                continue;
+            };
             let id = self.unused_id(format!(
                 "{}-{level}-{}",
                 r.id,
@@ -1022,5 +1031,23 @@ mod tests {
         let p = chain.candidates.iter().find(|c| c.id == pair_id).unwrap();
         assert_eq!(p.cause.as_deref(), Some("owner_died"));
         assert_eq!(root(&chain).unwrap().changes, [1]);
+    }
+
+    #[test]
+    fn a_pair_whose_earlier_pr_left_after_its_gate_still_pairs_at_the_next_level() {
+        let mut chain = asking(4);
+        chain.open_round("r");
+        pair(&mut chain, |_, _| true);
+        for (_, id) in gating(&chain) {
+            gate(&mut chain, &id, true);
+        }
+        chain.leave_round(|a| a.asks.change == 1);
+        chain.advance_round();
+        let level = chain.round.as_ref().unwrap().level;
+        pair(&mut chain, |_, _| true);
+        let round = chain.round.as_ref().unwrap();
+        assert_eq!(round.level, level, "the level is paired, not skipped");
+        let owners: Vec<u64> = gating(&chain).into_iter().map(|(change, _)| change).collect();
+        assert_eq!(owners, [4]);
     }
 }
