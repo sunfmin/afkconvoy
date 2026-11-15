@@ -462,12 +462,10 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Vec<Pro
     }
     loop {
         let all = crate::hot::listed_checked()?;
+        let spared = spared(candidate.owner.pid);
         let mut found = vec![];
         for p in &all {
-            if p.pid == candidate.owner.pid
-                || p.pid == std::process::id()
-                || frozen.owned.iter().any(|known| known.pid == p.pid)
-            {
+            if spared.contains(&p.pid) || frozen.owned.iter().any(|known| known.pid == p.pid) {
                 continue;
             }
             if frozen.owned.iter().any(|known| known.pid == p.ppid)
@@ -622,9 +620,9 @@ impl Exiting for Stopped<'_> {
 
     fn kill(&mut self) -> Result<()> {
         if self.scope.exists() && !crate::process_scope::free(self.scope)? {
+            let spared = spared(self.owner);
             for p in crate::hot::listed_checked()? {
-                if p.pid == self.owner
-                    || p.pid == std::process::id()
+                if spared.contains(&p.pid)
                     || self.holders.iter().any(|known| known.pid == p.pid)
                     || !crate::process_scope::owns(p.pid, self.scope)?
                 {
@@ -645,6 +643,17 @@ impl Exiting for Stopped<'_> {
         }
         Ok(())
     }
+}
+
+/// The processes a candidate's freeze and kill never signal, whatever they
+/// hold: the turn that owns the candidate, `owner`, this process, and this
+/// host's runner and its keeper, which may look at the scope as they free a
+/// lane (sunfmin/control#1096).
+fn spared(owner: u32) -> Vec<u32> {
+    [Some(owner), Some(std::process::id()), crate::host_runner::pid(), crate::host_runner::keeper()]
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// Confirms candidate `c`'s killed `processes`, and its process scope, gone:
@@ -1986,5 +1995,56 @@ mod tests {
         assert_eq!(confirmed, Ok(()));
         assert!(began.elapsed() < Duration::from_secs(15), "{:?}", began.elapsed());
         assert!(crate::process_scope::free(&scope).unwrap());
+    }
+
+    /// A process only looking at a candidate's scope — the host runner, as
+    /// it frees a lane, has it open for reading — is no holder of it: a
+    /// candidate stopped from another process kills the gate's holder and
+    /// leaves the looker alive (sunfmin/control#1096).
+    #[test]
+    fn a_process_looking_at_a_candidates_scope_is_never_killed_as_its_holder() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("w.processes");
+        let mut gate = std::process::Command::new("sh");
+        gate.args(["-c", "while :; do sleep 1; done"]);
+        let parent = crate::process_scope::create(&scope, &mut gate).unwrap();
+        let mut holder = gate.spawn().unwrap();
+        drop(parent);
+        let mut looker = std::process::Command::new("sh")
+            .args(["-c", "exec 3<\"$1\"; touch \"$1.looking\"; while :; do sleep 1; done", "sh"])
+            .arg(&scope)
+            .spawn()
+            .unwrap();
+        let looking = dir.path().join("w.processes.looking");
+        let began = std::time::Instant::now();
+        while !looking.exists() {
+            assert!(began.elapsed() < Duration::from_secs(10), "the looker never opened it");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let looks = crate::process_scope::owns(looker.id(), &scope).unwrap();
+        let holds = crate::process_scope::owns(holder.id(), &scope).unwrap();
+        let mut stopped =
+            super::Stopped { processes: &[], scope: &scope, owner: 0, holders: vec![] };
+        let mut clock = || {
+            std::thread::sleep(Duration::from_millis(10));
+            began.elapsed()
+        };
+        let confirmed = super::awaited(
+            &mut stopped,
+            Duration::from_secs(60),
+            Duration::from_secs(1),
+            &mut clock,
+        )
+        .unwrap();
+        let _ = holder.kill();
+        let _ = holder.wait();
+        let survived = looker.try_wait().unwrap().is_none();
+        let _ = looker.kill();
+        let _ = looker.wait();
+        assert!(!looks, "a look is no hold");
+        assert!(holds, "the gate's inherited descriptor is a hold");
+        assert_eq!(confirmed, Ok(()));
+        assert!(survived, "the process looking at the scope was killed");
     }
 }
