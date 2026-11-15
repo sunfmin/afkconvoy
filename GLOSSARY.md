@@ -73,7 +73,7 @@ A repository's one way to read and write the remote's refs. A read names how fre
 _Avoid_: remote cache, ref cache
 
 **Fetch lock**:
-The lock in a repository's git dir that every fetch of the fleet into its one object store takes, so the lands, reads and gates of all its worktrees fetch one at a time: a land that wants a commit another is fetching waits for that fetch and finds the commit there. A fetch that fails on a corrupt pack is made again once with `--refetch`; one that fails so again is noted, `doctor` names it, and fetches wait out a backoff that doubles from a minute to half an hour until one succeeds. git's own maintenance and auto-gc are off for a fleet's checkout; each tick repacks it under the fetch lock, only while nothing fetches (ADR-0079).
+The lock in a repository's git dir that every fetch of the fleet into its one object store takes, so the lands, reads and gates of all its worktrees fetch one at a time: a land that wants a commit another is fetching waits for that fetch and finds the commit there. A fetch that fails on a corrupt pack is made again once with `--refetch`; one that fails so again is noted, `doctor` names it, and the fetches that bring a commit wait out a backoff that doubles from a minute to half an hour until one succeeds. git's own maintenance and auto-gc are off for a fleet's checkout; each tick repacks it under the fetch lock, only while nothing fetches (ADR-0079).
 _Avoid_: fetch cache, git lock (git's own `index.lock` and ref locks)
 
 **Fleet state**:

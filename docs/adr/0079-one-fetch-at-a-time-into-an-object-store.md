@@ -28,7 +28,8 @@ failure, a bad object — is made again once with `--refetch`, which asks for
 everything anew. One that fails so again is noted in the git dir with its
 ref, its error, when the failures began and how many there were. Until its
 backoff ends — a minute, doubled with each failure after, at most half an
-hour — no fetch into that store is made; each says what it waits for. The
+hour — no land or read that brings a commit into that store fetches; each
+says what it waits for. The
 next fetch that succeeds clears the note. While it stands, `doctor` reports
 `a fetch of the remote keeps failing corrupt`, whose fix is the fetch by
 hand with `--refetch`.
