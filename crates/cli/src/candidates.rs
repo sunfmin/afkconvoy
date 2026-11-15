@@ -1939,7 +1939,6 @@ mod tests {
     /// they keep: the turn answers `lane_occupied`, not an error.
     #[test]
     fn processes_that_never_exit_end_the_turn_as_lane_occupied_naming_the_lane_and_pids() {
-        use std::time::Duration;
         let mut dying = dying(None);
         let pids = awaited(&mut dying, super::exit_bound(0, 16)).unwrap_err();
         assert_eq!(pids, [41, 42]);
