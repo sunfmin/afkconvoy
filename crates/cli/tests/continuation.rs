@@ -101,7 +101,7 @@ impl Escaped {
 
     fn in_directory(world: &World, worktree: &Path, dir: &Path, ignores_term: bool) -> Self {
         let ready = dir.join("escaped-ready");
-        let mut child = Command::new(std::env::current_exe().unwrap())
+        let mut child = common::on_no_terminal(&mut Command::new(std::env::current_exe().unwrap()))
             .args(["--exact", "continuation::escaped_helper", "--ignored"])
             .current_dir(dir)
             .env("TMPDIR", world.tmp(worktree))
@@ -173,7 +173,7 @@ struct Orphan(u32);
 impl Orphan {
     fn start(world: &World, worktree: &Path, cwd: &Path) -> Self {
         let ready = cwd.join("orphan-ready");
-        let status = Command::new(std::env::current_exe().unwrap())
+        let status = common::on_no_terminal(&mut Command::new(std::env::current_exe().unwrap()))
             .args(["--exact", "continuation::orphan_launcher", "--ignored"])
             .current_dir(cwd)
             .env("TMPDIR", world.tmp(worktree))

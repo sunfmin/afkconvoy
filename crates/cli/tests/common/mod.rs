@@ -162,6 +162,24 @@ pub fn codex_line(_world: &World, dir: &Path) -> String {
     Harness::Codex.guarded(&command, "", "", &terminal_guard())
 }
 
+/// `command`, a stand-in for a worker's process, started on no terminal: in a
+/// session of its own, as a harness is on the terminal orca opens for it, and
+/// never on whatever terminal the test runs from. A test run from a terminal
+/// whose foreground is another process group would otherwise see its
+/// stand-in as a harness resumed in the background (`foreground::holds`), and
+/// no line would be typed at it (sunfmin/control#1154).
+pub fn on_no_terminal(command: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: between fork and exec this calls only setsid, which is
+    // async-signal-safe.
+    unsafe {
+        command.pre_exec(|| match libc::setsid() {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        })
+    }
+}
+
 /// A Claude Code launch as an unbound worker receives it, with worktree trust.
 pub fn trusted(command: &str) -> String {
     let harness = afkconvoy_core::harness::Harness::ClaudeCode;

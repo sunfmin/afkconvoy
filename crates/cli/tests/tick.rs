@@ -896,21 +896,7 @@ impl Session {
     pub(crate) fn start(world: &World, worktree: &Path) -> Self {
         // Not a system binary: `ps` reads the environment of this one.
         let ready = worktree.join(".afkconvoy-tmp/session-ready");
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        // A session of its own, with no terminal: orca's harness holds its
-        // terminal, and this one must not inherit the terminal of whatever
-        // runs the tests, where it is no foreground job (a cut under the host
-        // runner) and so looks like a harness resumed in the background.
-        // SAFETY: setsid alone runs between fork and exec.
-        unsafe {
-            std::os::unix::process::CommandExt::pre_exec(&mut command, || {
-                if libc::setsid() < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut child = command
+        let mut child = common::on_no_terminal(&mut Command::new(std::env::current_exe().unwrap()))
             .args(["--exact", "tick::session_helper", "--ignored"])
             .current_dir(worktree)
             .env("TMPDIR", world.tmp(worktree))
