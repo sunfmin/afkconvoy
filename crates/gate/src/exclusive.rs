@@ -240,7 +240,7 @@ pub fn excludes<N>(held: &Ticket<N>, asking: &Ticket<N>) -> bool {
 }
 
 pub fn ready<N>(queue: &[Ticket<N>], number: u64, lanes: Lanes) -> bool {
-    scheduling(queue, lanes, false)
+    scheduling(queue, lanes, Halt::default())
         .iter()
         .any(|request| request.number == number && matches!(request.state, State::Eligible))
 }
@@ -279,6 +279,25 @@ pub enum ConstraintKind {
     RepoCapacity,
     FastCapacity,
     Paused,
+    Disk,
+}
+
+/// The disk the host builds on, under the floor its builds need kept free:
+/// bytes free, and that floor. The embedder derives the floor; the queue
+/// only refuses new grants beneath it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Low {
+    pub free: u64,
+    pub floor: u64,
+}
+
+/// What holds every new grant back, whatever the lanes: a pause for a move
+/// to another holder, or a disk under its floor. Running commands keep
+/// their lanes either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Halt {
+    pub paused: bool,
+    pub disk: Option<Low>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -291,8 +310,9 @@ pub struct Scheduling {
 /// Interpret every request with the very same reservations used to grant a
 /// lane, with cuts before ordinary waiters. A same-repo waiter reserves nothing. Turns exclude each other
 /// across worker and repo lanes too; fast gates of one repo do not exclude
-/// each other. Pausing prevents every new grant.
-pub fn scheduling<N>(queue: &[Ticket<N>], lanes: Lanes, paused: bool) -> Vec<Scheduling> {
+/// each other. Pausing prevents every new grant, and so does a disk under its
+/// floor (`Halt::disk`).
+pub fn scheduling<N>(queue: &[Ticket<N>], lanes: Lanes, halt: Halt) -> Vec<Scheduling> {
     let mut ordered: Vec<&Ticket<N>> = queue.iter().collect();
     ordered.sort_by_key(|ticket| place(ticket));
     let mut admitted: Vec<&Ticket<N>> = ordered.iter().copied().filter(|t| t.running()).collect();
@@ -301,7 +321,7 @@ pub fn scheduling<N>(queue: &[Ticket<N>], lanes: Lanes, paused: bool) -> Vec<Sch
         .map(|ticket| Scheduling { number: ticket.number, state: State::Running, reasons: vec![] })
         .collect();
     for ticket in ordered.iter().copied().filter(|t| !t.running()) {
-        let decision = reservation(ticket, &admitted, lanes, paused);
+        let decision = reservation(ticket, &admitted, lanes, halt);
         if matches!(decision.state, State::Eligible) {
             admitted.push(ticket);
         }
@@ -315,19 +335,30 @@ fn reservation<N>(
     ticket: &Ticket<N>,
     admitted: &[&Ticket<N>],
     lanes: Lanes,
-    paused: bool,
+    halt: Halt,
 ) -> Scheduling {
     let limit = limit(ticket, lanes);
     let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
     let own: Vec<_> = admitted.iter().copied().filter(|t| excludes(t, ticket)).collect();
     let mut reasons = vec![];
-    if paused {
+    if halt.paused {
         reasons.push(Constraint {
             kind: ConstraintKind::Paused,
             requests: vec![],
             capacity: None,
             explanation: "the host runner has paused new grants while moving to another release"
                 .into(),
+        });
+    }
+    if let Some(low) = halt.disk {
+        reasons.push(Constraint {
+            kind: ConstraintKind::Disk,
+            requests: vec![],
+            capacity: None,
+            explanation: format!(
+                "{} bytes are free on the disk the host builds on, under its floor of {} bytes: no new heavy command starts until space returns",
+                low.free, low.floor
+            ),
         });
     }
     if !own.is_empty() {
@@ -410,6 +441,9 @@ pub struct Observed<N = Plain> {
 #[derive(Debug, Serialize)]
 pub struct Snapshot<N = Plain> {
     pub paused: bool,
+    /// The disk under its floor, where it is: no new grant until space
+    /// returns.
+    pub disk: Option<Low>,
     pub worker: Capacity,
     pub fast: Capacity,
     pub slow: Capacity,
@@ -622,11 +656,11 @@ const SETUP: [&str; 15] = [
 pub fn snapshot<N: Clone>(
     queue: &[Ticket<N>],
     lanes: Lanes,
-    paused: bool,
+    halt: Halt,
     now: u64,
 ) -> Snapshot<N> {
     let ordered = in_order(queue.to_vec());
-    let decisions = scheduling(&ordered, lanes, paused);
+    let decisions = scheduling(&ordered, lanes, halt);
     let mut repos: Vec<String> = ordered.iter().filter_map(|t| t.repo_lane.clone()).collect();
     repos.sort();
     repos.dedup();
@@ -635,7 +669,8 @@ pub fn snapshot<N: Clone>(
         .map(|repo| RepoLane { occupancy: occupancy(&ordered, &format!("repo {repo}"), 1), repo })
         .collect();
     let mut result = Snapshot {
-        paused,
+        paused: halt.paused,
+        disk: halt.disk,
         worker: occupancy(&ordered, "worker", lanes.worker),
         fast: occupancy(&ordered, "fast", lanes.fast),
         slow: occupancy(&ordered, "slow", lanes.slow),
@@ -810,7 +845,7 @@ mod tests {
         assert!(ready(&queue, 3, lanes), "full worker lanes leave the slow lane free");
         queue.push(ticket(4, true, None));
         assert!(!ready(&queue, 4, lanes), "one slow lane runs one slow gate");
-        let seen = snapshot(&queue, lanes, false, 5);
+        let seen = snapshot(&queue, lanes, Halt::default(), 5);
         assert_eq!((seen.worker.used, seen.slow.capacity), (2, 1));
         assert_eq!(lane(&queue[2]), "slow");
     }
@@ -918,7 +953,7 @@ mod tests {
         let third = gate(3, "/a/three", Gate::Fast, 102);
         let queue = [first, second, third];
         let two = Lanes { worker: 1, fast: 2, slow: 1 };
-        let decisions = scheduling(&queue, two, false);
+        let decisions = scheduling(&queue, two, Halt::default());
         assert!(matches!(decisions[1].state, State::Eligible));
         assert!(matches!(decisions[2].state, State::Waiting));
         for decision in &decisions {
@@ -941,7 +976,7 @@ mod tests {
         slow.ran = Some(101);
         let mut turn = ticket(3, "/a/three", 102);
         turn.is_turn = true;
-        let seen = snapshot(&[fast, slow, turn, ticket(4, "/b", 103)], ONE, false, 150);
+        let seen = snapshot(&[fast, slow, turn, ticket(4, "/b", 103)], ONE, Halt::default(), 150);
         let kinds: Vec<(Kind, &str)> = seen
             .running
             .iter()
@@ -1067,12 +1102,38 @@ mod tests {
         runs.command = "afkconvoy exclusive -- ./gate.sh".into();
         let mut waits = ticket(2, "/a", 110);
         waits.command = "sh -c export DATABASE_URL=postgres://secret\ncargo nextest run\n".into();
-        let seen = snapshot(&[runs, waits], ONE, false, 150);
+        let seen = snapshot(&[runs, waits], ONE, Halt::default(), 150);
         assert_eq!(seen.running[0].ticket.command, "afkconvoy exclusive -- ./gate.sh");
         assert_eq!(seen.waiting[0].ticket.command, "cargo nextest run");
         assert_eq!(seen.waiting[0].scheduling.state, State::Waiting);
         assert_eq!(seen.running[0].elapsed_seconds, Some(50));
         assert!(!seen.waiting[0].ticket.command.contains("postgres"));
+    }
+
+    #[test]
+    fn a_disk_under_its_floor_holds_every_waiter_and_leaves_running_ones_be() {
+        let mut runs = ticket(1, "/a", 100);
+        runs.ran = Some(100);
+        let waits = ticket(2, "/b", 110);
+        let low = Low { free: 2 << 30, floor: 40 << 30 };
+        let halt = Halt { paused: false, disk: Some(low) };
+        let lanes = Lanes { worker: 4, fast: 4, slow: 1 };
+        let seen = snapshot(&[runs, waits], lanes, halt, 150);
+        assert_eq!(seen.disk, Some(low));
+        assert_eq!(seen.running.len(), 1, "a running command keeps its lane");
+        let waiting = &seen.waiting[0].scheduling;
+        assert_eq!(waiting.state, State::Waiting, "a free lane, and still it waits");
+        assert!(matches!(waiting.reasons[..], [Constraint { kind: ConstraintKind::Disk, .. }]));
+        let json = serde_json::to_value(&waiting.reasons[0]).unwrap();
+        assert_eq!(json["kind"], "disk");
+        let freed = scheduling(&seen_queue(), lanes, Halt::default());
+        assert_eq!(freed[1].state, State::Eligible, "space returned: granted again");
+    }
+
+    fn seen_queue() -> Vec<Ticket> {
+        let mut runs = ticket(1, "/a", 100);
+        runs.ran = Some(100);
+        vec![runs, ticket(2, "/b", 110)]
     }
 
     fn sorted(pids: BTreeSet<u32>) -> Vec<u32> {
