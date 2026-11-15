@@ -764,6 +764,47 @@ mod tests {
         }
     }
 
+    /// sunfmin/control#1090: a checkout whose commit-graph names a commit its
+    /// object store lost fails every fetch of that commit. The bring drops the
+    /// commit-graph, fetches again with `--refetch` and has the commit back.
+    #[test]
+    fn a_fetch_repairs_a_commit_graph_naming_a_lost_object() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote.git");
+        let local = root.path().join("local");
+        git(root.path(), &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        git(root.path(), &["init", "-q", "-b", "main", local.to_str().unwrap()]);
+        git(&local, &["remote", "add", REMOTE, remote.to_str().unwrap()]);
+        for n in ["one", "two"] {
+            git(
+                &local,
+                &[
+                    "-c",
+                    "user.name=a",
+                    "-c",
+                    "user.email=a@b",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    n,
+                ],
+            );
+        }
+        git(&local, &["push", "-q", REMOTE, "main", "HEAD:refs/convoy/candidates/main"]);
+        git(&local, &["commit-graph", "write", "--reachable"]);
+        let repo = Repo::new(local.clone());
+        let tip = repo.git(&["rev-parse", "HEAD"]).unwrap();
+        std::fs::remove_file(local.join(".git/objects").join(&tip[..2]).join(&tip[2..])).unwrap();
+        assert!(!repo.try_git(&["cat-file", "-e", &tip]).unwrap().ok);
+
+        repo.bring(&tip, "refs/convoy/candidates/main").unwrap();
+
+        assert!(repo.try_git(&["cat-file", "-e", &tip]).unwrap().ok);
+        assert!(!local.join(".git/objects/info/commit-graph").exists());
+        assert!(repo.failing_fetch().is_none());
+    }
+
     /// A checkout whose remote has a commit at `refs/convoy/candidates/main`
     /// and answers each fetch only after `slow`, noting in `seen` how many of
     /// its fetches run at once as each one starts → (checkout, sha, seen).

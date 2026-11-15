@@ -204,8 +204,17 @@ impl Permit {
         Self::acquire(repo, command, heavy, is_turn, false, None)
     }
 
-    pub(crate) fn candidate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
-        Self::acquire(repo, command, heavy, true, true, None)
+    /// A candidate's lane, waited for until `until` at most → `None`: its
+    /// place in the queue came no sooner, and it waits no more. A land that
+    /// waited without bound held its pending place on the chain, and every
+    /// round with it, for hours (sunfmin/control#1117).
+    pub(crate) fn candidate_until(
+        repo: &Repo,
+        command: &str,
+        heavy: bool,
+        until: Instant,
+    ) -> Result<Option<Self>> {
+        Self::acquire_until(repo, command, heavy, true, true, None, Some(until))
     }
 
     /// A cut's gate of its own commit (docs/adr/0028), in a worker lane. Its
@@ -237,6 +246,21 @@ impl Permit {
         candidate: bool,
         gate: Option<Gate>,
     ) -> Result<Self> {
+        let permit = Self::acquire_until(repo, command, heavy, is_turn, candidate, gate, None)?;
+        permit.ok_or_else(|| anyhow::anyhow!("a wait with no bound passed its bound"))
+    }
+
+    /// As `acquire`, waiting in the queue until `until` at most → `None`:
+    /// the turn came no sooner.
+    fn acquire_until(
+        repo: &Repo,
+        command: &str,
+        heavy: bool,
+        is_turn: bool,
+        candidate: bool,
+        gate: Option<Gate>,
+        until: Option<Instant>,
+    ) -> Result<Option<Self>> {
         if held() {
             bail!("this command already holds a turn");
         }
@@ -261,7 +285,7 @@ impl Permit {
         };
         let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
         let stop = Arc::new(AtomicBool::new(false));
-        let monitor = match turn(&ticket, &acting, &crate::clock)? {
+        let monitor = match turn(&ticket, &acting, &crate::clock, until)? {
             Turn::Queued(place, _) => {
                 acting.say(crate::clock(), runs_line(&ticket, crate::clock(), 0));
                 let watch = Watch::new(place)?;
@@ -298,11 +322,12 @@ impl Permit {
                 }))
             }
             Turn::AtOnce(_) => None,
+            Turn::Expired => return Ok(None),
         };
         let slot = crate::slots::Slot::take(&ticket)?;
         SLOT.with_borrow_mut(|held| *held = Some(slot));
         HELD.set(true);
-        Ok(Self { stop, monitor })
+        Ok(Some(Self { stop, monitor }))
     }
 }
 
@@ -623,14 +648,42 @@ enum Turn {
     Queued(Conversation, usize),
     /// It runs in no queue, as this says why.
     AtOnce(String),
+    /// Its bound came before its turn: it left the queue, and runs nothing.
+    Expired,
+}
+
+/// Ends `conversation` at `until`, unless `cancel` is told first → whether
+/// it ended it. The asker waiting on its line hears it closed.
+fn ending_at(
+    conversation: &Conversation,
+    until: Instant,
+) -> Result<(mpsc::Sender<()>, std::thread::JoinHandle<bool>)> {
+    let end = conversation.ender()?;
+    let (cancel, cancelled) = mpsc::channel::<()>();
+    let timer = std::thread::spawn(move || {
+        let left = until.saturating_duration_since(Instant::now());
+        let due = matches!(cancelled.recv_timeout(left), Err(mpsc::RecvTimeoutError::Timeout));
+        if due {
+            end();
+        }
+        due
+    });
+    Ok((cancel, timer))
 }
 
 /// Waits in the host runner's queue for `ticket`'s turn, saying to `acting`
 /// and stderr how it waits. One whose host runner ends as it waits asks the
 /// next, as it first asked, for `REACHED_WITHIN`; one that finds no host
-/// runner, or one that cannot hold it, runs at once. Errors: the host runner
-/// could not be asked, or what it said could not be read.
-fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn> {
+/// runner, or one that cannot hold it, runs at once. One given `until` waits
+/// no later: `Turn::Expired`. Errors: the host runner could not be asked, or
+/// what it said could not be read.
+fn turn(
+    ticket: &Ticket,
+    acting: &Acting,
+    now: &dyn Fn() -> u64,
+    until: Option<Instant>,
+) -> Result<Turn> {
+    let expired = || until.is_some_and(|until| Instant::now() >= until);
     let asked = Request::Exclusive { ticket: ticket.clone() };
     // Since when it has asked with no host runner placing it.
     let mut lost: Option<Instant> = None;
@@ -651,15 +704,31 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
                     eprintln!("[afkconvoy] exclusive: {line}");
                     acting.say(now(), line);
                 }
+                let timer = until.map(|until| ending_at(&conversation, until)).transpose()?;
                 // What it cannot read, a newer host runner's, is passed over.
+                let mut runs = None;
                 while let Some(said) = conversation.heard()? {
                     if said.get("runs").is_some() {
-                        let ahead_of = said["ahead_of"].as_u64().unwrap_or(0);
-                        return Ok(Turn::Queued(
-                            conversation,
-                            usize::try_from(ahead_of).unwrap_or(usize::MAX),
-                        ));
+                        runs = Some(said["ahead_of"].as_u64().unwrap_or(0));
+                        break;
                     }
+                }
+                // A line its bound ended is no place: it ran nothing, even
+                // where its turn came as it ended.
+                if let Some((cancel, timer)) = timer {
+                    let _ = cancel.send(());
+                    if timer.join().unwrap_or(true) {
+                        return Ok(Turn::Expired);
+                    }
+                }
+                if let Some(ahead_of) = runs {
+                    return Ok(Turn::Queued(
+                        conversation,
+                        usize::try_from(ahead_of).unwrap_or(usize::MAX),
+                    ));
+                }
+                if expired() {
+                    return Ok(Turn::Expired);
                 }
                 let line = rejoins_line(ticket);
                 eprintln!("[afkconvoy] exclusive: {line}");
@@ -669,6 +738,7 @@ fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64) -> Result<Turn>
             (Reached::Nobody, _) if lost.is_none() && !crate::host_runner::runs() => {
                 return Ok(Turn::AtOnce("no host runner runs on this host".to_string()));
             }
+            _ if expired() => return Ok(Turn::Expired),
             _ => {
                 let since = *lost.get_or_insert_with(Instant::now);
                 if since.elapsed() >= REACHED_WITHIN {
@@ -733,7 +803,7 @@ pub fn exclusive(
         retained: None,
     };
     let acting = Acting::new("exclusive").on_own_issue().in_checkout(checkout);
-    let place = match turn(&ticket, &acting, &now) {
+    let place = match turn(&ticket, &acting, &now, None) {
         Ok(Turn::Queued(place, ahead_of)) => {
             let started = now();
             acting.say(started, runs_line(&ticket, started, ahead_of));
@@ -744,6 +814,9 @@ pub fn exclusive(
             eprintln!("[afkconvoy] exclusive: {line}");
             acting.say(now(), line);
             None
+        }
+        Ok(Turn::Expired) => {
+            return failed("its wait in the queue passed a bound it was not given");
         }
         Err(error) => return failed(&format!("{error:#}")),
     };

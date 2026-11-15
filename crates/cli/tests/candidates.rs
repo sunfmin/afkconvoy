@@ -1880,3 +1880,44 @@ fn an_unsettled_round_fails_no_round_and_the_candidate_before_it_lands() {
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
     assert!(files.lines().any(|f| f == "a.txt") && !files.lines().any(|f| f == "b.txt"));
 }
+
+/// The Studio64 case (sunfmin/control#1117): with the one lane taken by a
+/// gate, a turn behind it holds a pending place as it waits for a lane. Past
+/// its bound it ends `waited_past_bound`, and the chain holds its place no
+/// more; the gate ahead lands as before.
+#[test]
+fn a_pending_turn_past_its_bound_ends_and_frees_its_place() {
+    let world = world(1);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let mut first = start(&world, &a, &world.cache(), 1);
+    until(|| world.root.join("start-a").exists() || first.try_wait().unwrap().is_some());
+    if first.try_wait().unwrap().is_some() {
+        panic!("first turn exited: {}", finish(first));
+    }
+    let behind = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &b)
+        .env("XDG_CACHE_HOME", world.cache())
+        .env("AFKCONVOY_ISSUE", "2")
+        .env("AFKCONVOY_PENDING_SECONDS", "3")
+        .args(["land", "--issue", "2"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let pid = behind.id();
+    until(|| {
+        chain(&world)["pending"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|b| b["owner"]["pid"] == pid && b["since"].is_u64()))
+    });
+    let answer = finish(behind);
+    assert_eq!(answer["outcome"], "waited_past_bound", "{answer}");
+    assert!(answer["detail"].as_str().unwrap().contains("for a lane on this host"), "{answer}");
+    let pending = chain(&world)["pending"].clone();
+    assert!(pending.as_array().is_none_or(Vec::is_empty), "its place is freed: {pending}");
+    assert!(!world.root.join("start-b").exists(), "nothing of it ran");
+    release(&world, "a", false);
+    assert_eq!(finish(first)["outcome"], "merged");
+}
