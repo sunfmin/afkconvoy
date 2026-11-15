@@ -1471,8 +1471,12 @@ fn a_round_gates_its_pair_then_its_root_whole_once_and_lands_both_together() {
     assert!(!started(&world, "whole", "b"), "the round's tip needed no certification run");
 }
 
+/// A red root is not bisected (docs/adr/0083): the round's last-asked PR
+/// fixes it on the spot. Its branch is brought up to the root's tip and
+/// pushed, every other PR of the round is closed at once as carried by it,
+/// and its fixed turn lands the whole round; every issue of it closes.
 #[test]
-fn a_red_root_is_fixed_whole_by_its_last_asked_pr_and_the_others_stop() {
+fn a_red_root_is_fixed_on_the_spot_by_its_last_asked_pr_which_carries_the_round() {
     let world = split_world(3);
     let (e, _) = worker(&world, 5, "e");
     let (a, _) = worker(&world, 1, "a");
@@ -1499,16 +1503,27 @@ fn a_red_root_is_fixed_whole_by_its_last_asked_pr_and_the_others_stop() {
     assert_eq!(red["outcome"], "gate_red", "{red}");
     assert_eq!(red["gate"], "slow");
     assert_eq!(red["round"].as_array().map(Vec::len), Some(2), "{red}");
+    assert_eq!(red["carrying"], json!([10]), "{red}");
+    assert_eq!(red["carried"], json!([10]), "{red}");
     assert_eq!(stopped["outcome"], "round_red", "{stopped}");
     assert_eq!(stopped["round_pr"], 20);
+    assert_eq!(stopped["carried_by"], 20);
     assert_eq!(
         world.remote(&["rev-parse", "refs/heads/main"]),
         base,
         "nothing of a red round lands"
     );
     assert!(!started(&world, "slow", "a"), "a red round is not split");
-    // The tip's branch holds the whole round; its next turn lands it all.
+    // The tip's branch holds the whole round, pushed; the other PR is carried.
     assert_eq!(git(&b, &["rev-parse", "HEAD"]), tip);
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-2"]), tip);
+    let pr = |n: u64| {
+        let gh = world.gh();
+        gh["prs"].as_array().unwrap().iter().find(|p| p["number"] == n).unwrap().clone()
+    };
+    assert_eq!(pr(10)["state"], "closed", "carried at once");
+    assert!(pr(20)["body"].as_str().unwrap().contains("<!--carries change=10-->"));
+    assert_eq!(world.state(1), "open", "the carried issue stays open until its carrier lands");
     let_go(&world, "slow", "b", false);
     let fixed = finish(start(&world, &b, &world.cache(), 2));
     assert_eq!(fixed["outcome"], "merged", "{fixed}");
@@ -1519,6 +1534,8 @@ fn a_red_root_is_fixed_whole_by_its_last_asked_pr_and_the_others_stop() {
         history.contains("(#10)"),
         "the stopped candidate's merge is in the history: {history}"
     );
+    assert_eq!(world.state(2), "closed");
+    assert_eq!(world.state(1), "closed", "every issue of the round closes as it lands");
 }
 
 /// Two PRs that conflict, neither with another partner (docs/adr/0083): the
