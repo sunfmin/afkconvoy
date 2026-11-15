@@ -1557,7 +1557,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         };
         match in_round(&turn, answer.clone(), &reserve, &past, &pending_past)? {
             Rounded::Answer(answer) => return Ok(answer),
-            Rounded::Assigned(candidate) => candidate,
+            Rounded::Assigned(candidate) => *candidate,
         }
     } else {
         loop {
@@ -1917,7 +1917,7 @@ struct InRound<'a> {
 /// root, on the chain.
 enum Rounded {
     Answer(Value),
-    Assigned(Candidate),
+    Assigned(Box<Candidate>),
 }
 
 /// Takes the turn through its round, up to its candidate of the round's
@@ -1970,7 +1970,7 @@ fn in_round(
             }
             Some(RoundNext::Assigned(candidate)) => {
                 let c = chain.candidates.iter().find(|c| c.id == candidate);
-                return Ok(Rounded::Assigned(c.context("assigned candidate")?.clone()));
+                return Ok(Rounded::Assigned(Box::new(c.context("assigned candidate")?.clone())));
             }
             Some(RoundNext::Left(pairing::Left::Red(pair))) => {
                 let p = chain.candidates.iter().find(|c| c.id == pair).context("red pair")?;
