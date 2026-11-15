@@ -4,6 +4,8 @@ description = "Candidates, candidate chains, rounds and landing, with the forge 
 version.workspace = true
 edition.workspace = true
 publish = false
+# Built again at every commit the gate names (sunfmin/control#1114).
+build = "../commit.rs"
 
 [dependencies]
 # Flux's attributes and refinements of the standard library (../../Cargo.toml).
