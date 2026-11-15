@@ -39,6 +39,18 @@ version() {
     cargo pkgid -p afkconvoy | sed 's/.*[#@]//'
 }
 
+# Finds rustup's stable cargo, as `stable`, empty where there is none, and
+# rustup itself, as `rustup`.
+stable() {
+    rustup=$(PATH="$PATH:$HOME/.cargo/bin" command -v rustup) || rustup=
+    stable=$([ -n "$rustup" ] && "$rustup" which --toolchain stable cargo 2>/dev/null) || stable=
+}
+# Puts that cargo's toolchain first on PATH.
+on_stable() {
+    PATH="$(dirname "$stable"):$PATH"
+    export PATH
+}
+
 # The Rust target that builds for an arch.
 target() {
     case "$1" in
@@ -87,8 +99,7 @@ build)
     # stable cargo` is not enough: the cargo it starts still finds the
     # `rustc` that is first on PATH.
     targets=$(for arch in $ARCHES; do target "$arch"; done)
-    rustup=$(PATH="$PATH:$HOME/.cargo/bin" command -v rustup) || rustup=
-    stable=$([ -n "$rustup" ] && "$rustup" which --toolchain stable cargo 2>/dev/null) || stable=
+    stable
     installed=$([ -n "$stable" ] && "$rustup" target list --installed --toolchain stable) || installed=
     for target in $targets; do
         echo "$installed" | grep -qx "$target" && continue
@@ -99,16 +110,17 @@ release: build needs rustup's stable toolchain with the target $target, and ${ru
 EOF
         exit 1
     done
-    PATH="$(dirname "$stable"):$PATH"
-    export PATH
+    on_stable
     for target in $targets; do
         cargo build --release --locked -p afkconvoy --target "$target"
     done
     ;;
 package)
-    # Cargo says where it built: a cargo given another target directory
-    # builds there, and huacnlee/cargo ignores any it is given
+    # The cargo that built says where it built: a cargo given another target
+    # directory builds there, and huacnlee/cargo ignores any it is given
     # (sunfmin/control#1127).
+    stable
+    [ -n "$stable" ] && on_stable
     target_dir=$(cargo metadata --format-version 1 --no-deps --offline | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
     [ -n "$target_dir" ] || {
         echo "release: cargo metadata said no target directory" >&2
