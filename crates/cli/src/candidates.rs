@@ -845,6 +845,14 @@ fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
         if c.owner.host != crate::this_host() || (c.gate.is_none() && alive(&c.owner)?) {
             continue;
         }
+        // Its live owner is stopping it already: its gate returned, and the
+        // scope that owned its processes is gone with them, though it is
+        // not yet recorded stopped. A stacked merge another turn's red round
+        // invalidates as it ends is (sunfmin/control#1140).
+        let stopping = c.gate.is_some() && !crate::process_scope::path(&c.worktree).exists();
+        if stopping && alive(&c.owner)? {
+            continue;
+        }
         signalled.push((c.clone(), signal(repo, config, c)?));
     }
     for (c, found) in signalled {
