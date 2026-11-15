@@ -54,7 +54,7 @@ _Avoid_: global config, runner flags
 
 **Tick**:
 One reconciliation pass: rebuild the working set from fleet state, then perform every transition it calls for, without waiting for the workers it started.
-_Avoid_: cycle, poll, batch (batch round: a landing mode)
+_Avoid_: cycle, poll, batch
 
 **Plan**:
 A tick stopped after its rebuild, which reports what an acting tick would do and leaves nothing written: its startup probe, when it makes one, is the only thing it pushes, and it deletes that.
@@ -482,11 +482,11 @@ One command's construction, validation and ordered landing of an open PR's candi
 _Avoid_: landing slot, merge queue
 
 **Candidate**:
-An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree, or by a reused run where its tree is green on record. Once the candidate has stopped, that worktree is removed and the candidate chain keeps the gate evidence. Its predecessor is the certified target tip or the preceding candidate.
+An immutable merge of a PR's original head onto its assigned predecessor, validated in its own worktree, or by a reused run where its tree is green on record. Once the candidate has stopped, that worktree is removed and the candidate chain keeps the gate evidence. Its predecessor is the certified target tip or the preceding candidate. A candidate of a round's root is not gated alone: the whole gate at the round's last candidate gates it with the rest (ADR-0082). A pair is a candidate of its own, beside the chain.
 _Avoid_: speculative branch, train tip
 
 **Candidate chain**:
-The ordered candidates of one repo and target branch, each depending on its predecessor. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed. It holds at most one valid candidate of a change: a change asked to land again takes up the one it has, where it was merged from the change's head now. A candidate is wedged once it stood valid past its whole gate's seconds. A chain is **piled** while this host's `land` turns of its repo answered `speculative_conflict` in the last hour three times or more and more often than `merged`: a turn then stacks on no other PR's candidate, and each lands alone on the base, oldest first, until the landings catch up (sunfmin/control#1112).
+The ordered candidates of one repo and target branch, each depending on its predecessor: within a round, its root's PRs merged onto the target tip in the order they asked; outside one, a barrier's candidate. A failed or invalid candidate cancels its dependent suffix; already landed predecessors remain landed. A round's pairs are not on it. It holds at most one valid candidate of a change: a change asked to land again takes up the one it has, where it was merged from the change's head now. A candidate is wedged once it stood valid past its whole gate's seconds. A chain is **piled** while this host's `land` turns of its repo answered `speculative_conflict` in the last hour three times or more and more often than `merged`: a turn then stacks on no other PR's candidate, and each lands alone on the base, oldest first, until the landings catch up (sunfmin/control#1112).
 _Avoid_: landing train, speculative queue
 
 **Landing heartbeat**:
@@ -494,12 +494,24 @@ A landing within the last 45 minutes, while green work waits: a valid candidate 
 _Avoid_: landing timeout, train health
 
 **Round**:
-One run of the slow gate on a candidate chain's tip, once every PR that asked to land is a fast-green candidate, that lands every candidate up to the tip together. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next. A red round is not split to find whose change failed: the tip's worker fixes it whole, from the round's issues and its failing tests, and the round's other candidates stop, their changes carried by the tip's PR.
-_Avoid_: batch round (no candidate gated alone), bisection, merge train, rollup
+The PRs that asked to land — each one's worker fast-green — taken together when it starts, and landed together through a pairing tree (ADR-0082): its pairs are fast-gated alone, and its root, merged onto the target tip, is gated whole, fast and slow, once; green, every PR of it lands in one fast-forward and each issue closes. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next. A red root is not split to find whose change failed: the round's last-asked PR's worker fixes it whole, from the round's issues and its failing tests, and the round's other PRs stop, their changes carried by that PR.
+_Avoid_: batch round (gone with ADR-0068), bisection, merge train, rollup
 
-**Batch round**:
-A landing mode in which no candidate is gated alone (ADR-0068): the candidate chain is built as for a round, and its tip runs the fast gate and then the slow gate. Green, every candidate up to it lands as one fast-forward. Red, the chain is bisected — the middle candidate is gated, then the half holding the first red, until the first red candidate is found; it is dropped and its change sent back with the red run, the candidates before it land, and those behind it are rebuilt without it, for the round to go on. A repo is in it where its config says `landing: batch`, or where a round's caller asks for it; otherwise it lands per candidate. afkconvoy's own turns land per candidate; the landing crate's plain runner lands either.
-_Avoid_: batch (a tick's), merge train, rollup
+**Pairing tree**:
+How a round's PRs come together (ADR-0082). In the order they asked to land, each PR pairs with the first later one it merges with cleanly (`git merge-tree`, textual conflicts only); pairs pair the same way, level by level, until one node is left: the root. A node with no partner at a level goes up unpaired. Only the fast gate runs inside the tree.
+_Avoid_: candidate chain (within a round), bracket
+
+**Pair**:
+Two nodes of a pairing tree merged, the earlier-asked first, fast-gated alone in a worktree of its own by its later-asked PR's turn; the pairs of a level gate at once. Red, it stops no other pair: its later-asked PR is given the red run, and the other side goes up unpaired. A pair's merge is never landed.
+_Avoid_: couple, twin
+
+**Root**:
+The pairing tree's last node: every PR of the round still in it. It is merged onto the target tip as one candidate per PR, in the order they asked, and the last of them runs the whole gate once.
+_Avoid_: tip (the target branch's), top
+
+**Carrying PR**:
+A PR that merged another PR of its round into its own — the partner of a pair red on its fast gate, the earliest-asked PR it conflicts with when it conflicts with every partner, or every PR of a red root — and lands them together, its description rewritten as the changes together with `Closes` for every issue (ADR-0082). The **carried PR** is closed, commented "carried by #…", its branch deleted, its worktree removed and its worker ended; its issue stays open until the carrying PR lands.
+_Avoid_: absorbing PR, squash
 
 **Land**:
 Pushing the exact candidate a turn recorded green onto its target branch as a fast-forward after its predecessor has landed, and closing the issue it completes. Issue workers, a workflow's landing worker and watches all land in a turn; watches retain the configured base branch. A cut lands nothing.

@@ -610,7 +610,7 @@ impl<N: Clone> Chain<N> {
     /// turns are dropped, each of their valid candidates whose gate is not
     /// confirmed stopped is invalidated `owner_died` with its suffix, and
     /// each of their candidates not confirmed stopped is abandoned. A
-    /// stopped candidate one left valid — green, or waiting in a batch round
+    /// stopped candidate one left valid — green, or waiting in a round's root
     /// — holds no process, and any later run carries it on. Only a process's
     /// own host can tell whether its pid runs: another host's members are
     /// left to the lease (`abandon`).
@@ -954,7 +954,7 @@ impl<N: Clone> Chain<N> {
         let Some(first) = members.first() else { return false };
         let Some(last) = members.last() else { return false };
         // A whole-gated candidate ahead lands by its own turn, not this one;
-        // in a batch round the tip's gate passed every one before it.
+        // in a round's root the tip's whole gate passed every one before it.
         let (ahead, _) = members.split_at(members.len() - 1);
         let batch = last.batch;
         last.whole()
@@ -1452,7 +1452,7 @@ mod tests {
         assert_eq!(chain.round_tip().map(|c| c.id.as_str()), Some("c3"));
     }
 
-    /// A candidate of a batch round, not gated alone.
+    /// A candidate of a round's root, not gated alone.
     fn batched(n: usize) -> Candidate {
         Candidate { phase: Phase::Batched, stopped: true, batch: true, ..split(n) }
     }

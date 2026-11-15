@@ -12,6 +12,8 @@ Where a candidate's commit declares the ```` ```yaml gates ```` block, a turn no
 
 A **round** is one run of the slow gate, on the commit of the candidate chain's tip, once no candidate of the chain is still building or fast-gating. The tip's turn runs it, in the worktree its fast gate ran in, under the slow gate's limit. A candidate assigned while it runs is built on the tip and waits for the next round. The tip's tree holds every candidate of the round, so its run is a run on each of their changes together.
 
+Replaced within a round by ADR-0082 (sunfmin/control#1135): no candidate of a round is fast-gated on the candidate before it; the round's PRs are paired and each pair fast-gated alone, and the round's root, merged onto the target tip, is gated whole once at its last candidate. What follows of a red round — not bisected, its tip's worker handed it, the others `round_red` — stands.
+
 Amended by ADR-0068 (sunfmin/control#789): a repo or a round's caller may land in a batch round instead, where no candidate is gated alone and a red tip is bisected to its first red candidate. This round stays the default, and is still not bisected.
 
 ## Green
