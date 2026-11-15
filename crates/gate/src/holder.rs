@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::exclusive::{
-    Lanes, Retained, Ticket, ahead, in_order, is_fast, limit, ready, same_lane, same_repo,
+    Lanes, Retained, Ticket, ahead, excludes, in_order, limit, ready, same_lane, same_repo,
 };
 
 /// How often a waiting turn looks again, besides being woken by a change.
@@ -162,19 +162,14 @@ impl<N> Joined<N> {
         for waiting in &self.tickets {
             if waiting.running()
                 || !(same_lane(running, waiting)
-                    || (running.is_turn && waiting.is_turn && same_repo(running, waiting)))
+                    || ((running.is_turn && waiting.is_turn || running.whole_repo)
+                        && same_repo(running, waiting)))
             {
                 continue;
             }
             let mut owner = None;
             for ticket in &self.tickets {
-                if owner.is_none()
-                    && ticket.running()
-                    && same_repo(ticket, waiting)
-                    && (same_lane(ticket, waiting) || (ticket.is_turn && waiting.is_turn))
-                    && !(ticket.candidate && waiting.candidate)
-                    && !(is_fast(ticket) && is_fast(waiting))
-                {
+                if owner.is_none() && ticket.running() && excludes(ticket, waiting) {
                     owner = Some(ticket.number);
                 }
             }
@@ -385,6 +380,40 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
         done
     }
 
+    /// Grants `ticket` its lane at once, where it may be granted now and no
+    /// other ticket of its repo, of this queue or beside it, runs or waits →
+    /// the number it runs as, until it `leave`s; `None`: it was not joined.
+    /// What holds its whole repo (`Ticket::whole_repo`) is asked so, at a
+    /// moment nothing of its repo runs, and never waits for one.
+    pub fn at_once(&self, ticket: Ticket<N>) -> Option<u64> {
+        let lanes = self.host.lanes();
+        let mut joined = self.joined();
+        if joined.paused || joined.closed || !self.host.grantable(&ticket) {
+            return None;
+        }
+        let standing = self.with_beside(&joined).ok()?;
+        if standing.iter().any(|other| same_repo(other, &ticket)) {
+            return None;
+        }
+        let mut ticket = ticket;
+        ticket.number = joined.next.saturating_add(1);
+        ticket.ran = None;
+        let mut asking = standing;
+        asking.push(ticket.clone());
+        if !ready(&asking, ticket.number, lanes) {
+            return None;
+        }
+        joined.count(Instant::now(), lanes);
+        joined.next = ticket.number;
+        ticket.ran = Some(self.host.now());
+        joined.waited.insert(ticket.number, Duration::ZERO);
+        let number = ticket.number;
+        joined.tickets.push(ticket);
+        drop(joined);
+        self.held.1.notify_all();
+        Some(number)
+    }
+
     /// Sends waiting commands to the next holder: none is granted here any
     /// more. None is running when a move to another holder calls this;
     /// closing also works when that move fails.
@@ -458,6 +487,7 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            whole_repo: false,
             gate: None,
             asked,
             ran: None,

@@ -75,6 +75,11 @@ pub enum Request {
     /// runner is replaced asks the next one the same, whichever afkconvoy
     /// that is: this line changes by fields with a default alone.
     Exclusive { ticket: Ticket },
+    /// Hold `ticket`'s whole repo for it at once, where nothing of that repo
+    /// runs or waits in the host's exclusive queue: answered at once with
+    /// `runs`, the asker kept on the line and the repo held until it closes
+    /// its end — or with `busy`, and the line closes (sunfmin/control#1101).
+    WholeRepo { ticket: Ticket },
     /// A display copy of a turn's authoritative remote candidate, no grant
     /// or fleet state changed. Older runners may ignore this question.
     Candidate { pid: u32, validation: afkconvoy_core::candidate::Validation },
@@ -383,7 +388,7 @@ fn ask_in(dir: &Path, request: &Request, within: Duration) -> Result<Reached> {
 }
 
 /// `keep_asking`, of the socket in `dir`.
-fn keep_asking_in(
+pub(crate) fn keep_asking_in(
     dir: &Path,
     request: &Request,
     within: Duration,
@@ -603,6 +608,7 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            whole_repo: false,
             note: afkconvoy_core::exclusive::Note { issue: Some(46), validation: None },
             gate: None,
             command: "cargo test".into(),
@@ -656,7 +662,9 @@ mod tests {
                     | Request::Stop { checkout }
                     | Request::Wake { checkout, .. }
                     | Request::Holds { checkout } => json!({"checkout": checkout}),
-                    Request::Exclusive { ticket } => json!({"checkout": ticket.dir}),
+                    Request::Exclusive { ticket } | Request::WholeRepo { ticket } => {
+                        json!({"checkout": ticket.dir})
+                    }
                     Request::Version
                     | Request::StopAll
                     | Request::Checkouts

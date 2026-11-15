@@ -274,6 +274,7 @@ impl Permit {
             repo: Some(canonical(repo.common_dir()?)),
             is_turn,
             candidate,
+            whole_repo: false,
             note: afkconvoy_core::exclusive::Note {
                 issue: std::env::var(ISSUE_ENV).ok().and_then(|v| v.parse().ok()),
                 validation: None,
@@ -469,7 +470,7 @@ impl Host<Note> for Hosted {
 }
 
 impl Queue {
-    fn with_leases(leases: bool) -> Self {
+    pub(crate) fn with_leases(leases: bool) -> Self {
         let hosted = Hosted { leases, validations: Mutex::default(), ran: Mutex::default() };
         Self { holder: Holder::new(hosted) }
     }
@@ -547,6 +548,31 @@ impl Queue {
         Reply::Kept(json!({"ahead": ahead}), Box::new(move |kept| queue.hold(number, kept)))
     }
 
+    /// Answers housekeeping asking to hold `ticket`'s whole repo
+    /// (`Ticket::whole_repo`): held at once where nothing of the repo runs or
+    /// waits, until its asker's line closes; else `busy`, and it never joins.
+    pub fn whole_repo(&self, ticket: Ticket) -> Reply {
+        if let Err(error) = crate::slots::recover() {
+            return Reply::Line(
+                json!({"error": format!("candidate cleanup unconfirmed: {error}")}),
+            );
+        }
+        let ticket = Ticket { whole_repo: true, ..ticket };
+        let Some(number) = self.holder.at_once(ticket) else {
+            return Reply::Line(json!({"busy": true}));
+        };
+        let queue = self.clone();
+        Reply::Kept(
+            json!({"runs": number}),
+            Box::new(move |kept| {
+                kept.on_close(move || {
+                    queue.ended(number);
+                    queue.holder.leave(number);
+                });
+            }),
+        )
+    }
+
     /// Holds the ticket `number` for its asker on `kept`, telling it once
     /// none is ahead of it: it leaves the queue once the asker's line closes,
     /// or where it cannot be told.
@@ -610,6 +636,56 @@ impl Drop for Watch {
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
+        }
+    }
+}
+
+/// Runs `work` while this host's exclusive queue holds `repo` whole for it —
+/// no gate, turn or other command of the repo runs beside it, in any lane —
+/// asking the host runner whose socket is in `cache` → what `work` returned;
+/// `None`, `work` not run, where something of the repo runs or waits, or no
+/// host runner holds the queue: nothing could keep the repo's commands off.
+/// It never waits for a turn (sunfmin/control#1101). Errors: the host runner
+/// could not be asked, or it cannot hold the repo whole — an older one.
+pub(crate) fn whole_repo<T>(
+    cache: &Path,
+    repo: &Repo,
+    command: &str,
+    work: impl FnOnce() -> T,
+) -> Result<Option<T>> {
+    let common = canonical(repo.common_dir()?);
+    let ticket = Ticket {
+        number: 0,
+        pid: std::process::id(),
+        command: command.into(),
+        dir: canonical(&repo.dir),
+        cut: false,
+        repo_lane: Some(common.clone()),
+        repo: Some(common),
+        is_turn: false,
+        candidate: false,
+        whole_repo: true,
+        note: Note::default(),
+        gate: None,
+        asked: crate::clock(),
+        ran: None,
+        retained: None,
+    };
+    let asked = Request::WholeRepo { ticket };
+    match runner_socket::keep_asking_in(cache, &asked, PLACED_WITHIN)? {
+        (Reached::Answer(answer), Some(held)) if answer.get("runs").is_some() => {
+            let done = work();
+            drop(held);
+            Ok(Some(done))
+        }
+        (Reached::Answer(answer), _) if answer.get("busy").is_some() => Ok(None),
+        (Reached::Answer(answer), _) => {
+            bail!("the host runner cannot hold the repo whole: {}", answer["error"])
+        }
+        (Reached::Nobody, _) => Ok(None),
+        (Reached::Closed, _) => bail!("the host runner closed the line before it answered"),
+        (Reached::Unanswered, _) => {
+            bail!("the host runner did not answer within {}s", PLACED_WITHIN.as_secs())
         }
     }
 }
@@ -793,6 +869,7 @@ pub fn exclusive(
         repo: checkout.as_ref().and_then(|repo| repo.common_dir().ok()).map(canonical),
         is_turn: false,
         candidate: false,
+        whole_repo: false,
         note: afkconvoy_core::exclusive::Note {
             issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
             validation: None,
@@ -1019,6 +1096,7 @@ mod tests {
             repo: None,
             is_turn: false,
             candidate: false,
+            whole_repo: false,
             note: afkconvoy_core::exclusive::Note { issue: Some(7), validation: None },
             gate: None,
             asked,

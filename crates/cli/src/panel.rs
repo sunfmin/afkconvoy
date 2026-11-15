@@ -1949,6 +1949,7 @@ mod tests {
                 repo: repo_lane.map(String::from),
                 is_turn: false,
                 candidate: false,
+                whole_repo: false,
                 note: afkconvoy_core::exclusive::Note { issue: None, validation: None },
                 gate: None,
                 asked: 900 + number,
