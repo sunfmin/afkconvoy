@@ -12,13 +12,17 @@ Amended by sunfmin/control#541: a cut no longer lands on the base branch, and so
 
 Amended by sunfmin/control#1071: a PR that changes a path the repo declares in `minor_paths` makes the cut minor (below, **A design change is minor**).
 
+Amended by sunfmin/control#1119: an operator's `afkconvoy cut --now` starts the due cut at the next tick (below, **When**).
+
 ## When
 
 In a repo that turns cutting on, a tick whose pass ends idle — no claim held, an empty frontier, admission holding nothing back — starts a cut when its base branch holds landed commits past its newest version tag (`v` and three numbers), or its remote has no version tag and its cut block declares `initial: X.Y.Z`.
 
 Landed work also starts a cut at the first tick at or after the oldest landing past the newest tag reaches the repo's age bound: `busy_after_seconds` in the cut block. Leaving the key out means 18000 seconds (five hours) (sunfmin/control#197); sunfmin/control#106 set that default to 3600 seconds. Its age is measured from the committer time of the first first-parent commit past that tag, the time it landed, rather than a side branch's earlier commits. Claims, the frontier and admission holding workers back do not hold this cut back. A fleet lock and a live cut claim still do; an open cut failure does not (ADR-0072). An untagged initial cut remains idle-only.
 
-At concurrency eight the fleet went 158 ticks without an idle end on 26 October 2026, leaving fixes already landed uninstalled for hours. Waiting for every claim makes the slowest worker set the release time. A version that the next landing makes stale is acceptable: the next cut picks that work up, and the age bound prevents indefinite waiting without stopping admission. The cut starts from the base branch as it stands; work still in flight goes into a later version. No command, flag or fixed schedule starts one.
+At concurrency eight the fleet went 158 ticks without an idle end on 26 October 2026, leaving fixes already landed uninstalled for hours. Waiting for every claim makes the slowest worker set the release time. A version that the next landing makes stale is acceptable: the next cut picks that work up, and the age bound prevents indefinite waiting without stopping admission. The cut starts from the base branch as it stands; work still in flight goes into a later version. No fixed schedule starts one.
+
+An operator may ask for the due cut now (sunfmin/control#1119): `afkconvoy cut --now` records the ask on the remote (`cut-asked` under the fleet's refs), wakes the fleet, and the next tick starts the cut whatever claims, frontier, admission or age bound say, as the age bound does. It passes only that wait. Nothing past the newest tag, a fleet lock, the same failure repeated with nothing landed since, or a cut still going refuse it, and nothing is recorded. The cut that starts answers the ask and deletes it, whichever host claims it. On 15 November 2026 the operator wanted landed work released at once, while the fleet was busy and short of the bound; before this, only lowering `busy_after_seconds` in a commit could start a busy cut sooner. The tick line says `as an operator asked`, and `plan`'s `cut` row gives `asked` while the ask stands.
 
 `plan` says where a cut stands — due, tagged, untagged, failed, locked, running — and gives `oldest_landing_age_seconds` and `busy_in_seconds` (zero once the bound is reached, null without a landing past a tag). The tick line that starts a cut says `fleet idle` or `fleet busy`, after the pass has admitted work.
 
