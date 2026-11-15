@@ -896,7 +896,7 @@ impl Session {
     pub(crate) fn start(world: &World, worktree: &Path) -> Self {
         // Not a system binary: `ps` reads the environment of this one.
         let ready = worktree.join(".afkconvoy-tmp/session-ready");
-        let mut child = Command::new(std::env::current_exe().unwrap())
+        let mut child = common::on_no_terminal(&mut Command::new(std::env::current_exe().unwrap()))
             .args(["--exact", "tick::session_helper", "--ignored"])
             .current_dir(worktree)
             .env("TMPDIR", world.tmp(worktree))
