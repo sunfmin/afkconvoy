@@ -281,9 +281,11 @@ const READER: &str = "Run by whoever reads this manual";
 #[command(name = "afkconvoy", version = VERSION, about, verbatim_doc_comment, disable_help_subcommand = true,
     help_template = "{before-help}{usage-heading} {usage}\n{all-args}{after-help}")]
 struct Cli {
-    /// The time to act at, in epoch seconds [default: the clock's]
-    #[arg(long, global = true, hide = true)]
-    now: Option<u64>,
+    /// The time to act at, in epoch seconds [default: the clock's]. Given no
+    /// time, on `cut` alone, it is that command's own `--now`: an ask for a
+    /// cut now
+    #[arg(long, global = true, hide = true, num_args = 0..=1)]
+    now: Option<Option<u64>>,
     #[command(subcommand)]
     command: Command,
 }
@@ -1003,6 +1005,11 @@ enum Command {
         /// The host its gate runs and is recorded as on [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
+        /// `--now`: ask the fleet to start its due cut at the next tick, without
+        /// waiting for it to go idle or for the age bound (an operator's command).
+        /// The clock's `--now <seconds>` shares the flag, so it is read from there.
+        #[arg(skip)]
+        now: bool,
         #[command(flatten)]
         at: At,
     },
@@ -2094,7 +2101,7 @@ fn show_checkout_hint(error: &clap::Error, args: &[OsString]) -> Option<String> 
         if let Some(team) = team.team {
             line = line.fixed(" --team ").word(&team.to_string());
         }
-        if let Some(now) = now {
+        if let Some(now) = now.flatten() {
             line = line.fixed(" --now ").number(now);
         }
         return Some(format!("show names its checkout with -C: {}", line.own()));
@@ -2123,7 +2130,7 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let parsed = operators(cli())
         .try_get_matches_from(&args)
         .and_then(|matches| Ok((Cli::from_arg_matches(&matches)?, matches)));
-    let (cli, matches) = match parsed {
+    let (mut cli, matches) = match parsed {
         Ok(parsed) => parsed,
         // A command's `--help` is its text in the manual.
         Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => {
@@ -2146,6 +2153,19 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             return fail(2, &said);
         }
     };
+    // `--now` with no time asks for a cut now, and is `cut`'s alone.
+    let asked_now = matches!(cli.now, Some(None));
+    match &mut cli.command {
+        Command::Cut { now, .. } => *now = asked_now,
+        _ if asked_now => {
+            return fail(
+                2,
+                "--now takes no time only on `afkconvoy cut --now`, which asks for a cut now",
+            );
+        }
+        _ => {}
+    }
+    let fixed_now = cli.now.flatten();
     if let Command::Guard { terminal_input_only } = cli.command {
         return guard::guard(terminal_input_only);
     }
@@ -2183,9 +2203,9 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     if let Command::Exclusive { command, .. } = &cli.command {
         return match (checkout, checkout::dir(named)) {
             (Err(error), _) if named.is_some() => exclusive::failed(&format!("{error:#}")),
-            (checkout, Ok(dir)) => {
-                exclusive::exclusive(command, &dir, checkout.ok(), || cli.now.unwrap_or_else(clock))
-            }
+            (checkout, Ok(dir)) => exclusive::exclusive(command, &dir, checkout.ok(), || {
+                fixed_now.unwrap_or_else(clock)
+            }),
             (_, Err(error)) => exclusive::failed(&format!("{error:#}")),
         };
     }
@@ -2199,11 +2219,11 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             let in_it = checkout.as_ref().ok().cloned();
             let acting = kind.acts.then(|| cli.command.acting()).flatten();
             let acting = acting.map(|acting| acting.in_checkout(in_it));
-            let now = || cli.now.unwrap_or_else(clock);
+            let now = || fixed_now.unwrap_or_else(clock);
             if let Some(acting) = &acting {
                 acting.start(now());
             }
-            let ran = run(cli.command, checkout, cli.now);
+            let ran = run(cli.command, checkout, fixed_now);
             match &acting {
                 Some(acting) => acting.end(now(), ran),
                 None => ran,
@@ -2343,6 +2363,7 @@ impl Command {
             }
             Command::Over { run, .. } => Acting::new("over").on(format!("run {}", run.trim())),
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
+            Command::Cut { now: true, .. } => Acting::new("cut").on("now".to_string()),
             Command::Cut { .. } => Acting::new("cut").saying_start(),
             Command::Wake { .. } => Acting::new("wake").on_own_issue(),
             Command::Cast { .. } => Acting::new("cast"),
@@ -2654,6 +2675,12 @@ fn run(
                 );
             }
             claims::declare_over(&checkout?, run.trim())
+        }
+        Command::Cut { now: true, from: Some(_), .. } => {
+            bail!("--now asks for a cut, and --from goes on with one: give one of them")
+        }
+        Command::Cut { now: true, host, .. } => {
+            cut::ask(&checkout?, &host.unwrap_or_else(this_host), now)
         }
         Command::Cut { from, host, .. } => {
             let repo = checkout?;

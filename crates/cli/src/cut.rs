@@ -88,7 +88,79 @@ pub fn seen(
         claim,
         failure,
         held,
+        asked: fleet.scan.cut_ask.as_ref().map(|ask| ask.ts),
     }))
+}
+
+/// `afkconvoy cut --now`: an operator's ask, on `host` at `now`, that the
+/// fleet of the checkout `repo` start its due cut at the next tick, without
+/// waiting for the fleet to go idle or the oldest landing to reach the age
+/// bound. It is recorded on the remote for the next tick of whichever host
+/// starts the cut, and the cut that starts answers it; the fleet is woken as
+/// the command ends (`crate::acting`). Refused, with nothing recorded, where
+/// no cut is due: cutting is off, nothing is past the newest tag, a fleet
+/// lock stands, the same failure repeats with nothing landed since, or a cut
+/// is going.
+///
+///   {"cut", "asked", "ref", "said"}
+pub fn ask(repo: &Repo, host: &str, now: u64) -> Result<Value> {
+    let (mut fleet, open) = Fleet::read(repo, now)?;
+    let read = Flows::read(&fleet, &open.issues)?;
+    let base = fleet.base_tip()?;
+    let seen = seen(&fleet, &read, &open.issues.rows, &open.issues, &base)?.unwrap_or_default();
+    let locks = afkconvoy_core::lock::standing(&open.issues.rows, &fleet.config);
+    let row = cut::row(&seen, None, &fleet.scan.beats(), now, !locks.is_empty());
+    if let Err(held) = cut::ask(&row) {
+        bail!("no cut is due, so none is started now: {}", refused(&fleet, &row, held, &locks));
+    }
+    let refname = crate::claims::push_cut_ask(&fleet.repo, &mut fleet.scan, host, now)?;
+    let said = match &row.newest_tag {
+        Some(tag) => format!("{} commits past {tag}", row.past),
+        None => format!("the initial version {}", row.initial.as_deref().unwrap_or_default()),
+    };
+    Ok(json!({"cut": "asked", "asked": now, "ref": refname, "said": said}))
+}
+
+/// Why an ask for a cut now is refused, the cut standing as `row`, held as
+/// `held`, with the fleet locks `locks` standing, and what clears it.
+fn refused(fleet: &Fleet, row: &Row, held: Standing, locks: &[u64]) -> String {
+    let tracker = &fleet.gh.tracker;
+    match held {
+        Standing::Off => format!(
+            "the repo names no cut steps: a ```yaml cut block in {} says them",
+            crate::config::FILE
+        ),
+        Standing::Untagged => "the remote has no version tag to count a version from, and the \
+                               repo declares no `initial` version"
+            .to_string(),
+        Standing::Tagged => format!(
+            "nothing has landed past {}: the version it names is the newest there is",
+            row.newest_tag.as_deref().unwrap_or("the newest version tag")
+        ),
+        Standing::Locked => {
+            let numbers: Vec<String> = locks.iter().map(|&lock| tracker.issue(lock)).collect();
+            format!(
+                "a fleet lock stands ({}): no cut starts while one does, asked for or not. It \
+                 ends when the last lock issue closes",
+                numbers.join(", ")
+            )
+        }
+        Standing::Failed => format!(
+            "the last {} cuts failed the same way{}, and nothing has landed since: the next cut \
+             waits for a landing",
+            cut::REPEATS,
+            row.failure.map(|issue| format!(" ({})", tracker.issue(issue))).unwrap_or_default()
+        ),
+        Standing::Running | Standing::PeerRunning => {
+            "a cut is still going: `afkconvoy plan` says where it stands".to_string()
+        }
+        Standing::StaleRun => {
+            "the peer that was cutting went silent: the next tick unclaims it, and the cut is \
+             due again after"
+                .to_string()
+        }
+        Standing::Due => "the cut cannot be asked for now".to_string(),
+    }
 }
 
 /// Whether a cut will come for an issue that waits on the next one: one is
@@ -268,11 +340,22 @@ pub fn start(
         let failed = started.err().map(|error| format!("{error:#}; ")).unwrap_or_default();
         bail!("{failed}its claim could not be given back: {kept:#}");
     }
-    let Some(record) = started? else { return Ok(Outcome::Lost) };
+    let started = started?;
+    // A cut that starts answers an operator's ask for one now, whatever
+    // started it; so does finding nothing left to cut. The cut is started
+    // already: an ask left standing only starts the next due cut sooner.
+    let asked = fleet.scan.cut_ask.clone();
+    if let Some(ask) = &asked
+        && let Err(error) = crate::claims::drop_cut_ask(&fleet.repo, &mut fleet.scan, ask)
+    {
+        eprintln!("warning: the ask for a cut now could not be deleted: {error:#}");
+    }
+    let Some(record) = started else { return Ok(Outcome::Lost) };
     found.cut_said.push(What::CutStarted {
         version: record.version.clone(),
         said: record.line(),
         busy,
+        asked: asked.is_some(),
     });
     Ok(Outcome::Done)
 }
@@ -614,6 +697,9 @@ pub fn says(repo: &Repo, row: &Row) -> Option<String> {
         Standing::PeerRunning => "a peer is cutting".to_string(),
         Standing::StaleRun => {
             "the peer that was cutting went silent: the next tick unclaims it".to_string()
+        }
+        Standing::Due if row.asked.is_some() => {
+            format!("due: {}; an operator asked for it now, and the next tick starts it", past())
         }
         Standing::Due => match (row.oldest_landing_age_seconds, row.busy_in_seconds) {
             (Some(age), Some(wait)) => format!(
@@ -1130,13 +1216,15 @@ fn repo_name(repo: &Repo) -> Result<String> {
 /// lib.rs's `Command` holds.
 pub(crate) const HELP: &str = r#"## When to run it
 
-The fleet runs it: in a repo that turns cutting on, a tick starts a cut once landed work is past the newest version tag and either the fleet is idle or the oldest landing reaches `busy_after_seconds` (default {const:CUT_BUSY_AFTER_SECONDS}s). At the bound it starts while busy too, whatever claims or frontier remain, even while admission holds workers back. It cuts from the base branch as it stands; work still in flight goes into a later version. A remote with no version tag and a declared `initial` is cut on an idle tick. No flag, command or fixed schedule starts one.
+The fleet runs it: in a repo that turns cutting on, a tick starts a cut once landed work is past the newest version tag and either the fleet is idle or the oldest landing reaches `busy_after_seconds` (default {const:CUT_BUSY_AFTER_SECONDS}s). At the bound it starts while busy too, whatever claims or frontier remain, even while admission holds workers back. It cuts from the base branch as it stands; work still in flight goes into a later version. A remote with no version tag and a declared `initial` is cut on an idle tick. No fixed schedule starts one.
+
+An operator who wants the due cut now — not once the fleet is idle or the age bound is reached — runs `afkconvoy cut --now` in a checkout of the repo: the next tick starts it, busy or idle, even while admission holds workers back, and the command wakes this host's `run` so that tick starts at once. It is recorded on the remote, so whichever host claims the cut starts it, and the cut that starts answers it; `plan`'s `cut` row says `asked` while it stands, and the tick line that starts it says `as an operator asked`. It passes only the wait: nothing to cut past the newest tag, a fleet lock, the same failure repeated with nothing landed since, or a cut still going refuse the ask, recording nothing. It is `--now` with no time after it, and goes with no `--from`.
 
 A failed cut holds no cut back: the next due cut — an idle tick, or a busy tick past the age bound — cuts again from the start, on the base tip as it stands, whether or not the failure's issue is open. Nothing waits for `--from <step>`: it goes on from the step that failed, in the checkout the cut kept, until the next cut starts and removes it. A look that finds a failed cut starts a watch, which looks for its cause and lands a fix where it is code; only one that needs money spent, the one kind `afkconvoy help humans` leaves to a human, goes to one, under the escalate label. To have a landed fix cut, the watch wakes the repo's checkout and fixes what holds its fleet back: the next idle tick, or busy tick past the age bound, starts the due cut through these same steps.
 
 ## Who runs it
 
-A cut's worker, in its own worktree: the checkout (`afkconvoy-cut`) the tick that started it cut from the base branch as it stood; a human, there, after a failure. Run anywhere else it is refused.
+A cut's worker, in its own worktree: the checkout (`afkconvoy-cut`) the tick that started it cut from the base branch as it stood; a human, there, after a failure. Run anywhere else it is refused, but for `--now`: an operator's ask, in any checkout of the repo.
 
 A cut is a worker in no role, started the way a watch is: its own checkout, the bounds of any unattended worker, a time limit. It is this command, not a model session: its steps are known, each is timed, and a failure names its step. It takes no slot.
 

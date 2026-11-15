@@ -156,6 +156,9 @@ pub enum What {
         said: String,
         #[serde(default)]
         busy: bool,
+        /// It started on an operator's ask for a cut now (`afkconvoy cut --now`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        asked: bool,
     },
     /// A tick ended the cut of `version`: `said` is what it did — its PR,
     /// where it landed, and each step it took with its seconds. `failed`, of
@@ -175,9 +178,10 @@ pub enum What {
 /// any other line.
 pub fn cut_said(what: &What) -> Option<String> {
     match what {
-        What::CutStarted { said, busy, .. } => {
+        What::CutStarted { said, busy, asked, .. } => {
             let fleet = if *busy { "busy" } else { "idle" };
-            Some(format!("started the cut of {said}, fleet {fleet}"))
+            let asked = if *asked { ", as an operator asked" } else { "" };
+            Some(format!("started the cut of {said}, fleet {fleet}{asked}"))
         }
         What::CutEnded { said, superseded: Some(why), .. } => {
             Some(format!("cut {said}: stopped at `tag`, without tagging: {why}"))
