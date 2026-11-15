@@ -2019,3 +2019,31 @@ fn an_unsettled_round_fails_no_round_and_the_candidate_before_it_lands() {
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
     assert!(files.lines().any(|f| f == "a.txt") && !files.lines().any(|f| f == "b.txt"));
 }
+
+/// A batch round's gate that reaches its limit is ended: its candidate
+/// stays valid while the round reads what its red says, so its gate is
+/// stopped by its own turn, which drops it and answers `gate_red`
+/// (sunfmin/control#1120).
+#[test]
+fn a_batch_gate_at_its_limit_is_ended_and_its_turn_answers_gate_red() {
+    let world = batch_world(2);
+    let file = world.clone.join("docs/agents/afkconvoy.md");
+    let config = std::fs::read_to_string(&file).unwrap();
+    let config = config.replacen(
+        "seconds: 300\n  budget_seconds: 200",
+        "seconds: 3\n  budget_seconds: 2",
+        1,
+    );
+    std::fs::write(&file, config).unwrap();
+    git(&world.clone, &["commit", "-q", "-am", "a fast gate of 3 seconds"]);
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (a, _) = worker(&world, 1, "a");
+    let _runner = world.host_held();
+    let began = Instant::now();
+    let failed = finish(start(&world, &a, &world.cache(), 1));
+    assert_eq!(failed["outcome"], "gate_red", "{failed}");
+    assert_eq!(failed["timed_out"], true, "{failed}");
+    assert!(began.elapsed() < Duration::from_secs(25), "{:?}", began.elapsed());
+    assert!(!started(&world, "slow", "a"));
+}

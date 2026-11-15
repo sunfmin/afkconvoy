@@ -735,7 +735,7 @@ fn reconcile(repo: &Repo, config: &Config, now: u64) -> Result<Chain> {
                 != Some(&c.original_head)
             {
                 invalid.push((c.id.clone(), "head_changed"));
-            } else if !c.adoptable() && !alive(&c.owner)? {
+            } else if !adopted_later(c) && !alive(&c.owner)? {
                 invalid.push((c.id.clone(), "owner_died"));
             }
         }
@@ -797,6 +797,14 @@ fn dead_hosts(
 }
 
 /// Used before queue capacity is released after a candidate owner dies.
+/// Whether a candidate whose owner is gone waits for its PR's next turn to
+/// adopt it: a fast-green one does. One of a batch round does not: its
+/// round's next step may be its own, which no other turn runs, so it goes
+/// `owner_died` and the round goes on without it.
+fn adopted_later(c: &Candidate) -> bool {
+    c.adoptable() && !c.batch
+}
+
 /// A stopped fast-green candidate has no process to clean up and is adopted
 /// by its next turn instead of cancelling its successors here.
 pub(crate) fn abandoned(dir: &str) -> Result<()> {
@@ -808,7 +816,7 @@ pub(crate) fn abandoned(dir: &str) -> Result<()> {
             record.name.strip_prefix(&prefix).context("invalid candidate ref")?.to_string();
         let chain: Chain = serde_json::from_str(&record.subject)?;
         for c in chain.candidates.iter().filter(|c| c.active()) {
-            if !c.adoptable() && !alive(&c.owner)? {
+            if !adopted_later(c) && !alive(&c.owner)? {
                 invalidate(&repo, &config, &c.id, "owner_died")?;
             }
         }
@@ -856,6 +864,13 @@ impl Gate<'_> {
         seconds: u64,
         termination: Option<afkconvoy_core::gate::Termination>,
     ) -> Result<()> {
+        // A batch candidate's red decides nothing behind it, and its round's
+        // next step waits for its turn's own `finish`: its gate is stopped
+        // here, as it stays valid and no cleanup would stop it.
+        let chain = read(self.repo, self.config)?.chain;
+        if chain.candidates.iter().any(|c| c.id == self.id && c.batch && c.valid()) {
+            return self.stop();
+        }
         let evidence = Evidence::red(exit_code, timed_out, seconds, termination);
         let chain =
             change(self.repo, self.config, |chain| chain.finish(self.id, evidence.clone()))?;
@@ -1331,6 +1346,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     };
     // A candidate of a batch round is its round's to decide (`batched`); one
     // rebuilt without the round's red one is assigned again, here.
+    let mut rebuilt = false;
     let candidate = loop {
         let candidate = if let Some(candidate) = adopted.take() {
             candidate
@@ -1483,6 +1499,12 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             }
         };
         if !candidate.batch {
+            // One rebuilt from a batch round onto a tip that lands per
+            // candidate gates now, in a lane.
+            if rebuilt {
+                permit =
+                    Some(Permit::candidate(repo, "turn: validate candidate, record, land", heavy)?);
+            }
             break candidate;
         }
         // It waits holding no lane, and takes one to gate.
@@ -1490,6 +1512,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         if let Some(answer) = batched(&turn, &candidate.id, answer.clone())? {
             return Ok(answer);
         }
+        rebuilt = true;
     };
     let id = candidate.id.clone();
     let path = PathBuf::from(&candidate.worktree);
