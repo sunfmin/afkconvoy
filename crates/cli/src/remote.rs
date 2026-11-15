@@ -66,7 +66,7 @@ impl Wire for Git {
         args.push("ls-remote");
         args.push(REMOTE);
         args.extend_from_slice(patterns);
-        let ran = crate::git::run_within(dir, &args, &[], ls_remote_limit())?;
+        let ran = crate::git::run_within(dir, &args, &[], crate::git::LS_REMOTE_LIMIT)?;
         if !ran.ok {
             bail!("git {} failed: {}", args.join(" "), ran.stderr.trim());
         }
@@ -206,7 +206,7 @@ pub(crate) fn foreign_refs(
 ) -> Result<Vec<(String, String)>> {
     let mut args = vec!["ls-remote", url];
     args.extend_from_slice(patterns);
-    let ran = crate::git::run_within(dir, &args, &[], ls_remote_limit())?;
+    let ran = crate::git::run_within(dir, &args, &[], crate::git::LS_REMOTE_LIMIT)?;
     ensure!(ran.ok, "remote {url} could not be read: {}", ran.stderr.trim());
     Ok(ran
         .stdout
@@ -399,7 +399,7 @@ impl Remote {
             if ran.ok || !remote_fault(&ran.stderr) || attempt >= PUSH_ATTEMPTS || settled()? {
                 return Ok(ran);
             }
-            std::thread::sleep(BETWEEN_PUSH_ATTEMPTS * (1 << attempt));
+            std::thread::sleep(crate::waits::bound(BETWEEN_PUSH_ATTEMPTS * (1 << attempt)));
         }
     }
 
@@ -463,7 +463,7 @@ impl Remote {
                         "remote ref read failed after {attempts} attempts: {error:#}"
                     ));
                 }
-                Err(_) => std::thread::sleep(BETWEEN_LIST_ATTEMPTS),
+                Err(_) => std::thread::sleep(crate::waits::bound(BETWEEN_LIST_ATTEMPTS)),
             }
             attempts += 1;
         };
@@ -503,14 +503,6 @@ const PUSH_ATTEMPTS: u32 = 5;
 const BETWEEN_PUSH_ATTEMPTS: Duration = Duration::from_millis(250);
 #[cfg(test)]
 const BETWEEN_PUSH_ATTEMPTS: Duration = Duration::ZERO;
-
-fn ls_remote_limit() -> Duration {
-    std::env::var("AFKCONVOY_LS_REMOTE_SECONDS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(crate::git::LS_REMOTE_LIMIT)
-}
 
 pub(crate) fn reads_help() -> String {
     format!(

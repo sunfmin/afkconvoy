@@ -26,10 +26,11 @@ case "$*" in
 metadata*) echo "{\"target_directory\":\"$PWD/target\",\"version\":1}" ;;
 *'nextest --version'*|*'--no-run'*|fmt*|clippy*) exit 0 ;;
 *'nextest run'*'--profile fast -E'*)
+    case "$CASE" in slow-passed | slow-fixed) echo '        SLOW [   2.500s] afkconvoy::cli tick::example' >&2; exit 0 ;; esac
     if [ "$CASE" = failure ]; then echo 'FAIL [   0.100s] afkconvoy::cli tick::example' >&2; else echo 'TIMEOUT [   6.000s] afkconvoy::cli tick::example' >&2; fi
     exit 1 ;;
 *'nextest run'*)
-    if [ "$CASE" = pass ]; then exit 0; fi
+    if [ "$CASE" = pass ] || [ "$CASE" = slow-fixed ]; then exit 0; fi
     echo 'TIMEOUT [   2.000s] afkconvoy::cli tick::example' >&2; exit 1 ;;
 esac
 exit 0
@@ -66,3 +67,18 @@ for scenario in loaded slow pass failure; do
         absent 'load fault'
     fi
 done
+# A fast-gate test that passed past the 2s line is checked alone: still past
+# it on a quiet host, it fails the gate; under the line alone, it does not.
+HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow-passed sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 && exit 1
+grep -q 'Name it in .config/slow-tests' "$tmp/out"
+HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow-fixed sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 || {
+    cat "$tmp/out" >&2
+    exit 1
+}
+grep -q 'load fault' "$tmp/out"
+# On a loaded host it is flagged, and the gate passes.
+HOME="$tmp/home" FAKE_LOAD=40.00 CASE=slow-passed sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 || {
+    cat "$tmp/out" >&2
+    exit 1
+}
+grep -q 'flagged: afkconvoy::cli tick::example' "$tmp/out"
