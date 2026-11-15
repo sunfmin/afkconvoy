@@ -846,12 +846,12 @@ fn cleanup(repo: &Repo, config: &Config, chain: &Chain) -> Result<()> {
         if c.owner.host != crate::this_host() || (c.gate.is_none() && alive(&c.owner)?) {
             continue;
         }
-        // Its live owner is stopping it already: its gate returned, and the
-        // scope that owned its processes is gone with them, though it is
-        // not yet recorded stopped. A stacked merge another turn's red round
-        // invalidates as it ends is (sunfmin/control#1140).
-        let stopping = c.gate.is_some() && !crate::process_scope::path(&c.worktree).exists();
-        if stopping && alive(&c.owner)? {
+        // A pair or stacked merge beside the chain is its live turn's to
+        // stop: its gate asks whether it was cancelled and stops itself, and
+        // its turn stops it as its gate returns. Signalled from here as well,
+        // as a red round's turn invalidates a stacked merge just stopping,
+        // its scope may go between the two (sunfmin/control#1140).
+        if c.is_pair() && alive(&c.owner)? {
             continue;
         }
         signalled.push((c.clone(), signal(repo, config, c)?));
