@@ -38,6 +38,33 @@ const EVERY: Duration = Duration::from_millis(100);
 /// The longest it waits between two reads (`Waiting`).
 const AT_MOST: Duration = Duration::from_secs(1);
 
+/// How long a land turn holds a pending place, waiting on the chain and
+/// then for its lane, before it ends `waited_past_bound` and
+/// frees it (`pending_bound`). On Studio64, 2026-11-15, 25 live lands of
+/// sunfmin/guild held pending places, one for 3 h 10 min; a round waits for
+/// every pending turn, so none started, and their polling spent the REST
+/// quota (sunfmin/control#1117).
+const PENDING_FOR: Duration = Duration::from_secs(30 * 60);
+
+/// `PENDING_FOR`, or the seconds `AFKCONVOY_PENDING_SECONDS` says: the tests
+/// set it short.
+fn pending_bound() -> Duration {
+    std::env::var("AFKCONVOY_PENDING_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map_or(PENDING_FOR, Duration::from_secs)
+}
+
+/// A land turn that waited on the chain past its bound: its answer, as
+/// `detail` says which wait it was. Its reservation frees its pending place
+/// as the turn ends; a green candidate it held stays on the chain, stopped,
+/// for the next turn of its PR to take over (`Candidate::adoptable`).
+fn waited_past(mut answer: Value, detail: String) -> Value {
+    answer["outcome"] = json!(Ending::WaitedPastBound);
+    answer["detail"] = json!(detail);
+    answer
+}
+
 /// A turn waiting on the chain: for its round, its predecessor or another
 /// turn of its PR. Each read asks the remote live and starts git, so a wait
 /// that sees nothing change grows, twice as long each time up to `AT_MOST`,
@@ -1213,10 +1240,25 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     // A barrier's place, or a pending turn's: a round waits for every turn
     // that asked to land (sunfmin/control#244). It says this host is alive.
     let here = crate::this_host();
+    let reserved = clock();
+    let bound = pending_bound();
+    // A barrier is not bounded: it waits for the window to drain, and one
+    // that ended would take its place again at the back.
+    let until = (!barrier).then(|| std::time::Instant::now() + bound);
+    let past = || until.is_some_and(|until| std::time::Instant::now() >= until);
+    let pending_past = |answer: Value, waited: &str| {
+        let detail = format!(
+            "this turn held its pending place for {}s, past the bound of {}s, {waited}; it \
+             frees it, and nothing ran",
+            clock().saturating_sub(reserved),
+            bound.as_secs()
+        );
+        waited_past(answer, detail)
+    };
     let reserve = |chain: &mut Chain| {
         let places = if barrier { &mut chain.barriers } else { &mut chain.pending };
         if !places.iter().any(|b| b.id == id) {
-            places.push(Barrier { id: id.clone(), owner: owner.clone() });
+            places.push(Barrier { id: id.clone(), owner: owner.clone(), since: Some(reserved) });
         }
         chain.beat(&here, clock());
     };
@@ -1289,6 +1331,9 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 if adopted.as_ref().is_some_and(|adopted| adopted.id == c.id) {
                     break;
                 }
+                if past() {
+                    return Ok(pending_past(answer, "for another turn of its PR"));
+                }
                 waiting.after(&chain);
                 continue;
             }
@@ -1300,6 +1345,9 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         {
             break;
         }
+        if past() {
+            return Ok(pending_past(answer, "for a barrier on the chain"));
+        }
         waiting.after(&chain);
     }
     let recovering = adopted.is_some();
@@ -1307,11 +1355,16 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let mut permit = if recovering {
         None
     } else {
-        Some(if barrier {
-            Permit::take(repo, "turn: serial barrier", heavy, true)?
-        } else {
-            Permit::candidate(repo, "turn: validate candidate, record, land", heavy)?
-        })
+        match until {
+            None => Some(Permit::take(repo, "turn: serial barrier", heavy, true)?),
+            Some(until) => {
+                let label = "turn: validate candidate, record, land";
+                match Permit::candidate_until(repo, label, heavy, until)? {
+                    Some(permit) => Some(permit),
+                    None => return Ok(pending_past(answer, "for a lane on this host")),
+                }
+            }
+        }
     };
     let path = root.join(&id);
     let candidate = if let Some(candidate) = adopted {
@@ -1499,6 +1552,21 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     if !barrier {
         permit = None;
     }
+    // It waits on the chain for as long as its own whole gate may take; past
+    // that, the candidates ahead or its round hold it, and its turn ends.
+    // A round this turn ran is no wait: it starts the wait again.
+    let mut green_at = std::time::Instant::now();
+    let green_for = Duration::from_secs(candidate.limit());
+    let green_past = |result: Value, waited: Duration| {
+        let detail = format!(
+            "this turn's candidate is green and waited {}s on the chain for the candidates \
+             ahead or its round, past its gate limit of {}s; it stays on the chain, stopped, \
+             and the next turn of this PR takes it over without gating it again",
+            waited.as_secs(),
+            green_for.as_secs()
+        );
+        waited_past(result, detail)
+    };
     let mut waiting = Waiting::new();
     loop {
         let chain = reconcile(repo, config, clock())?;
@@ -1530,10 +1598,14 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 }
                 return Ok(result);
             }
+            green_at = std::time::Instant::now();
             continue;
         }
         let base = crate::turn::base(repo, config)?;
         if !chain.ripe(&id, &base) {
+            if green_at.elapsed() >= green_for {
+                return Ok(green_past(result, green_at.elapsed()));
+            }
             waiting.after(&chain);
             continue;
         }
@@ -1830,6 +1902,7 @@ mod tests {
             pending: vec![super::Barrier {
                 id: "b".into(),
                 owner: super::identity(std::process::id()).unwrap().unwrap(),
+                since: None,
             }],
             ..super::Chain::default()
         };

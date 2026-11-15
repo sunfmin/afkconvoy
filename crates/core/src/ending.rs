@@ -21,13 +21,14 @@ pub enum Ending {
     SpeculativeConflict,
     GateLaneChanged,
     WaitingForCapacity,
+    WaitedPastBound,
     Blocked,
     Locked,
 }
 
 impl Ending {
     /// Every ending, in the order a reader is told them.
-    pub const ALL: [Ending; 15] = [
+    pub const ALL: [Ending; 16] = [
         Ending::Merged,
         Ending::Conflict,
         Ending::GateRed,
@@ -41,6 +42,7 @@ impl Ending {
         Ending::SpeculativeConflict,
         Ending::GateLaneChanged,
         Ending::WaitingForCapacity,
+        Ending::WaitedPastBound,
         Ending::Blocked,
         Ending::Locked,
     ];
@@ -61,6 +63,7 @@ impl Ending {
             Ending::SpeculativeConflict => "speculative_conflict",
             Ending::GateLaneChanged => "gate_lane_changed",
             Ending::WaitingForCapacity => "waiting_for_capacity",
+            Ending::WaitedPastBound => "waited_past_bound",
             Ending::Blocked => "blocked",
             Ending::Locked => "locked",
         }
@@ -107,6 +110,9 @@ impl Ending {
             }
             Ending::WaitingForCapacity => {
                 "the bounded candidate window was full; nothing ran: ask for a turn again; no gate failure or rework occurred"
+            }
+            Ending::WaitedPastBound => {
+                "this turn waited on the candidate chain past its bound (`detail` says which): a pending turn that holds no candidate, past a fixed bound, or a green candidate waiting for the candidates ahead or its round, past its gate limit; it ended and freed its pending place, and a green candidate stays on the chain for the next turn to take over without gating it again; nothing landed: ask for a turn again"
             }
             Ending::Blocked => {
                 "`blocked_by` lists the issue dependencies still open; nothing landed: the fleet does not ask again while they all stay open and the issue's blocked-by list is unchanged; it asks again once one closes or the list changes"
