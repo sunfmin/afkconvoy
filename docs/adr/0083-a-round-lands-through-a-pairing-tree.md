@@ -32,9 +32,11 @@ afkconvoy's turns each run their own PR's part: a turn reserves its pending plac
 
 The plain runner (`Lander::land`) runs a round over all its changes in one process, gates each level's pairs on threads of its own, and takes the changes that left a round for the next into the next.
 
-## This slice (sunfmin/control#1135)
+## A red root (sunfmin/control#1137)
 
-A red root is handled as a red round was (ADR-0048): its tip's worker is handed the round, and the others answer `round_red`.
+A red root is the chain's, as carrying is: the candidate of the round's last-asked PR, the tip whose whole gate ran red, keeps the failure, and every other candidate of the root stops `round_red` by it (ADR-0048); the PR of that tip carries the PRs of those (`Chain::root_carry`), and each is carried by it (`Chain::round_carrier`). Its turn is handed the root's run and the round, as a red round's tip was, and fast-forwards its branch to the tip's commit, which holds every PR of the round; it pushes it and carries at once (`forge::carry`), as of a red pair, so its description closes every issue of the round, and answers `gate_red` with `carrying`. A merge that conflicts — its worker pushed past what it asked to land — is left in its worktree, and the turn after the worker resolved it carries. Each other turn answers `round_red`, naming the carrier `carried_by`. No bisection runs: the fixed round asks again as one PR.
+
+The plain runner (`Lander::land`) says the same: the last-asked change's outcome is `Carrying` the others, its forge told the run and the tip to merge (`Forge::sent_back`), and each other's is `Carried` by it.
 
 ## Carrying (sunfmin/control#1136)
 

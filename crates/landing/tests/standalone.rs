@@ -5,7 +5,8 @@
 //! at once, the root merged onto the target tip and gated whole once, the
 //! target fast-forwarded through one candidate per change in order, and the
 //! forge told each landed. A red pair has its later-asked change carry its
-//! partner while the rest lands; a red root lands nothing and is not bisected.
+//! partner while the rest lands; a red root lands nothing and is not bisected:
+//! its last-asked change carries the round.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -382,23 +383,29 @@ fn a_root_whose_tree_is_green_on_record_runs_no_second_fast_gate() {
     assert_eq!(reused.machine.as_deref(), Some(MACHINE));
 }
 
+/// A red root lands nothing and is not bisected (docs/adr/0083): the
+/// round's last-asked change is sent back with the root's run and its tip,
+/// carrying every other. Its author brings its source up to that tip and
+/// fixes it; asked again, it closes the others as carried and lands the
+/// whole round as one carrying change.
 #[test]
-fn a_red_root_lands_nothing_and_is_not_bisected() {
+fn a_red_root_is_fixed_on_the_spot_by_its_last_asked_change_which_carries_the_round() {
     let root = tempfile::tempdir().unwrap();
     let (work, ran) = scratch(root.path());
     let base = git(&work, &["rev-parse", "main"]);
     let breaking = change(&work, 1, "a", "breaks");
     let other = change(&work, 2, "b", "b.txt");
+    let asked = [breaking, other];
     let forge = Fake::default();
     let worktrees = root.path().join("candidates");
     let lander = lander(&work, &worktrees, &forge);
 
-    let outcomes = lander.land(&[breaking, other]).unwrap();
+    let outcomes = lander.land(&asked).unwrap();
 
     assert_eq!(
         outcomes,
-        [(1, Outcome::Decided(Decision::RoundRed)), (2, Outcome::Decided(Decision::Red))],
-        "the round is not split: its last-asked PR keeps the failure"
+        [(1, Outcome::Carried(2)), (2, Outcome::Carrying(vec![1]))],
+        "the round is not split: its last-asked change carries it"
     );
     let chain = recorded(&work);
     assert!(chain.candidates.iter().all(|c| !c.valid()), "{chain:?}");
@@ -409,6 +416,43 @@ fn a_red_root_lands_nothing_and_is_not_bisected() {
     git(&work, &["fetch", "--quiet", "origin"]);
     assert_eq!(git(&work, &["rev-parse", "origin/main"]), base, "nothing landed");
     assert!(forge.landed.borrow().is_empty());
+    let sent = forge.sent_back.borrow().clone();
+    let [(2, Some(run), merge, carried)] = &sent[..] else { panic!("{sent:?}") };
+    assert!(run.excerpt.iter().any(|line| line == "FAIL"), "sent back with the root's run");
+    assert_eq!(merge, std::slice::from_ref(&last.commit), "handed the root's tip");
+    assert_eq!(carried, &[1]);
+    assert!(forge.closed.borrow().is_empty(), "nothing is closed before it holds the round");
+
+    // Its author brings its source up to the root's tip and fixes it.
+    let one = git(&work, &["rev-parse", "a"]);
+    git(&work, &["checkout", "--quiet", "b"]);
+    git(&work, &["merge", "--quiet", "--ff-only", &last.commit]);
+    git(&work, &["rm", "--quiet", "breaks"]);
+    std::fs::write(work.join("fixed.txt"), "fixed").unwrap();
+    git(&work, &["add", "fixed.txt"]);
+    git(&work, &["commit", "--quiet", "-m", "fix the round"]);
+    git(&work, &["push", "--quiet", "origin", "b"]);
+    git(&work, &["checkout", "--quiet", "main"]);
+
+    let outcomes = lander.land(&asked).unwrap();
+
+    let mut outcomes = outcomes;
+    let landed = outcomes.split_off(1);
+    assert_eq!(outcomes, [(1, Outcome::Carried(2))]);
+    assert!(matches!(landed[..], [(2, Outcome::Landed(_))]), "{landed:?}");
+    assert_eq!(*forge.closed.borrow(), [(1, "carried by #2".to_string())]);
+    assert_eq!(*forge.deleted.borrow(), [("a".to_string(), one)]);
+    let described = forge.described.borrow();
+    let [(2, description)] = &described[..] else { panic!("{described:?}") };
+    assert!(description.contains("<!--carries change=1-->"), "{description}");
+    let told: Vec<u64> = forge.landed.borrow().iter().map(|(n, _)| *n).collect();
+    assert_eq!(told, [2], "the carrying change lands the round");
+    git(&work, &["fetch", "--quiet", "origin"]);
+    let files = git(&work, &["ls-tree", "--name-only", "origin/main"]);
+    assert!(files.lines().any(|f| f == "b.txt") && files.lines().any(|f| f == "fixed.txt"));
+    assert!(!files.lines().any(|f| f == "breaks"), "{files}");
+    let gates: Vec<String> = runs(&ran).into_iter().map(|(gate, _)| gate).collect();
+    assert_eq!(gates.iter().filter(|g| *g == "slow").count(), 2, "no bisection: {gates:?}");
 }
 
 /// The changes numbered 1 to `n`, each on a branch of its own adding a file

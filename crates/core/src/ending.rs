@@ -100,7 +100,7 @@ impl Ending {
                 "a predecessor or other evidence this candidate depended on was invalidated; `cancelled_by` names the root candidate and `cause` why. Your source branch is preserved and this is not your gate failing: ask for another turn when your issue's blockers permit"
             }
             Ending::RoundRed => {
-                "the slow gate ran red on the round this candidate was fast-green in, at the round's tip, PR `round_pr`; nothing landed and the round is not split. Your change is in that PR, whose worker fixes the round: stop; your issue is settled when that PR lands"
+                "the slow gate ran red on the round this candidate was fast-green in, at the round's tip, PR `round_pr`; nothing landed and the round is not split. Your change is in that PR, which carries this one, `carried_by`: its worker fixes the round on the spot and lands it whole, and its turn closes this PR as carried by it: stop; your issue closes when that PR lands"
             }
             Ending::Carried => {
                 "this PR is carried by PR `carried_by`, which merged its change into its own, their pair having gated red or the two conflicting, and lands it with its own; nothing of this PR lands alone, and that PR's turn closes it once that PR's branch holds this one's, and your issue closes when that PR lands: ask for a turn again"
