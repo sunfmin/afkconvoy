@@ -17,6 +17,11 @@ use std::process::Command;
 const PACKAGE: &str = "crates/cli/";
 /// Where the example teams are, in this package.
 const EXAMPLES: &str = "src/scaffold/examples";
+/// How long a commit's abbreviation is, in what a build says it was built
+/// from and in what a test reads back: fixed, as git's own grows with the
+/// objects its store holds, which a shared store gains between a build and
+/// its test (sunfmin/control#1096).
+pub const ABBREV: &str = "--abbrev=12";
 /// The commit a build is of, as `./gate.sh` names it to every build it runs.
 pub const COMMIT_ENV: &str = "AFKCONVOY_BUILD_COMMIT";
 
@@ -125,7 +130,7 @@ fn checkout() -> bool {
 }
 
 fn describe() -> Option<String> {
-    git(&["describe", "--tags", "--long", "--dirty", "--always", "--match", "v*"])
+    git(&["describe", "--tags", "--long", "--dirty", "--always", ABBREV, "--match", "v*"])
 }
 
 /// What changes when the answer may: where git keeps the commit checked out,
