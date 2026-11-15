@@ -1266,7 +1266,9 @@ impl Worktree {
     /// delivered, then SIGKILL a second later. Each one ended is a line of
     /// the tick log. One still there after five seconds is left: settling
     /// waits on it as on any process in the worktree (sunfmin/control#837).
-    pub(crate) fn end_stopped_orphans(&self) -> Result<()> {
+    /// → the listing of the host's processes it found none in, where it
+    /// ended none: what is still working here is read from it, not again.
+    pub(crate) fn end_stopped_orphans(&self) -> Result<Option<Vec<crate::hot::Proc>>> {
         let clock = TerminationTime::new();
         let until = clock.now() + Duration::from_secs(5);
         let mut ending = BTreeMap::<u32, Ending>::new();
@@ -1295,8 +1297,11 @@ impl Worktree {
                 }
             }
             let left = processes.iter().any(|proc| ending.contains_key(&proc.pid));
+            if ending.is_empty() {
+                return Ok(Some(processes));
+            }
             if !left || clock.now() >= until {
-                return Ok(());
+                return Ok(None);
             }
             clock.sleep(Duration::from_millis(100));
         }
@@ -1309,12 +1314,18 @@ impl Worktree {
     fn end_worker(&self, command: &str, consequence: &str) -> Result<Ended> {
         let before = crate::hot::listed_checked()?;
         let pids: Vec<_> = crate::hot::tree(&before, &self.path).iter().map(|p| p.pid).collect();
-        self.close_terminals()?;
+        let closed = self.close_any()?;
         let clock = TerminationTime::new();
         let until = clock.now() + Duration::from_secs(5);
         let mut ending = BTreeMap::<u32, Ending>::new();
+        // Where there was no terminal to close and no process of the worker
+        // to end, the listing before is the one after: nothing was closed.
+        let mut unchanged = (!closed && pids.is_empty()).then_some(before);
         loop {
-            let processes = crate::hot::listed_checked()?;
+            let processes = match unchanged.take() {
+                Some(processes) => processes,
+                None => crate::hot::listed_checked()?,
+            };
             let writers = crate::hot::tree(&processes, &self.path);
             for proc in &processes {
                 if pids.contains(&proc.pid)
@@ -2045,8 +2056,15 @@ impl Worktree {
     /// as on a host that cannot see its harness. Only what is seen holds a
     /// line back.
     pub(crate) fn holds(&self) -> Result<Holds> {
-        let Ok(procs) = crate::hot::listed_checked() else { return Ok(Holds::Unseen) };
-        let Ok(holds) = crate::foreground::holds(&procs, &self.path) else {
+        self.holds_in(crate::hot::listed_checked().as_deref().ok())
+    }
+
+    /// `holds`, as `procs` shows it: a listing of the host's processes its
+    /// caller has just made, to answer more than this from, or `None` where
+    /// that could not be read.
+    pub(crate) fn holds_in(&self, procs: Option<&[crate::hot::Proc]>) -> Result<Holds> {
+        let Some(procs) = procs else { return Ok(Holds::Unseen) };
+        let Ok(holds) = crate::foreground::holds(procs, &self.path) else {
             return Ok(Holds::Unseen);
         };
         if let Some(tty) = holds.tty()

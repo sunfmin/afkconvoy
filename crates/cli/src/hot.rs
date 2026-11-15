@@ -146,13 +146,13 @@ fn works_in(pid: u32) -> Option<PathBuf> {
 /// it works somewhere else. An error from the process list removes nothing
 /// that was waiting on this answer.
 pub(crate) fn working_directories() -> anyhow::Result<Vec<PathBuf>> {
-    let mut dirs = vec![];
-    for proc in listed_checked()? {
-        if let Some(cwd) = works_in(proc.pid) {
-            dirs.push(cwd);
-        }
-    }
-    Ok(dirs)
+    Ok(working_directories_of(&listed_checked()?))
+}
+
+/// `working_directories`, of the processes `procs` lists: a listing its
+/// caller has just made.
+pub(crate) fn working_directories_of(procs: &[Proc]) -> Vec<PathBuf> {
+    procs.iter().filter_map(|proc| works_in(proc.pid)).collect()
 }
 
 /// The stopped orphans working in `worktree`, and every process under one:

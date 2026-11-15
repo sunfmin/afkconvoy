@@ -126,8 +126,10 @@ fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Opti
     }
     // A stopped orphan can never leave on its own: it is ended, and only a
     // process that outlives that keeps the worktree.
-    worktree.end_stopped_orphans()?;
-    let busy = crate::hot::working_directories()?;
+    let busy = match worktree.end_stopped_orphans()? {
+        Some(listed) => crate::hot::working_directories_of(&listed),
+        None => crate::hot::working_directories()?,
+    };
     if crate::hot::occupies(&busy, &worktree.path) {
         return wait();
     }
