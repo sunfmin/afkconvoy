@@ -793,31 +793,6 @@ fn base64_url(bytes: &[u8]) -> String {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a_comment_node_id_is_github_s_encoding_of_its_rest_id() {
-        // sunfmin/control is repository 1432057979; its comment 6889160226
-        // is node IC_kwDOVVt4e88AAAABmqA-Ig, as GitHub answers.
-        let mut packed = vec![0x93, 0x00];
-        packed.extend(super::msgpack_uint(1432057979));
-        packed.extend(super::msgpack_uint(6889160226));
-        assert_eq!(super::base64_url(&packed), "kwDOVVt4e88AAAABmqA-Ig");
-    }
-
-    #[test]
-    fn a_write_with_no_graphql_equivalent_names_its_path() {
-        let gh = crate::gh::GitHub::in_no_checkout();
-        for (method, path) in [("DELETE", "issues/comments/42"), ("PUT", "pulls/3/merge")] {
-            let endpoint = format!("repos/acme/dev/{path}");
-            let args = ["api", "--method", method, &endpoint, "--silent"];
-            let error = super::write(&gh, &args).unwrap_err().to_string();
-            let named = format!("no GraphQL equivalent for {method} {path};");
-            assert!(error.starts_with(&named), "{error}");
-        }
-    }
-}
-
 /// gh list bounds its result and embeds only the first 100 native closing
 /// references. At either boundary, replace its result with a complete paged
 /// query, not a concatenation that can duplicate or lose changing rows.
@@ -884,4 +859,29 @@ pub(crate) fn complete_listing(gh: &GitHub, args: &[&str], out: String) -> Resul
         row["since"] = time(&row["createdAt"]);
     }
     Ok(json!(rows).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_comment_node_id_is_github_s_encoding_of_its_rest_id() {
+        // sunfmin/control is repository 1432057979; its comment 6889160226
+        // is node IC_kwDOVVt4e88AAAABmqA-Ig, as GitHub answers.
+        let mut packed = vec![0x93, 0x00];
+        packed.extend(super::msgpack_uint(1432057979));
+        packed.extend(super::msgpack_uint(6889160226));
+        assert_eq!(super::base64_url(&packed), "kwDOVVt4e88AAAABmqA-Ig");
+    }
+
+    #[test]
+    fn a_write_with_no_graphql_equivalent_names_its_path() {
+        let gh = crate::gh::GitHub::in_no_checkout();
+        for (method, path) in [("DELETE", "issues/comments/42"), ("PUT", "pulls/3/merge")] {
+            let endpoint = format!("repos/acme/dev/{path}");
+            let args = ["api", "--method", method, &endpoint, "--silent"];
+            let error = super::write(&gh, &args).unwrap_err().to_string();
+            let named = format!("no GraphQL equivalent for {method} {path};");
+            assert!(error.starts_with(&named), "{error}");
+        }
+    }
 }
