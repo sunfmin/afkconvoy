@@ -1553,6 +1553,37 @@ fn a_conflict_with_the_candidate_ahead_is_left_for_the_worker_to_resolve() {
 }
 
 #[test]
+fn ten_green_prs_whose_speculative_stacks_all_conflict_land_the_oldest_alone_within_one_round() {
+    let world = split_world(3);
+    let names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+    let workers: Vec<PathBuf> =
+        (1..=10).map(|n| world.worker(n, "x.txt", names[n as usize - 1])).collect();
+    let _runner = world.host_held();
+    let oldest = start(&world, &workers[0], &world.cache(), 1);
+    until(|| started(&world, "fast", "a"));
+    // Each stack on the oldest conflicts: three of them pile the chain.
+    for n in 2..=4 {
+        let conflict = finish(start(&world, &workers[n as usize - 1], &world.cache(), n));
+        assert_eq!(conflict["outcome"], "speculative_conflict", "{conflict}");
+        git(&workers[n as usize - 1], &["merge", "--abort"]);
+    }
+    // Piled, no turn stacks on the oldest any more, nor waits on the chain.
+    for n in 2..=10 {
+        let waited = finish(start(&world, &workers[n as usize - 1], &world.cache(), n));
+        assert_eq!(waited["outcome"], "waiting_for_capacity", "{waited}");
+        assert!(waited["detail"].as_str().unwrap().contains("piled"), "{waited}");
+    }
+    let pending = chain(&world)["pending"].as_array().map_or(0, Vec::len);
+    assert_eq!(pending, 0, "a piled turn holds no place a round waits for");
+    let_go(&world, "fast", "a", false);
+    let_go(&world, "slow", "a", false);
+    let landed = finish(oldest);
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(landed["landed"], json!([10]), "the oldest lands alone: {landed}");
+    assert_eq!(world.remote(&["show", "refs/heads/main:x.txt"]), "a");
+}
+
+#[test]
 fn with_one_lane_every_ready_pr_fast_gates_in_turn_and_lands_in_one_round() {
     let world = split_world(1);
     let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]

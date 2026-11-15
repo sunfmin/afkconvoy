@@ -32,6 +32,12 @@ use crate::remote::{Fresh, Push};
 const RETARGETED: &str =
     "pinned target changed during validation; restore its record before continuing";
 
+/// What a turn of a piled chain says while a candidate is ahead of it
+/// (`Landing::piled`).
+const PILED: &str = "the candidate chain is piled: its turns conflicted with the candidates \
+     ahead more often than they landed, so each lands alone on the base, oldest first; ask \
+     for another turn once the candidates ahead have landed";
+
 /// How long a turn waiting on the chain first waits before it reads it again.
 const EVERY: Duration = Duration::from_millis(100);
 
@@ -263,6 +269,7 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
         "cause": c.cause,
         "cancelled_by": c.cancelled_by,
         "round": chain.round_of(&c.id).map(|tip| &tip.id),
+        "assigned": c.assigned,
     });
     if matches!(c.phase, Phase::Validating | Phase::Slow)
         && let Some(result) = &c.result
@@ -1347,6 +1354,17 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             .candidates
             .iter()
             .any(|c| c.valid() && crate::config::heavy_gate(&c.command));
+    // A piled chain's turns stack on no candidate ahead: each lands alone on
+    // the base, oldest first, and a turn behind one ends before it reserves
+    // the pending place a round would wait for (sunfmin/control#1112).
+    if !barrier
+        && starting.chain.candidates.iter().any(|c| c.valid() && c.change != pr.number)
+        && crate::admission::landing_of(&repo.dir, clock()).is_some_and(|l| l.piled())
+    {
+        answer["outcome"] = json!(Ending::WaitingForCapacity);
+        answer["detail"] = json!(PILED);
+        return Ok(answer);
+    }
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
     let id = format!(
         "{:016x}-{stamp}-{}",
