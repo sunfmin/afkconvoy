@@ -106,8 +106,16 @@ EOF
     done
     ;;
 package)
+    # Cargo says where it built: a cargo given another target directory
+    # builds there, and huacnlee/cargo ignores any it is given
+    # (sunfmin/control#1127).
+    target_dir=$(cargo metadata --format-version 1 --no-deps --offline | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+    [ -n "$target_dir" ] || {
+        echo "release: cargo metadata said no target directory" >&2
+        exit 1
+    }
     for arch in $ARCHES; do
-        built=target/$(target "$arch")/release/afkconvoy
+        built=$target_dir/$(target "$arch")/release/afkconvoy
         [ -f "$built" ] || {
             echo "release: $built is missing: build it first" >&2
             exit 1

@@ -57,10 +57,19 @@ export AFKCONVOY_BUILD_COMMIT
 began=$(date +%s)
 echo "gate: ${1:-fast and slow} gate started $(date -u '+%Y-%m-%dT%H:%M:%SZ') on $(hostname), commit $(git rev-parse HEAD)" >&2
 echo "gate: host $(uname -sm); $(uptime)" >&2
-if [ -d target ]; then
-    echo "gate: target/ present; this alone does not establish warm artifacts" >&2
+# Where the build puts what it builds is cargo's to say, not the gate's: a
+# candidate's gate is given its worker's target directory, and huacnlee/cargo
+# ignores any it is given and builds into the workspace's own ./target
+# (sunfmin/control#1127). `cargo metadata` says the one it uses.
+target_dir=$(cargo metadata --format-version 1 --no-deps --offline | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+[ -n "$target_dir" ] || {
+    echo "gate: cargo metadata said no target directory" >&2
+    exit 1
+}
+if [ -d "$target_dir" ]; then
+    echo "gate: $target_dir present; this alone does not establish warm artifacts" >&2
 else
-    echo "gate: target/ absent; shared compiler and dependency caches may still be warm" >&2
+    echo "gate: $target_dir absent; shared compiler and dependency caches may still be warm" >&2
 fi
 took=
 step() {
@@ -92,11 +101,15 @@ cargo nextest --version >/dev/null 2>&1 && nextest=yes || nextest=
 # The tests leave no process behind: one that outlives them, stopped or
 # running, holds the worktree it ran in, and settling waits on it
 # (sunfmin/control#508). Once the tests end, a process whose working directory
-# or executable is under target/ or the tests' TMPDIR is theirs: the gate's
-# own ancestors excepted, given ten seconds to finish ending, any still there
-# is named by pid and command line, killed, and fails the gate. Only the tests'
-# TMPDIR is looked in, not all of .afkconvoy-tmp: a worker's own harness keeps
-# its home there, beside the fast gate it runs.
+# or executable is under the target directory cargo says or the tests' TMPDIR
+# is theirs: the gate's own ancestors excepted, given ten seconds to finish
+# ending, any still there is named by pid and command line, killed, and fails
+# the gate. Only the tests' TMPDIR is looked in, not all of .afkconvoy-tmp: a
+# worker's own harness keeps its home there, beside the fast gate it runs.
+# Nor is the build directory: huacnlee/cargo runs test programs from one under
+# ~/.cargo/targets that the repo's worktrees share, by content, and a
+# process there may be another gate's test (sunfmin/control#1127). The
+# programs the tests start, afkconvoy among them, are in the target directory.
 left_behind() {
     ours=$$
     ancestors=" $$ "
@@ -116,7 +129,7 @@ left_behind() {
         else
             pids=$(lsof -nPw -d cwd,txt -Fpn 2>/dev/null | awk '/^p/ { pid = substr($0, 2) } /^n/ { print pid, substr($0, 2) }')
         fi
-        pids=$(printf '%s\n' "$pids" | awk -v target="$PWD/target/" -v tmp="$tests_tmpdir/" -v skip="$ancestors" '
+        pids=$(printf '%s\n' "$pids" | awk -v target="$target_dir/" -v tmp="$tests_tmpdir/" -v skip="$ancestors" '
             { path = substr($0, length($1) + 2) }
             (index(path, target) == 1 || index(path, tmp) == 1) && index(skip, " " $1 " ") == 0 { print $1 }' | sort -un)
         [ -n "$pids" ] || return 0
@@ -124,7 +137,7 @@ left_behind() {
         sleep 1
         waited=$((waited + 1))
     done
-    echo "gate: the tests left these processes behind, in target/ or the tests' TMPDIR; each is killed, and the gate fails:" >&2
+    echo "gate: the tests left these processes behind, in $target_dir or the tests' TMPDIR; each is killed, and the gate fails:" >&2
     # shellcheck disable=SC2086
     ps -o pid=,ppid=,stat=,etime=,command= -p "$(echo $pids | tr ' ' ,)" >&2 || true
     # shellcheck disable=SC2086

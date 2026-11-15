@@ -113,6 +113,9 @@ fn run_command(
             .transpose()?;
     let mut shell = Command::new("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
+    // A gate command that takes no lane of its own keeps its rustc to one
+    // front-end thread as one that does (sunfmin/control#1127).
+    crate::exclusive::one_front_end_thread(&mut shell);
     match alone {
         Some(which) => shell.env(crate::exclusive::GATE_ENV, which.word()),
         None => shell.env_remove(crate::exclusive::GATE_ENV),

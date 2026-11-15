@@ -410,6 +410,8 @@ impl World {
             // share of a gate in the world (sunfmin/control#245).
             "CARGO_BUILD_JOBS",
             "NEXTEST_TEST_THREADS",
+            // as are the threads of its rustc (sunfmin/control#1127)
+            "CARGO_RUSTC_THREADS",
         ] {
             cmd.env_remove(name);
         }
