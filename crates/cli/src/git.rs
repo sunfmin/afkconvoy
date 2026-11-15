@@ -10,6 +10,9 @@ use anyhow::{Context, Result, bail};
 
 use crate::remote::{Remote, RemoteRecord, Seen, Wire};
 
+mod one_fetch;
+pub(crate) use one_fetch::Failing;
+
 /// The remote every ref and branch is pushed to and fetched from.
 pub const REMOTE: &str = "origin";
 
@@ -71,10 +74,6 @@ pub(crate) struct RemoteReads {
     empty_tree: OnceLock<String>,
     /// Shas `bring` has already found present. Objects live in the common store.
     present: Mutex<HashSet<String>>,
-    /// One lock for each fetch this process has made of the repository, by
-    /// its arguments: a fetch due while the same one runs waits for it, and
-    /// never runs beside it (sunfmin/control#1106).
-    fetching: Mutex<HashMap<Vec<String>, Arc<Mutex<()>>>>,
 }
 
 impl RemoteReads {
@@ -86,7 +85,6 @@ impl RemoteReads {
             messages: Mutex::default(),
             empty_tree: OnceLock::new(),
             present: Mutex::default(),
-            fetching: Mutex::default(),
         }
     }
 }
@@ -331,35 +329,27 @@ impl Repo {
         Ok(listed.lines().map(str::to_string).filter(|name| !name.is_empty()).collect())
     }
 
-    /// One fetch whose failure the caller reads. At `FETCH_LIMIT` its process
-    /// group is ended and the call is a failure. The same fetch runs once at
-    /// a time in this process: one due while it runs waits for it first.
+    /// One fetch whose failure the caller reads, under the fetch lock of
+    /// this repository's object store (`one_fetch`). At `FETCH_LIMIT` its
+    /// process group is ended and the call is a failure.
     pub fn try_fetch(&self, args: &[&str]) -> Result<Ran> {
         let ran = self.fetch_unless(args, || Ok(false))?;
         Ok(ran.expect("a fetch that is never done is run"))
     }
 
-    /// Runs the fetch `args` once no fetch of the same arguments runs in this
-    /// process. A fetch that had to wait asks `done` first, and runs only
-    /// when the fetch it waited for did not bring what it is for → `None`
-    /// when it was not run (sunfmin/control#1106).
+    /// Runs the fetch `args` under the fetch lock: no other fetch into this
+    /// object store runs beside it, of this process or another. A fetch that
+    /// had to wait asks `done` first, and runs only when the fetch it waited
+    /// for did not bring what it is for → `None` when it was not run
+    /// (sunfmin/control#1106, sunfmin/control#1102).
     fn fetch_unless(&self, args: &[&str], done: impl Fn() -> Result<bool>) -> Result<Option<Ran>> {
         if args.first() != Some(&"fetch") {
             bail!("Repo::try_fetch takes a git fetch command");
         }
-        let key = args.iter().map(|arg| arg.to_string()).collect();
-        let one = Arc::clone(lock(&self.reads().fetching).entry(key).or_default());
-        let _running = match one.try_lock() {
-            Ok(running) => running,
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                let running = lock(&one);
-                if done()? {
-                    return Ok(None);
-                }
-                running
-            }
-        };
+        let (_lock, waited) = one_fetch::take_after(self.common_dir()?)?;
+        if waited && done()? {
+            return Ok(None);
+        }
         run_within(&self.dir, args, &[], FETCH_LIMIT).map(Some)
     }
 
@@ -392,15 +382,27 @@ impl Repo {
 
     /// Brings into this repo the commit `sha` the remote was seen to have at
     /// `refname`, when it is not here yet. An error when the remote no longer
-    /// has it there.
+    /// has it there. Lands that want the same commit at once make one fetch
+    /// of it: each waits for the fetch lock, and finds there what the one
+    /// before it fetched (`one_fetch::guarded`). A corrupt pack is fetched
+    /// again with `--refetch`, and one that stays corrupt backs off.
     pub fn bring(&self, sha: &str, refname: &str) -> Result<()> {
         if !self.object_here(sha)? {
-            let args = ["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE, refname];
-            // The fetch waited for may have brought it.
-            let ran = self.fetch_unless(&args, || self.object_here(sha))?;
-            if let Some(ran) = ran.filter(|ran| !ran.ok) {
-                bail!("git {} failed: {}", args.join(" "), ran.stderr.trim());
-            }
+            let now = crate::gh_quota::now();
+            one_fetch::guarded(
+                self.common_dir()?,
+                refname,
+                now,
+                || self.object_here(sha),
+                |refetch| {
+                    let mut fetch = vec!["fetch", "--quiet", "--no-write-fetch-head", "--no-tags"];
+                    if refetch {
+                        fetch.push("--refetch");
+                    }
+                    fetch.extend([REMOTE, refname]);
+                    run_within(&self.dir, &fetch, &[], FETCH_LIMIT)
+                },
+            )?;
             if !self.object_here(sha)? {
                 bail!("{refname} moved on the remote while it was read — run this again");
             }
@@ -807,7 +809,8 @@ mod tests {
     }
 
     /// The host-runner's threads each find the same fetch due, one well
-    /// before the last one ends (sunfmin/control#1106): each runs in turn,
+    /// before the last one ends (sunfmin/control#1106): each runs in turn
+    /// under the fetch lock,
     /// never beside another.
     #[test]
     fn a_fetch_due_while_the_same_one_runs_waits_for_it() {

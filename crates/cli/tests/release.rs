@@ -228,7 +228,9 @@ fn the_binary_prints_what_it_was_built_from() {
         assert_eq!(afkconvoy::VERSION, VERSION);
         return;
     }
-    let described = git(&["describe", "--tags", "--long", "--always", "--match", "v*"]).unwrap();
+    // As the build describes it, but clean: a dirty tree says either.
+    let clean: Vec<&str> = build::DESCRIBE.into_iter().filter(|arg| *arg != "--dirty").collect();
+    let described = git(&clean).unwrap();
     let built = build::built_from(VERSION, Some(stdout(&described).trim()));
     let built_dirty =
         build::built_from(VERSION, Some(&format!("{}-dirty", stdout(&described).trim())));
@@ -318,7 +320,7 @@ fn a_build_sharing_a_target_directory_says_the_commit_it_is_built_from() {
             None => cargo.env_remove(build::COMMIT_ENV),
         };
         let said = stdout(&cargo.output().unwrap());
-        let described = git(dir, &["describe", "--tags", "--long", "--dirty", "--always"]);
+        let described = git(dir, &build::DESCRIBE);
         (said, build::built_from("0.1.0", Some(&described)))
     };
     let (said, built) = build(&main, None);
