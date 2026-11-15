@@ -2989,15 +2989,15 @@ mod tests {
         let live = crate::candidates::identity(std::process::id()).unwrap().unwrap();
         let gone = Process { started: "0.000000".into(), ..live.clone() };
         let record = |n: u64| {
-            let mut chain: Chain = Chain::default();
-            chain.pending = (0..n)
+            let mut pending: Vec<Barrier> = (0..n)
                 .map(|i| Barrier {
                     id: format!("p{i}"),
                     owner: live.clone(),
                     since: Some(1000 + i),
                 })
                 .collect();
-            chain.pending.push(Barrier { id: "gone".into(), owner: gone.clone(), since: Some(0) });
+            pending.push(Barrier { id: "gone".into(), owner: gone.clone(), since: Some(0) });
+            let chain: Chain = Chain { pending, ..Chain::default() };
             crate::remote::RemoteRecord {
                 name: "refs/convoy/candidates/main".into(),
                 sha: "0".into(),
