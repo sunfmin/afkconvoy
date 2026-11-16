@@ -1054,6 +1054,104 @@ pub fn switched(switched: &Switched) -> String {
     text
 }
 
+/// One red turn of a PR, as the brief of the worker handed it next names it
+/// (`fresh_look`): the tests its gate's output names as failing, and the
+/// file that keeps that whole output, where one is kept.
+#[derive(Debug, Clone)]
+pub struct RedTurn<'a> {
+    pub failing: &'a [String],
+    pub gate_output: Option<&'a str>,
+}
+
+/// What a worker handed a PR whose landing turns went red twice in a row
+/// finds of the worker before it (`fresh_look`).
+#[derive(Debug, Clone)]
+pub struct FreshLook<'a> {
+    /// The PR, and the base branch its branch was merged up to.
+    pub pr: u64,
+    pub base_branch: &'a str,
+    /// The red turns, oldest first.
+    pub reds: &'a [RedTurn<'a>],
+    /// The text of the last verdict the worker before it declared on the
+    /// issue, where it declared one.
+    pub verdict: Option<&'a str>,
+    /// The last lines the worker before it showed in its terminal.
+    pub said: &'a [String],
+    /// The patch that keeps what that worker had that the PR's branch does
+    /// not: its uncommitted work, and its commits not pushed. None where it
+    /// had nothing.
+    pub patch: Option<&'a str>,
+    /// The files merging the base tip into the branch left conflicted: none
+    /// where the merge was clean.
+    pub conflicts: &'a [String],
+}
+
+/// What the brief of a worker handed a PR after its landing turns went red
+/// twice in a row says after the rest: both red runs, what the worker before
+/// it last declared and said, the patch of what it left, and that it may
+/// change the approach (docs/adr/0088).
+pub fn fresh_look(look: &FreshLook) -> String {
+    let mut text = format!(
+        "\n\n## A fresh look at a PR that went red twice in a row\n\nPR #{} gated red in {} \
+         landing turns in a row. The worker before you retried it in its own worktree each \
+         time; it was ended, and you start in a new worktree on the PR's branch, merged up to \
+         the tip of `origin/{}`. The claim, the PR and its branch are the same.\n\nYou may \
+         change the approach: you are not bound to patch the last attempt. Read the issue's \
+         requirements again, then the failing tests below, and fix what makes them fail.\n",
+        look.pr,
+        look.reds.len(),
+        look.base_branch
+    );
+    for (at, red) in look.reds.iter().enumerate() {
+        text.push_str(&format!("\n- **Red run {}:** ", at + 1));
+        match red.failing {
+            [] => text.push_str("its output names no failing test"),
+            failing => {
+                let named: Vec<String> = failing.iter().map(|test| format!("`{test}`")).collect();
+                text.push_str(&format!("failing {}", named.join(", ")));
+            }
+        }
+        match red.gate_output {
+            Some(file) => text.push_str(&format!("; its whole gate output is in `{file}`.\n")),
+            None => text.push_str("; its whole gate output was not kept.\n"),
+        }
+    }
+    match look.verdict {
+        Some(verdict) => {
+            text.push_str(&format!("- **Its last verdict:**\n\n```\n{}\n```\n", verdict.trim_end()))
+        }
+        None => text.push_str("- **Its last verdict:** it declared none.\n"),
+    }
+    match look.patch {
+        Some(patch) => text.push_str(&format!(
+            "- **What it left:** its uncommitted work and unpushed commits are saved in the \
+             patch `{patch}` (`git apply --3way` takes it); none of it is in your worktree.\n"
+        )),
+        None => text.push_str(
+            "- **What it left:** nothing beyond what the PR's branch holds; no patch was saved.\n",
+        ),
+    }
+    if !look.conflicts.is_empty() {
+        text.push_str(&format!(
+            "- **Merging the base tip conflicted** on {}: resolve each, `git add` it and commit \
+             the merge before anything else.\n",
+            look.conflicts.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    match look.said {
+        [] => text.push_str("- **Last said:** its terminal was already gone.\n"),
+        said => {
+            text.push_str("- **Last said**, the end of its terminal:\n\n```\n");
+            for line in said {
+                text.push_str(line.trim_end());
+                text.push('\n');
+            }
+            text.push_str("```\n");
+        }
+    }
+    text
+}
+
 /// `template` with the fleet's tracker in each of its issue commands, where
 /// its marks say: `<tracker>` after a `gh issue` command, `<issues>` in a
 /// `gh api` path, `<labelled>` on one that opens or looks for an issue of

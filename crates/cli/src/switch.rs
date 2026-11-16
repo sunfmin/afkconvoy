@@ -309,8 +309,16 @@ pub(crate) fn switch_issue(
     if let Some(worktree) = &worktree {
         worktree.stop_for_continuation()?;
     }
-    let dispatched =
-        dispatch_continuing(fleet, found, me, agent, issue, StartFrom::Auto, Some(&continued))?;
+    let dispatched = dispatch_continuing(
+        fleet,
+        found,
+        me,
+        agent,
+        issue,
+        StartFrom::Auto,
+        Some(&continued),
+        None,
+    )?;
     if !dispatched.started() {
         bail!("issue #{issue}: no worker was started: {}", dispatched.answer);
     }

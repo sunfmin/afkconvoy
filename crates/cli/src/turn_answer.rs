@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 
 use afkconvoy_core::candidate::Process;
 use afkconvoy_core::ending::Ending;
-use afkconvoy_core::landing_worker::Answered;
+use afkconvoy_core::landing_worker::{Answered, InARow};
 use afkconvoy_core::stopped::Progress;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,55 @@ struct Note {
 }
 
 const HANDOFF: &str = "AFKCONVOY_TURN_HANDOFF";
+/// The red turns in a row of the worktree's PR, oldest first: a file of its
+/// own beside the note, which forgetting a wait (`forget_wait`) leaves.
+const REDS: &str = "convoy-turn-reds.json";
+
+/// One red turn of a landing worktree's PR, as its answer said it: when, the
+/// tests its gate's output names as failing, and the file that keeps that
+/// whole output (`candidates::red_told`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedTurn {
+    pub at: u64,
+    #[serde(default)]
+    pub failing: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_output: Option<String>,
+}
+
+/// The red turns in a row after `answer`, from `before` (`InARow`): a red
+/// one is added, a green or conflicting one starts the row over, and any
+/// other — a wait, a failed ask — leaves it as it was.
+pub fn in_a_row(mut before: Vec<RedTurn>, answer: Option<&Value>, now: u64) -> Vec<RedTurn> {
+    let Some(answer) = answer else { return before };
+    let outcome = answer["outcome"].as_str().unwrap_or("error");
+    let green = answer["status"] == "green";
+    match InARow::of(outcome, green) {
+        InARow::Red => {
+            let failing = answer["failing"].as_array().into_iter().flatten();
+            before.push(RedTurn {
+                at: now,
+                failing: failing.filter_map(Value::as_str).map(str::to_string).collect(),
+                gate_output: answer["gate_output"].as_str().map(str::to_string),
+            });
+            before
+        }
+        InARow::Broken => vec![],
+        InARow::Kept => before,
+    }
+}
+
+fn read_reds(file: &Path) -> Vec<RedTurn> {
+    std::fs::read(file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// The red turns in a row of the PR of the landing worktree `worktree`.
+pub fn reds(worktree: &Worktree) -> Result<Vec<RedTurn>> {
+    Ok(read_reds(&worktree.note(REDS)?))
+}
 const RECEIPT: &str = "convoy-turn-told.json";
 
 #[derive(Serialize, Deserialize)]
@@ -102,6 +151,13 @@ pub fn noted(
         );
     }
     let answer = ask();
+    if let Ok(reds) = repo.git_dir().map(|dir| dir.join(REDS)) {
+        let before = read_reds(&reds);
+        let after = in_a_row(before.clone(), answer.as_ref().ok(), crate::clock());
+        if after != before {
+            let _ = write(&reds, &after);
+        }
+    }
     if let Some(file) = &file {
         let outcome = match &answer {
             Ok(answer) => answer["outcome"].as_str().unwrap_or("error").to_string(),
