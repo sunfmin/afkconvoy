@@ -472,7 +472,12 @@ pub(crate) fn json(now: u64) -> Value {
     let book = read_book();
     let here = account::this_machine().unwrap_or_default();
     let home = user_home().unwrap_or_default();
-    let running = running();
+    // With no account there is nothing to count workers on: orca is not
+    // asked, so a `plan` refused for a missing tool asks orca nothing more.
+    let running = match listed.accounts.is_empty() {
+        true => BTreeMap::new(),
+        false => running(),
+    };
     let limit = limit();
     let mut shown = vec![];
     let mut harnesses: Vec<Harness> = listed.accounts.iter().map(|a| a.harness).collect();
