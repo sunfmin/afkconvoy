@@ -1791,9 +1791,12 @@ impl Worktree {
     }
 
     /// Removes and unregisters every worktree of `shared` under this one.
+    /// A finished worker's `.git` pointer need not name a repo still there:
+    /// one whose worktrees cannot be listed has none registered to remove.
     fn remove_nested(&self, shared: &Path) -> Result<()> {
         let repo = Repo::new(shared.to_path_buf());
-        for nested in repo.worktrees_under(&self.path)? {
+        let Ok(nested) = repo.worktrees_under(&self.path) else { return Ok(()) };
+        for nested in nested {
             repo.remove_worktree(&nested).with_context(|| {
                 format!("cannot remove the worktree nested in {}", self.path.display())
             })?;
