@@ -780,6 +780,98 @@ pub fn quoted(lines: &[String]) -> Vec<String> {
     lines.iter().skip(from).take(QUOTE_LINES).cloned().collect()
 }
 
+/// How many lines of one failing test's panic a report carries, and how many
+/// characters of each.
+pub const PANIC_LINES: usize = 12;
+pub const PANIC_WIDTH: usize = 300;
+
+/// What one failing test panicked with, as a red gate's output says it: the
+/// test as the gate named it, and its panic, trimmed (`panics`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Panic {
+    pub test: String,
+    pub said: Vec<String>,
+}
+
+/// What each of the failing `tests` panicked with, as a red gate's output
+/// `lines` says it, in their order: the `thread '…' panicked at` line and what
+/// follows it up to a blank line, its backtrace note or nextest's next line,
+/// at most `PANIC_LINES` lines of `PANIC_WIDTH` characters, indented as the
+/// panic line is not. It is the panic printed after the line nextest names
+/// the test failing by (`failed_test`) — its own thread's, else the first —
+/// or, where no such line holds one, the first panic of a thread named for
+/// the test anywhere. A test that printed no panic — a TIMEOUT — is left out.
+pub fn panics(lines: &[String], tests: &[String]) -> Vec<Panic> {
+    tests
+        .iter()
+        .filter_map(|test| {
+            let said = panic_of(lines, test)?;
+            Some(Panic { test: test.clone(), said })
+        })
+        .collect()
+}
+
+/// What `test` panicked with in `lines` (`panics`).
+fn panic_of(lines: &[String], test: &str) -> Option<Vec<String>> {
+    let path = test.split_whitespace().last().unwrap_or(test);
+    // `thread 'a::test' panicked at`, or, as later Rust prints it, with its
+    // thread's id: `thread 'a::test' (12345) panicked at`.
+    let thread = format!("thread '{path}'");
+    let own = |line: &str| line.contains(&thread) && line.contains("panicked at");
+    let block: Vec<&String> = lines
+        .iter()
+        .skip_while(|line| failed_test(line) != Some(test))
+        .skip(1)
+        .take_while(|line| !nextest_status(line))
+        .collect();
+    let from = |found: &dyn Fn(&str) -> bool| -> Option<Vec<String>> {
+        let start = block.iter().position(|line| found(line))?;
+        Some(panic_from(block.iter().skip(start).map(|line| line.as_str())))
+    };
+    from(&own).or_else(|| from(&|line| line.contains("panicked at"))).or_else(|| {
+        let start = lines.iter().position(|line| own(line))?;
+        Some(panic_from(lines.iter().skip(start).map(String::as_str)))
+    })
+}
+
+/// A panic's lines from its `panicked at` line on (`panics`).
+fn panic_from<'a>(mut lines: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let Some(first) = lines.next() else {
+        return vec![];
+    };
+    let indent = first.len().saturating_sub(first.trim_start().len());
+    let trim = |line: &str| -> String {
+        let line = line.get(indent..).filter(|_| line.is_char_boundary(indent)).unwrap_or(line);
+        line.trim_end().chars().take(PANIC_WIDTH).collect()
+    };
+    let rest = lines.take_while(|line| {
+        let line = line.trim();
+        !line.is_empty()
+            && !line.starts_with("note: run with `RUST_BACKTRACE")
+            && !line.starts_with("stack backtrace:")
+            && !line.starts_with("────")
+            && !line.starts_with("---")
+            && !nextest_status(line)
+    });
+    std::iter::once(first).chain(rest).take(PANIC_LINES).map(trim).collect()
+}
+
+/// Whether `line` is one of nextest's own lines that says how a test went or
+/// sums the run up — `PASS [`, `FAIL [`, `TRY 2 FAIL [`, `Summary [` — and so
+/// ends what the test before it printed.
+fn nextest_status(line: &str) -> bool {
+    let mut rest = line.trim_start();
+    if let Some(retry) = rest.strip_prefix("TRY ") {
+        rest = retry.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start();
+    }
+    let Some((word, after)) = rest.split_once(' ') else {
+        return false;
+    };
+    word.starts_with(|c: char| c.is_ascii_uppercase())
+        && word.chars().all(|c| c.is_ascii_alphabetic() || c == '-')
+        && after.trim_start().starts_with('[')
+}
+
 /// What wait status proves about a gate command ended by a signal. The pid
 /// also names its process group, created by the gate. Wait status identifies
 /// no sender and proves nothing about which repository checks started.
@@ -1032,6 +1124,56 @@ pub fn test_times(lines: &[String]) -> Vec<TestTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_failing_test_s_panic_is_read_from_what_it_printed_and_trimmed() {
+        let long = "x".repeat(PANIC_WIDTH + 50);
+        let lines: Vec<String> = [
+            "        FAIL [   0.208s] (1/4) nx exclusive::frees_its_lane",
+            "  stderr ───",
+            "    a line it logged first",
+            "    thread 'other' panicked at tests/exclusive.rs:1:1:",
+            "    not this one",
+            "",
+            "    thread 'exclusive::frees_its_lane' (4242) panicked at tests/exclusive.rs:9:5:",
+            "    assertion `left == right` failed: the lane is held",
+            "      left: 1",
+            &format!("     right: {long}"),
+            "    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+            "        PASS [   0.012s] (2/4) nx gate::passes",
+            "     TIMEOUT [   6.004s] (3/4) nx gate::hangs",
+            "        FAIL [   0.300s] (4/4) nx continuation::forced",
+            "--- STDERR:              nx continuation::forced ---",
+            "thread '<unnamed>' panicked at tests/continuation.rs:20:9:",
+            "the escaped worker still runs",
+            "",
+            "     Summary [   0.900s] 4 tests run: 1 passed, 3 failed, 0 skipped",
+        ]
+        .map(String::from)
+        .to_vec();
+        let tests = failing_tests(&lines);
+        let found = panics(&lines, &tests);
+        assert_eq!(found.len(), 2, "the TIMEOUT printed no panic: {found:?}");
+        assert_eq!(found[0].test, "nx exclusive::frees_its_lane");
+        assert_eq!(
+            found[0].said[..3],
+            [
+                "thread 'exclusive::frees_its_lane' (4242) panicked at tests/exclusive.rs:9:5:",
+                "assertion `left == right` failed: the lane is held",
+                "  left: 1",
+            ]
+        );
+        assert_eq!(found[0].said.len(), 4, "{:?}", found[0].said);
+        assert_eq!(found[0].said[3].chars().count(), PANIC_WIDTH);
+        assert_eq!(found[1].test, "nx continuation::forced");
+        assert_eq!(
+            found[1].said,
+            [
+                "thread '<unnamed>' panicked at tests/continuation.rs:20:9:",
+                "the escaped worker still runs"
+            ]
+        );
+    }
 
     #[test]
     fn a_red_gate_s_output_names_its_failing_tests_and_is_quoted_from_the_first() {

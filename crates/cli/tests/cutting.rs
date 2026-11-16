@@ -1655,8 +1655,10 @@ fn a_verdict_on_the_cut_escalates_where_no_cut_will_come() {
     assert!(escalation.contains("the repo names no cut steps"), "{escalation}");
 }
 
-#[test]
-fn a_cut_whose_gate_goes_red_names_the_failing_test_and_keeps_that_run_s_output() {
+/// A world whose cut's gate, while `red` exists, fails as nextest says a
+/// test failed: the test by name, what it printed after it, and a last line
+/// that names no test.
+fn cutting_red() -> World {
     let world = World::new();
     tag(&world, "v0.1.0");
     // A gate that, while `red` exists, fails as nextest says a test failed:
@@ -1687,6 +1689,31 @@ fn a_cut_whose_gate_goes_red_names_the_failing_test_and_keeps_that_run_s_output(
         &format!("{config}\n{}", cut_block(&says_published(&world))),
         "Turn cutting on (#7)",
     );
+    world
+}
+
+/// The git dir of `checkout`, where its cut keeps each gate run's output.
+fn git_dir(checkout: &Path) -> PathBuf {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--absolute-git-dir"])
+        .current_dir(checkout)
+        .output()
+        .unwrap();
+    PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// The gate runs whose output is kept in `checkout`'s git dir.
+fn gate_runs_in(checkout: &Path) -> Vec<String> {
+    std::fs::read_dir(git_dir(checkout))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("convoy-cut-gate-"))
+        .collect()
+}
+
+#[test]
+fn a_cut_whose_gate_goes_red_names_the_failing_test_and_keeps_that_run_s_output() {
+    let world = cutting_red();
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
     let checkout = checkout(&world);
     std::fs::write(world.root.join("red"), "red").unwrap();
@@ -1717,13 +1744,61 @@ fn a_cut_whose_gate_goes_red_names_the_failing_test_and_keeps_that_run_s_output(
     let answer = world.afk_in(&checkout, &["cut", "--host", "h1", "--from", "gate"]).ok();
     assert!(answer.get("failed").is_none(), "{answer}");
     assert_eq!(std::fs::read_to_string(&output).unwrap(), kept, "the red run's output stays");
-    let dir = output.parent().unwrap();
-    let runs: Vec<_> = std::fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with("convoy-cut-gate-"))
-        .collect();
+    let runs = gate_runs_in(&checkout);
     assert_eq!(runs.len(), 2, "each run keeps its own: {runs:?}");
+}
+
+#[test]
+fn a_failed_cut_s_gate_output_survives_the_next_cut_in_the_same_checkout() {
+    let world = cutting_red();
+    std::fs::write(world.root.join("red"), "red").unwrap();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    assert_eq!(failed["failed"], "gate", "{failed}");
+    let output = PathBuf::from(failed["gate_output"].as_str().unwrap());
+    let kept = std::fs::read_to_string(&output).unwrap();
+    // It is kept in the host's cache, named for the version and its run.
+    let repo = world.cache().join("afkconvoy/cut-failed");
+    assert!(output.starts_with(&repo), "{} is not under {}", output.display(), repo.display());
+    let name = output.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.starts_with("0.1.1-") && name.ends_with(".log"), "{name}");
+
+    // The issue names that path, and what the failing test panicked with.
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    let failed = failures(&world);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    let issue = failed[0].0;
+    let issues = world.gh()["issues"].as_array().unwrap().clone();
+    let found = issues.iter().find(|found| found["number"] == issue).unwrap();
+    let body = found["body"].as_str().unwrap();
+    assert!(body.contains(&format!("`{}`", output.display())), "{body}");
+    assert!(
+        body.contains(
+            "`afkconvoy cutting::a_named_test` panicked:\n\n````\n\
+             thread 'cutting::a_named_test' panicked at tests/cutting.rs:9:5:\n\
+             the widget was not cut\n````"
+        ),
+        "{body}"
+    );
+    let found = cut_failed(&world, 10_200);
+    let evidence = found["evidence"].as_str().unwrap();
+    assert!(evidence.contains(&output.display().to_string()), "{evidence}");
+
+    // The next cut starts in the same checkout: the run's file there is
+    // gone, the one its issue names stays.
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), ["cut done"]);
+    assert_eq!(self::checkout(&world), checkout, "the same checkout");
+    assert_eq!(gate_runs_in(&checkout), [] as [String; 0], "the next cut starts afresh");
+    assert_eq!(std::fs::read_to_string(&output).unwrap(), kept, "the failed run's output stays");
+    let again = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    assert_eq!(again["failed"], "gate", "{again}");
+    assert_ne!(again["gate_output"], failed_output(&output), "{again}");
+    assert_eq!(std::fs::read_to_string(&output).unwrap(), kept, "the failed run's output stays");
+}
+
+fn failed_output(output: &Path) -> Value {
+    json!(output.display().to_string())
 }
 
 /// A world whose cut's gate is a script: while `overloaded` holds a run,
