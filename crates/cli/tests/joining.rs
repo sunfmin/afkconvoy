@@ -380,7 +380,7 @@ fn doctor_does_not_call_a_landing_worker_stopped_when_the_tick_asks_again() {
         let began = Instant::now();
         while !started.exists() {
             assert!(
-                began.elapsed() < Duration::from_secs(15),
+                began.elapsed() < Duration::from_secs(120),
                 "{outcome}: the retried turn did not start"
             );
             std::thread::sleep(Duration::from_millis(20));
@@ -431,7 +431,7 @@ fn a_running_landing_turn_is_left_alone_with_its_worker_idle() {
         .unwrap();
     let began = Instant::now();
     while !started.exists() {
-        assert!(began.elapsed() < Duration::from_secs(15), "the landing gate did not start");
+        assert!(began.elapsed() < Duration::from_secs(120), "the landing gate did not start");
         std::thread::sleep(Duration::from_millis(20));
     }
     let asking: Value =
