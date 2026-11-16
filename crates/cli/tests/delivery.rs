@@ -221,7 +221,7 @@ fn interrupted_atomic_creation_recovers_and_inspection_never_attempts_an_empty_p
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = afkconvoy_patience::deadline();
     while !marker.exists() {
         assert!(Instant::now() < until, "creation did not publish");
         std::thread::sleep(Duration::from_millis(10));

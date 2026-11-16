@@ -17,6 +17,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# The one bound on a test's wait for an event (sunfmin/control#1183).
+afkconvoy-patience = { path = "../patience" }
 tempfile = "3"
 
 # `cargo flux` (through ../../verify.sh) checks every refinement in this crate.

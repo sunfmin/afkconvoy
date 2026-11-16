@@ -8,7 +8,7 @@ use crate::common;
 use common::World;
 use serde_json::{Value, json};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// A load no host of any number of cores is under.
 const PAST_ANY: &str = "100000.00";
@@ -27,11 +27,7 @@ fn queued(world: &World) -> common::FixtureProcess {
             .stdout(Stdio::null())
             .stderr(Stdio::null()),
     );
-    let start = Instant::now();
-    while !marker.exists() {
-        assert!(start.elapsed() < Duration::from_secs(10));
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    afkconvoy_patience::until_true("the queued command ran", || marker.exists());
     command
 }
 

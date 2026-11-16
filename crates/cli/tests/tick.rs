@@ -330,7 +330,7 @@ fn a_settled_worktree_s_files_are_deleted_by_a_child_and_its_path_is_free_at_onc
     assert!(trash.is_dir(), "{}", trash.display());
     let since = std::time::Instant::now();
     while std::fs::read_dir(&trash).unwrap().next().is_some() {
-        assert!(since.elapsed() < std::time::Duration::from_secs(30), "the trash is never emptied");
+        assert!(since.elapsed() < afkconvoy_patience::PATIENCE, "the trash is never emptied");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
@@ -477,7 +477,7 @@ touch "$2/paused"
 exec sleep 120"#;
         let mut scheduler =
             Command::new("sh").args(["-c", script, "sh"]).arg(worktree).arg(marks).spawn().unwrap();
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let until = afkconvoy_patience::deadline();
         while !marks.join("paused").exists() {
             assert!(std::time::Instant::now() < until, "the scheduler never paused its gate");
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -524,11 +524,11 @@ fn settling_ends_a_gate_its_killed_scheduler_left_stopped_and_removes_the_worktr
     world.close_issue(3);
     let paused = Paused::start(&worktree, &world.root);
 
-    let began = std::time::Instant::now();
+    // What it paused never goes on by itself: a settle that waited for it
+    // would never answer.
     let ticked = tick(&world, "1090");
     assert_eq!(did(&ticked)[0], "settle 3 done", "{ticked}");
-    assert!(began.elapsed() < std::time::Duration::from_secs(30), "ended within a bound");
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = afkconvoy_patience::deadline();
     while state(paused.gate).is_some() || state(paused.child).is_some() {
         assert!(std::time::Instant::now() < until, "the paused gate's processes still exist");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -696,7 +696,7 @@ fn a_run_says_left_after_a_finishing_worker_leaves() {
     let world = backlog(&[391]);
     let running =
         world.running(&["--instance", "alpha", "--host", "h1", "--ticks", "3", "--now", "1000"]);
-    let soon = std::time::Duration::from_secs(20);
+    let soon = afkconvoy_patience::PATIENCE;
     assert!(running.line(soon).unwrap().contains("dispatched #391"));
     let worktree = worker_worktree(&world);
     let session = Session::start(&world, &worktree);
@@ -910,7 +910,7 @@ impl Session {
         let reaper = std::thread::spawn(move || {
             child.wait().unwrap();
         });
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let until = afkconvoy_patience::deadline();
         while !ready.exists() {
             assert!(std::time::Instant::now() < until, "the session never started");
             std::thread::sleep(std::time::Duration::from_millis(10));

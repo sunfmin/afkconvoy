@@ -371,7 +371,7 @@ mod tests {
         }
 
         fn until(&self, what: &str, done: impl Fn(&Holds) -> bool) -> Holds {
-            let until = Instant::now() + Duration::from_secs(10);
+            let until = afkconvoy_patience::deadline();
             loop {
                 let holds = self.holds();
                 if done(&holds) {
@@ -386,9 +386,10 @@ mod tests {
             }
         }
 
-        /// Waits until `file` exists, or `within` has gone; whether it does.
-        fn appears(file: &Path, within: Duration) -> bool {
-            let until = Instant::now() + within;
+        /// Waits until `file` exists, or the one bound on a wait for an event
+        /// has gone; whether it does.
+        fn appears(file: &Path) -> bool {
+            let until = afkconvoy_patience::deadline();
             while Instant::now() < until {
                 if file.exists() {
                     return true;
@@ -463,7 +464,7 @@ mod tests {
         assert!(recovered, "fg brings it back; screen: {:?}", terminal.output);
         assert!(matches!(terminal.holds(), Holds::Foreground { .. }));
         terminal.type_line("heard");
-        assert!(Terminal::appears(&said, Duration::from_secs(5)), "it reads its terminal again");
+        assert!(Terminal::appears(&said), "it reads its terminal again");
         assert_eq!(std::fs::read_to_string(&said).unwrap(), "heard\n");
     }
 
@@ -492,7 +493,7 @@ mod tests {
         let harness = terminal.start_harness("sleep");
         terminal.type_line(&format!("touch {}", ran.display()));
         signal(harness, libc::SIGKILL);
-        assert!(Terminal::appears(&ran, Duration::from_secs(5)), "the shell ran the unread line");
+        assert!(Terminal::appears(&ran), "the shell ran the unread line");
 
         // Dropped once it is not confirmed delivered, nothing is left to run.
         let dropped = terminal.worktree.path().join("dropped");
@@ -502,7 +503,7 @@ mod tests {
         signal(harness, libc::SIGKILL);
         let marker = terminal.worktree.path().join("shell-reads");
         terminal.type_line(&format!("touch {}", marker.display()));
-        assert!(Terminal::appears(&marker, Duration::from_secs(5)), "the shell reads again");
+        assert!(Terminal::appears(&marker), "the shell reads again");
         assert!(!dropped.exists(), "the dropped line never ran");
     }
 

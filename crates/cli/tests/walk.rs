@@ -7,7 +7,6 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use common::{World, commit, git, write};
 use serde_json::{Value, json};
@@ -668,9 +667,9 @@ fn a_breaker_found_on_an_issue_nobody_holds_is_escalated_with_its_rounds_too() {
     assert_eq!(did(&tick(&world, 1360)), [] as [&str; 0]);
 }
 
-/// `run` as alpha at `now`, for `ticks` ticks → its lines, and how long it took.
-fn run(world: &World, now: &str, ticks: &str, pacing: &[&str]) -> (Vec<String>, Duration) {
-    let started = Instant::now();
+/// `run` as alpha at `now`, for `ticks` ticks → its lines, and the lines that
+/// say why each tick started.
+fn run(world: &World, now: &str, ticks: &str, pacing: &[&str]) -> (Vec<String>, Vec<String>) {
     let args = [
         "run",
         "--foreground",
@@ -683,8 +682,9 @@ fn run(world: &World, now: &str, ticks: &str, pacing: &[&str]) -> (Vec<String>, 
         "--ticks",
         ticks,
     ];
-    let (lines, _) = world.afk_lines(&[&args[..], pacing].concat());
-    (lines, started.elapsed())
+    let (lines, _) = world.afk_every_line(&[&args[..], pacing].concat());
+    let started = lines.iter().filter(|line| line.contains(": started (")).cloned().collect();
+    (lines.into_iter().filter(|line| !common::bookkeeping(line)).collect(), started)
 }
 
 #[test]
@@ -718,7 +718,7 @@ fn run_starts_what_a_verdict_left_the_next_tick_with_no_sleep() {
     declare(&world, 7, "build", "escalate", &["--text", "Which schema?"]);
 
     // Its seconds are real ones: a sleep between the two ticks is 90 of them.
-    let (lines, took) = run(&world, "1090", "2", &[]);
+    let (lines, started) = run(&world, "1090", "2", &[]);
     assert_eq!(
         lines,
         [
@@ -727,7 +727,8 @@ fn run_starts_what_a_verdict_left_the_next_tick_with_no_sleep() {
             "tick 2: dispatched #7 · holding 1 · frontier 0 · next in 90s",
         ]
     );
-    assert!(took < Duration::from_secs(45), "the sleep was not skipped: {took:?}");
+    // no sleep: the second tick follows the first, and no timer opened it
+    assert!(started.contains(&"tick 2: started (follow-up)".to_string()), "{started:?}");
     assert!(workers(&world, &worktree(&world, 7))[0].contains(" AFKCONVOY_CONSULT='true' "));
 }
 

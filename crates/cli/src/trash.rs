@@ -165,8 +165,8 @@ mod tests {
     use super::*;
 
     fn gone_soon(path: &Path) -> bool {
-        let since = Instant::now();
-        while since.elapsed() < Duration::from_secs(20) {
+        let until = afkconvoy_patience::deadline();
+        while Instant::now() < until {
             if !path.exists() {
                 return true;
             }

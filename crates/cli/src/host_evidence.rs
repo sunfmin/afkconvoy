@@ -449,7 +449,7 @@ mod tests {
         std::fs::write(big.join("blob"), vec![1u8; 512 << 10]).unwrap();
         std::fs::write(big.join("w/blob"), vec![1u8; 256 << 10]).unwrap();
         let worktree = (big.join("w"), 256 << 10);
-        let deadline = Instant::now() + MEASURED_WITHIN;
+        let deadline = afkconvoy_patience::deadline();
         let all = sizes_said(std::slice::from_ref(&big), &[], deadline);
         let less = sizes_said(std::slice::from_ref(&big), &[worktree], deadline);
         assert!(less.lines().next().unwrap().ends_with("/big"), "{less}");
@@ -474,7 +474,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("big")).unwrap();
         std::fs::write(home.path().join("big/blob"), vec![1u8; 512 << 10]).unwrap();
-        let measured = largest_said(home.path(), &[], Instant::now() + MEASURED_WITHIN);
+        let measured = largest_said(home.path(), &[], afkconvoy_patience::deadline());
         assert!(measured.lines().any(|line| line.ends_with("/big")), "{measured}");
         let late = largest_said(home.path(), &[], Instant::now());
         assert!(late.contains("du was stopped at 5 minutes"), "{late}");

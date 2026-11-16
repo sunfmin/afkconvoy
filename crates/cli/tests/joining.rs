@@ -182,7 +182,7 @@ fn a_fleet_asked_red_turn_hands_its_answer_to_the_idle_worker_on_the_next_tick()
             break;
         }
         assert!(
-            began.elapsed() < Duration::from_secs(30),
+            began.elapsed() < afkconvoy_patience::PATIENCE,
             "the retried turn did not answer gate_red: {note}"
         );
         std::thread::sleep(Duration::from_millis(20));
@@ -380,7 +380,7 @@ fn doctor_does_not_call_a_landing_worker_stopped_when_the_tick_asks_again() {
         let began = Instant::now();
         while !started.exists() {
             assert!(
-                began.elapsed() < Duration::from_secs(15),
+                began.elapsed() < afkconvoy_patience::PATIENCE,
                 "{outcome}: the retried turn did not start"
             );
             std::thread::sleep(Duration::from_millis(20));
@@ -431,7 +431,7 @@ fn a_running_landing_turn_is_left_alone_with_its_worker_idle() {
         .unwrap();
     let began = Instant::now();
     while !started.exists() {
-        assert!(began.elapsed() < Duration::from_secs(15), "the landing gate did not start");
+        assert!(began.elapsed() < afkconvoy_patience::PATIENCE, "the landing gate did not start");
         std::thread::sleep(Duration::from_millis(20));
     }
     let asking: Value =
@@ -859,7 +859,7 @@ impl BareShell {
         drop(master);
         let tty = name.trim_start_matches("/dev/").to_string();
         let bare = BareShell { shell: command.spawn().unwrap(), tty };
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = afkconvoy_patience::deadline();
         loop {
             let on =
                 std::process::Command::new("ps").args(["-o", "pid=", "-t", &bare.tty]).output();

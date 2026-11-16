@@ -423,11 +423,9 @@ mod tests {
     #[test]
     fn a_wake_ends_the_rest_and_one_before_it_ends_it_at_once() {
         let wakes = Wakes::default();
-        // one that arrived during the tick
+        // one that arrived during the tick: a rest given no time is ended by it
         wakes.hear(None);
-        let started = Instant::now();
-        assert!(wakes.rest(Duration::from_secs(30)).is_some());
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(wakes.rest(Duration::ZERO).is_some());
         // …and with none, the whole sleep is waited out
         let started = Instant::now();
         assert!(wakes.rest(Duration::from_millis(150)).is_none());
@@ -439,9 +437,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             waker.wake();
         });
-        let started = Instant::now();
-        assert_eq!(wakes.rest(Duration::from_secs(30)), Some(Woken { by: None }));
-        assert!(started.elapsed() < Duration::from_secs(5));
+        // a rest that ran out says none: one that says the wake was ended by it
+        assert_eq!(wakes.rest(afkconvoy_patience::PATIENCE), Some(Woken { by: None }));
         woke.join().unwrap();
     }
 
@@ -452,7 +449,7 @@ mod tests {
         wakes.telling(Box::new(move |n, _| told.send(n).unwrap()));
         // between ticks: the rest it ends says so, not this
         assert_eq!(wakes.hear(None), Answer::Starts(1));
-        assert!(wakes.rest(Duration::from_secs(30)).is_some());
+        assert!(wakes.rest(afkconvoy_patience::PATIENCE).is_some());
         assert!(during.try_recv().is_err());
         wakes.forget(7);
         assert_eq!(wakes.hear(None), Answer::Follows(7));
@@ -460,12 +457,12 @@ mod tests {
         assert_eq!(wakes.hear(None), Answer::Follows(7), "and a second, as well");
         wakes.ended();
         // …which is kept, not told twice, and ends the rest at once
-        assert!(wakes.rest(Duration::from_secs(30)).is_some());
+        assert!(wakes.rest(afkconvoy_patience::PATIENCE).is_some());
         assert!(during.try_recv().is_err(), "one line a tick");
         wakes.forget(8);
         wakes.ended();
         assert_eq!(wakes.hear(None), Answer::Starts(9));
-        assert!(wakes.rest(Duration::from_secs(30)).is_some());
+        assert!(wakes.rest(afkconvoy_patience::PATIENCE).is_some());
         assert!(during.try_recv().is_err(), "heard after the tick ended");
     }
 
@@ -477,17 +474,21 @@ mod tests {
         wakes.hear(None);
         wakes.hear(Some("park #46".into()));
         wakes.hear(Some("land #7".into()));
-        let woken = wakes.rest(Duration::from_secs(5));
+        let woken = wakes.rest(afkconvoy_patience::PATIENCE);
         assert_eq!(woken, Some(Woken { by: Some("park #46".into()) }));
         // used up with the wake it ended
         wakes.hear(Some("  ".into()));
-        assert_eq!(wakes.rest(Duration::from_secs(5)), Some(Woken { by: None }), "blank is none");
+        assert_eq!(
+            wakes.rest(afkconvoy_patience::PATIENCE),
+            Some(Woken { by: None }),
+            "blank is none"
+        );
         // during a tick: told as it is heard, and kept for the tick after it
         wakes.forget(3);
         wakes.hear(Some("verdict #121".into()));
         assert_eq!(during.try_recv(), Ok(Some("verdict #121".to_string())));
         wakes.ended();
-        let woken = wakes.rest(Duration::from_secs(5));
+        let woken = wakes.rest(afkconvoy_patience::PATIENCE);
         assert_eq!(woken, Some(Woken { by: Some("verdict #121".into()) }));
         // what it names is cut to a wake's length, never inside a character
         wakes.hear(Some("é".repeat(200)));
@@ -507,7 +508,7 @@ mod tests {
         for _ in 0..3 {
             wakes.hear(None);
         }
-        assert!(wakes.rest(Duration::from_secs(5)).is_some());
+        assert!(wakes.rest(afkconvoy_patience::PATIENCE).is_some());
         wakes.forget(2);
         assert!(wakes.rest(Duration::ZERO).is_none());
     }

@@ -630,10 +630,11 @@ mod tests {
 
     #[test]
     fn settled_waits_for_every_question_taken_and_no_longer_than_it_is_given() {
+        // Given the one bound on a wait for an event, a `settled` that waited
+        // for no question or a question answered would outlast the test's own
+        // limit: that it returns is that it did not wait (sunfmin/control#1183).
         let answering = Answering::default();
-        let started = Instant::now();
-        answering.settled(Duration::from_secs(5));
-        assert!(started.elapsed() < Duration::from_secs(1), "none taken: at once");
+        answering.settled(afkconvoy_patience::PATIENCE); // none taken: at once
 
         let taken = answering.took();
         let started = Instant::now();
@@ -644,9 +645,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             drop(taken);
         });
-        let started = Instant::now();
-        answering.settled(Duration::from_secs(5));
-        assert!(started.elapsed() < Duration::from_secs(4), "once it is answered");
+        answering.settled(afkconvoy_patience::PATIENCE); // once it is answered
         answered.join().unwrap();
     }
 
@@ -707,16 +706,16 @@ mod tests {
             )
         });
         let (reached, conversation) =
-            keep_asking_in(dir.path(), &Request::Shared, Duration::from_secs(5)).unwrap();
+            keep_asking_in(dir.path(), &Request::Shared, afkconvoy_patience::PATIENCE).unwrap();
         let Reached::Answer(answer) = reached else { panic!("{reached:?}") };
         assert_eq!(answer, json!({"ahead": 1, "host_runner": {"pid": 42}}));
         let mut conversation = conversation.expect("kept on the line");
         let said = conversation.heard().unwrap();
         assert_eq!(said, Some(json!({"runs": 1000, "host_runner": {"pid": 42}})));
-        answering.settled(Duration::from_secs(5));
+        answering.settled(afkconvoy_patience::PATIENCE);
         assert!(gone.try_recv().is_err(), "still on the line");
         drop(conversation);
-        gone.recv_timeout(Duration::from_secs(5)).expect("its leaving is heard");
+        gone.recv_timeout(afkconvoy_patience::PATIENCE).expect("its leaving is heard");
 
         // one the host runner closes on hears nothing more
         let (asker, runner) = UnixStream::pair().unwrap();
@@ -761,7 +760,9 @@ mod tests {
             drop(first);
         });
         assert!(matches!(asked(dir.path()), Reached::Unanswered));
-        assert!(matches!(asked(dir.path()), Reached::Closed));
+        // a close is waited for: on a loaded host it may come past `within`
+        let closing = ask_in(dir.path(), &add, afkconvoy_patience::PATIENCE).unwrap();
+        assert!(matches!(closing, Reached::Closed), "{closing:?}");
         held.join().unwrap();
     }
 

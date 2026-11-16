@@ -171,7 +171,7 @@ mod tests {
 
     fn asked(port: u16, path: &str) -> TcpStream {
         let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(afkconvoy_patience::PATIENCE)).unwrap();
         write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
         stream
     }

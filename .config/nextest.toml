@@ -29,6 +29,16 @@ test-threads = 6
 slow-timeout = { period = "2s", terminate-after = 3 }
 fail-fast = true
 
+# The fast gate's tests again, on a host loaded past its cores, once the fast
+# profile ended some only as TIMEOUT (./gate.sh, sunfmin/control#1183): its
+# 6 seconds are the line between the gates, which a loaded host's load says
+# nothing of. Here a test is ended at the limit for one test the default
+# profile gives, 240 seconds, which only a hang reaches; one past the line,
+# 2 seconds, is named SLOW, and flagged as unclassified.
+[profile.fast-loaded]
+slow-timeout = { period = "2s", terminate-after = 120 }
+fail-fast = true
+
 # Check a fast timeout alone against the 2-second line.
 [profile.fast-check]
 slow-timeout = { period = "2s", terminate-after = 1 }

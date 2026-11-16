@@ -64,7 +64,7 @@ fn open_commands(world: &World, dir: &Path) -> Vec<String> {
 /// Waits until issue `issue` has one open terminal whose command contains
 /// `needle` → that command.
 fn wait_command(world: &World, issue: u64, needle: &str) -> String {
-    let until = Instant::now() + Duration::from_secs(40);
+    let until = afkconvoy_patience::deadline();
     loop {
         if let Some(dir) = worktree(world, issue) {
             let commands = open_commands(world, &dir);
@@ -203,7 +203,7 @@ fn a_worker_already_at_work_is_continued_once_and_switch_does_not_move_it() {
         !calls.iter().any(|call| call == "worktree rm" || call == "worktree create"),
         "{calls:?}"
     );
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = afkconvoy_patience::deadline();
     while applied(&world, &world.clone).as_deref() != Some("kimi") {
         assert!(Instant::now() < until, "the converge was not recorded: {}", world.checkout_list());
         std::thread::sleep(Duration::from_millis(50));
@@ -240,7 +240,7 @@ fn a_worker_already_at_work_is_continued_once_and_switch_does_not_move_it() {
     let followed = wait_command(&world, 7, "grok --always-approve");
     assert!(followed.contains("grok"), "{followed}");
     assert!(!followed.contains("--model"), "no model label, so the user default: {followed}");
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = afkconvoy_patience::deadline();
     while applied(&world, &world.clone).as_deref() != Some("") {
         assert!(Instant::now() < until, "the clear was not recorded: {}", world.checkout_list());
         std::thread::sleep(Duration::from_millis(50));
@@ -499,7 +499,7 @@ fn the_host_watch_starts_from_the_last_brief_and_not_a_checkouts_named_harness()
             "1",
         ])
         .ok();
-    let until = Instant::now() + Duration::from_secs(60);
+    let until = afkconvoy_patience::deadline();
     let running = loop {
         let file = world.cache().join("afkconvoy/watch/state.json");
         let state: Value =
@@ -507,7 +507,11 @@ fn the_host_watch_starts_from_the_last_brief_and_not_a_checkouts_named_harness()
         if !state["running"].is_null() {
             break state["running"].clone();
         }
-        assert!(Instant::now() < until, "no watch within 60s: {state}");
+        assert!(
+            Instant::now() < until,
+            "no watch within {:?}: {state}",
+            afkconvoy_patience::PATIENCE
+        );
         std::thread::sleep(Duration::from_millis(100));
     };
     assert_eq!(running["harness"], "codex", "{running}");

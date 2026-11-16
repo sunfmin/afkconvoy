@@ -48,7 +48,7 @@ const ROLE_SAYS: &str = "ROLE-SAYS-NO-4417";
 const RUNS: [&str; 3] =
     ["echo smoke-ran", "echo role-forbidden", "git commit --allow-empty -m smoke"];
 /// How long a real session is given to make every call of `RUNS`.
-const SESSION: Duration = Duration::from_secs(90);
+const SESSION: Duration = afkconvoy_patience::PATIENCE;
 
 /// A skill named `name`, whose description holds `word`.
 fn skill(name: &str, word: &str) -> String {

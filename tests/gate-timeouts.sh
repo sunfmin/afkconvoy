@@ -22,9 +22,13 @@ echo '{"reason":"compiler-artifact"}'
 MOCK
 cat > "$tmp/home/.cargo/bin/cargo" <<'MOCK'
 #!/bin/sh
+echo "$*" >> "$HOME/ran"
 case "$*" in
 metadata*) echo "{\"target_directory\":\"$PWD/target\",\"version\":1}" ;;
 *'nextest --version'*|*'--no-run'*|fmt*|clippy*) exit 0 ;;
+*'nextest run'*'--profile fast-loaded -E'*)
+    if [ "$CASE" = loaded-recovers ]; then exit 0; fi
+    echo 'TIMEOUT [ 240.000s] afkconvoy::cli tick::example' >&2; exit 1 ;;
 *'nextest run'*'--profile fast -E'*)
     case "$CASE" in slow-passed | slow-fixed) echo '        SLOW [   2.500s] afkconvoy::cli tick::example' >&2; exit 0 ;; esac
     if [ "$CASE" = failure ]; then echo 'FAIL [   0.100s] afkconvoy::cli tick::example' >&2; else echo 'TIMEOUT [   6.000s] afkconvoy::cli tick::example' >&2; fi
@@ -82,3 +86,26 @@ HOME="$tmp/home" FAKE_LOAD=40.00 CASE=slow-passed sh "$tmp/repo/gate.sh" fast >"
     exit 1
 }
 grep -q 'flagged: afkconvoy::cli tick::example' "$tmp/out"
+# A fast gate red only on TIMEOUTs on a loaded host runs its tests again under
+# the limit for one test: green there, the gate is green and each TIMEOUT is
+# flagged; red there, the gate is red (sunfmin/control#1183).
+HOME="$tmp/home" FAKE_LOAD=40.00 CASE=loaded-recovers sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 || {
+    cat "$tmp/out" >&2
+    exit 1
+}
+grep -q 'they run again under the limit for one test' "$tmp/out"
+grep -q 'flagged: afkconvoy::cli tick::example timed out in the fast gate' "$tmp/out"
+grep -q -- '--profile fast-loaded' "$tmp/home/ran"
+HOME="$tmp/home" FAKE_LOAD=40.00 CASE=loaded sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 && exit 1
+grep -q 'they run again under the limit for one test' "$tmp/out"
+# A FAIL is no load fault: nothing runs again, loaded or not; nor does a
+# TIMEOUT on a quiet host.
+for load in 40.00 1.00; do
+    rm -f "$tmp/home/ran"
+    HOME="$tmp/home" FAKE_LOAD=$load CASE=failure sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 && exit 1
+    absent 'run again under the limit'
+    if grep -q -- '--profile fast-loaded' "$tmp/home/ran"; then exit 1; fi
+done
+rm -f "$tmp/home/ran"
+HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 && exit 1
+absent 'run again under the limit'

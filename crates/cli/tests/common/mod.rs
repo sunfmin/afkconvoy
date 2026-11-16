@@ -15,14 +15,9 @@ use tempfile::TempDir;
 pub const BASE: &str = "main";
 
 /// How long a test waits for what a host runner, or a fleet instance it holds,
-/// is to do: a log line, a tick, a socket, a page. It is waited on, never
-/// slept for, and a test is held only as long as it takes; the bound is for
-/// what never comes, and is generous: a cut's gate runs beside other gates on
-/// its host, and a wait of 30 seconds lost to their load
-/// (sunfmin/control#833); at a load of 200 on 14 cores one tick that leaves
-/// three issues took over 90. Within the limit for one test, 240 seconds
-/// (.config/nextest.toml).
-pub const PATIENCE: Duration = Duration::from_secs(180);
+/// is to do: the one bound on a wait for an event, shared by every test crate
+/// (sunfmin/control#1183).
+pub use afkconvoy_patience::PATIENCE;
 
 /// Opt-in fixture timings, captured by nextest with `--success-output final`.
 /// The environment belongs to the test driver, never to a world's host.
@@ -61,7 +56,7 @@ impl FixtureProcess {
     }
 
     fn wait_for(pid: u32, stopped: bool) {
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = afkconvoy_patience::deadline();
         loop {
             match Self::state(pid) {
                 None | Some('Z') => return,
@@ -131,7 +126,7 @@ pub fn fixture_lease_observed() {
     let Some(root) = std::env::var_os("CONVOY_FIXTURE_LEASE_PROBE") else { return };
     let root = PathBuf::from(root);
     std::fs::write(root.join("ready"), "").unwrap();
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = afkconvoy_patience::deadline();
     while !root.join("release").exists() {
         assert!(Instant::now() < until, "fixture lease was never observed");
         std::thread::sleep(Duration::from_millis(10));
@@ -1489,7 +1484,7 @@ impl Drop for World {
         if let Some(line) = taken.filter(|_| !std::thread::panicking()) {
             panic!("a test's host runner asked for the panel's port {PANEL_PORT}: {line:?}");
         }
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = afkconvoy_patience::deadline();
         while self.runner_lock_held() && Instant::now() < until {
             // Its keeper first, which would start it again.
             for pid in [self.keeper(), self.host_runner()].into_iter().flatten() {
@@ -1963,6 +1958,9 @@ case "$2" in
     if [ -e "$root/logged-out-kimi" ]; then echo '{"models":{}}'; exit 0; fi
     echo '{"models":{"kimi-code/k3":{}}}'; exit 0 ;;
   *" && kimi provider list --json")
+    # Held while `hold-kimi-models` is there: a test proves what answers
+    # before this listing finishes by holding it until then.
+    while [ -e "$root/hold-kimi-models" ]; do sleep 0.02; done
     if [ -f "$root/shell-kimi-models" ]; then cat "$root/shell-kimi-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
   "grok models")
@@ -2287,6 +2285,24 @@ impl Running {
             let line = self.every_line(until.saturating_duration_since(Instant::now()))?;
             if !bookkeeping(&line) {
                 return Some(line);
+            }
+        }
+    }
+
+    /// The next tick's line, of a tick something other than its timer opened:
+    /// the line saying it started names what did, so a lost wake is told from
+    /// a late one however loaded the host, and the wait is [`PATIENCE`].
+    pub fn woken_tick(&self) -> String {
+        let mut opened: Option<String> = None;
+        loop {
+            let line = self.every_line(PATIENCE).expect("the woken tick");
+            if !bookkeeping(&line) {
+                let opened = opened.unwrap_or_else(|| panic!("no tick started before {line:?}"));
+                assert!(!opened.ends_with("(timer)"), "its timer opened it, no wake: {opened}");
+                return line;
+            }
+            if line.contains(": started (") {
+                opened = Some(line);
             }
         }
     }

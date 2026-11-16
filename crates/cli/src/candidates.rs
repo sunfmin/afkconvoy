@@ -3105,10 +3105,15 @@ mod tests {
             began.elapsed()
         };
         let confirmed = super::awaited(&mut stopped, &mut clock);
-        let _ = child.kill();
-        let _ = child.wait();
+        if confirmed.is_err() {
+            let _ = child.kill();
+        }
+        let ended = child.wait().unwrap();
         confirmed.unwrap();
-        assert!(began.elapsed() < Duration::from_secs(15), "{:?}", began.elapsed());
+        // Killed hard, not waited out: its trap of SIGTERM sleeps 15 s and goes
+        // on, which no number of seconds tells apart on a loaded host.
+        let signal = std::os::unix::process::ExitStatusExt::signal(&ended);
+        assert_eq!(signal, Some(libc::SIGKILL), "{ended:?}");
         assert!(crate::process_scope::free(&scope).unwrap());
     }
 
@@ -3133,7 +3138,8 @@ mod tests {
             .unwrap();
         let looking = dir.path().join("w.processes.looking");
         let began = std::time::Instant::now();
-        while !looking.exists() && began.elapsed() < Duration::from_secs(10) {
+        let until = afkconvoy_patience::deadline();
+        while !looking.exists() && std::time::Instant::now() < until {
             std::thread::sleep(Duration::from_millis(10));
         }
         let looks = crate::process_scope::owns(looker.id(), &scope).unwrap();

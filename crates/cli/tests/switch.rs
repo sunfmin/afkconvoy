@@ -251,33 +251,31 @@ fn a_missing_harness_starts_on_its_default_before_its_listing_is_researched() {
         .unwrap();
     let dir = worktree(&world, 7);
 
-    let started = std::time::Instant::now();
+    // The listing is held until the switch has answered: an answer that
+    // waited for it would never come.
+    let hold = world.root.join("hold-kimi-models");
+    std::fs::write(&hold, "").unwrap();
     let answer = switch(&world, "800", &["7", "--harness", "kimi"]).ok();
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let kit =
+        || -> Value { serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap() };
+    assert_eq!(kit()["harnesses"][0]["models"], json!([]), "answered before its listing");
+    std::fs::remove_file(&hold).unwrap();
     assert_eq!(answer["added"], true);
     assert_eq!(answer["start_fault"], Value::Null);
     assert_eq!(answer["order"][0], "kimi");
     assert_eq!(answer["switched"][0]["to"], "kimi");
     assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Kimi);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while std::time::Instant::now() < until {
-        let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
-        if !kit["harnesses"][0]["models"].as_array().unwrap().is_empty() {
-            assert_eq!(kit["harnesses"][0]["harness"], "kimi");
-            assert_eq!(kit["harnesses"][0]["models"][0]["model"], "kimi-code/k3");
-            assert_eq!(kit["harnesses"][0]["models"][0]["good_at"], "research pending");
-            assert!(!world.root.join("research-asked").exists());
-            assert!(
-                !world
-                    .shell_asked()
-                    .iter()
-                    .any(|asked| asked.contains("Reply with the single word OK."))
-            );
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    panic!("the targeted background refresh did not finish");
+    let kit = afkconvoy_patience::until("the targeted background refresh", || {
+        let kit = kit();
+        (!kit["harnesses"][0]["models"].as_array().unwrap().is_empty()).then_some(kit)
+    });
+    assert_eq!(kit["harnesses"][0]["harness"], "kimi");
+    assert_eq!(kit["harnesses"][0]["models"][0]["model"], "kimi-code/k3");
+    assert_eq!(kit["harnesses"][0]["models"][0]["good_at"], "research pending");
+    assert!(!world.root.join("research-asked").exists());
+    assert!(
+        !world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK."))
+    );
 }
 
 #[test]

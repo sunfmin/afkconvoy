@@ -693,7 +693,7 @@ fn run_tracker_keeps_it_on_the_checkout_list_makes_its_labels_and_refuses_a_chan
 
     // its next tick reads the tracker: its issue is dispatched, the repo's is not
     tracker_issue(&world, 7, &["ready-for-agent", MINE]);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let until = afkconvoy_patience::deadline();
     while world.claims().is_empty() {
         assert!(std::time::Instant::now() < until, "no tick dispatched #7");
         std::thread::sleep(std::time::Duration::from_millis(100));

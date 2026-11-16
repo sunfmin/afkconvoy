@@ -97,9 +97,12 @@ fn a_gate_timeout_still_ends_a_nested_exclusive_command_and_its_descendants() {
     let line = afkconvoy_core::line::Line::new()
         .program(env!("CARGO_BIN_EXE_afkconvoy"))
         .fixed(" exclusive -- sh -c ")
-        .word("sleep 30 & echo $! > descendant; wait")
+        .word("sleep 600 & echo $! > descendant; wait")
         .own();
-    world.set_gate_config(&format!("gate_command: {line}\ngate_seconds: 1"));
+    // The limit is to end the gate once its nested command has started its
+    // descendant, which a loaded host takes seconds to: 20 of them, though
+    // the descendant never ends by itself (sunfmin/control#1183).
+    world.set_gate_config(&format!("gate_command: {line}\ngate_seconds: 20"));
     let _host_runner = world.host_held();
     let answer = world.afk(&["gate"]).ok();
     assert_eq!(answer["timed_out"], true, "{answer}");
@@ -212,13 +215,14 @@ fn tickets(world: &World) -> usize {
     ["running", "waiting"].iter().map(|group| exclusive[group].as_array().map_or(0, Vec::len)).sum()
 }
 
-/// Waits, five seconds at most, until `done`.
+/// A command's part that holds it until the test writes `$CACHE/release`:
+/// what it holds is seen held however loaded the host, where a sleep could
+/// end first.
+const HELD: &str = "while test ! -f \"$CACHE/release\"; do sleep 0.02; done";
+
+/// Waits until `done`.
 fn until(done: impl Fn() -> bool) {
-    let started = Instant::now();
-    while !done() {
-        assert!(started.elapsed() < Duration::from_secs(5), "waited too long");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    afkconvoy_patience::until_true("the awaited queue state", done);
 }
 
 fn lines(file: &Path) -> Vec<String> {
@@ -373,10 +377,11 @@ fn two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_as
     let order = cache.join("order");
     let say = |what: &str| format!("echo {what} >> \"$CACHE/order\"");
     let held =
-        exclusive(&first, &cache, 11, &format!("{}; sleep 1; {}", say("a-start"), say("a-end")));
+        exclusive(&first, &cache, 11, &format!("{}; {HELD}; {}", say("a-start"), say("a-end")));
     until(|| lines(&order).len() == 1);
     let waiting = exclusive(&second, &cache, 22, &format!("{}; {}", say("b-start"), say("b-end")));
     until(|| tickets(&first) == 2);
+    std::fs::write(cache.join("release"), "").unwrap();
     let (held, waiting) = (held.wait_with_output().unwrap(), waiting.wait_with_output().unwrap());
     assert!(held.status.success() && waiting.status.success());
     assert_eq!(lines(&order), ["a-start", "a-end", "b-start", "b-end"]);
@@ -406,7 +411,7 @@ fn a_cut_gates_ahead_of_waiting_workers_and_its_queue_wait_does_not_end_its_gate
         .fixed(" exclusive -- sh -c ")
         .word("echo \"$MARK\" >> \"$CACHE/order\"")
         .own();
-    world.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 1"));
+    world.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 20"));
     let cutting = world.root.join("afkconvoy-cut-2");
     common::git(
         &world.clone,
@@ -444,8 +449,9 @@ fn a_cut_gates_ahead_of_waiting_workers_and_its_queue_wait_does_not_end_its_gate
     let first = Path::new(queue["waiting"][0]["dir"].as_str().unwrap());
     assert_eq!(first.file_name().unwrap(), "afkconvoy-cut-2", "{queue}");
     assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");
-    // Longer than the gate limit: the gate starts its clock after the grant.
-    std::thread::sleep(Duration::from_millis(1200));
+    // Longer than the gate limit, which is room for a loaded host to run an
+    // `echo` (sunfmin/control#1183): the gate starts its clock after the grant.
+    std::thread::sleep(Duration::from_secs(21));
     std::fs::write(cache.join("release"), "").unwrap();
     let out = cutting.wait_with_output().unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
@@ -518,7 +524,7 @@ fn one_that_waits_as_its_host_runner_ends_waits_in_the_next_one_s_queue() {
     let cache = world.cache();
     let order = cache.join("order");
     let say = |what: &str| format!("echo {what} >> \"$CACHE/order\"");
-    let running = exclusive(&world, &cache, 1, &format!("{}; sleep 5; {}", say("a"), say("a-end")));
+    let running = exclusive(&world, &cache, 1, &format!("{}; {HELD}; {}", say("a"), say("a-end")));
     until(|| lines(&order).len() == 1);
     let waiting = exclusive(&world, &cache, 2, &say("b"));
     until(|| tickets(&world) == 2);
@@ -528,6 +534,7 @@ fn one_that_waits_as_its_host_runner_ends_waits_in_the_next_one_s_queue() {
     world.kill_host_runner("KILL");
     drop(first);
     let _next = world.host_held();
+    std::fs::write(cache.join("release"), "").unwrap();
     let waiting = waiting.wait_with_output().unwrap();
     assert!(waiting.status.success());
     let said = text(&waiting.stderr);
@@ -553,8 +560,10 @@ fn a_waiter_killed_leaves_the_queue_and_a_holder_that_dies_frees_its_place() {
     let pid: PathBuf = cache.join("pid");
     let order = cache.join("order");
     let say = |what: &str| format!("echo {what} >> \"$CACHE/order\"");
-    // the holder's command: it runs on past its holder, and is ended at the end
-    let mut holder = exclusive(&world, &cache, 1, "echo $$ > \"$CACHE/pid\"; exec sleep 5");
+    // the holder's command: it runs on past its holder, and is ended at the
+    // end; its sleep outlasts any wait of the test, so `next` runs only once
+    // the orphan's end is observed, however loaded the host
+    let mut holder = exclusive(&world, &cache, 1, "echo $$ > \"$CACHE/pid\"; exec sleep 600");
     until(|| pid.exists() && !lines(&pid).is_empty());
     let mut killed = exclusive(&world, &cache, 2, &say("killed-ran"));
     until(|| tickets(&world) == 2);
@@ -565,7 +574,6 @@ fn a_waiter_killed_leaves_the_queue_and_a_holder_that_dies_frees_its_place() {
     kill(&mut killed);
     // Killing the holder frees its queue entry, while the child's inherited
     // slot keeps the worker lane occupied until that command ends.
-    let started = Instant::now();
     kill(&mut holder);
     std::thread::sleep(Duration::from_millis(200));
     assert!(next.try_wait().unwrap().is_none(), "the orphan still owns its worker slot");
@@ -573,7 +581,6 @@ fn a_waiter_killed_leaves_the_queue_and_a_holder_that_dies_frees_its_place() {
     let _ = Command::new("kill").arg(orphan).status();
     let next = next.wait_with_output().unwrap();
     assert!(next.status.success());
-    assert!(started.elapsed() < Duration::from_secs(4), "the released slot was not observed");
     assert_eq!(lines(&order), ["next-ran"]);
     assert_eq!(tickets(&world), 0, "what the killed left is gone");
 }
@@ -608,7 +615,7 @@ fn a_fast_gate_that_ended_frees_its_lane_though_a_server_it_started_holds_its_sl
         &world,
         &cache,
         1,
-        "(cd / && exec sleep 30 </dev/null >/dev/null 2>&1) & echo $! > \"$CACHE/server\"; \
+        "(cd / && exec sleep 600 </dev/null >/dev/null 2>&1) & echo $! > \"$CACHE/server\"; \
          echo first >> \"$CACHE/order\"",
     );
     let first = started.wait_with_output().unwrap();
@@ -619,13 +626,14 @@ fn a_fast_gate_that_ended_frees_its_lane_though_a_server_it_started_holds_its_sl
         text(&ppid.stdout).trim() == "1"
     });
 
-    let begun = Instant::now();
+    // The server sleeps past any wait of the test, so the next ending while
+    // it still runs proves it did not wait for it, however loaded the host.
     let next = fast_gate(&world, &cache, 2, "echo next >> \"$CACHE/order\"");
     let next = next.wait_with_output().unwrap();
-    let waited = begun.elapsed();
+    let running = Command::new("kill").args(["-0", &server]).status().unwrap().success();
     let _ = Command::new("kill").arg(&server).status();
     assert!(next.status.success(), "{}", text(&next.stderr));
-    assert!(waited < Duration::from_secs(10), "the next fast gate waited {waited:?}");
+    assert!(running, "the next fast gate waited for the server to end");
     assert_eq!(lines(&order), ["first", "next"]);
     assert_eq!(tickets(&world), 0, "no holder is left of the gate that ended");
 }
@@ -636,7 +644,7 @@ fn a_fast_gate_s_wait_for_its_lane_uses_none_of_its_limit() {
     let afk = afkconvoy_core::line::Line::new().program(env!("CARGO_BIN_EXE_afkconvoy")).own();
     let alone = |part: &str| {
         format!(
-            "  command: \"{afk} exclusive -- sh -c 'echo {part} >> ../ran'\"\n  seconds: 3\n  budget_seconds: 1"
+            "  command: \"{afk} exclusive -- sh -c 'echo {part} >> ../ran'\"\n  seconds: 20\n  budget_seconds: 1"
         )
     };
     let config = format!(
@@ -659,7 +667,8 @@ fn a_fast_gate_s_wait_for_its_lane_uses_none_of_its_limit() {
     until(|| cache.join("held").exists());
     let release = cache.join("release");
     let letting_go = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(4));
+        // Past the limit, which is room for a loaded host to run an `echo`.
+        std::thread::sleep(Duration::from_secs(21));
         std::fs::write(release, "").unwrap();
     });
 
@@ -668,7 +677,7 @@ fn a_fast_gate_s_wait_for_its_lane_uses_none_of_its_limit() {
     assert!(held.wait_with_output().unwrap().status.success());
     assert_eq!(answer["status"], "green", "{answer}");
     assert_eq!(answer["timed_out"], false);
-    assert!(answer["seconds"].as_u64().unwrap() < 3, "{answer}");
+    assert!(answer["seconds"].as_u64().unwrap() < 20, "{answer}");
     assert_eq!(lines(&world.root.join("ran")), ["fast"]);
 }
 
@@ -686,7 +695,7 @@ fn an_ordinary_command_that_ended_frees_its_repo_though_a_server_it_started_hold
         &world,
         &cache,
         1,
-        "(cd / && exec sleep 30 </dev/null >/dev/null 2>&1) & echo $! > \"$CACHE/server\"; \
+        "(cd / && exec sleep 600 </dev/null >/dev/null 2>&1) & echo $! > \"$CACHE/server\"; \
          echo first >> \"$CACHE/order\"",
     );
     let first = first.wait_with_output().unwrap();
@@ -697,13 +706,14 @@ fn an_ordinary_command_that_ended_frees_its_repo_though_a_server_it_started_hold
         text(&ppid.stdout).trim() == "1"
     });
 
-    let begun = Instant::now();
+    // The server sleeps past any wait of the test, so the next ending while
+    // it still runs proves it did not wait for it, however loaded the host.
     let next = exclusive(&world, &cache, 2, "echo next >> \"$CACHE/order\"");
     let next = next.wait_with_output().unwrap();
-    let waited = begun.elapsed();
+    let running = Command::new("kill").args(["-0", &server]).status().unwrap().success();
     let _ = Command::new("kill").arg(&server).status();
     assert!(next.status.success(), "{}", text(&next.stderr));
-    assert!(waited < Duration::from_secs(10), "the next command of the repo waited {waited:?}");
+    assert!(running, "the next command of the repo waited for the server to end");
     assert_eq!(lines(&order), ["first", "next"]);
     assert_eq!(tickets(&world), 0, "no holder is left of the command that ended");
 }

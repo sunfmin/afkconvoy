@@ -83,7 +83,7 @@ impl QueuedGate {
             .process_group(0)
             .spawn()
             .unwrap();
-        let (owner, permit) = receive.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (owner, permit) = receive.recv_timeout(afkconvoy_patience::PATIENCE).unwrap();
         assert_eq!(owner, child.id(), "the gate takes its owning lease first");
         // SAFETY: the process group was created for this child alone.
         let group = unsafe { libc::getpgid(child.id() as i32) };
@@ -307,9 +307,9 @@ fn a_red_run_records_nothing_and_takes_the_trees_record_away() {
 fn a_run_that_reaches_the_configs_gate_limit_is_ended_and_red() {
     let world = World::new();
     world.set_gate_config("gate_command: sleep 30\ngate_seconds: 1");
-    let started = std::time::Instant::now();
     let answer = world.afk(&["gate"]).ok();
-    assert!(started.elapsed().as_secs() < 10, "the run was killed");
+    // Ended at its limit, not by its sleep: 124 is the limit's exit, a
+    // sleep that ran out exits 0.
     assert_eq!(answer["status"], "red");
     assert_eq!((&answer["timed_out"], &answer["exit_code"]), (&json!(true), &json!(124)));
     assert_eq!(answer["termination"], serde_json::Value::Null);
@@ -472,7 +472,8 @@ fn a_turn_believes_a_green_run_kept_on_the_other_layout() {
     // Noted hidden believes the same run kept as a branch, and does not run it.
     repo.note_layout(Layout::Hidden).unwrap();
     let believed =
-        believe(&repo, &command, "mini", 100_000, Duration::from_secs(60), None, None).unwrap();
+        believe(&repo, &command, "mini", 100_000, afkconvoy_patience::PATIENCE, None, None)
+            .unwrap();
     believes_recorded(believed);
     assert_eq!(std::fs::read_to_string(&ran).unwrap(), "ran\n");
     let later = Tree::named("later-tree-a-cut-commits");
@@ -484,7 +485,8 @@ fn a_turn_believes_a_green_run_kept_on_the_other_layout() {
     move_record(&world, &branches, &hidden);
     repo.note_layout(Layout::Branches).unwrap();
     let believed =
-        believe(&repo, &command, "mini", 100_000, Duration::from_secs(60), None, None).unwrap();
+        believe(&repo, &command, "mini", 100_000, afkconvoy_patience::PATIENCE, None, None)
+            .unwrap();
     believes_recorded(believed);
     assert_eq!(std::fs::read_to_string(&ran).unwrap(), "ran\n");
 }

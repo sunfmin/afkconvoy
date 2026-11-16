@@ -142,7 +142,7 @@ fn a_run_whose_output_times_no_test_reads_back_as_the_same_run_with_none() {
     let slow = GateCommand::new("./gate.sh slow");
     let now = OneEach.now();
     let on = ("scratch-host", "a-kind");
-    let ran = run::gate(&repo, &slow, on, now, Duration::from_secs(60), &[]).unwrap();
+    let ran = run::gate(&repo, &slow, on, now, afkconvoy_patience::PATIENCE, &[]).unwrap();
     assert_eq!(ran.judged, Judged::Green, "{:?}", ran.output);
     let read = run::recorded_with_tests(&repo, &ran.tree, &slow, now).unwrap().expect("on record");
     assert!(read.tests().is_empty());
@@ -172,7 +172,7 @@ fn a_green_run_on_record_answers_for_the_same_tree_declaration_and_kind_of_machi
     counting(&repo, &counted);
     let fast = GateCommand::new("./gate.sh fast");
     let now = OneEach.now();
-    let limit = Duration::from_secs(60);
+    let limit = afkconvoy_patience::PATIENCE;
     let gate = |command: &GateCommand, machine: &str| {
         run::gate(&repo, command, ("scratch-host", machine), now, limit, &[]).unwrap()
     };
@@ -253,7 +253,7 @@ fn a_heavy_command_waits_its_turn_behind_those_that_asked_before_it() {
     }
     assert!(order.recv_timeout(Duration::from_millis(300)).is_err(), "both wait while one runs");
     holder.leave(first);
-    let wait = Duration::from_secs(5);
+    let wait = afkconvoy_patience::PATIENCE;
     assert_eq!(order.recv_timeout(wait).unwrap(), second, "the one that asked first runs first");
     assert_eq!(order.recv_timeout(wait).unwrap(), third);
 }
@@ -355,7 +355,7 @@ fn a_ticket_holding_its_whole_repo_runs_only_while_nothing_else_of_it_does() {
     });
     assert!(turned.recv_timeout(Duration::from_millis(500)).is_err(), "its repo's gate waits");
     holder.leave(housekeeping);
-    turned.recv_timeout(Duration::from_secs(5)).expect("granted once it left");
+    turned.recv_timeout(afkconvoy_patience::PATIENCE).expect("granted once it left");
     assert!(matches!(thread.join().unwrap(), Turn::Runs(_)));
     holder.leave(fast);
 }

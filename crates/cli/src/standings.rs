@@ -173,7 +173,7 @@ mod tests {
             std::thread::spawn(move || sent.send(alpha.begins_unless_stopped(&stopping)).unwrap());
         assert!(received.recv_timeout(Duration::from_millis(100)).is_err());
         stop.tell();
-        assert!(!received.recv_timeout(Duration::from_secs(2)).unwrap(), "no new tick began");
+        assert!(!received.recv_timeout(afkconvoy_patience::PATIENCE).unwrap(), "no new tick began");
         waiting.join().unwrap();
     }
 

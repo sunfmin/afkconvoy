@@ -603,7 +603,7 @@ mod tests {
             },
         );
         let settled = |count: usize| {
-            let until = std::time::Instant::now() + Duration::from_secs(5);
+            let until = afkconvoy_patience::deadline();
             while queue.standing().len() != count && std::time::Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -630,7 +630,8 @@ mod tests {
         };
         let asked = Request::Exclusive { ticket: gate };
         let (_, running) =
-            runner_socket::keep_asking_in(cache.path(), &asked, Duration::from_secs(5)).unwrap();
+            runner_socket::keep_asking_in(cache.path(), &asked, afkconvoy_patience::PATIENCE)
+                .unwrap();
         let mut running = running.expect("kept on the line");
         assert!(running.heard().unwrap().expect("its turn")["runs"].is_u64());
         assert!(!repo.housekeep_asking(cache.path()).unwrap());

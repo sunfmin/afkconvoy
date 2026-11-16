@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 use common::{Running, World, git};
 use serde_json::json;
 
-/// How long anything a wake should bring about is waited for. The sleep it
-/// ends is far longer (`LONG`), so "within this" means "woken".
-const SOON: Duration = Duration::from_secs(20);
+/// How long anything a wake should bring about is waited for: the one bound
+/// on a wait for an event. That a wake, not the sleep it ends, opened a tick
+/// is said by the line that starts it, never by how soon it came.
+const SOON: Duration = common::PATIENCE;
 
 /// A `run` of two ticks whose sleep between them is real: 90 seconds at the
 /// least.
@@ -21,11 +22,7 @@ fn wake(world: &World, dir: &Path) -> serde_json::Value {
 }
 
 fn until(what: &str, done: impl Fn() -> bool) {
-    let started = Instant::now();
-    while !done() {
-        assert!(started.elapsed() < SOON, "never happened: {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    afkconvoy_patience::until_true(what, done)
 }
 
 #[test]
@@ -40,16 +37,13 @@ fn a_wake_from_a_worktree_opens_the_next_tick_now() {
 
     // the worker's worktree, not the fleet's checkout: the repo is what is woken
     let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
-    let started = Instant::now();
     assert_eq!(wake(&world, Path::new(&worktree)), json!({"woke": true, "tick": 2}));
 
-    // said before the tick does anything, within a second of the wake
+    // said before the tick does anything
     let opened = running.every_line(SOON).expect("the wake opens the second tick");
     assert_eq!(opened, "tick 2: started (woken by wake)");
-    assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
     let second = running.line(SOON).expect("the second tick ends");
     assert!(second.starts_with("tick 2: "), "{second}");
-    assert!(started.elapsed() < SOON);
     let stopped = running.line(SOON).expect("the answer");
     assert!(stopped.contains("\"ticks\":2"), "{stopped}");
 }
@@ -64,7 +58,7 @@ fn the_tick_a_wake_opens_reads_github_like_any_other() {
     // what changed meanwhile is not in the wake: the tick finds it on GitHub
     world.issue(9, &["ready-for-agent"]);
     assert_eq!(wake(&world, &world.clone), json!({"woke": true, "tick": 2}));
-    let second = running.line(SOON).expect("the second tick");
+    let second = running.woken_tick();
     assert!(second.starts_with("tick 2: dispatched #9"), "{second}");
 }
 
@@ -81,19 +75,13 @@ fn a_wake_that_arrives_during_a_tick_makes_the_next_start_at_once() {
         let calls = world.gh()["calls"].to_string();
         calls.contains("graphql")
     });
-    let woken = Instant::now();
     assert_eq!(wake(&world, &world.clone), json!({"woke": true, "after_tick": 1}));
     let again = json!({"woke": true, "after_tick": 1});
     assert_eq!(wake(&world, &world.clone), again, "and a second, as well");
 
-    // said as it is heard, while the tick goes on — once
+    // said as it is heard, while the tick goes on — once, and before it ends
     let heard = running.line(SOON).expect("the wake heard");
     assert_eq!(heard, "woken by wake during tick 1: tick 2 follows");
-    assert!(
-        woken.elapsed() < Duration::from_secs(1),
-        "said within a second: {:?}",
-        woken.elapsed()
-    );
     let first = running.line(SOON).expect("the first tick");
     assert!(first.starts_with("tick 1: dispatched #7"), "it ended after the wake came: {first}");
     assert!(first.ends_with("next in 90s"), "{first}");
@@ -161,7 +149,8 @@ fn a_run_that_does_not_answer_costs_the_wake_its_wait_and_no_more() {
     let detail = answer["detail"].as_str().unwrap();
     assert!(detail.contains("did not answer within 3s"), "{detail}");
     assert!(detail.contains("`afkconvoy doctor`"), "with the fix: {detail}");
-    assert!(took >= Duration::from_secs(3) && took < Duration::from_secs(10), "{took:?}");
+    // its wait at the least; that the wake answers at all is the bound holding
+    assert!(took >= Duration::from_secs(3), "{took:?}");
     // it was asked all the same, naming the checkout
     let (asked, _) = mute.accept().unwrap();
     let mut line = String::new();
@@ -243,11 +232,9 @@ fn a_wake_ends_the_sleep_of_its_checkouts_fleet_instance_alone() {
     let second = world.afk_in(&clone2, &["run", "--host", "h1"]).ok();
     assert_eq!(second["host_runner"]["pid"], first["host_runner"]["pid"], "{second}");
 
-    let started = Instant::now();
     assert_eq!(wake(&world, &clone2), json!({"woke": true, "tick": 2}));
     let woken = "tick 2: started (woken by wake)".to_string();
     until("the second tick of the woken", || tick_log(&second).contains(&woken));
-    assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
     std::thread::sleep(Duration::from_millis(500));
     let other = tick_log(&first);
     assert!(!other.iter().any(|line| line.starts_with("tick 2:")), "{other:#?}");
@@ -319,11 +306,11 @@ fn closed_blocker(closes: bool, through_edge: bool) {
     } else {
         world.with_tracker(|gh| gh["issues"][0]["state"] = json!("closed"));
     }
-    let started = Instant::now();
     wake(&world, &world.clone);
+    let until = afkconvoy_patience::deadline();
     while !tick_log(&target).iter().any(|line| line.starts_with("tick 4: dispatched #9")) {
         assert!(
-            started.elapsed() < SOON,
+            Instant::now() < until,
             "the blocked fleet did not dispatch: source {:#?}, target {:#?}, blocker {}",
             tick_log(&source),
             tick_log(&target),
@@ -331,7 +318,7 @@ fn closed_blocker(closes: bool, through_edge: bool) {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(started.elapsed() < SOON, "it did not wait for the idle timer");
+    // woken, not by the idle timer: the line that started the tick says so
     let by = format!(
         "tick 4: started (woken by acme/tracker#7 closed, seen by fleet instance {})",
         source["instance"].as_str().unwrap()

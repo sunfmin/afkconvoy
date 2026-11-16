@@ -339,7 +339,7 @@ fn a_root_whose_tree_is_green_on_record_runs_no_second_fast_gate() {
     git(&work, &["checkout", "--quiet", "a"]);
     let checkout = Git { worktree: work.clone(), remote: "origin".into(), layout: Layout::Hidden };
     let fast = GateCommand::new("./gate.sh fast");
-    let limit = std::time::Duration::from_secs(60);
+    let limit = afkconvoy_patience::PATIENCE;
     let worker = run::gate(&checkout, &fast, ("worker-host", MACHINE), now(), limit, &[]).unwrap();
     assert!(matches!(worker.settled, Settled::Written { not_recorded: None, .. }), "{worker:?}");
     git(&work, &["checkout", "--quiet", "main"]);
@@ -1023,13 +1023,9 @@ fn on_remote(root: &Path) -> Chain {
     serde_json::from_str(&text).unwrap()
 }
 
-/// Waits until `done`, at most a minute.
+/// Waits until `done`.
 fn wait_for(what: &str, done: impl Fn() -> bool) {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while !done() {
-        assert!(std::time::Instant::now() < until, "waited a minute for {what}");
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    afkconvoy_patience::until_true(what, done)
 }
 
 /// The stacked merge of the chain `main` has, once its fast gate decided it.

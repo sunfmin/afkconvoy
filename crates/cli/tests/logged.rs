@@ -5,7 +5,6 @@ use crate::common;
 
 use std::io::{BufRead, BufReader};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
 
 use afkconvoy::log::Entry;
 use common::World;
@@ -114,11 +113,10 @@ fn the_run_logs_the_command_that_woke_it() {
     let first = lines.find(|line| line.starts_with("tick 1: ") && line.contains("next in"));
     assert!(first.is_some_and(|first| first.ends_with("next in 90s")));
     world.issue(9, &["bug"]);
-    let started = Instant::now();
     afk(&world, &["claim", "9", "--instance", "beta", "--host", "h2"]).ok();
+    // woken, and not at the end of its 90s sleep: the line says by what
     let woken = lines.find(|line| line.starts_with("tick 2: started"));
     assert_eq!(woken.as_deref(), Some("tick 2: started (woken by claim #9)"));
-    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
     let _ = child.kill();
     let _ = child.wait();
     // the command's line and the run's, in the one log

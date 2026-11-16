@@ -114,7 +114,7 @@ impl Escaped {
             .unwrap();
         let pid = child.id();
         let escaped = Self { pid, reaper: Some(std::thread::spawn(move || child.wait().unwrap())) };
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = afkconvoy_patience::deadline();
         while !ready.exists() {
             assert!(Instant::now() < until, "escaped helper never became ready");
             std::thread::sleep(Duration::from_millis(10));
@@ -185,7 +185,7 @@ impl Orphan {
             .status()
             .unwrap();
         assert!(status.success());
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = afkconvoy_patience::deadline();
         loop {
             if let Ok(ready) = std::fs::read_to_string(&ready) {
                 let pid: u32 = ready.parse().unwrap();

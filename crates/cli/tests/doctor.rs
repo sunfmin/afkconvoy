@@ -762,7 +762,7 @@ fn start(world: &World) -> Running {
         files.into_iter().any(|file| file.path().extension().is_some_and(|ext| ext == "jsonl"))
     };
     while !kept() || ticks(&log(world)).is_empty() {
-        assert!(started.elapsed() < Duration::from_secs(60), "the run never logged a tick");
+        assert!(started.elapsed() < afkconvoy_patience::PATIENCE, "the run never logged a tick");
         std::thread::sleep(Duration::from_millis(50));
     }
     running

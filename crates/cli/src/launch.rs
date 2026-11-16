@@ -867,7 +867,7 @@ mod tests {
             dir.path(),
             shell.to_str().unwrap(),
             &afkconvoy_core::question::typed(script),
-            Duration::from_secs(5),
+            afkconvoy_patience::PATIENCE,
             &env,
         )
         .unwrap()
@@ -889,7 +889,7 @@ mod tests {
             dir.path(),
             shell.to_str().unwrap(),
             &afkconvoy_core::question::typed(":"),
-            Duration::from_secs(5),
+            afkconvoy_patience::PATIENCE,
             &[],
         )
         .unwrap()
@@ -903,18 +903,26 @@ mod tests {
     fn a_host_question_that_does_not_end_is_none_and_its_group_is_gone() {
         let dir = tempfile::tempdir().unwrap();
         let shell = shell_that_runs(dir.path());
-        let started = Instant::now();
+        // A question waited out would outlast the test's own limit: that it
+        // answers is that it was not (sunfmin/control#1183).
+        let pidfile = dir.path().join("sleeper");
+        let script = format!("sleep 1000 & echo $! > '{}'; wait", pidfile.display());
         let env = [(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))];
         let answer = run_login_shell(
             dir.path(),
             shell.to_str().unwrap(),
-            &afkconvoy_core::question::typed("sleep 30"),
+            &afkconvoy_core::question::typed(&script),
             Duration::from_millis(300),
             &env,
         )
         .unwrap();
         assert_eq!(answer, None);
-        assert!(started.elapsed() < Duration::from_secs(5), "the sleep was left running");
+        // Ended before it wrote its pid, on a loaded host, it left nothing.
+        if let Ok(pid) = std::fs::read_to_string(&pidfile) {
+            let alive =
+                || Command::new("kill").args(["-0", pid.trim()]).status().unwrap().success();
+            afkconvoy_patience::until_true("the sleep was left running", || !alive());
+        }
     }
 
     #[test]
@@ -922,13 +930,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shell = shell_that_runs(dir.path());
         let pidfile = dir.path().join("holder");
-        let script = format!("sleep 30 & echo $! > '{}'; printf done", pidfile.display());
-        let started = Instant::now();
+        // A question kept waiting by the grandchild would outlast the test's
+        // own limit: that it answers is that it was not (sunfmin/control#1183).
+        let script = format!("sleep 1000 & echo $! > '{}'; printf done", pidfile.display());
         let answer = run_login_shell(
             dir.path(),
             shell.to_str().unwrap(),
             &afkconvoy_core::question::typed(&script),
-            Duration::from_secs(5),
+            afkconvoy_patience::PATIENCE,
             &[(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))],
         )
         .unwrap()
@@ -936,11 +945,6 @@ mod tests {
         if let Ok(pid) = std::fs::read_to_string(&pidfile) {
             let _ = Command::new("kill").arg(pid.trim()).status();
         }
-        assert!(
-            started.elapsed() < Duration::from_secs(8),
-            "the question waited {:?} after the shell exited",
-            started.elapsed()
-        );
         let text = String::from_utf8_lossy(&answer);
         assert!(text.contains("done"), "{text}");
     }

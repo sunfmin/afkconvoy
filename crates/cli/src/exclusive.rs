@@ -1174,9 +1174,16 @@ mod tests {
             (asker, first)
         }
 
-        /// What it is told next, waiting a second at most; `None`: nothing.
+        /// What it is told next, waited for as an event is.
         fn next(&mut self) -> Option<Value> {
-            self.lines.get_ref().set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            self.next_within(afkconvoy_patience::PATIENCE)
+        }
+
+        /// What it is told next, waiting `wait` at most; `None`: nothing. A
+        /// check that nothing comes waits a second: a loaded host only makes
+        /// a grant that is not to come later still.
+        fn next_within(&mut self, wait: Duration) -> Option<Value> {
+            self.lines.get_ref().set_read_timeout(Some(wait)).unwrap();
             let mut line = String::new();
             self.lines.read_line(&mut line).ok()?;
             serde_json::from_str(&line).ok()
@@ -1200,9 +1207,9 @@ mod tests {
         });
     }
 
-    /// Waits a while for `queue` to hold `commands`, in the order it runs.
+    /// Waits for `queue` to hold `commands`, in the order it runs.
     fn holds(queue: &Queue, commands_now: &[&str]) {
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = afkconvoy_patience::deadline();
         while commands(queue) != commands_now && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1223,12 +1230,12 @@ mod tests {
         assert_eq!(said["ahead"], 2);
         assert_eq!(commands(&queue), ["a", "b", "c"]);
         assert!(queue.standing()[0].running() && !queue.standing()[1].running());
-        assert_eq!(second.next(), None, "waits while the first runs");
+        assert_eq!(second.next_within(Duration::from_secs(1)), None, "waits while the first runs");
 
         drop(first);
         assert!(second.next().unwrap()["runs"].is_u64(), "its turn, once the first left");
         holds(&queue, &["b", "c"]);
-        assert_eq!(third.next(), None);
+        assert_eq!(third.next_within(Duration::from_secs(1)), None);
         drop(second);
         assert!(third.next().unwrap()["runs"].is_u64());
         drop(third);
@@ -1257,7 +1264,7 @@ mod tests {
         assert!(second.next().unwrap()["runs"].is_u64(), "and beside a fast gate of its repo");
         let (mut third, said) = Asker::joins(dir.path(), of_a("fast 3", 104, Some(Gate::Fast)));
         assert_eq!(said["ahead"], 2);
-        assert_eq!(third.next(), None, "the fast lanes are full");
+        assert_eq!(third.next_within(Duration::from_secs(1)), None, "the fast lanes are full");
         drop(first);
         assert!(third.next().unwrap()["runs"].is_u64(), "a fast lane's place is free");
         drop((slow, other));
@@ -1293,9 +1300,17 @@ mod tests {
         drop(running);
         holds(&queue, &["b"]);
         assert_eq!(queue.pause(), 0, "the waiter is not a running command");
-        assert_eq!(waiting.next(), None, "the move holds new commands");
+        assert_eq!(
+            waiting.next_within(Duration::from_secs(1)),
+            None,
+            "the move holds new commands"
+        );
         queue.close();
-        assert_eq!(waiting.next(), None, "the waiter rejoins, never granted here");
+        assert_eq!(
+            waiting.next_within(Duration::from_secs(1)),
+            None,
+            "the waiter rejoins, never granted here"
+        );
         holds(&queue, &[]);
     }
 

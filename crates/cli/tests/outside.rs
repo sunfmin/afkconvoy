@@ -4,14 +4,8 @@
 
 use crate::common;
 
-use std::time::Duration;
-
 use common::{Running, World};
 use serde_json::json;
-
-/// How long a line a wake brings about is waited for. The sleep it ends is
-/// 90 seconds at the least, so "within this" means "woken".
-const SOON: Duration = Duration::from_secs(20);
 
 /// The lease, and a moment past it for a heartbeat stamped at 1000.
 const LATER: &str = "2860"; // 31 minutes after 1000
@@ -34,9 +28,9 @@ fn two_ticks(world: &World, between: impl FnOnce()) -> (String, String) {
 /// changes fleet state, and so wakes the `run` itself — starts now.
 fn by_command(world: &World, command: impl FnOnce()) -> (String, String) {
     let running = run(world);
-    let first = running.line(SOON).expect("the first tick");
+    let first = running.line(common::PATIENCE).expect("the first tick");
     command();
-    let second = running.line(SOON).expect("the second tick");
+    let second = running.woken_tick();
     (first, second)
 }
 

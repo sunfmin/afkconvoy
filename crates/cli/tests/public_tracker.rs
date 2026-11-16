@@ -8,7 +8,6 @@
 use crate::common;
 
 use std::process::Child;
-use std::time::{Duration, Instant};
 
 use common::World;
 use serde_json::{Value, json};
@@ -42,13 +41,9 @@ fn refuses(world: &World, refused: &str, named: &str) -> bool {
         && refused.contains(&format!("`{}`", fix(world)))
 }
 
-/// Waits until `done`, for 60 seconds at the most.
+/// Waits until `done`.
 fn until(what: &str, done: impl Fn() -> bool) {
-    let started = Instant::now();
-    while !done() {
-        assert!(started.elapsed() < Duration::from_secs(60), "never happened: {what}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    afkconvoy_patience::until_true(what, done)
 }
 
 /// The findings of `doctor` of the kind whose `what` holds `symptom`.
