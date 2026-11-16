@@ -19,7 +19,7 @@
 //! Knobs: `stopped` (it is not running: it says so, and every other call
 //! fails), `create_fails` [issue…], `rm_fails`, `never_ready`, `send_refused`,
 //! `stale_base` (a ref worktrees are cut at instead of the one asked for),
-//! `ps_truncated`, `ps_fails`, `close_fails` [worktree paths…],
+//! `ps_truncated`, `ps_fails`, `set_fails`, `close_fails` [worktree paths…],
 //! `close_keeps_terminal` (acknowledges close without ending its terminal),
 //! `timeout_on_waits` (the numbered waits of each terminal that time out),
 //! `start_screen`, `send_screen`, `prompt_stages` (a receipt without a turn
@@ -86,6 +86,7 @@ fn main() {
         ["worktree", "list", ..] => worktree_list(&mut st),
         ["worktree", "ps", ..] => worktree_ps(&mut st),
         ["worktree", "rm", ..] => worktree_rm(&mut st),
+        ["worktree", "set", ..] => worktree_set(&mut st),
         ["terminal", "create", ..] => terminal_create(&mut st),
         ["terminal", "wait", ..] => terminal_wait(&mut st),
         ["terminal", "send", ..] => terminal_send(&mut st),
@@ -280,6 +281,25 @@ fn worktree_ps(st: &mut State) -> ! {
     let truncated = st.doc["ps_truncated"] == true;
     sync_sessions(st);
     done(st, json!({"worktrees": out, "totalCount": out.len(), "truncated": truncated}))
+}
+
+/// As real orca, which sets the metadata of any worktree of a repo it knows,
+/// one git added included: each set is kept in `shown`, in order, as
+/// {path, displayName, comment?, issue?}. Knob: `set_fails` refuses every one.
+fn worktree_set(st: &mut State) -> ! {
+    let path = selected(st);
+    if st.doc["set_fails"] == true {
+        fail(st, "selector_not_found");
+    }
+    let mut row = json!({"path": path, "displayName": st.opt("--display-name")});
+    if let Some(comment) = st.opt("--comment") {
+        row["comment"] = json!(comment);
+    }
+    if let Some(issue) = st.opt("--issue") {
+        row["issue"] = json!(issue);
+    }
+    st.list("shown").push(row);
+    done(st, json!({"worktree": {"path": path}}))
 }
 
 fn worktree_rm(st: &mut State) -> ! {
