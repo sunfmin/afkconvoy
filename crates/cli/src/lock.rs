@@ -108,4 +108,5 @@ Errors, as {"error": …} with a non-zero exit: the issue is closed; there is no
 - Once the last lock has closed, a bound repo's stage that declared `escalate` or stayed silent past its nudge before then runs again, on the base branch as it is now: a broken base branch is what such a lock is raised for, and a human could only answer "run the gate again". Every other verdict stands.
 - What was on the base branch before the lock is not taken off it. The lock issue's PR lands after it.
 - A lock issue nothing makes dispatchable — no ready label, no flow label, an epic label, an open blocker — is worked by nobody, and the lock stands all the same. `afkconvoy plan` shows the lock under `locks` and the issue under `excluded`, with why.
+- It holds no running worker's gate, and it is every host's: to pause this host's landings and its workers' gates while one PR lands alone, keeping their claims, raise a landing hold (`afkconvoy hold --help`).
 - It does not check that the base branch is broken. It is refused to nobody: the guard recognises the label being moved by hand, not this command."#;

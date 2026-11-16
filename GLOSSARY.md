@@ -240,6 +240,10 @@ _Avoid_: cron, job, scheduled worker
 An open issue carrying the lock label, in a bound repo or an unbound one — of a tracker that is another repo, and the repo label of the repo whose fleet it holds: no other repo's fleet that works the same tracker. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue lands, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it. A stage's `escalate` or failure the lock explains — declared before it closed, and not acted on since — is then not carried out: the stage runs again, which is no rework.
 _Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill switch
 
+**Landing hold**:
+An operator's hold on a repo's landings on one host, raised with `afkconvoy hold` and lifted with `hold --lift`: a note in the repo's git dir that every worktree of it on the host reads. While it stands no `land` turn of an issue it does not let through starts (it answers `held`), no worker's `gate` runs, and the tick leaves those claims alone — no turn asked for, no stopped worker judged — keeping their claims, worktrees and branches; a watch's `land --watch`, and the one issue it names, are let through, so one PR lands alone. Lifting it lets the held workers go on with no restart. Unlike `stop`, which leaves the workers landing, and `stop --release`, which ends them and releases their claims, it keeps the work and pauses it; unlike a **fleet lock**, it is this host's alone and stops running workers' gates (ADR-0089).
+_Avoid_: freeze, SIGSTOP
+
 ### Workers
 
 **Harness**:
