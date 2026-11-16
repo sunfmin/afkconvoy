@@ -41,6 +41,11 @@ pub struct Taken {
     /// The bytes its processes held resident at each sample of the last
     /// minutes, oldest first.
     pub resident: Vec<(u64, u64)>,
+    /// Its stall in words, its lock holders named, where it turned hot
+    /// stalled (`crate::stall`).
+    pub stall: Option<String>,
+    /// The issue its worktree is linked to, where it is.
+    pub issue: Option<u64>,
 }
 
 /// The first line of the evidence of the episode that started at `since`:
@@ -55,6 +60,9 @@ pub fn take(worktree: &Worktree, taken: &Taken) -> Result<PathBuf> {
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let mut out = head(&taken.worker, taken.since);
     let _ = write!(out, "\n\nHot for {}; it held {}.\n", taken.why, taken.held);
+    if let Some(stall) = &taken.stall {
+        let _ = write!(out, "\n## The build-directory locks it waits on\n\n{stall}\n");
+    }
 
     out.push_str("\n## The process tree, with each command line\n\n```\n");
     out.push_str(&tree(&taken.pids));

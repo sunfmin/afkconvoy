@@ -134,6 +134,7 @@ mod skill;
 mod slots;
 pub mod slow_gate;
 pub mod stage;
+mod stall;
 pub mod standings;
 pub mod steer;
 pub mod stop;
