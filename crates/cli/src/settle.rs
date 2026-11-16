@@ -252,7 +252,7 @@ pub(crate) fn kept_at_settle(repo: &Repo) -> Result<Vec<(Worktree, KeptAtSettle)
 /// (sunfmin/control#1161): it is removed once it holds nothing only it holds
 /// — its commits on a branch of the remote, the carrier's among them while
 /// its PR is open, or their change on the base branch once that PR, or the
-/// batch that took it, has landed — and no process is in it. One whose issue
+/// round that took it, has landed — and no process is in it. One whose issue
 /// is claimed again is that claim's: its note goes, and its end decides.
 pub(crate) fn remove_kept(fleet: &Fleet) -> Result<()> {
     let kept = kept_at_settle(&fleet.repo)?;

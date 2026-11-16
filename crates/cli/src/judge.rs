@@ -156,7 +156,7 @@ fn leaving_with(fleet: &Fleet, issue: u64, worktree: &Worktree, at_open: bool) -
 /// What the worktree of a settled claim on `issue` holds that nothing else
 /// does (sunfmin/control#1161): as `leaving`, with the branch of the PR that
 /// carries its PR, `carrier`, known too, and its commits held by the base
-/// branch once their change is all there — a batch or a carrier landed them
+/// branch once their change is all there — a round or a carrier landed them
 /// under commits of its own, so they are on the base by their change and not
 /// by their hash.
 pub(crate) fn leaving_settled(
