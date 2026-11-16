@@ -2053,7 +2053,7 @@ mod tests {
             let shown = if request["lane"] == "worker" { worker } else { repo };
             assert!(shown.contains(&card), "{} not in its lane: {section}", request["lane"]);
         }
-        assert!(section.contains("1 worker lanes · 1 used · 0 free"), "{section}");
+        assert!(!section.contains("worker lanes ·"), "no count of places: {section}");
         assert!(repo.contains("1 used · 0 free"), "{section}");
         assert!(section.contains("does not say whether it paused"), "{section}");
         assert!(!section.contains("waiting_for_capacity"), "{section}");
@@ -2061,7 +2061,7 @@ mod tests {
         host.exclusive = Err("the host runner closed".into());
         let html = render(&page_of(host, vec![]));
         assert!(html.contains("The exclusive queue cannot be read: the host runner closed"));
-        assert!(!html.contains("worker lanes"), "an unread queue is not an empty one: {html}");
+        assert!(!html.contains("Cores "), "an unread queue is not an empty one: {html}");
     }
 
     #[test]

@@ -672,13 +672,13 @@ enum Command {
         /// `default` changes it back [default: {const:BUSY_SHARE}%]
         #[arg(long, env = BUSY_SHARE_ENV, value_name = "PERCENT", value_parser = boxed_percent)]
         busy_share: Option<Box<To<u64>>>,
-        /// Removed: the exclusive queue has no count of places (docs/adr/0087)
+        /// Removed: the exclusive queue has no count of places
         #[arg(long, hide = true, value_parser = removed_lanes)]
         gate_lanes: Option<()>,
-        /// Removed: the exclusive queue has no count of places (docs/adr/0087)
+        /// Removed: the exclusive queue has no count of places
         #[arg(long, hide = true, value_parser = removed_lanes)]
         slow_gate_lanes: Option<()>,
-        /// Removed: the exclusive queue has no count of places (docs/adr/0087)
+        /// Removed: the exclusive queue has no count of places
         #[arg(long, hide = true, value_parser = removed_lanes)]
         fast_lanes: Option<()>,
         /// Stop after this many ticks
@@ -1880,7 +1880,7 @@ fn boxed_percent(said: &str) -> Result<Box<To<u64>>, String> {
 
 /// What `--gate-lanes`, `--slow-gate-lanes` and `--fast-lanes` say now.
 const REMOVED_LANES: &str = "is removed: the exclusive queue has no count of places, and starts \
-     a command once the host has room for it, by its CPU reading (docs/adr/0087); \
+     a command once the host has room for it, by its CPU reading; \
      `--busy-share PERCENT` sets the share of its cores it starts under";
 
 /// `--gate-lanes`, `--slow-gate-lanes` and `--fast-lanes`, still given.
