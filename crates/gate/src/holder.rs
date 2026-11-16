@@ -317,10 +317,7 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
         let (_, turned) = &*self.held;
         let mut joined = self.joined();
         loop {
-            let Some(ticket) = joined.tickets.iter().find(|ticket| ticket.number == number) else {
-                return None;
-            };
-            let cut = ticket.cut;
+            let cut = joined.tickets.iter().find(|ticket| ticket.number == number)?.cut;
             let room = self.own_room(&joined);
             joined.count(Instant::now(), room);
             let bound = self.host.bound();

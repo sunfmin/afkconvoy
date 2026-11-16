@@ -13,3 +13,5 @@ The default is 1,200 seconds. On FelixMBP14.local, the retained tick logs read o
 Exit 124 is reserved for this outcome, distinct from the command's ordinary status, the queue's 125 and a command that cannot start's 127. A command itself exiting 124 is reported as 1, keeping the bound distinguishable. One stderr line tells the worker to split the work, and one tick-log line says which command ended, its runtime and how many waited. `doctor` reports each occurrence retained from the last day, so a bound too low for an ordinary gate shows.
 
 A wall-clock limit would end a long command even on an otherwise idle host. Resetting the count when a waiter leaves would let changing waiters extend a hold forever. A repo setting would let one repo hold every other fleet up. None fits the host's shared queue.
+
+A cut's own commands are exempt (sunfmin/control#1263). The cut goes ahead of every waiting worker command, so ending it frees nothing for long: it only starts again from scratch, and on a loaded host, where its gate runs on one core, it reached the bound every time. Its gate is bounded by its own `gate_seconds`, and the cut by its time limit.
