@@ -201,15 +201,18 @@ fn a_busy_host_bounds_candidates_and_room_lets_another_repo_start() {
     assert_eq!(doctor["host"]["settings"]["in_force"]["busy_share"], 90);
     assert!(doctor["host"]["settings"]["in_force"].get("gate_lanes").is_none());
     assert!(doctor["host"]["settings"]["in_force"].get("ignored").is_none());
-    let waiting = &doctor["host"]["exclusive"]["waiting"];
-    assert!(
-        waiting.as_array().unwrap().iter().any(|request| request["scheduling"]["reasons"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|reason| reason["kind"] == "host_busy")),
-        "{waiting}"
-    );
+    // The second turn waits on the host's room, saying the reading.
+    let busy = || {
+        let queue = a.afk_in(&a.root, &["queue"]).ok();
+        queue["waiting"].as_array().unwrap().iter().any(|request| {
+            request["scheduling"]["reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|reason| reason["kind"] == "host_busy" && reason["busy"] == 95)
+        })
+    };
+    until(busy);
     std::fs::write(a.root.join("release"), "").unwrap();
     std::fs::write(b.root.join("release"), "").unwrap();
     assert_eq!(finish(first)["outcome"], "merged");
