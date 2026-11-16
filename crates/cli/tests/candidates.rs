@@ -354,6 +354,21 @@ fn a_landing_goes_on_when_orca_refuses_to_name_its_worktrees() {
     assert!(shown(&world).is_empty());
 }
 
+/// A turn that cannot finish still answers an ending its worker is taught,
+/// `error`, beside the error itself (sunfmin/control#1267).
+#[test]
+fn a_turn_that_cannot_finish_answers_the_error_ending() {
+    let world = World::new();
+    world.set_gate("true");
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (source, _) = worker(&world, 1, "a");
+    std::fs::write(source.join("a.txt"), "changed and not committed\n").unwrap();
+    let ran = world.afk_in(&source, &["land", "--issue", "1"]);
+    assert_eq!(ran.json["outcome"], "error", "{}", ran.json);
+    let error = ran.error();
+    assert!(error.contains("uncommitted changes"), "{error}");
+}
+
 #[test]
 fn a_cache_inside_any_checkout_is_refused_before_a_candidate_is_assigned() {
     let world = World::new();

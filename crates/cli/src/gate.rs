@@ -458,7 +458,13 @@ pub(crate) fn candidate_gate(
         });
         return Ok((evidence, Judged::Green));
     }
-    let run = controlled_run(repo, command, host, now, limit, issue, Some(candidate), None)?;
+    // Its whole output is kept where the turn that answers red names it.
+    let output = candidate.output().ok();
+    if let Some(file) = &output {
+        crate::candidates::room_for_output(file);
+    }
+    let run =
+        controlled_run(repo, command, host, now, limit, issue, Some(candidate), output.as_deref())?;
     let evidence = Evidence::of(Observed {
         command: command.text(),
         ran: run.ran,

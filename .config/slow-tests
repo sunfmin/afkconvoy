@@ -480,6 +480,7 @@ afkconvoy::cli kimi::missing_or_unconfigured_kimi_is_named_with_its_fix
 afkconvoy::cli kimi::roles_do_not_share_configuration_and_host_user_resources_are_explicit
 afkconvoy::cli kit_research::sourced_research_places_models_in_file_order_without_calling_a_model
 afkconvoy::cli kit_research::sourced_settlements_preserve_seven_placed_codex_models_and_survive_relisting
+afkconvoy::cli lander::a_carried_issue_whose_worker_left_waits_on_its_carrier_not_on_a_human
 afkconvoy::cli lander::a_builder_with_an_open_pr_still_needs_its_workflow_and_worker_health
 afkconvoy::cli lander::a_faulted_landing_worker_continues_in_its_role_without_consuming_a_restart
 afkconvoy::cli lander::a_landing_blocked_verdict_parks_and_resumes_landing
@@ -1109,5 +1110,12 @@ afkconvoy::cli tools::an_orca_only_where_the_ssh_remote_runtime_puts_its_cli_is_
 afkconvoy::cli tick::a_carried_issue_s_worktree_stays_while_its_carrier_is_open_and_goes_once_it_lands
 afkconvoy::cli tick::a_carried_issue_s_worktree_whose_commits_its_carrier_holds_goes_at_settle
 afkconvoy::cli tick::a_settled_worktree_with_a_commit_no_remote_ref_holds_stays_on_every_later_tick
+# A PR red twice in a row handed to a new worker (sunfmin/control#1254): each
+# runs two candidate gates and ticks a fleet; measured 4.4s to 11.5s.
+afkconvoy::cli joining::a_red_turn_names_its_failing_tests_and_its_gate_output_in_its_answer_and_its_log_line
+afkconvoy::cli joining::two_red_turns_in_a_row_hand_the_pr_to_a_new_worker_in_a_new_worktree
+afkconvoy::cli joining::one_red_turn_is_handed_back_to_the_same_worker_in_the_same_worktree
+afkconvoy::cli joining::a_worker_that_cannot_be_confirmed_stopped_gets_no_successor_and_this_is_reported
+afkconvoy::cli stage::a_pr_handed_to_a_new_worker_after_two_red_turns_keeps_the_issue_s_rework_counts
 # Still TIMEOUT at 2s alone on a quiet host (load 12.95, 18 CPUs), in the pair of #948 and #944: it runs the real scheduler for two repos.
 afkconvoy::cli queue::the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_room

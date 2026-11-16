@@ -168,21 +168,6 @@ fn contains(dir: &Path, head: &str, other: &str) -> Result<bool, String> {
     }
 }
 
-/// Commits `tree` in `dir` with `parents`, each once, and `message` →
-/// its sha. The message goes to git on stdin, as no argument may carry
-/// one past the OS's `ARG_MAX` (sunfmin/control#1266).
-fn commit_tree(dir: &Path, tree: &str, parents: &[&str], message: &str) -> Result<String, String> {
-    let mut args = vec!["commit-tree", tree, "-F", "-"];
-    let mut given: Vec<&str> = vec![];
-    for &parent in parents {
-        if !given.contains(&parent) {
-            given.push(parent);
-            args.extend(["-p", parent]);
-        }
-    }
-    git_in(dir, &args, Some(message))
-}
-
 /// One git call in `dir`, given `input`, that must succeed → its stdout,
 /// trimmed.
 fn git_in(dir: &Path, args: &[&str], input: Option<&str>) -> Result<String, String> {
@@ -208,6 +193,18 @@ fn git_in(dir: &Path, args: &[&str], input: Option<&str>) -> Result<String, Stri
         ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// `git commit-tree` of `tree` on `parents`, its `message` on stdin and
+/// ended by a newline, as `-m` ends it: no message is too long for git to
+/// start, as one in its arguments can be (sunfmin/control#1267).
+fn commit_tree(dir: &Path, tree: &str, parents: &[&str], message: &str) -> Result<String, String> {
+    let mut args = vec!["commit-tree", tree];
+    for parent in parents {
+        args.extend(["-p", parent]);
+    }
+    args.extend(["-F", "-"]);
+    git_in(dir, &args, Some(&format!("{message}\n")))
 }
 
 impl<F> Lander<'_, F>
@@ -1009,6 +1006,9 @@ where
         target: &str,
         (round, level, nodes): (String, u32, Vec<pairing::Node>),
     ) -> Result<(), String> {
+        let named = |changes: &[u64]| {
+            changes.iter().map(|n| format!("!{n}")).collect::<Vec<_>>().join(", ")
+        };
         let made = pairing::groups(nodes.len(), |held: Option<&String>, at: &[usize], node| {
             let (Some(first), Some(next)) =
                 (at.first().and_then(|&i| nodes.get(i)), nodes.get(node))
@@ -1021,7 +1021,7 @@ where
             for &i in at {
                 changes.extend(nodes.get(i).iter().flat_map(|n| &n.changes));
             }
-            let message = pairing::group_message("!", &changes, &next.changes);
+            let message = format!("Group {} with {}", named(&changes), named(&next.changes));
             let commit = commit_tree(self.dir(), &tree, &[onto, &next.commit], &message)?;
             Ok::<_, String>(Some(commit))
         })?;

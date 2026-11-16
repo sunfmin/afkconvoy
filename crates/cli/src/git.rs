@@ -265,21 +265,18 @@ impl Repo {
         run(&self.dir, args, env)
     }
 
-    /// One git call under extra environment, `input` on its stdin, whose
-    /// failure the caller reads: for text no argument may carry, past the
-    /// OS's `ARG_MAX`.
-    pub fn try_git_given(&self, args: &[&str], env: &[(&str, &str)], input: &str) -> Result<Ran> {
-        local(args)?;
-        let out = crate::process::output_with_input(
-            Command::new("git")
-                .current_dir(&self.dir)
-                .args(args)
-                .env("LC_ALL", "C")
-                .envs(env.iter().copied()),
-            input.as_bytes(),
-        )
-        .with_context(|| could_not_run(args, &self.dir))?;
-        Ok(ran(out))
+    /// `git commit-tree tree -p parent…` given `message` on stdin (`-F -`),
+    /// under extra environment, whose failure the caller reads: no message is
+    /// too long for git to start, as one in its arguments can be
+    /// (sunfmin/control#1267).
+    pub fn commit_tree(
+        &self,
+        tree: &str,
+        parents: &[&str],
+        message: &str,
+        env: &[(&str, &str)],
+    ) -> Result<Ran> {
+        commit_tree(&self.dir, tree, parents, message, env)
     }
 
     /// Removes the linked worktree at `path`, its directory and its
@@ -494,7 +491,7 @@ impl Repo {
     /// A parentless commit of `tree` whose subject is `record`: a record that
     /// is about a tree, and keeps it.
     pub fn record_commit_of(&self, tree: &str, record: &str) -> Result<String> {
-        let ran = run(&self.dir, &["commit-tree", tree, "-m", record], &RECORD_IDENTITY)?;
+        let ran = commit_tree(&self.dir, tree, &[], record, &RECORD_IDENTITY)?;
         if !ran.ok {
             bail!("git commit-tree failed: {}", ran.stderr.trim());
         }
@@ -505,8 +502,7 @@ impl Repo {
     /// gives a push the edge of the tested commit, so a remote holding it is
     /// sent only the record and objects it still lacks.
     pub fn record_commit_on(&self, tree: &str, parent: &str, record: &str) -> Result<String> {
-        let ran =
-            run(&self.dir, &["commit-tree", tree, "-p", parent, "-m", record], &RECORD_IDENTITY)?;
+        let ran = commit_tree(&self.dir, tree, &[parent], record, &RECORD_IDENTITY)?;
         if !ran.ok {
             bail!("git commit-tree failed: {}", ran.stderr.trim());
         }
@@ -664,6 +660,32 @@ pub(crate) fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran
             .envs(env.iter().copied()),
     )
     .with_context(|| could_not_run(args, dir))?;
+    Ok(ran(out))
+}
+
+/// `git commit-tree` of `tree` on `parents`, its `message` on stdin and
+/// ended by a newline, as `-m` ends it: the commit is the one `-m` made.
+fn commit_tree(
+    dir: &Path,
+    tree: &str,
+    parents: &[&str],
+    message: &str,
+    env: &[(&str, &str)],
+) -> Result<Ran> {
+    let mut args = vec!["commit-tree", tree];
+    for parent in parents {
+        args.extend(["-p", parent]);
+    }
+    args.extend(["-F", "-"]);
+    let out = crate::process::output_with_input(
+        Command::new("git")
+            .current_dir(dir)
+            .args(&args)
+            .env("LC_ALL", "C")
+            .envs(env.iter().copied()),
+        format!("{message}\n").as_bytes(),
+    )
+    .with_context(|| could_not_run(&args, dir))?;
     Ok(ran(out))
 }
 

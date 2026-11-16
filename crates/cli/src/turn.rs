@@ -250,21 +250,11 @@ fn merged_tree(repo: &Repo, base: &str, head: &str) -> Result<Option<String>> {
     }
 }
 
-/// Commits `tree` with `parents`, each once, and `message` at `now` → its
-/// sha. The message goes to git on stdin: as an argument, one past the OS's
-/// `ARG_MAX` could not be committed at all (sunfmin/control#1266).
+/// Commits `tree` with `parents` and `message` at `now` → its sha.
 fn commit_at(repo: &Repo, tree: &str, parents: &[&str], message: &str, now: u64) -> Result<String> {
     let at = format!("@{now} +0000");
     let dated = [("GIT_AUTHOR_DATE", at.as_str()), ("GIT_COMMITTER_DATE", at.as_str())];
-    let mut args = vec!["commit-tree", tree, "-F", "-"];
-    let mut given: Vec<&str> = vec![];
-    for &parent in parents {
-        if !given.contains(&parent) {
-            given.push(parent);
-            args.extend(["-p", parent]);
-        }
-    }
-    let made = repo.try_git_given(&args, &dated, message)?;
+    let made = repo.commit_tree(tree, parents, message, &dated)?;
     if !made.ok {
         bail!("could not commit {tree}: {}", made.stderr.trim());
     }
@@ -335,6 +325,13 @@ pub fn locked(mut answer: Value, locks: &[u64]) -> Value {
         named(locks)
     ));
     answer
+}
+
+/// `printed`, the `{"error": …}` of a turn that could not finish, with its
+/// ending (`Ending::Error`): a worker reads it as any other outcome, never a
+/// bare error its brief does not cover (sunfmin/control#1267).
+pub(crate) fn unfinished(printed: &mut Value) {
+    printed["outcome"] = json!(Ending::Error);
 }
 
 pub fn land(
@@ -526,10 +523,11 @@ fn run(
     }
     let head = repo.git(&["rev-parse", "HEAD"])?;
     repo.remote().push(&Push::set(&head, &format!("refs/heads/{}", pr.head_branch)))?;
-    crate::candidates::run(
+    let answer = crate::candidates::run(
         crate::candidates::Request { repo, config, tracker, pr, of, host, now },
         answer,
-    )
+    )?;
+    Ok(crate::candidates::red_told(repo, answer))
 }
 
 /// Why a turn of `issue`, closed, lands nothing.
@@ -605,7 +603,7 @@ An unrecorded base tip is gated alone in a separate checkout using its own gate 
 
 {const:LAND_ENDINGS}
 
-Errors are {"error": …} with non-zero exit: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix. Once the turn holds its place on the candidate chain, an error of any kind is not one: the turn answers `turn_failed`, naming it, and frees its place.
+Errors are {"error": …} with non-zero exit, and its outcome is error, as its ending above says: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
 
 ## What trips you up
 

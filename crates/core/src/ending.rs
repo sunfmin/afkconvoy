@@ -25,7 +25,7 @@ pub enum Ending {
     WaitedPastBound,
     Blocked,
     Locked,
-    TurnFailed,
+    Error,
 }
 
 impl Ending {
@@ -48,7 +48,7 @@ impl Ending {
         Ending::WaitedPastBound,
         Ending::Blocked,
         Ending::Locked,
-        Ending::TurnFailed,
+        Ending::Error,
     ];
 
     /// The word a turn's answer carries as `outcome`.
@@ -71,7 +71,7 @@ impl Ending {
             Ending::WaitedPastBound => "waited_past_bound",
             Ending::Blocked => "blocked",
             Ending::Locked => "locked",
-            Ending::TurnFailed => "turn_failed",
+            Ending::Error => "error",
         }
     }
 
@@ -129,8 +129,8 @@ impl Ending {
             Ending::Locked => {
                 "a fleet lock stands, named by `locks`; nothing landed: ask for a turn again once no lock stands"
             }
-            Ending::TurnFailed => {
-                "the turn stopped on an error of afkconvoy's own after it took its place on the candidate chain, which `detail` names; nothing landed, its place is freed, and nothing of this PR is recorded red: that says nothing of your change: ask for a turn again"
+            Ending::Error => {
+                "the turn could not finish, and `error` says why; nothing landed and nothing is recorded red. Where `error` names something of your branch to fix — no open PR, uncommitted tracked changes — fix it, commit and run this again; otherwise it is afkconvoy's own failure, not your change's: ask for a turn again"
             }
         }
     }

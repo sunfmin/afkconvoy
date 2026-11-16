@@ -1184,6 +1184,11 @@ impl Gate<'_> {
         self.repo.dir.join("target")
     }
 
+    /// Where the candidate's gate writes its whole output (`gate_output`).
+    pub fn output(&self) -> Result<PathBuf> {
+        gate_output(self.repo, self.id, self.slow)
+    }
+
     pub fn scope(&self) -> Result<std::path::PathBuf> {
         let chain = read(self.repo, self.config, Read::Known)?.chain;
         let candidate = chain
@@ -1262,6 +1267,84 @@ fn answered(evidence: &Evidence, answer: &Value) -> Value {
         result[key] = value.clone();
     }
     result
+}
+
+/// How many of a checkout's candidate gate outputs are kept: the newest.
+const GATE_OUTPUTS_KEPT: usize = 40;
+
+/// Where a candidate's gate, fast or `slow`, writes its whole output: a file
+/// of its own in the checkout's shared git dir, named for the candidate, so
+/// it outlasts the candidate's worktree and the worker's, and whichever turn
+/// answers red for it names it (`red_told`).
+pub(crate) fn gate_output(repo: &Repo, id: &str, slow: bool) -> Result<PathBuf> {
+    let id: String =
+        id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    let gate = if slow { "slow" } else { "fast" };
+    Ok(repo.common_dir()?.join(format!("convoy-gate-{id}-{gate}.log")))
+}
+
+/// Makes room for the gate output `file` is to be: an earlier one of the same
+/// name is removed, and only the newest of the others are kept
+/// (`GATE_OUTPUTS_KEPT`). Soft: what cannot be removed stays.
+pub(crate) fn room_for_output(file: &Path) {
+    let _ = std::fs::remove_file(file);
+    let Some(dir) = file.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut kept: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("convoy-gate-") && name.ends_with(".log")
+        })
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    kept.sort();
+    let over = kept.len().saturating_sub(GATE_OUTPUTS_KEPT - 1);
+    for (_, old) in kept.into_iter().take(over) {
+        let _ = std::fs::remove_file(old);
+    }
+}
+
+/// A turn's `answer` with what a red one says of its gate besides: the tests
+/// its output names as failing (nextest's `FAIL`, `TIMEOUT` and signal
+/// lines), as `failing`, and the file that keeps the whole output, as
+/// `gate_output` — its candidate's, or its group's (`pair`), where this
+/// host kept one; the newest, a round's slow gate's before its fast one's.
+/// Where none is kept, the tests are read from its excerpt. Any other answer
+/// is as it was.
+pub(crate) fn red_told(repo: &Repo, mut answer: Value) -> Value {
+    if answer["outcome"] != json!(Ending::GateRed) {
+        return answer;
+    }
+    let ids = [&answer["pair"]["candidate"], &answer["candidate"]];
+    let output = ids
+        .iter()
+        .filter_map(|id| id.as_str())
+        .flat_map(|id| [true, false].map(|slow| gate_output(repo, id, slow).ok()))
+        .flatten()
+        .filter_map(|file| Some((std::fs::metadata(&file).ok()?.modified().ok()?, file)))
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, file)| file);
+    let excerpt = || -> Vec<String> {
+        let lines = answer["excerpt"].as_array().into_iter().flatten();
+        lines.filter_map(Value::as_str).map(str::to_string).collect()
+    };
+    let mut failing = output
+        .as_ref()
+        .and_then(|file| std::fs::read_to_string(file).ok())
+        .map(|text| {
+            afkconvoy_gate::gate::failing_tests(
+                &text.lines().map(str::to_string).collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default();
+    if failing.is_empty() {
+        failing = afkconvoy_gate::gate::failing_tests(&excerpt());
+    }
+    answer["failing"] = json!(failing);
+    answer["gate_output"] = json!(output);
+    answer
 }
 
 /// Says in `answer` the ending the chain decided for `c`
@@ -1529,37 +1612,7 @@ impl Drop for Reap<'_> {
 
 /// The source head has been pushed and the base certified by the caller.
 /// Assignment happens only after capacity is granted, by one atomic record.
-/// Takes `request`'s turn (`turn`). An error once the turn holds its place
-/// on the chain is afkconvoy's own, not one its worker mends: it answers
-/// `turn_failed`, naming the error, and the fleet asks for the turn again
-/// (sunfmin/control#1266). One before that — no PR head, a lock unread, a
-/// closed or retargeted PR — is the command's error, as `land --help` says.
-pub(crate) fn run(request: Request<'_>, answer: Value) -> Result<Value> {
-    let placed = std::cell::Cell::new(false);
-    match turn(request, answer.clone(), &placed) {
-        Err(error) if placed.get() => Ok(turn_failed(answer, &error)),
-        ran => ran,
-    }
-}
-
-/// The longest `detail` a failed turn gives of its error: one that quotes a
-/// commit message or a git argument may run to megabytes.
-const FAILED_DETAIL: usize = 4000;
-
-/// `answer` as a turn that failed on `error` says it (`run`).
-fn turn_failed(mut answer: Value, error: &anyhow::Error) -> Value {
-    let said = format!("{error:#}");
-    let cut = said.char_indices().nth(FAILED_DETAIL).map_or(said.len(), |(at, _)| at);
-    let more = if cut < said.len() { " …" } else { "" };
-    answer["outcome"] = json!(Ending::TurnFailed);
-    answer["detail"] = json!(format!(
-        "this turn failed on an error of afkconvoy's own and freed its place; nothing landed: {}{more}",
-        &said[..cut]
-    ));
-    answer
-}
-
-fn turn(request: Request<'_>, mut answer: Value, placed: &std::cell::Cell<bool>) -> Result<Value> {
+pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let Request { repo, config, tracker, pr, of, host, now } = request;
     let _reap = Reap(repo);
     let began = std::time::Instant::now();
@@ -1656,7 +1709,6 @@ fn turn(request: Request<'_>, mut answer: Value, placed: &std::cell::Cell<bool>)
     };
     change(repo, config, reserve)?;
     let _reservation = Reservation { repo, config, id: id.clone() };
-    placed.set(true);
     // A fast-green candidate's gate is confirmed gone, so a later turn of its
     // PR can own its immutable evidence without cancelling its successors.
     let existing = read(repo, config, Read::Known)?
@@ -2412,6 +2464,8 @@ fn pair_red(answer: Value, p: &Candidate) -> Value {
 fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
     let InRound { repo, config, root, clock, .. } = *turn;
     let Some((round, level, nodes)) = chain.to_pair() else { return Ok(()) };
+    let named =
+        |changes: &[u64]| changes.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
     let made = pairing::groups(nodes.len(), |held: Option<&String>, at: &[usize], node| {
         let (Some(first), Some(next)) = (at.first().and_then(|&i| nodes.get(i)), nodes.get(node))
         else {
@@ -2421,7 +2475,7 @@ fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
         for &i in at {
             changes.extend(nodes.get(i).iter().flat_map(|n| &n.changes));
         }
-        let message = pairing::group_message("#", &changes, &next.changes);
+        let message = format!("Group {} with {}", named(&changes), named(&next.changes));
         let onto = held.unwrap_or(&first.commit);
         crate::turn::merged_onto(repo, onto, &next.commit, &message, clock())
     })?;
@@ -3033,21 +3087,6 @@ fn publish(
 
 #[cfg(test)]
 mod tests {
-    /// An error once the turn holds its place is a documented outcome the
-    /// fleet asks again on, its detail bounded however long the error
-    /// (sunfmin/control#1266).
-    #[test]
-    fn an_error_of_a_placed_turn_answers_turn_failed_with_a_bounded_detail() {
-        let error = anyhow::anyhow!("git commit-tree -m {}", "Group #125, ".repeat(100_000));
-        let answer = super::turn_failed(serde_json::json!({"issue": 481, "pr": 130}), &error);
-        assert_eq!(answer["outcome"], "turn_failed");
-        assert_eq!(answer["pr"], 130);
-        let detail = answer["detail"].as_str().unwrap();
-        assert!(detail.contains("git commit-tree -m Group #125"), "{detail}");
-        assert!(detail.len() < 2 * super::FAILED_DETAIL, "{}", detail.len());
-        assert!(afkconvoy_core::ending::Ending::TurnFailed.waits(), "the fleet asks again");
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
     fn an_unreadable_pid_is_not_the_candidate_owner() {

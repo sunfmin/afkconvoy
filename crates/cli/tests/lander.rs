@@ -443,3 +443,34 @@ fn a_pass_to_land_with_no_open_pr_hands_the_issue_to_a_human() {
     assert_eq!(world.claims(), []);
     assert_eq!(did(&tick(&world, now + 90)), [] as [&str; 0]);
 }
+
+#[test]
+fn a_carried_issue_whose_worker_left_waits_on_its_carrier_not_on_a_human() {
+    let world = bound();
+    let now = through_the_stages(&world);
+    tick(&world, now);
+    // PR #80 of issue 8 carries #70 (docs/adr/0083): its turn closed #70,
+    // and told issue 7 which PR lands its change.
+    world.issue(8, &[]);
+    world.pr(80, 8, "issue-8");
+    world.with_gh(|gh| {
+        let prs = gh["prs"].as_array_mut().unwrap();
+        prs.iter_mut().find(|pr| pr["number"] == 70).unwrap()["state"] = json!("closed");
+    });
+    world.comment(7, "<!--convoy:carried pr=70 by=80-->\n<!--convoy:branch name=issue-8-->");
+    // Told `carried`, the worker stops, and its claim is left behind.
+    stopped(&world, now);
+    tick(&world, now + 90);
+    assert!(world.claims().is_empty(), "{:?}", world.claims());
+
+    let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
+    assert_eq!(plan["waiting_on_human"], json!([]), "{plan}");
+    assert_eq!(plan["escalating"], Value::Null, "{plan}");
+    let excluded = plan["excluded"].as_array().unwrap();
+    let seven = excluded.iter().find(|row| row["number"] == 7).expect("issue 7 excluded");
+    assert_eq!(seven["reason"], "carried by PR #80, which lands its change", "{plan}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let waiting = doctor["waiting_on_human"].as_array().unwrap_or_else(|| panic!("{doctor}"));
+    assert!(waiting.iter().all(|row| row["issue"] != 7), "{doctor}");
+    assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
+}
