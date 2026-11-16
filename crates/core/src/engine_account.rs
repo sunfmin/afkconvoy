@@ -107,8 +107,16 @@ fn minutes(seconds: u64) -> String {
 impl Standing {
     /// The windows that still hold `now`: a window that has reset since its
     /// engine reported it says nothing of it any more.
-    pub fn current(&self, now: u64) -> impl Iterator<Item = &Window> {
-        self.windows.iter().filter(move |window| window.resets_at > now)
+    // Loops, not iterator adaptors: Flux cannot check those (an internal
+    // error in its projections).
+    pub fn current(&self, now: u64) -> Vec<&Window> {
+        let mut current = vec![];
+        for window in &self.windows {
+            if window.resets_at > now {
+                current.push(window);
+            }
+        }
+        current
     }
 
     /// Why it takes no new worker `now`, its windows judged against `limit`
@@ -121,14 +129,26 @@ impl Standing {
             }
             Here::LoggedOut { line } => return Some(Refused::LoggedOut { line: line.clone() }),
         }
-        if let Some(until) = self.rests_until.filter(|until| *until > now) {
+        if let Some(until) = self.rests_until
+            && until > now
+        {
             return Some(Refused::Resting { until });
         }
-        if let Some(window) = self
-            .current(now)
-            .filter(|window| window.used >= limit)
-            .max_by_key(|window| (window.used, window.resets_at))
-        {
+        // The most used window at or past the limit, the later reset of equals.
+        let mut past: Option<&Window> = None;
+        for window in self.current(now) {
+            let more = match past {
+                None => true,
+                Some(kept) => {
+                    window.used > kept.used
+                        || (window.used == kept.used && window.resets_at > kept.resets_at)
+                }
+            };
+            if window.used >= limit && more {
+                past = Some(window);
+            }
+        }
+        if let Some(window) = past {
             return Some(Refused::Window {
                 window: window.name.clone(),
                 used: window.used,
@@ -136,7 +156,8 @@ impl Standing {
                 resets_at: window.resets_at,
             });
         }
-        if let Some(sessions) = self.sessions.filter(|sessions| self.running >= *sessions as usize)
+        if let Some(sessions) = self.sessions
+            && self.running >= sessions as usize
         {
             return Some(Refused::Full { running: self.running, sessions });
         }
@@ -147,7 +168,12 @@ impl Standing {
     /// used window that still holds. An account whose engine has reported
     /// no window that holds has all of it left.
     pub fn left(&self, now: u64) -> u64 {
-        let used = self.current(now).map(|window| window.used).max().unwrap_or(0);
+        let mut used = 0;
+        for window in self.current(now) {
+            if window.used > used {
+                used = window.used;
+            }
+        }
         100u64.saturating_sub(used)
     }
 }
@@ -157,12 +183,23 @@ impl Standing {
 /// left; of equals, the one with the fewest workers on it, then the first.
 /// `None`: none takes one, and its harness's workers wait.
 pub fn choose(standings: &[Standing], limit: u64, now: u64) -> Option<&Standing> {
-    standings
-        .iter()
-        .enumerate()
-        .filter(|(_, standing)| standing.refused(limit, now).is_none())
-        .min_by_key(|(at, standing)| (std::cmp::Reverse(standing.left(now)), standing.running, *at))
-        .map(|(_, standing)| standing)
+    let mut chosen: Option<&Standing> = None;
+    for standing in standings {
+        if standing.refused(limit, now).is_some() {
+            continue;
+        }
+        let better = match chosen {
+            None => true,
+            Some(kept) => {
+                let (left, kept_left) = (standing.left(now), kept.left(now));
+                left > kept_left || (left == kept_left && standing.running < kept.running)
+            }
+        };
+        if better {
+            chosen = Some(standing);
+        }
+    }
+    chosen
 }
 
 /// Until when an account that met a limit at `at` rests: the reset the

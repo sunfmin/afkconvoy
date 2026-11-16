@@ -489,6 +489,7 @@ pub(crate) fn json(now: u64) -> Value {
             };
             let windows: Vec<Value> = standing
                 .current(now)
+                .into_iter()
                 .map(|window| {
                     json!({"window": window.name, "used": window.used,
                         "resets_at": window.resets_at,

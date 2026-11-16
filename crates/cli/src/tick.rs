@@ -682,6 +682,7 @@ pub(crate) fn usage_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Optio
             .map(|chosen| {
                 chosen
                     .current(now)
+                    .into_iter()
                     .filter_map(|window| {
                         let length = crate::admission::minutes_of(&window.name)? * 60;
                         Some(afkconvoy_core::admission::Window {
