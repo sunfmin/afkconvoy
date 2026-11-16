@@ -11,11 +11,13 @@ fn quote(path: &Path) -> String {
     afkconvoy_core::line::Line::new().word(&path.to_string_lossy()).own()
 }
 
+/// Waits for a transition. The bound only catches a hang: a loaded host
+/// (a gate beside others, load 100+) takes well past 15s for one (sunfmin/control#1182).
 fn until(mut done: impl FnMut() -> bool) {
     let began = Instant::now();
     while !done() {
         assert!(
-            began.elapsed() < Duration::from_secs(15),
+            began.elapsed() < Duration::from_secs(120),
             "the expected transition did not happen"
         );
         std::thread::sleep(Duration::from_millis(20));
