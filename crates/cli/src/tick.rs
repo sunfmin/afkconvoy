@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use afkconvoy_core::before::{Before, Lost};
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::lease::stamp_age;
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
@@ -645,8 +646,12 @@ const WINDOWS_FRESH: u64 = 3600;
 /// The account the next worker of `fleet` starts on — its checkout's own
 /// harness, or the host kit's first — as the newest records of its workers
 /// at work on it say its windows, with how many run on it: those of my
-/// claims at work in `set`, and `started` more, each counted as on it. `None`:
-/// none of them said a window within `WINDOWS_FRESH` — its harness reports
+/// claims at work in `set`, and `started` more, each counted as on it.
+/// Where its harness holds several accounts in mytokens, the one of them a
+/// worker starts on now (`engine_accounts::of`), what this host last heard
+/// of each kept first from the records of its workers at work
+/// (`engine_accounts::sync`). `None`: none of them said a window within
+/// `WINDOWS_FRESH` and its harness holds no accounts — its harness reports
 /// none, or nothing could be read — and admission judges the host alone.
 pub(crate) fn usage_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Option<Usage> {
     let account = match fleet.pinned {
@@ -662,9 +667,41 @@ pub(crate) fn usage_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Optio
         .collect();
     let source = crate::orca::Source::of(&fleet.repo).ok()?;
     let linked = Worktree::linked(&source).ok()?;
+    let working: Vec<(Worktree, Harness)> = linked
+        .into_iter()
+        .filter(|(issue, _)| at_work.contains(issue))
+        .filter_map(|(_, worktree)| {
+            let harness = worktree.recorded_harness().ok().flatten()?;
+            Some((worktree, harness))
+        })
+        .collect();
+    crate::engine_accounts::sync(&working, now);
+    if let Some(accounts) = crate::engine_accounts::of(account, now) {
+        let chosen = accounts.chosen();
+        let windows: Vec<afkconvoy_core::admission::Window> = chosen
+            .map(|chosen| {
+                chosen
+                    .current(now)
+                    .into_iter()
+                    .filter_map(|window| {
+                        let length = crate::admission::minutes_of(&window.name)? * 60;
+                        Some(afkconvoy_core::admission::Window {
+                            account: format!("{} `{}`", account.key(), chosen.name),
+                            window: window.name.clone(),
+                            used: window.used,
+                            length,
+                            resets_in: window.resets_at.saturating_sub(now),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let running = chosen.map_or(0, |chosen| chosen.running);
+        return Some(Usage { account, windows, running, accounts: Some(accounts) });
+    }
     let (mut running, mut newest) = (0, None::<(u64, Vec<_>)>);
-    for (issue, worktree) in &linked {
-        if !at_work.contains(issue) || worktree.recorded_harness().ok().flatten() != Some(account) {
+    for (worktree, harness) in &working {
+        if *harness != account {
             continue;
         }
         running += 1;
@@ -676,8 +713,8 @@ pub(crate) fn usage_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Optio
         }
     }
     let (_, said) = newest?;
-    let windows = crate::admission::windows_of(account, &said, now);
-    Some(Usage { account, windows, running: running + started })
+    let windows = crate::admission::windows_of(account.key(), &said, now);
+    Some(Usage { account, windows, running: running + started, accounts: None })
 }
 
 /// A fact of a claim as it was read (`tick::Fact`).

@@ -239,6 +239,71 @@ pub fn orca_place() -> Option<(PathBuf, OrcaFrom)> {
     }
 }
 
+/// The login shell's question that lists every `orca` on its `PATH`.
+const EVERY_ORCA: &str = "which -a orca";
+
+/// Where another `orca` than this process's answers a different repo list:
+/// one found on the login shell's `PATH`, where a line an operator types
+/// runs, that is not the file this process asks. A line such a shell runs
+/// then gives a checkout to an orca the fleet never asks (sunfmin/control#1236).
+/// An orca that cannot answer says nothing here: what it would list is
+/// unknown, not different.
+pub fn orca_findings() -> Vec<crate::doctor::Finding> {
+    let Some((ours, _)) = orca_place() else { return vec![] };
+    let ours = std::path::absolute(&ours).unwrap_or(ours);
+    let Ok(listed) = orca::listed_repos() else { return vec![] };
+    let Some((_, said)) = ask_login_shell(&orca::asked_from(), EVERY_ORCA) else {
+        return vec![];
+    };
+    let mut seen = vec![ours.canonicalize().unwrap_or_else(|_| ours.clone())];
+    let mut found = vec![];
+    for line in said.lines().map(str::trim).filter(|line| line.starts_with('/')) {
+        let other = PathBuf::from(line);
+        let canonical = other.canonicalize().unwrap_or_else(|_| other.clone());
+        if !runnable(&other) || seen.contains(&canonical) {
+            continue;
+        }
+        seen.push(canonical);
+        let Ok(theirs) = orca::repos_listed_by(&other) else { continue };
+        if theirs == listed {
+            continue;
+        }
+        found.push(orca_disagrees(&ours, &listed, &other, &theirs));
+    }
+    found
+}
+
+fn orca_disagrees(
+    ours: &Path,
+    listed: &std::collections::BTreeSet<PathBuf>,
+    other: &Path,
+    theirs: &std::collections::BTreeSet<PathBuf>,
+) -> crate::doctor::Finding {
+    use crate::doctor::Kind;
+    let only = |of: &std::collections::BTreeSet<PathBuf>,
+                not: &std::collections::BTreeSet<PathBuf>| {
+        let only: Vec<String> = of.difference(not).map(|path| path.display().to_string()).collect();
+        if only.is_empty() { "nothing".to_string() } else { only.join(", ") }
+    };
+    let (at, there) = (ours.display(), other.display());
+    crate::doctor::finding(
+        Kind::OrcaDisagrees,
+        serde_json::json!(["orca-disagrees", ours, other]),
+        format!(
+            "the orca at {at}, which afkconvoy asks, and the orca at {there}, on the login \
+             shell's PATH, {}: a line run in that shell may give a checkout to an orca the \
+             fleet never asks",
+            Kind::OrcaDisagrees.symptom()
+        ),
+        format!(
+            "only {at} lists {}; only {there} lists {}",
+            only(listed, theirs),
+            only(theirs, listed)
+        ),
+        EVERY_ORCA.to_string(),
+    )
+}
+
 fn same_file(a: &Path, b: &Path) -> bool {
     matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
