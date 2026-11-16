@@ -432,6 +432,34 @@ pub(crate) fn keep(worktree: &Worktree, chosen: Option<&Chosen>) -> Result<()> {
     }
 }
 
+/// One finding for each harness whose accounts none takes a new worker
+/// `now`: its workers wait until a window resets or a rest ends, and the
+/// watch is not called, since nothing on the host gives an account's use
+/// back before then.
+pub(crate) fn findings(now: u64) -> Vec<crate::doctor::Finding> {
+    use crate::doctor::{Kind, finding};
+    Harness::ALL
+        .into_iter()
+        .filter_map(|harness| of(harness, now))
+        .filter(|accounts| accounts.chosen().is_none())
+        .map(|accounts| {
+            let harness = accounts.harness.key();
+            finding(
+                Kind::AccountsSpent,
+                json!(["accounts-spent", harness]),
+                format!("no {harness} account takes a new worker: its workers wait"),
+                none_said(&accounts),
+                format!(
+                    "mytokens put {}<name> --set \"{}={harness}\" --fields \"{}\"",
+                    account::PREFIX,
+                    account::HARNESS,
+                    account::CLAUDE_TOKEN
+                ),
+            )
+        })
+        .collect()
+}
+
 /// Every account mytokens holds, as `plan` and the panel show it `now`:
 /// {name, harness, windows, rests_until, running, sessions, takes_work,
 /// why}, and each secret of the prefix that is no account, with why.

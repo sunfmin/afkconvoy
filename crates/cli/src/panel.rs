@@ -279,6 +279,9 @@ pub struct Host {
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
     pub paused: Vec<afkconvoy_core::casting::Paused>,
+    /// The engine accounts mytokens holds, as `plan` says them
+    /// (`engine_accounts::json`).
+    pub accounts: serde_json::Value,
 }
 
 impl Host {
@@ -318,6 +321,7 @@ impl Host {
             watch: crate::host_watch::json(watch.as_ref(), false),
             asking: crate::host_asking::json(),
             paused: crate::paused::read(),
+            accounts: crate::engine_accounts::json(now),
         }
     }
 }
@@ -1165,6 +1169,7 @@ fn host_part(out: &mut String, page: &Page) {
     exclusive(out, host);
 
     kit(out, host);
+    accounts(out, host);
     out.push_str("</section>\n");
 }
 
@@ -1389,6 +1394,57 @@ fn kit(out: &mut String, host: &Host) {
          host can start, in order of preference.</p>\
          <ul class=\"harnesses\">{}</ul></section>",
         harnesses.concat(),
+    );
+}
+
+/// The engine accounts the host's workers start on: each with its harness,
+/// its windows used and when they reset, and whether it takes work. None
+/// held, and nothing is shown.
+fn accounts(out: &mut String, host: &Host) {
+    let Some(accounts) = host.accounts["accounts"].as_array().filter(|a| !a.is_empty()) else {
+        return;
+    };
+    let rows: Vec<String> = accounts
+        .iter()
+        .map(|account| {
+            let text = |key: &str| esc(account[key].as_str().unwrap_or_default());
+            let windows: Vec<String> = account["windows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|window| {
+                    format!(
+                        "<code>{}</code> {}% used, resets in {}",
+                        esc(window["window"].as_str().unwrap_or_default()),
+                        window["used"].as_u64().unwrap_or_default(),
+                        lasted(window["resets_in"].as_u64().unwrap_or_default())
+                    )
+                })
+                .collect();
+            let windows = match windows.is_empty() {
+                true => "no window heard".to_string(),
+                false => windows.join(", "),
+            };
+            let takes = match account["takes_work"].as_bool() {
+                Some(true) => "takes work".to_string(),
+                _ => format!("takes no work: {}", text("why")),
+            };
+            format!(
+                "<li data-account=\"{name}\"><b>{name}</b> {harness} · {windows} · {} on it · \
+                 {takes}</li>",
+                account["running"].as_u64().unwrap_or_default(),
+                name = text("name"),
+                harness = text("harness"),
+            )
+        })
+        .collect();
+    let _ = writeln!(
+        out,
+        "<section class=\"kit\" data-accounts><h2>Accounts</h2><p class=\"by\">The engine \
+         accounts mytokens holds: a worker starts on the one of its harness with the most left, \
+         and none past {}% of a window.</p><ul class=\"harnesses\">{}</ul></section>",
+        host.accounts["limit_percent"].as_u64().unwrap_or_default(),
+        rows.concat(),
     );
 }
 
@@ -1855,6 +1911,7 @@ mod tests {
             watch: serde_json::json!({}),
             asking: serde_json::json!({}),
             paused: vec![],
+            accounts: serde_json::json!({"accounts": []}),
         }
     }
 

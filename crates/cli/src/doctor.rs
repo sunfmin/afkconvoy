@@ -171,6 +171,7 @@ kinds! {
     RepoUnworked: Warning, "no fleet has taken";
     RepoUnreadable: Warning, "remote could not be read";
     GithubQuota: Warning, "GitHub quota is spent";
+    AccountsSpent: Warning, "account takes a new worker";
     StepFailed: Critical, "failed in each of the last";
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
@@ -274,6 +275,7 @@ impl Kind {
                 | Kind::RepoUnworked
                 | Kind::RepoUnreadable
                 | Kind::GithubQuota
+                | Kind::AccountsSpent
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
                 | Kind::ExitWaiting
@@ -297,6 +299,7 @@ impl Kind {
                 | Kind::NotUpgraded
                 | Kind::LandingContention
                 | Kind::GithubQuota
+                | Kind::AccountsSpent
         )
     }
 }
@@ -3052,6 +3055,9 @@ pub fn all_since_rounds(
         of_host.push(crate::unworked::quota_finding(&quota));
         once.insert("github_quota".into(), quota);
     }
+    // A harness with no account left is one finding of the host's, not one
+    // per issue its workers wait with (sunfmin/control#1220).
+    of_host.extend(crate::engine_accounts::findings(now));
     // Said once, named for the first checkout on the list: the lines are
     // equal while they are gathered, and each runs from any directory.
     if let Some(checkout) = listed.first() {
