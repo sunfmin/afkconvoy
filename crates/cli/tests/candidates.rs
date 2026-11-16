@@ -337,6 +337,38 @@ done"#,
     );
 }
 
+/// A candidate's gate builds warm, in a clone of its worker's `target/`
+/// in its own checkout, and writes nothing into the worker's: what it
+/// built there has the candidate's checkout compiled in, and the worker's
+/// next gate would run it once that checkout is gone (sunfmin/control#1262).
+#[test]
+fn a_candidates_gate_builds_in_a_clone_of_its_workers_target_and_leaves_the_workers_alone() {
+    let world = World::new();
+    commit(&world.clone, ".gitignore", "target/\n");
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    world.set_gate(
+        r#"test -n "${AFKCONVOY_CANDIDATE_PROCESS:-}" || exit 0
+test -z "${CARGO_TARGET_DIR:-}" || exit 6
+test "$(cat target/warm)" = built-by-the-worker || exit 7
+pwd > target/built-for
+echo built-by-the-candidate > target/warm"#,
+    );
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    let (source, _) = worker(&world, 1, "a");
+    std::fs::create_dir_all(source.join("target")).unwrap();
+    std::fs::write(source.join("target/warm"), "built-by-the-worker\n").unwrap();
+    let landed = world.afk_in(&source, &["land", "--issue", "1"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(
+        std::fs::read_to_string(source.join("target/warm")).unwrap(),
+        "built-by-the-worker\n",
+        "the candidate's build changed the worker's"
+    );
+    assert!(!source.join("target/built-for").exists(), "the candidate built in the worker's");
+    let candidate = candidate_of(&world, 1);
+    assert!(!Path::new(candidate["worktree"].as_str().unwrap()).exists(), "{candidate}");
+}
+
 /// Orca refusing to name a worktree stops no landing: the turn says so once
 /// in its log and lands (sunfmin/control#1226).
 #[test]

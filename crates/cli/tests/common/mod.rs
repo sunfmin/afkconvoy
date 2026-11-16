@@ -461,6 +461,8 @@ impl World {
             "NEXTEST_TEST_THREADS",
             // as are the threads of its rustc (sunfmin/control#1127)
             "CARGO_RUSTC_THREADS",
+            // as is where it builds (sunfmin/control#1262)
+            "CARGO_TARGET_DIR",
         ] {
             cmd.env_remove(name);
         }

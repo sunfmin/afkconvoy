@@ -27,10 +27,12 @@ fn main() {
     // Asked again whenever the checkout moved or a tracked file changed. With
     // no git there is nothing to watch but this script.
     println!("cargo:rerun-if-changed=build.rs");
-    // And whenever the commit the gate names changes: a candidate's gate
-    // builds in its worker's target directory, where the paths watched are
-    // those of the checkout this script last ran in, which a candidate whose
-    // merge has its branch's tree leaves as they were (sunfmin/control#838).
+    // And whenever the commit the gate names changes: checkouts that build
+    // in one target directory — a `CARGO_TARGET_DIR` the environment names;
+    // a candidate's gate builds in a clone of its worker's since
+    // sunfmin/control#1262 — watch the paths of the checkout this script
+    // last ran in, which a candidate whose merge has its branch's tree
+    // leaves as they were (sunfmin/control#838).
     println!("cargo:rerun-if-env-changed={COMMIT_ENV}");
     println!("cargo:rerun-if-changed={EXAMPLES}");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
