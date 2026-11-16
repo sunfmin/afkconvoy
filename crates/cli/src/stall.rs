@@ -211,7 +211,7 @@ mod tests {
         assert!(idle.held(1, at), "no CPU and no child since 1000");
         assert!(!idle.held(2, at), "it has a child");
         let busy = proc(1, 0, 51);
-        idle.sampled(&[&busy], &[busy.clone()], at + 10);
+        idle.sampled(&[&busy], std::slice::from_ref(&busy), at + 10);
         assert!(!idle.held(1, at + 10), "it took CPU");
         assert!(!idle.held(3, at + 10), "gone, it is forgotten");
     }
