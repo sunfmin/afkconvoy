@@ -666,11 +666,13 @@ fn in_group(group: u32) -> Result<Vec<u32>> {
 /// user cannot kill is never stopped, as nothing could end it then; it is
 /// left to run and is waited for (`Signalled::unkillable`).
 ///
-/// A recorded gate whose scope is gone — its turn died after the scope went
-/// with the run that held it, as between a round's fast and slow gate — is
-/// still stopped: its gate by its identity, what it started by its recorded
-/// descendants, their parents and its mark. Refusing it would hold its lane
-/// for good, with no turn left to free it (sunfmin/control#1247).
+/// A recorded gate whose scope is gone — a round's fast gate, whose scope
+/// goes before its slow gate takes one of its own, its turn dead between the
+/// two — is still stopped, never taken for free: its gate by its identity
+/// where it still runs, what it started by its recorded descendants, their
+/// parents and its mark (sunfmin/control#1246). Refusing it, gone or still
+/// running, would hold its lane for good, with no turn left to free it
+/// (sunfmin/control#1247).
 fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Signalled> {
     let scope = crate::process_scope::path(&candidate.worktree);
     let has_scope = scope.exists();
