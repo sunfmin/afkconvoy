@@ -1635,7 +1635,17 @@ fn decide(
     let model_fault = diagnosis.scope == Scope::Model
         && observed.model.is_some()
         && observed.command_key.is_some();
-    let mut excluded = if same_command && !model_fault { vec![observed.harness] } else { vec![] };
+    // A quota its account met, where another account of its harness takes
+    // a worker now, continues on that harness: the account rests, not the
+    // harness (docs/adr/0087).
+    let on_another_account = account_rests
+        && crate::engine_accounts::of(observed.harness, fleet.now)
+            .is_some_and(|accounts| accounts.chosen().is_some());
+    let mut excluded = if same_command && !model_fault && !on_another_account {
+        vec![observed.harness]
+    } else {
+        vec![]
+    };
     store(book)?;
     fleet.invalidate_selection();
     if refusal && let Some(issue) = issue {

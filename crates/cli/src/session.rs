@@ -171,10 +171,18 @@ fn user_home() -> Option<PathBuf> {
     std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from)
 }
 
-/// The names of the directories the fleet keeps for `harness`: the fleet's
-/// own and the host user's.
-fn kept_names(harness: Harness) -> [String; 2] {
-    [harness.key().to_string(), format!("{}-host-user", harness.key())]
+/// The directories the fleet keeps for `harness` directly under `base`: the
+/// fleet's own, the host user's, and each of an account's login
+/// (`kept::is_kept_name`).
+fn kept_dirs(base: &Path, harness: Harness) -> Result<Vec<PathBuf>> {
+    let Some(entries) = transcripts::listing(base)? else { return Ok(Vec::new()) };
+    let kept = |(dir, is_dir): &&(PathBuf, bool)| {
+        let name = dir.file_name().and_then(|name| name.to_str());
+        *is_dir && name.is_some_and(|name| crate::kept::is_kept_name(harness, name))
+    };
+    let mut dirs: Vec<PathBuf> = entries.iter().filter(kept).map(|(dir, _)| dir.clone()).collect();
+    dirs.sort();
+    Ok(dirs)
 }
 
 /// Directories the fleet keeps for `harness`, including a role's own home.
@@ -183,13 +191,8 @@ fn kept_roots(harness: Harness) -> Result<Vec<PathBuf>> {
     let Ok(cache) = crate::copies::cache() else {
         return Ok(Vec::new());
     };
-    let base = cache.join("harness");
     let mut roots = Vec::new();
-    for name in kept_names(harness) {
-        let dir = base.join(name);
-        if !dir.is_dir() {
-            continue;
-        }
+    for dir in kept_dirs(&cache.join("harness"), harness)? {
         roots.push(dir.clone());
         let Some(entries) = list_dir(&dir)? else { continue };
         for entry in entries {
@@ -885,6 +888,36 @@ mod tests {
         }
     }
 
+    /// A worker on an account's refreshing login is started in a directory
+    /// kept for that account, `<harness>[-host-user]@<account>`, and its
+    /// harness records its turn there: it is read as the worker's
+    /// (sunfmin/control#1231). Grok and Kimi Code keep it under the fleet's
+    /// cache; Codex under the worktree's own fresh directory, which its
+    /// launch notes, and which its windows and limits are read in after.
+    #[test]
+    fn a_turn_in_the_home_kept_for_an_account_is_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("work");
+        std::fs::create_dir(&cwd).unwrap();
+        let root = crate::codex_launch::fresh_root(Harness::Codex, &cwd).unwrap();
+        let codex = root.join("harness/codex-host-user@work");
+        std::fs::create_dir_all(&codex).unwrap();
+        assert!(worker_homes(&cwd, Harness::Codex).unwrap().contains(&codex));
+
+        for harness in [Harness::Grok, Harness::Kimi] {
+            let dir = tempfile::tempdir().unwrap();
+            let cwd = dir.path().join("work");
+            std::fs::create_dir(&cwd).unwrap();
+            let name = format!("{}-host-user@work", harness.key());
+            let home = crate::copies::cache().unwrap().join("harness").join(&name).join("role-1");
+            std::fs::create_dir_all(&home).unwrap();
+            let read = || read_turn(&cwd, harness, Some(AT - 2), Some(AT - 2)).unwrap();
+            assert_eq!(read(), None, "{}: no turn recorded is no start", harness.key());
+            write_session(&home, harness, &cwd_str(&cwd), true, AT).unwrap();
+            assert_eq!(read(), Some(Turn::Open { since: AT }), "{}", harness.key());
+        }
+    }
+
     #[test]
     fn every_harness_round_trips_an_open_and_a_closed_turn() {
         let dir = tempfile::tempdir().unwrap();
@@ -1185,12 +1218,7 @@ fn worker_homes(cwd: &Path, harness: Harness) -> Result<Vec<PathBuf>> {
         && let Some(entries) = list_dir(&cwd.join(crate::worker_tmp::TMP_DIR))?
     {
         for entry in entries {
-            for name in kept_names(harness) {
-                let home = entry.join("harness").join(name);
-                if home.is_dir() {
-                    homes.push(home);
-                }
-            }
+            homes.extend(kept_dirs(&entry.join("harness"), harness)?);
         }
     }
     homes.sort();

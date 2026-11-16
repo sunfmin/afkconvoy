@@ -33,15 +33,6 @@ const LISTED_FOR: Duration = Duration::from_secs(60);
 /// still be read, in seconds.
 const RECORDS_FRESH: u64 = 3600;
 
-/// Whether a worker of `harness` is started on one of its accounts: Claude
-/// Code's, whose token alone decides the account its session is on. A
-/// refreshing login's harness — Codex, Grok, Kimi Code — starts in the
-/// fleet's own kept home, which links the host user's login, not an
-/// account's: its workers start there as before (docs/adr/0087).
-pub(crate) fn handed(harness: Harness) -> bool {
-    harness == Harness::ClaudeCode
-}
-
 /// What mytokens holds of the accounts, and the mytokens that said it.
 pub(crate) struct Listed {
     pub accounts: Vec<Account>,
@@ -185,6 +176,29 @@ pub(crate) fn account_of(worktree: &Worktree) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// The refreshing login the worker in `worktree` starts on, where its note
+/// names an account whose login is a file (Codex, Grok, Kimi Code): its name
+/// and its home, `~/.agent-accounts/<name>` under `user_home`. Its worker's
+/// kept home links that home's login in place of the host user's
+/// (`kept::for_worker`, docs/adr/0088). `None`: it started on no account,
+/// or on a token, which no file holds.
+pub(crate) fn login_of(worktree: &Worktree, user_home: &Path) -> Option<Login> {
+    let name = account_of(worktree)?;
+    let listed = listed();
+    let account = listed.as_ref().as_ref().ok()?.accounts.iter().find(|a| a.name == name)?;
+    matches!(account.credential, Credential::Login { .. })
+        .then(|| Login { home: account.home(user_home), name })
+}
+
+/// An account's refreshing login, as a worker's kept home links it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Login {
+    pub name: String,
+    /// Its home, `~/.agent-accounts/<name>`: the harness's user
+    /// configuration, where its login file is.
+    pub home: PathBuf,
+}
+
 /// Keeps in the book what the workers in `worktrees`, each on its harness,
 /// last recorded of their accounts by `now`: their windows, and a limit of
 /// their account's use they met.
@@ -316,11 +330,8 @@ impl Accounts {
 
 /// The accounts of `harness` as admission reads them `now`; `None`: a
 /// worker of it starts on no account — it holds none in mytokens, mytokens
-/// cannot be read, or its accounts are not handed to a session (`handed`).
+/// cannot be read.
 pub(crate) fn of(harness: Harness, now: u64) -> Option<Accounts> {
-    if !handed(harness) {
-        return None;
-    }
     let listed = listed();
     let listed = listed.as_ref().as_ref().ok()?;
     if !listed.accounts.iter().any(|account| account.harness == harness) {
@@ -373,7 +384,8 @@ impl Chosen {
                 .fixed(" && ")
                 .launch(command)
                 .done(),
-            // Not handed (`handed`): `of` gives none of these.
+            // Its worker's kept home links its account's login, not the
+            // host user's (`login_of`): the command is started as it is.
             Credential::Login { .. } => command.to_string(),
         }
     }
@@ -449,12 +461,20 @@ pub(crate) fn findings(now: u64) -> Vec<crate::doctor::Finding> {
                 json!(["accounts-spent", harness]),
                 format!("no {harness} account takes a new worker: its workers wait"),
                 none_said(&accounts),
-                format!(
-                    "mytokens put {}<name> --set \"{}={harness}\" --fields \"{}\"",
-                    account::PREFIX,
-                    account::HARNESS,
-                    account::CLAUDE_TOKEN
-                ),
+                match accounts.harness {
+                    Harness::ClaudeCode => format!(
+                        "mytokens put {}<name> --set \"{}={harness}\" --fields \"{}\"",
+                        account::PREFIX,
+                        account::HARNESS,
+                        account::CLAUDE_TOKEN
+                    ),
+                    _ => format!(
+                        "mytokens put {}<name> --set \"{}={harness}\" --set \"{}=$(hostname -s)\"",
+                        account::PREFIX,
+                        account::HARNESS,
+                        account::MACHINE
+                    ),
+                },
             )
         })
         .collect()
@@ -484,14 +504,7 @@ pub(crate) fn json(now: u64) -> Value {
     harnesses.dedup();
     for harness in Harness::ALL.into_iter().filter(|h| harnesses.contains(h)) {
         for standing in standings_of(listed, &book, harness, &here, &home, &running) {
-            let why = match handed(harness) {
-                true => standing.refused(limit, now).map(|why| why.said(now)),
-                false => Some(format!(
-                    "a {} worker starts on the host user's own login, in the fleet's kept home: \
-                     an account's login is not given to it yet",
-                    harness.key()
-                )),
-            };
+            let why = standing.refused(limit, now).map(|why| why.said(now));
             let windows: Vec<Value> = standing
                 .current(now)
                 .into_iter()
@@ -594,6 +607,48 @@ mod tests {
              CLAUDE_CODE_OAUTH_TOKEN)\" && export CLAUDE_CODE_OAUTH_TOKEN && claude"
         );
         assert!(!line.contains("sk-idle"), "the line holds where the token is, never it");
+    }
+
+    /// A Codex account whose `primary` or `secondary` window is at 90% takes
+    /// no new worker: the next starts on its other account, whose login is
+    /// on this machine (sunfmin/control#1231).
+    #[test]
+    fn a_codex_account_at_ninety_percent_of_either_window_sends_the_next_to_the_other() {
+        let held = Held(vec![
+            ("agent-account-first", json!({"HARNESS": "codex", "MACHINE": "studio"})),
+            ("agent-account-second", json!({"HARNESS": "codex", "MACHINE": "studio"})),
+        ]);
+        let read = read(&held).unwrap();
+        let listed = Listed {
+            accounts: read.accounts,
+            refused: read.refused,
+            program: PathBuf::from("/bin/mytokens"),
+        };
+        let home = tempfile::tempdir().unwrap();
+        for name in ["first", "second"] {
+            let login = home.path().join(account::HOMES).join(name).join("auth.json");
+            std::fs::create_dir_all(login.parent().unwrap()).unwrap();
+            std::fs::write(login, "{}").unwrap();
+        }
+        let window = |name: &str, used| Window { name: name.into(), used, resets_at: NOW + 3600 };
+        for (busy, other) in [("first", "second"), ("second", "first")] {
+            for full in ["primary", "secondary"] {
+                let mut book = Book::default();
+                let low = if full == "primary" { "secondary" } else { "primary" };
+                observe(&mut book, busy, NOW - 60, vec![window(full, 90), window(low, 5)]);
+                observe(&mut book, other, NOW - 60, vec![window("primary", 60)]);
+                let standings = standings_of(
+                    &listed,
+                    &book,
+                    Harness::Codex,
+                    "studio",
+                    home.path(),
+                    &BTreeMap::new(),
+                );
+                let accounts = Accounts { harness: Harness::Codex, standings, limit: 90, now: NOW };
+                assert_eq!(accounts.chosen().map(|c| c.name.as_str()), Some(other), "{full}");
+            }
+        }
     }
 
     #[test]
