@@ -45,6 +45,7 @@ mod codex_launch;
 pub mod concurrency;
 pub mod config;
 pub mod copies;
+pub mod cpu;
 pub mod cut;
 pub mod daybook;
 mod delivery;

@@ -10,8 +10,8 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use afkconvoy_core::admission::{
-    Cap, Disk, Hold, LANDING_WINDOW, Landing, Own, QUEUE_BOUND, Reading, SHARES, Shares, Window,
-    cap_holds, cap_limits, holds, landing_hold, queue_hold, thresholds, window_holds,
+    CPU_BUSY, Cap, Disk, Hold, LANDING_WINDOW, Landing, Own, QUEUE_BOUND, Reading, SHARES, Shares,
+    Window, cap_holds, cap_limits, holds, landing_hold, queue_hold, thresholds, window_holds,
 };
 use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::harness::Harness;
@@ -39,6 +39,7 @@ pub struct Readings {
     load: Option<u64>,
     total_load: Option<u64>,
     queue_load: Option<u64>,
+    cpu_busy: Option<u64>,
     memory_free: Option<u64>,
     memory: Option<u64>,
     /// How long the exclusive queue takes to drain, in seconds; `None`: it
@@ -91,6 +92,7 @@ impl Readings {
             load: total_load.map(|load| load.saturating_sub(queue_load.unwrap_or(0))),
             total_load,
             queue_load,
+            cpu_busy: crate::cpu::busy(),
             memory_free: memory_free().ok(),
             memory: crate::hot::memory(),
             queue_drain,
@@ -113,6 +115,7 @@ impl Readings {
         Reading {
             cores: self.cores,
             load: self.load,
+            cpu_busy: self.cpu_busy,
             memory_free: self.memory_free,
             disk,
             reserve: self.reserve,
@@ -274,12 +277,16 @@ impl Admission {
     /// `hold` as a tick's line and `plan` say it.
     pub fn said(&self, hold: &Hold) -> String {
         match hold {
-            Hold::Load { load, limit } => format!(
-                "the load {} is past {}, {}% of its {} cores",
+            Hold::Load { load, limit, busy } => format!(
+                "the load {} is past {}, {}% of its {} cores, {}",
                 hundredths(*load),
                 hundredths(*limit),
                 self.shares.load,
-                self.reading.cores
+                self.reading.cores,
+                match busy {
+                    Some(busy) => format!("and its cores are {busy}% busy, past {CPU_BUSY}%"),
+                    None => "and how busy its cores are could not be read".to_string(),
+                }
             ),
             Hold::Memory { free, floor } => {
                 format!("{free}% of its memory is free, under {floor}%")
@@ -334,6 +341,9 @@ impl Admission {
         if let Some(load) = reading.load {
             said.push(format!("a load of {} on {} cores", hundredths(load), reading.cores));
         }
+        if let Some(busy) = reading.cpu_busy {
+            said.push(format!("its cores {busy}% busy"));
+        }
         if let Some(free) = reading.memory_free {
             said.push(format!("{free}% of its memory free"));
         }
@@ -364,6 +374,7 @@ impl Admission {
             },
             "thresholds": {
                 "load": limits.load as f64 / 100.0,
+                "cpu_busy_percent": CPU_BUSY,
                 "memory_free_percent": limits.memory_free,
                 "disk_free_bytes": limits.disk_free,
             },
@@ -373,6 +384,7 @@ impl Admission {
                 "total_load": self.total_load.map(|load| load as f64 / 100.0),
                 "queue_load": self.queue_load.map(|load| load as f64 / 100.0),
                 "other_load": reading.load.map(|load| load as f64 / 100.0),
+                "cpu_busy_percent": reading.cpu_busy,
                 "memory_free_percent": reading.memory_free,
                 "disk_free_bytes": reading.disk.map(|disk| disk.free),
                 "disk_size_bytes": reading.disk.map(|disk| disk.size),
@@ -668,6 +680,7 @@ mod tests {
             reading: Reading {
                 cores: 14,
                 load: Some(10543),
+                cpu_busy: None,
                 memory_free: Some(4),
                 disk: None,
                 reserve: None,
@@ -687,7 +700,8 @@ mod tests {
         assert_eq!(
             said,
             [
-                "the load 105.43 is past 28.00, 200% of its 14 cores",
+                "the load 105.43 is past 28.00, 200% of its 14 cores, and how busy its cores are \
+                 could not be read",
                 "4% of its memory is free, under 10%"
             ]
         );
@@ -701,6 +715,7 @@ mod tests {
         let reading = Reading {
             cores: 14,
             load: Some(5000),
+            cpu_busy: None,
             memory_free: Some(4),
             disk: None,
             reserve: None,
@@ -731,6 +746,7 @@ mod readings_tests {
         let reading = Reading {
             cores: 14,
             load: Some(100),
+            cpu_busy: None,
             memory_free: Some(60),
             disk: None,
             reserve: None,

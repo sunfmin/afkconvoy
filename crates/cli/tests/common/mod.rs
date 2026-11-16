@@ -493,6 +493,9 @@ impl World {
             ("CONVOY_FAKE_GH".to_string(), shown(&self.gh_file)),
             ("CONVOY_FAKE_ORCA".to_string(), shown(&self.orca_file)),
             ("AFKCONVOY_TMP_LINKS".to_string(), shown(&self.tmp_links.path().join("links"))),
+            // How busy the host's cores are, as `cores_busy` says it: none
+            // said, and admission's load is judged alone.
+            ("AFKCONVOY_FAKE_CPU_BUSY".to_string(), shown(&self.root.join("host-cpu-busy"))),
         ];
         env.extend(GIT_ENV.iter().map(|(name, value)| (name.to_string(), value.to_string())));
         // No checkout above the world is one of its: a test's directory
@@ -2150,6 +2153,12 @@ impl World {
     /// Has the stand-in host's 1-minute load be `load`, as `sysctl` says it.
     pub fn busy(&self, load: &str) {
         std::fs::write(self.root.join("host-load"), load).unwrap();
+    }
+
+    /// The stand-in host's cores are `percent` busy, as admission reads
+    /// them; unsaid, how busy they are is not read.
+    pub fn cores_busy(&self, percent: u64) {
+        std::fs::write(self.root.join("host-cpu-busy"), percent.to_string()).unwrap();
     }
 
     /// What the named host command stand-in was asked, one call a line.
