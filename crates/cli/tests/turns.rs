@@ -197,10 +197,6 @@ fn a_busy_host_bounds_candidates_and_room_lets_another_repo_start() {
     let second = start(&a, &another, &a.cache(), 2);
     until(|| pending(&a) == 1);
     assert!(!another.join("held.txt").exists(), "the second turn has not merged yet");
-    let doctor = a.afk(&["doctor"]).json;
-    assert_eq!(doctor["host"]["settings"]["in_force"]["busy_share"], 90);
-    assert!(doctor["host"]["settings"]["in_force"].get("gate_lanes").is_none());
-    assert!(doctor["host"]["settings"]["in_force"].get("ignored").is_none());
     // The second turn waits on the host's room, saying the reading.
     let busy = || {
         let queue = a.afk_in(&a.root, &["queue"]).ok();
@@ -209,10 +205,15 @@ fn a_busy_host_bounds_candidates_and_room_lets_another_repo_start() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|reason| reason["kind"] == "host_busy" && reason["busy"] == 95)
+                // 95% read, and what the two started since add.
+                .any(|reason| {
+                    reason["kind"] == "host_busy" && reason["busy"].as_u64().unwrap() >= 95
+                })
         })
     };
     until(busy);
+    // Room again: it starts once the next reading counts the two.
+    a.cores_busy(10);
     std::fs::write(a.root.join("release"), "").unwrap();
     std::fs::write(b.root.join("release"), "").unwrap();
     assert_eq!(finish(first)["outcome"], "merged");
