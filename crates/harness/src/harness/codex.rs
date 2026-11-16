@@ -78,6 +78,9 @@ pub(super) const KEY: &str = "codex";
 pub(super) const PROGRAM: &str = "codex";
 /// The line that installs it.
 pub(super) const INSTALL: &str = "brew install --cask codex";
+/// The line that logs it in with a device code, opened on any other device:
+/// what logs in an account's home on its machine (`codex login --help` of codex-cli 0.168.0, 2026-11-16).
+pub(super) const DEVICE_LOGIN: Option<&str> = Some("codex login --device-auth");
 /// What asks whether Codex holds a login a worker can use: the file a worker
 /// is given a link to, and that Codex takes what it holds for a login. A
 /// login Codex keeps in a keyring is in no file, and is no worker's: its

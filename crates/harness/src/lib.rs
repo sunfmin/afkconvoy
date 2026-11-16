@@ -3,7 +3,8 @@
 //! each starts, where it reads its rules and skills, how a hook reaches it,
 //! where it keeps its session, what its usage lines count, what it says of
 //! its account's usage windows and the limits it meets, and which of its
-//! screen words mean a quota or a refusal. Nothing in its API is a fleet's —
+//! screen words mean a quota or a refusal — and the engine accounts a session
+//! may start on, read from mytokens (docs/adr/0086). Nothing in its API is a fleet's —
 //! no team, role, stage, issue, claim or patrol: whoever starts a session
 //! says what it is started with (`Start`).
 
@@ -13,6 +14,7 @@
 extern crate flux_alloc;
 extern crate flux_core;
 
+pub mod account;
 pub mod brief;
 mod harness;
 pub mod line;

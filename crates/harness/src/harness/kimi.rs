@@ -27,6 +27,9 @@ pub(super) const PROGRAM: &str = "kimi";
 pub(super) const INSTALL: &str = "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash";
 /// A session of it outside a role gets a home of its own.
 pub(super) const OWN_HOME_OUTSIDE_ROLE: bool = true;
+/// The line that logs it in with a device code, opened on any other device:
+/// what logs in an account's home on its machine (kimi.com/code/docs, Kimi Code CLI getting started: its Kimi Code login is a device-code flow, 2026-11-16).
+pub(super) const DEVICE_LOGIN: Option<&str> = Some("kimi login");
 /// How it is asked whether it is logged in, and logged in.
 pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
     question: "kimi provider list --json",
