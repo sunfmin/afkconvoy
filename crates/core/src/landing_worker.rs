@@ -132,6 +132,43 @@ pub fn changing_tree(state: Option<WorkerState>, answered: &Answered) -> bool {
         && !answered.waits()
 }
 
+/// How many red turns of one PR in a row, with no green or conflicting turn
+/// between them, hand it to a new worker in a new worktree (docs/adr/0088).
+pub const RED_TURNS_IN_A_ROW: usize = 2;
+
+/// How one turn's ending, `outcome`, changes a PR's red turns in a row
+/// (`RED_TURNS_IN_A_ROW`). `green` is whether its gate passed: a `gate_red`
+/// whose run was green and only not on record judged the change green.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InARow {
+    /// It is one more red turn.
+    Red,
+    /// It landed, its gate passed, or it conflicted and left the worker a
+    /// merge to make: the row starts over.
+    Broken,
+    /// It is no judgement on the change — a wait, a turn that failed, a
+    /// round another PR fixes: the row is as it was.
+    Kept,
+}
+
+impl InARow {
+    pub fn of(outcome: &str, green: bool) -> InARow {
+        use crate::ending::Ending;
+        match outcome {
+            red if red == Ending::GateRed.word() && !green => InARow::Red,
+            red if red == Ending::GateRed.word() => InARow::Broken,
+            judged
+                if [Ending::Merged, Ending::Conflict, Ending::SpeculativeConflict]
+                    .iter()
+                    .any(|e| e.word() == judged) =>
+            {
+                InARow::Broken
+            }
+            _ => InARow::Kept,
+        }
+    }
+}
+
 /// The proof that a PR's join never had its restart, used up by the one
 /// restart it allows. Only `join_route` makes one.
 #[derive(Debug, PartialEq, Eq)]
@@ -403,6 +440,20 @@ mod tests {
         assert_eq!(read.restarted, None, "a switch is no restart");
         // what the fleet did not write is no switch
         assert_eq!(read_join(["<!--convoy:landing switched=soon/a/b/c,1/a//c-->"]).switched, []);
+    }
+
+    #[test]
+    fn only_a_red_gate_counts_and_only_a_green_or_conflicting_turn_starts_the_row_over() {
+        use crate::ending::Ending;
+        assert_eq!(InARow::of("gate_red", false), InARow::Red);
+        assert_eq!(InARow::of("gate_red", true), InARow::Broken, "green, only not on record");
+        for broken in [Ending::Merged, Ending::Conflict, Ending::SpeculativeConflict] {
+            assert_eq!(InARow::of(broken.word(), false), InARow::Broken, "{}", broken.word());
+        }
+        for kept in Ending::ALL.iter().filter(|e| e.waits()) {
+            assert_eq!(InARow::of(kept.word(), false), InARow::Kept, "{}", kept.word());
+        }
+        assert_eq!(InARow::of("error", false), InARow::Kept);
     }
 
     #[test]

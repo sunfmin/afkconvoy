@@ -284,7 +284,7 @@ pub fn dispatch(
     number: u64,
     from: StartFrom,
 ) -> Result<Dispatched> {
-    dispatch_continuing(fleet, found, me, agent, number, from, None)
+    dispatch_continuing(fleet, found, me, agent, number, from, None, None)
 }
 
 /// What a dispatch came to: how its start ended, which its callers act on,
@@ -337,7 +337,11 @@ impl Dispatched {
 
 /// `dispatch`, whose brief also says what of the work of the worker before
 /// it is there, where `continuing` says that worker was ended mid-way
-/// (`switch`).
+/// (`switch`), or what a fresh look is handed, where `fresh` says the
+/// worker before was ended after its PR's landing turns went red twice in a
+/// row (`fresh_look`): its new worktree's branch is merged up to the base
+/// tip first.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_continuing(
     fleet: &mut Fleet,
     found: &mut Found,
@@ -346,10 +350,11 @@ pub(crate) fn dispatch_continuing(
     number: u64,
     from: StartFrom,
     continuing: Option<&Continuing>,
+    fresh: Option<&crate::fresh_look::Handed>,
 ) -> Result<Dispatched> {
     let previous = starting(fleet, number)?;
     let ready = previous.as_ref().and_then(|previous| previous.ready.as_deref());
-    let started = start(fleet, me, agent, number, from, continuing, ready);
+    let started = start(fleet, me, agent, number, (from, continuing, fresh), ready);
     let Some(how) = started.as_ref().err().and_then(gone).cloned() else {
         return match started {
             Ok(started) => {
@@ -535,8 +540,7 @@ fn start(
     me: &Me,
     agent: &Agent,
     number: u64,
-    from: StartFrom,
-    continuing: Option<&Continuing>,
+    (from, continuing, fresh): (StartFrom, Option<&Continuing>, Option<&crate::fresh_look::Handed>),
     ready: Option<&str>,
 ) -> Result<Dispatched> {
     let issue = fleet.gh.issue(number)?;
@@ -589,12 +593,14 @@ fn start(
     let mut brief_pending = false;
     let mut discarded = None;
     let mut worker_untold = None;
+    let mut conflicts: Vec<String> = vec![];
     let undecided = || anyhow!("a dispatch step ran before the one that feeds it");
     let interrupted = "dispatch ended before the worker took its brief";
     if held {
         pin_target(fleet, number, &target)?;
         if !by_hand
             && continuing.is_none()
+            && fresh.is_none()
             && let Some(ready) = ready
         {
             keep_ready(fleet, number, ready)?;
@@ -653,6 +659,11 @@ fn start(
                     }
                     Tier::Fresh => cut_at(fleet, &issue, number, &target)?,
                 });
+                if fresh.is_some() {
+                    let cut = Repo::new(worktree.as_ref().ok_or_else(undecided)?.path.clone());
+                    let tip = fleet.task_tip(number)?;
+                    conflicts = crate::turn::merge_in(&cut, &tip, "the base tip")?;
+                }
             }
             DispatchStep::RecordBranch => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
@@ -672,6 +683,12 @@ fn start(
                     let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
                     continue_brief(fleet, cut, Some(number), pr, continuing)?;
                 }
+                if let Some(fresh) = fresh {
+                    let file = brief.as_ref().ok_or_else(undecided)?;
+                    let mut text = std::fs::read_to_string(file)?;
+                    text.push_str(&fresh.brief(&target, &conflicts));
+                    cut.write_brief(&text)?;
+                }
                 if let Some(handoff) = crate::turn_answer::pending(cut)? {
                     let file = brief.as_ref().ok_or_else(undecided)?;
                     let mut text = std::fs::read_to_string(file)?;
@@ -683,6 +700,7 @@ fn start(
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
                 if !by_hand
                     && continuing.is_none()
+                    && fresh.is_none()
                     && let Some(ready) = ready
                     && cut.live(ready)?
                 {

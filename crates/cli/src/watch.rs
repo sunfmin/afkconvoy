@@ -4,8 +4,8 @@
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::ending::Ending;
 use afkconvoy_core::landing_worker::{
-    Answered, LandingRecord, LandingRoute, RestartStep, Unrestarted, join_comment, join_route,
-    read_join, stalled_reason,
+    Answered, LandingRecord, LandingRoute, RED_TURNS_IN_A_ROW, RestartStep, Unrestarted,
+    join_comment, join_route, read_join, stalled_reason,
 };
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
@@ -89,6 +89,9 @@ pub(crate) struct Turn {
     answered: Answered,
     /// An answer needing tree changes, still to hand to the worker.
     handoff: Option<crate::turn_answer::Handoff>,
+    /// The PR's red turns in a row, where they are enough to hand it to a
+    /// new worker in a new worktree (`fresh_look`); empty otherwise.
+    reds: Vec<crate::turn_answer::RedTurn>,
 }
 
 /// The last turn of my landing claim on `issue`, where it answered what the
@@ -105,7 +108,13 @@ pub(crate) fn turn(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Turn>> {
     };
     let answered = crate::turn_answer::read(&worktree)?;
     if answered == Answered::Asking {
-        return Ok(Some(Turn { worktree, answered, handoff: None }));
+        return Ok(Some(Turn { worktree, answered, handoff: None, reds: vec![] }));
+    }
+    // Red twice in a row: not handed back to the same worker in the same
+    // worktree, whatever that worker is doing (docs/adr/0088).
+    let reds = crate::turn_answer::reds(&worktree)?;
+    if reds.len() >= RED_TURNS_IN_A_ROW {
+        return Ok(Some(Turn { worktree, answered, handoff: None, reds }));
     }
     let handoff = crate::turn_answer::pending(&worktree)?;
     if handoff.is_none()
@@ -114,7 +123,7 @@ pub(crate) fn turn(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Turn>> {
     {
         return Ok(None);
     }
-    Ok(Some(Turn { worktree, answered, handoff }))
+    Ok(Some(Turn { worktree, answered, handoff, reds: vec![] }))
 }
 
 /// Handles `turn`, the last turn of my landing claim on `issue`, before
@@ -134,9 +143,16 @@ pub(crate) fn answer_turn(
     start: bool,
     dependencies: &[crate::gh::BlockedBy],
 ) -> Result<Outcome> {
-    let Turn { worktree, answered, handoff } = turn;
+    let Turn { worktree, answered, handoff, reds } = turn;
     if answered == Answered::Asking {
         return Ok(Outcome::Nothing);
+    }
+    if !reds.is_empty() {
+        if !start {
+            return Ok(Outcome::Nothing);
+        }
+        crate::fresh_look::hand_on(fleet, found, (me, agent), issue, worktree, reds)?;
+        return Ok(Outcome::Continued);
     }
     if let Some(handoff) = handoff {
         if !start {
