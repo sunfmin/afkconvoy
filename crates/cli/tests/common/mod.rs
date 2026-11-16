@@ -212,6 +212,9 @@ pub struct World {
     /// The milliseconds one second of afkconvoy's production bounds takes in
     /// this world (`waits`), 0 while they are whole: `scale_waits`.
     second_ms: std::sync::atomic::AtomicU64,
+    /// The seconds a note typed at a worker may wait for its harness to take
+    /// it in this world: 0, a test checks once, unless `note_wait` says more.
+    note_wait: std::sync::atomic::AtomicU64,
 }
 
 /// One answer of the CLI: the JSON object it printed, and its exit code.
@@ -276,6 +279,7 @@ impl World {
             repository_templates: std::sync::atomic::AtomicBool::new(false),
             termination_clock: std::sync::atomic::AtomicBool::new(false),
             second_ms: std::sync::atomic::AtomicU64::new(0),
+            note_wait: std::sync::atomic::AtomicU64::new(0),
             tmp_links: tempfile::tempdir_in("/tmp").unwrap(),
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
@@ -310,6 +314,17 @@ impl World {
             .collect();
         let profile = "export AFKCONVOY_TEST_LOGIN=1\necho 'a line an rc file printed'\n";
         write(&self.home(), ".profile", &format!("{exported}{profile}"));
+    }
+
+    /// A note typed at a worker may wait `seconds` for its harness to take
+    /// it, as in production, in every command of this world from now on.
+    pub fn note_wait(&self, seconds: u64) {
+        self.note_wait.store(seconds, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The bytes free on the stand-in `df`'s disk of 1000 GiB from now on.
+    pub fn disk_free(&self, bytes: u64) {
+        std::fs::write(self.root.join("disk-available"), (bytes / 1024).to_string()).unwrap();
     }
 
     /// Has one second of every production bound afkconvoy waits out — a
@@ -500,7 +515,8 @@ impl World {
         // already written it when send returns, so a test checks once.
         env.push(("AFKCONVOY_TURN_WAIT_SECONDS".to_string(), "0".to_string()));
         // The same for a note typed at a worker (`afkconvoy tell`).
-        env.push(("AFKCONVOY_NOTE_WAIT_SECONDS".to_string(), "0".to_string()));
+        let note_wait = self.note_wait.load(std::sync::atomic::Ordering::Relaxed);
+        env.push(("AFKCONVOY_NOTE_WAIT_SECONDS".to_string(), note_wait.to_string()));
         // A cut's gate red only on TIMEOUTs it cannot classify under
         // overload runs again at once.
         env.push(("AFKCONVOY_CUT_GATE_RETRY_SECONDS".to_string(), "0".to_string()));
@@ -2114,11 +2130,12 @@ esac
 "#;
 
 /// The stand-in `df`, for admission: a disk of 1000 GiB, half of it free —
-/// never the disk of whoever runs the tests.
+/// never the disk of whoever runs the tests — or what `disk_free` says.
 const DF: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../df.log"
+free=$(cat "${0%/*}/../disk-available" 2>/dev/null || echo 524288000)
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
-echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
+echo "/dev/stand-in 1048576000 $((1048576000 - free)) $free 50% /"
 "#;
 
 /// The stand-in `ps`: the real one, but where asked for the uids of the
