@@ -2066,6 +2066,9 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             invalidate(repo, config, &id, "pr_base_changed")?;
             return Err(error);
         }
+        // What it carried closes with it, though its worker rewrote its
+        // description since (sunfmin/control#1248).
+        afkconvoy_landing::forge::described(&forge, &current)?;
         let mut snapshot = read(repo, config, Read::Known)?;
         let members: Vec<Candidate> = snapshot.chain.members(&id).into_iter().cloned().collect();
         let Some(c) = members.last() else {
