@@ -460,7 +460,7 @@ fn a_real_claimed_worker_receives_a_later_comment_in_its_session() {
         if afkconvoy::session::holds_note(&checkout, harness, started, &comment.url).unwrap() {
             break;
         }
-        assert!(began.elapsed() < Duration::from_secs(90), "{steps:?}");
+        assert!(began.elapsed() < afkconvoy_patience::PATIENCE, "{steps:?}");
         std::thread::sleep(Duration::from_millis(250));
     }
     let entry_at = afkconvoy::session::note_at(&checkout, harness, started, &comment.url)

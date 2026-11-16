@@ -129,7 +129,7 @@ fn doctor_reads_label_and_blocker_times_and_remote_beats_without_a_checkout() {
 }
 
 fn until(world: &World, check: impl Fn() -> Option<Value>) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let deadline = afkconvoy_patience::deadline();
     loop {
         if let Some(found) = check() {
             return found;

@@ -2184,7 +2184,7 @@ mod tests {
             let mut state = read().unwrap();
             state.running = Some(round.clone());
             watcher.save(&mut state).unwrap();
-            let until = Instant::now() + Duration::from_secs(90);
+            let until = afkconvoy_patience::deadline();
             loop {
                 match resume_delivery(round) {
                     Ok(()) => break,
@@ -2200,7 +2200,7 @@ mod tests {
             watcher.save(&mut state).unwrap();
         };
         let wait_report = |round: &Watch| {
-            let deadline = Instant::now() + Duration::from_secs(180);
+            let deadline = afkconvoy_patience::deadline();
             loop {
                 watcher.check().unwrap();
                 if read()
@@ -2231,7 +2231,7 @@ mod tests {
         let pid = executor(&first);
         let first_runtime =
             worktree.terminal_health(&first.terminal, first.harness, crate::clock()).unwrap().1;
-        let deadline = Instant::now() + Duration::from_secs(90);
+        let deadline = afkconvoy_patience::deadline();
         while !worktree.watch_input_ready(&first.terminal).unwrap() {
             assert!(Instant::now() < deadline, "first round did not return to input");
             std::thread::sleep(Duration::from_millis(500));
@@ -2257,7 +2257,7 @@ mod tests {
             crate::watch_report::read(&second.id).unwrap().unwrap().did,
             ["smoke round 2 only"]
         );
-        let deadline = Instant::now() + Duration::from_secs(90);
+        let deadline = afkconvoy_patience::deadline();
         while !worktree.watch_input_ready(&second.terminal).unwrap() {
             assert!(Instant::now() < deadline, "second round did not return to input");
             std::thread::sleep(Duration::from_millis(500));
@@ -2305,7 +2305,7 @@ mod tests {
         );
         let mut terminal = Command::new("sh").args(["-c", &line]).spawn().unwrap();
         let mut operator = Command::new("sleep").arg("30").current_dir(dir.path()).spawn().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = afkconvoy_patience::deadline();
         while !ready.exists() {
             assert!(Instant::now() < deadline, "harness never started");
             std::thread::sleep(Duration::from_millis(10));

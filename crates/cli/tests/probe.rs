@@ -619,7 +619,7 @@ fn a_fleet_instance_breaks_when_a_gate_need_stops_passing() {
         if checkouts["checkouts"][0]["state"] == "broken" {
             break;
         }
-        assert!(start.elapsed() < std::time::Duration::from_secs(60), "instance did not break");
+        assert!(start.elapsed() < afkconvoy_patience::PATIENCE, "instance did not break");
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let doctor = world.afk(&["doctor", "--host", "h1"]).json.to_string();
@@ -756,12 +756,14 @@ fn a_failed_install_is_no_longer_listed_once_its_check_passes() {
 fn an_install_past_its_limit_is_stopped_and_named() {
     let world = World::new();
     declare_install(&world, "sh install.sh", 1);
-    std::fs::write(world.clone.join("install.sh"), "sleep 3\ntouch late\n").unwrap();
-    let began = std::time::Instant::now();
+    // It runs until released, which only an install left running sees: a
+    // plan that waited for it would never answer.
+    let install = "while [ ! -e release ]; do sleep 0.05; done\ntouch late\n";
+    std::fs::write(world.clone.join("install.sh"), install).unwrap();
     let error = plan(&world).error();
-    assert!(began.elapsed() < std::time::Duration::from_secs(3), "{:?}", began.elapsed());
     assert!(error.contains("toolchain") && error.contains("(timed out after 1s)"), "{error}");
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::fs::write(world.clone.join("release"), "").unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(1));
     assert!(!world.clone.join("late").exists(), "the install was left running");
 }
 

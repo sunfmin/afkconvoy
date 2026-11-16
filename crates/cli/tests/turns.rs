@@ -11,15 +11,8 @@ fn quote(path: &Path) -> String {
     afkconvoy_core::line::Line::new().word(&path.to_string_lossy()).own()
 }
 
-fn until(mut done: impl FnMut() -> bool) {
-    let began = Instant::now();
-    while !done() {
-        assert!(
-            began.elapsed() < Duration::from_secs(15),
-            "the expected transition did not happen"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+fn until(done: impl FnMut() -> bool) {
+    afkconvoy_patience::until_true("the expected transition", done)
 }
 
 fn start(world: &World, dir: &Path, cache: &Path, issue: u64) -> Child {
@@ -155,7 +148,7 @@ fn a_lock_issue_from_an_older_fleet_lands_its_fix_on_a_red_tip() {
     let mut child = start(&world, &fix, &world.cache(), 7);
     let began = Instant::now();
     while child.try_wait().unwrap().is_none() {
-        if began.elapsed() > Duration::from_secs(60) {
+        if began.elapsed() > afkconvoy_patience::PATIENCE {
             child.kill().unwrap();
             panic!("the lock issue's turn waited for a green tip its own fix makes green");
         }

@@ -173,13 +173,18 @@ fn run(world: &World, dir: &Path) -> Value {
 }
 
 fn until<T>(world: &World, what: &str, mut got: impl FnMut() -> Option<T>) -> T {
-    let until = Instant::now() + Duration::from_secs(60);
+    let until = afkconvoy_patience::deadline();
     loop {
         if let Some(found) = got() {
             return found;
         }
         let log = world.runner_log().join("\n");
-        assert!(Instant::now() < until, "no {what} within 60s: {}\n{log}", state(world));
+        assert!(
+            Instant::now() < until,
+            "no {what} within {:?}: {}\n{log}",
+            afkconvoy_patience::PATIENCE,
+            state(world)
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -1338,7 +1343,7 @@ fn a_watch_closed_without_reporting_does_not_consume_the_unresolved_episode() {
     until(&world, "the unreported watch to end", || ended(&world, "closed"));
     // Observe a completed look after that failure, rather than guessing how
     // long the host needs to notice it. The fault has not changed or cleared.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = afkconvoy_patience::deadline();
     let after = loop {
         let after = state(&world);
         if after["until"].as_u64().unwrap_or(0) > first_look && after["running"].is_object() {

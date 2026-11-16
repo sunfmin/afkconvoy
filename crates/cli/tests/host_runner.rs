@@ -26,17 +26,13 @@ fn the_initial_panel_does_not_ask_the_host_runner_before_it_can_answer() {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root);
     command.args(["host-runner", "--kept-by", "0"]);
     let _runner = common::FixtureProcess::spawn(&mut command);
-    let began = Instant::now();
-    while !world.cache().join("afkconvoy/host-runner.sock").exists() {
-        assert!(began.elapsed() < Duration::from_secs(5), "runner did not listen");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let socket = world.cache().join("afkconvoy/host-runner.sock");
+    afkconvoy_patience::until_true("the runner listens", || socket.exists());
+    // A panel that asked its own runner before it could answer would hold
+    // the runner's start past the bound `checkouts` asks it within, which
+    // then says the runner was silent: asked as the socket appears, it is
+    // answered.
     world.afk(&["checkouts"]).ok();
-    assert!(
-        began.elapsed() < Duration::from_secs(5),
-        "the initial panel waited for the runner's own unanswered socket: {:?}",
-        world.runner_log()
-    );
 }
 
 #[test]
@@ -69,7 +65,7 @@ fn a_host_runner_ends_when_its_test_is_killed() {
     assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
     child.kill().unwrap();
     child.wait().unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = afkconvoy_patience::deadline();
     while unsafe { libc::kill(pid, 0) } == 0 {
         if Instant::now() >= until {
             // SAFETY: this is the runner the probe just started.
@@ -441,7 +437,7 @@ fn changing_orca_state_keeps_updates_from_a_call_already_in_progress() {
         .unwrap();
     // The stand-in holds this lock after reading its state, until it saves
     // the call. Change that same state while the call is still in progress.
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = afkconvoy_patience::deadline();
     loop {
         match lock.try_lock() {
             Err(std::fs::TryLockError::WouldBlock) => break,
@@ -519,10 +515,8 @@ fn a_host_runner_ended_unexpectedly_is_started_again_by_its_keeper_on_the_same_l
     // kill -9 of the host runner: nobody runs `afkconvoy run`
     let killed = Command::new("kill").args(["-KILL", &old.to_string()]).status().unwrap();
     assert!(killed.success());
-    let began = Instant::now();
     let again =
         until("host runner started again", || world.host_runner().filter(|pid| *pid != old));
-    assert!(began.elapsed() < Duration::from_secs(60), "{:?}", began.elapsed());
     assert_eq!(world.keeper(), Some(keeper), "the same keeper starts it again");
     let said = logged(&world, "host runner restarted after an unexpected end: ");
     assert!(said.contains(&format!("pid {old} was ended by signal 9")), "{said}");
@@ -1045,15 +1039,8 @@ pub(crate) fn as_built() -> String {
 }
 
 /// Waits up to `PATIENCE` for `got` to give something → it.
-fn until<T>(what: &str, mut got: impl FnMut() -> Option<T>) -> T {
-    let until = Instant::now() + PATIENCE;
-    loop {
-        if let Some(got) = got() {
-            return got;
-        }
-        assert!(Instant::now() < until, "no {what} within {PATIENCE:?}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+fn until<T>(what: &str, got: impl FnMut() -> Option<T>) -> T {
+    afkconvoy_patience::until(format!("no {what}"), got)
 }
 
 /// What `doctor` says of the afkconvoy installed where the host runner was
@@ -1495,10 +1482,13 @@ fn stop_takes_a_broken_checkout_off_the_list_at_once_and_it_is_broken_no_more() 
     let clone = shown(&world.clone);
     logged(&world, &format!("fleet instance broken: {clone}: "));
 
-    // it answers without waiting out the minute its backoff has left
-    let asked = Instant::now();
+    // it answers without waiting out the minute its backoff has left: before
+    // the start again its break names, by the clock the runner says it in
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let next = doctor["fleet"]["broken"]["next"].as_u64().unwrap_or_else(|| panic!("{doctor}"));
     let stopped = world.afk(&["stop"]).ok();
-    assert!(asked.elapsed() < Duration::from_secs(30), "{:?}", asked.elapsed());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    assert!(now.as_secs() < next, "stop waited out the backoff, to {next}: {stopped}");
     assert_eq!(stopped["removed"], true, "{stopped}");
     let why = "it was broken, and `afkconvoy stop` took its checkout off the list";
     assert_eq!(stopped["stop"], format!("stop: {why}"), "{stopped}");

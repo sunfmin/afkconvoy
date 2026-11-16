@@ -11,12 +11,8 @@ fn quote(path: &Path) -> String {
     afkconvoy_core::line::Line::new().word(&path.to_string_lossy()).own()
 }
 
-fn until(mut done: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !done() {
-        assert!(start.elapsed() < Duration::from_secs(30), "candidate transition never happened");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+fn until(done: impl FnMut() -> bool) {
+    afkconvoy_patience::until_true("the candidate transition", done);
 }
 
 /// A world whose gates, and what they started, end with a failing test: a
@@ -1147,7 +1143,7 @@ done
     move_head(&a);
     let began = Instant::now();
     while aa.try_wait().unwrap().is_none() {
-        if began.elapsed() > Duration::from_secs(60) {
+        if began.elapsed() > afkconvoy_patience::PATIENCE {
             let _ = aa.kill();
             let _ = aa.wait();
             panic!("a turn whose cancellation cannot be recorded never ended");

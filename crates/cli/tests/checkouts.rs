@@ -311,7 +311,7 @@ fn one_doctor_all_reads_each_shared_source_once_and_each_remote_once_per_checkou
 fn a_fleet_instance_held_in_the_foreground_says_it_holds_its_checkout_alone() {
     let world = World::new();
     let running = world.running(&["--instance", "alpha", "--host", "h1"]);
-    let first = running.line(std::time::Duration::from_secs(20)).expect("the first tick");
+    let first = running.line(afkconvoy_patience::PATIENCE).expect("the first tick");
     assert!(first.starts_with("tick 1: "), "{first}");
 
     let answer = world.afk_in(&world.root, &["checkouts"]).ok();

@@ -8,7 +8,6 @@ use crate::common;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
 
 use common::{Answer, World, git, write};
 use serde_json::{Value, json};
@@ -286,22 +285,31 @@ fn a_verdict_wakes_the_fleet() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let lines = BufReader::new(running.stdout.take().unwrap()).lines();
-    let mut lines = lines.filter(|line| !line.as_ref().is_ok_and(|line| common::bookkeeping(line)));
-    let first = lines.next().unwrap().unwrap();
+    // Every line but why each tick started, which `opened` keeps.
+    let opened = std::cell::RefCell::new(Vec::new());
+    let lines = BufReader::new(running.stdout.take().unwrap()).lines().map(Result::unwrap);
+    let mut lines = lines.filter(|line| {
+        if line.contains(": started (") {
+            opened.borrow_mut().push(line.clone());
+        }
+        !common::bookkeeping(line)
+    });
+    let first = lines.next().unwrap();
     assert!(
         first.starts_with("tick 1: dispatched #7") && first.ends_with("next in 90s"),
         "{first}"
     );
 
-    let started = Instant::now();
     assert_eq!(declare(&world, "build", "pass", &["--text", "built"]).ok()["woke"], true);
     // the tick it opens advances #7, which wakes the fleet once more
-    let second = lines.next().unwrap().unwrap();
+    let second = lines.next().unwrap();
     assert_eq!(second, "woken during tick 2: tick 3 follows");
-    let second = lines.next().unwrap().unwrap();
+    let second = lines.next().unwrap();
     assert!(second.starts_with("tick 2: "), "{second}");
-    assert!(started.elapsed() < Duration::from_secs(20), "the sleep was not waited out");
+    // the sleep was not waited out: a wake, not the timer, opened tick 2
+    drop(lines);
+    let opened = opened.into_inner();
+    assert!(opened.iter().any(|line| line.starts_with("tick 2: started (woken")), "{opened:?}");
     running.wait().unwrap();
     // …and the tick it opened read the record: the label followed.
     assert_eq!(stage_labels(&world, 7), ["stage:review"]);

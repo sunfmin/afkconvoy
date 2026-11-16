@@ -443,7 +443,7 @@ mod tests {
         let terminal = worktree.start_watch(&launch_line(&watch, &command), TITLE).unwrap();
         // Deliberately discard the create receipt. Only the startup
         // acknowledgement is allowed to associate this candidate.
-        let until = Instant::now() + Duration::from_secs(15);
+        let until = afkconvoy_patience::deadline();
         while !handshake(&watch).exists() {
             assert!(Instant::now() < until, "no terminal handshake");
             std::thread::sleep(Duration::from_millis(100));

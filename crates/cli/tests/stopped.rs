@@ -752,7 +752,7 @@ fn queued(world: &World, asked: u64) -> Queued {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let command = common::FixtureProcess::spawn(&mut command);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let until = afkconvoy_patience::deadline();
     while !ran.exists() {
         assert!(std::time::Instant::now() < until, "the queued command never ran");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -866,7 +866,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
             matches!(probe.observer.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
             "a running fixture must retain its inherited lease"
         );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let until = afkconvoy_patience::deadline();
         while !rendezvous.path().join("ready").exists() {
             assert!(
                 probe.child.as_mut().unwrap().try_wait().unwrap().is_none(),

@@ -160,6 +160,30 @@ test_threads() {
     *) echo "--test-threads $((NEXTEST_TEST_THREADS * 2))" ;;
     esac
 }
+# Runs the tests nextest's filter `$2` picks under its profile `$1`, with the
+# deep TMPDIR, into "$test_log/output" → tests_status, which also fails on a
+# process the tests left behind.
+nextest_run() {
+    # Keep nextest's output live and retain its own exit status through tee.
+    # shellcheck disable=SC2086
+    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet $threads --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
+        echo 0 >"$test_log/status"
+    else
+        echo "$?" >"$test_log/status"
+    fi) 2>&1 | tee "$test_log/output"
+    tests_status=$(cat "$test_log/status")
+    left_behind || [ "$tests_status" -ne 0 ] || tests_status=1
+}
+# The tests nextest's output `$1` names TIMEOUT, as `<binary> <name>` lines.
+timed_out() {
+    awk '/TIMEOUT[[:space:]]*\[/ { sub(/^.*TIMEOUT[[:space:]]*\[[^]]*\][[:space:]]*/, ""); if (NF >= 2) print $1, $2 }' "$1" | sort -u
+}
+# Whether every test nextest's output `$1` names as failing is a TIMEOUT:
+# none FAIL, none ended by a signal, none ABORT or LEAK-FAIL.
+only_timeouts() {
+    grep -q 'TIMEOUT[[:space:]]*\[' "$1" &&
+        ! grep -Eq '(^|[[:space:]])(FAIL|SIG[A-Z]+|ABORT|LEAK-FAIL)[[:space:]]*\[' "$1"
+}
 # Runs the tests nextest's filter `$2` picks under its profile `$1`, with
 # the deep TMPDIR. Without nextest no test is told from another, and only the
 # whole gate runs its tests, all of them, with cargo test.
@@ -176,15 +200,30 @@ run_tests() {
     threads=$(test_threads)
     [ -z "$threads" ] ||
         echo "gate: the $1 tests run ${threads#--test-threads } at a time, two to each of the $NEXTEST_TEST_THREADS cores this gate was given" >&2
-    # Keep nextest's output live and retain its own exit status through tee.
-    # shellcheck disable=SC2086
-    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet $threads --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
-        echo 0 >"$test_log/status"
-    else
-        echo "$?" >"$test_log/status"
-    fi) 2>&1 | tee "$test_log/output"
-    tests_status=$(cat "$test_log/status")
-    left_behind || [ "$tests_status" -ne 0 ] || tests_status=1
+    nextest_run "$1" "$2"
+    # A fast gate red only on TIMEOUTs on a loaded host says nothing of the
+    # tests: their 6 seconds are the line between the gates, not a hang, and
+    # a host loaded from outside the fleet — another user's simulators on
+    # Studio64, at a load of 100 to 280 on 16 cores — is rarely quiet, so a
+    # cut's gate could never pass (sunfmin/control#1183). The fast tests run
+    # again under the `fast-loaded` profile, whose limit for one test is the
+    # slow gate's, which only a hang reaches: green there, the gate is green,
+    # and each TIMEOUT is flagged as unclassified, as a SLOW test on a loaded
+    # host is. Red there, it is red, as any gate is.
+    if [ "$tests_status" -ne 0 ] && [ "$1" = fast ] && only_timeouts "$test_log/output"; then
+        cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+        load=$(host_load)
+        if ! quiet_host "$load" "$cpus"; then
+            timed_out=$(timed_out "$test_log/output")
+            echo "gate: the fast tests ran red only on TIMEOUTs, on a loaded host (load ${load:-unknown}, CPUs ${cpus:-unknown}): they run again under the limit for one test, which only a hang reaches" >&2
+            nextest_run fast-loaded "$2"
+            if [ "$tests_status" -eq 0 ]; then
+                printf '%s\n' "$timed_out" | while read -r binary name; do
+                    echo "gate: flagged: $binary $name timed out in the fast gate and passed under the limit for one test, unclassified on a loaded host" >&2
+                done
+            fi
+        fi
+    fi
     if [ "$tests_status" -ne 0 ]; then
         if [ "$1" = fast ]; then
             check_fast_timeouts "$test_log/output" || true

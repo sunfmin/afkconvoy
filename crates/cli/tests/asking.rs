@@ -57,12 +57,17 @@ fn run(world: &World, dir: &Path) -> FixtureProcess {
 }
 
 fn until<T>(world: &World, what: &str, mut got: impl FnMut() -> Option<T>) -> T {
-    let until = Instant::now() + Duration::from_secs(60);
+    let until = afkconvoy_patience::deadline();
     loop {
         if let Some(found) = got() {
             return found;
         }
-        assert!(Instant::now() < until, "no {what} within 60s: {}", asking_state(world));
+        assert!(
+            Instant::now() < until,
+            "no {what} within {:?}: {}",
+            afkconvoy_patience::PATIENCE,
+            asking_state(world)
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 }

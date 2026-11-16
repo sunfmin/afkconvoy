@@ -247,7 +247,7 @@ fn a_real_kimi_worker_loads_its_role_and_refuses_what_the_role_and_guard_refuse(
 
     let started = Instant::now();
     while asked.lock().unwrap().len() <= RUNS.len()
-        && started.elapsed() < Duration::from_secs(90)
+        && started.elapsed() < afkconvoy_patience::PATIENCE
         && session.try_wait().unwrap().is_none()
     {
         std::thread::sleep(Duration::from_millis(200));

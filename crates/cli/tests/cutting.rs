@@ -250,7 +250,7 @@ fn a_cut_keeps_its_claim_checkout_and_terminal_when_the_host_runner_moves() {
     let terminals = world.orca()["terminals"].clone();
     upgraded(&link, "999.0.0", &as_built());
     logged(&world, "host runner moved: ");
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = afkconvoy_patience::deadline();
     while !world
         .runner_log()
         .iter()
@@ -691,7 +691,7 @@ fn a_turn_lands_while_a_cut_s_gate_hangs() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let until = Instant::now() + Duration::from_secs(60);
+    let until = afkconvoy_patience::deadline();
     while !started.exists() {
         assert!(child.try_wait().unwrap().is_none(), "the cut ended before its gate");
         assert!(Instant::now() < until, "the cut's gate never started");
@@ -709,7 +709,7 @@ fn a_turn_lands_while_a_cut_s_gate_hangs() {
         .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .unwrap();
-    let until = Instant::now() + Duration::from_secs(60);
+    let until = afkconvoy_patience::deadline();
     while landing.try_wait().unwrap().is_none() {
         if Instant::now() >= until {
             let _ = landing.kill();
@@ -1008,7 +1008,7 @@ fn a_cut_shows_its_plan_and_each_step_around_the_commands_output() {
         .unwrap();
     // Publish cannot end until this test has seen its output: progress
     // buffered until the cut exits would fail this handshake.
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = afkconvoy_patience::deadline();
     let during = loop {
         let screen = std::fs::read_to_string(&screen_file).unwrap();
         if screen.contains("publish stderr\n")
