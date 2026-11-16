@@ -4,7 +4,10 @@
 //! it escalated an issue or ended a cut still says so; the tick takes it
 //! whichever way the step ended. Nothing in it lives past its tick.
 
+use std::path::PathBuf;
+
 use afkconvoy_core::cut::Held;
+use afkconvoy_core::left::Kept;
 
 use crate::gh::Gone;
 use crate::log::What;
@@ -31,6 +34,10 @@ pub struct Found {
     /// what the tick says in place of its rebuild's look, so no tick both
     /// names a failed need and starts the cut (`cut::start`).
     pub cut_needs: Option<Option<Held>>,
+    /// The worktrees a settle kept, each with its issue and why: what the
+    /// settle's step in the tick log says, so the reason outlives the
+    /// worktree (sunfmin/control#1204).
+    pub kept: Vec<(u64, PathBuf, Kept)>,
 }
 
 impl Found {
@@ -42,6 +49,7 @@ impl Found {
         self.after_locks.extend(later.after_locks);
         self.blocked.extend(later.blocked);
         self.cut_said.extend(later.cut_said);
+        self.kept.extend(later.kept);
         if later.cut_needs.is_some() {
             self.cut_needs = later.cut_needs;
         }

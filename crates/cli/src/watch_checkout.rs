@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::git::Repo;
 use crate::host_watch::CHECKOUT;
-use crate::orca::{Source, Worktree};
+use crate::orca::{Source, Unremoved, Worktree};
 
 /// How long a watch's checkout that has not moved stays, where no watch
 /// round runs and no process works in it, before a tick removes it: one a
@@ -150,24 +150,22 @@ pub(crate) fn left(repo: &Repo, base: &str, now: u64) -> Result<Vec<Left>> {
 /// Removes each watch's checkout of `repo` a watch left (`left`), where no
 /// process works in it and nothing would be lost with it. One that holds
 /// something stays, for doctor to name.
-pub(crate) fn remove_left(repo: &Repo, base: &str, now: u64) -> Result<()> {
+pub(crate) fn remove_left(repo: &Repo, base: &str, now: u64) -> Result<Vec<Unremoved>> {
     let left = left(repo, base, now)?;
     if left.iter().all(|left| left.keeps.is_some()) {
-        return Ok(());
+        return Ok(vec![]);
     }
     let main = Repo::new(repo.main_checkout()?);
     let busy = crate::hot::working_directories()?;
+    let mut unremoved = vec![];
     for left in left.into_iter().filter(|left| left.keeps.is_none()) {
         if crate::hot::occupies(&busy, &left.path) {
             continue;
         }
         let checkout = Worktree::at(left.path, left.branch);
         if let Err(error) = remove(&main, &checkout) {
-            eprintln!(
-                "warning: the watch's checkout {} will be removed on a later tick: {error:#}",
-                checkout.path.display()
-            );
+            unremoved.push(Unremoved { path: checkout.path, issue: None, error });
         }
     }
-    Ok(())
+    Ok(unremoved)
 }

@@ -761,7 +761,7 @@ fn remote_ref(repo: &Repo, name: &str) -> bool {
 /// does not, stays. Only this checkout's rows. Asking orca to remove the
 /// worktree again is not how a leftover goes: orca refuses a directory git
 /// no longer lists. A candidate worktree is not one of these rows.
-pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
+pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<Vec<Unremoved>> {
     let source = Source::of(repo)?;
     let listed = worktree_list()?;
     let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
@@ -770,6 +770,7 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
     let mut busy = None;
     let mut finished = false;
     let mut retired = false;
+    let mut unremoved = vec![];
     for row in &rows {
         if row["repoId"].as_str() != Some(source.id.as_str())
             || row["isMainWorktree"] == true
@@ -797,11 +798,12 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
         }
         let _ = worker_tmp::retire(&path);
         retired = true;
-        if discarded(&path).is_err() || path.exists() {
-            eprintln!(
-                "warning: {} is still there and will be removed on a later tick",
-                path.display()
-            );
+        let gone = match discarded(&path) {
+            Ok(()) if path.exists() => Err(anyhow!("{} is still there", path.display())),
+            done => done,
+        };
+        if let Err(error) = gone {
+            unremoved.push(Unremoved { path, issue: None, error });
             continue;
         }
         finished = true;
@@ -812,7 +814,18 @@ pub(crate) fn finish_failed_removals(repo: &Repo, base: &str) -> Result<()> {
     if finished {
         worktree_list_again()?;
     }
-    Ok(())
+    Ok(unremoved)
+}
+
+/// A worktree a tick's cleanup looked at and could not remove, or could not
+/// read to say whether it goes (sunfmin/control#1204): the tick log records
+/// each, and the cleanup goes on to the others. A later tick tries it again.
+#[derive(Debug)]
+pub(crate) struct Unremoved {
+    pub path: PathBuf,
+    /// The issue it was the worktree of, where the cleanup knows it.
+    pub issue: Option<u64>,
+    pub error: anyhow::Error,
 }
 
 /// Removes the directory at `path`: moved into the trash beside it for a

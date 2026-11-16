@@ -642,6 +642,38 @@ pub struct Unclaimed {
     pub kept: Option<Kept>,
     /// The other host's holder; absent when the issue holds no claim.
     pub taken: Option<Owner>,
+    /// Why a settle kept it, as the settle recorded it, where one did.
+    pub settled: Option<Settled>,
+}
+
+/// Why a settle kept a worktree, as it recorded it (`settle::KeptAtSettle`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settled {
+    /// `dirty`, `unpushed` or `unread`.
+    pub kept_because: String,
+    pub unpushed: Option<u64>,
+    /// When a settle first kept it.
+    pub since: u64,
+}
+
+impl Settled {
+    /// The settle's reason as the finding says it beside doctor's own
+    /// reading, `holds` (sunfmin/control#1204): where they disagree — the
+    /// settle kept it, doctor reads nothing held — that is named.
+    fn said(&self, holds: Option<&Kept>) -> String {
+        let unpushed = match self.unpushed {
+            Some(count) => format!(", {count} unpushed"),
+            None => String::new(),
+        };
+        let at = log::utc(self.since);
+        let kept = format!("a settle kept it at {at} UTC as {}{unpushed}", self.kept_because);
+        match holds {
+            Some(_) => kept,
+            None => format!(
+                "{kept}, and doctor now reads nothing held: the settle's reason no longer holds"
+            ),
+        }
+    }
 }
 
 /// Everything `doctor` read.
@@ -986,7 +1018,8 @@ fn fix_of(failed: &Failed, instance: &str) -> String {
 /// successful attempt clears one, as does progress on the same issue by a
 /// step that can continue or end its claim. An advance with nothing to do
 /// clears an earlier dispatch failure: the claim has a worker to advance.
-/// Boards and labels clear none.
+/// Boards and labels clear none. A cleanup every tick makes is cleared by
+/// the first tick that ran and did not fail it (`Failed::each_tick`).
 fn recovered(failed: &Failed, step: &Value) -> bool {
     if step["outcome"] == "failed" {
         return false;
@@ -1026,11 +1059,15 @@ fn log_findings(run: &Run) -> Vec<Finding> {
     let mut pending: Vec<(u64, Failed)> = vec![];
     for (_, tick) in ticks {
         let did = tick.answer.as_ref().and_then(|answer| answer["did"].as_array());
+        let failed_now = tick.failed();
         pending.retain(|(_, failed)| {
             !(failed.step == "tick" && tick.error.is_none()
+                || failed.each_tick()
+                    && tick.error.is_none()
+                    && !failed_now.iter().any(|now| now.same_step(failed))
                 || did.into_iter().flatten().any(|step| recovered(failed, step)))
         });
-        for failed in tick.failed() {
+        for failed in failed_now {
             pending.retain(|(_, previous)| !previous.same_step(&failed));
             pending.push((tick.count, failed));
         }
@@ -1387,6 +1424,8 @@ fn unclaimed_finding(unclaimed: &Unclaimed) -> Finding {
         );
     }
     let push = format!("git -C {path} push origin HEAD:{branch}");
+    let settled = unclaimed.settled.as_ref().map(|s| s.said(unclaimed.kept.as_ref()));
+    let settled = settled.map(|said| format!("; {said}")).unwrap_or_default();
     let (holds, fix) = match &unclaimed.kept {
         None => ("nothing the remote does not".to_string(), remove),
         Some(kept) => {
@@ -1404,7 +1443,7 @@ fn unclaimed_finding(unclaimed: &Unclaimed) -> Finding {
         Kind::KeptWorktree,
         json!(["kept", unclaimed.issue, unclaimed.path]),
         format!("the worktree of #{} is kept with no claim: it holds {holds}", unclaimed.issue),
-        format!("{path}, on the branch {branch}"),
+        format!("{path}, on the branch {branch}{settled}"),
         fix,
     )
 }
@@ -2084,10 +2123,18 @@ fn read_unclaimed(fleet: &Fleet) -> Vec<Unclaimed> {
             if taken.is_some() && left.kept().is_none() {
                 return None;
             }
+            let settled = crate::settle::KeptAtSettle::of_worktree(&worktree)
+                .filter(|note| note.issue == issue)
+                .map(|note| Settled {
+                    kept_because: note.kept_because,
+                    unpushed: note.unpushed,
+                    since: note.since,
+                });
             Some(Unclaimed {
                 issue,
                 kept: left.kept().copied(),
                 taken,
+                settled,
                 path: worktree.path,
                 branch: worktree.branch,
             })
@@ -3134,7 +3181,7 @@ With `--all --since <time>`, each checkout's `doctor.watching` adds what happene
 
 It exits non-zero where any finding is critical, the host's or a checkout's, or a checkout could not be asked — printing the same object. Errors: the checkout list cannot be read.
 
-The findings: a command the fleet needs is missing or logged out; orca cannot be asked, or does not know the checkout; the worker launch command of a harness the fleet could be asked for cannot start a worker — said with the harness and what calls for it; no `run` is alive and claims are held; the fleet instance of this checkout is broken — with why, since when and when the host runner starts it again; the same step failed in each of the last three ticks; the team has a fault at its head; a fleet lock stands on an issue that cannot be worked (all critical) — a step failed and has not recovered, including a worker that failed to start, with its error and the line to try again; a claim has no worker; a worker is silent with its claim still at work, as the tick judges it — its `fix` the command the tick runs next for it; the frontier is not empty, admission held nothing back and the last tick started nobody; a flow label names no workflow of the team; an issue has been at a stage longer than the repo's p95 for completed performances of that stage, or, with fewer than 20, longer than its own earlier record gaps of at least a minute; an issue is one rework from a breaker; a patrol is failed or full; an issue has waited for a human for more than an hour, its `fix` being the line that answers it; the gate is slow — with the host, the fixed duration budget when declared, the termination gate limit and the {const:SLOW_GATE_LANDINGS} runs, each a commit and its seconds, as `afkconvoy plan` has them, and the issue open for it when there is one; the host runner did not move onto the newer release installed where it was started from — it did not start, does not say its version, or waited past the release move limit — with the file, both releases and why, its `fix` that file's `--version` (all warning) — a concurrency is still named, which is ignored, as no number bounds a fleet's workers and admission alone decides each start: one this checkout keeps on the checkout list, as a `run --concurrency` said it, whose `fix` is `afkconvoy run <checkout> --concurrency default`, or one the repo's config names, whose `fix` is deleting the key; nothing is held up; the role or the team a stage in flight started under has moved since; and the repo's config declares no gate limit, so the gate has the default's {const:GATE_SECONDS} seconds before anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on this host is kept with no claim on its issue — said with what it holds that the remote does not (uncommitted changes, commits only it has, or nothing), its `fix` the line that removes it, pushing first whatever only it holds (all info). A checkout that names a harness no worker of this checkout starts on is said with the checkout, the harness and why — the role holds no limits for that harness, or the harness cannot start — and no other harness is started in its place.
+The findings: a command the fleet needs is missing or logged out; orca cannot be asked, or does not know the checkout; the worker launch command of a harness the fleet could be asked for cannot start a worker — said with the harness and what calls for it; no `run` is alive and claims are held; the fleet instance of this checkout is broken — with why, since when and when the host runner starts it again; the same step failed in each of the last three ticks; the team has a fault at its head; a fleet lock stands on an issue that cannot be worked (all critical) — a step failed and has not recovered, including a worker that failed to start, with its error and the line to try again; a claim has no worker; a worker is silent with its claim still at work, as the tick judges it — its `fix` the command the tick runs next for it; the frontier is not empty, admission held nothing back and the last tick started nobody; a flow label names no workflow of the team; an issue has been at a stage longer than the repo's p95 for completed performances of that stage, or, with fewer than 20, longer than its own earlier record gaps of at least a minute; an issue is one rework from a breaker; a patrol is failed or full; an issue has waited for a human for more than an hour, its `fix` being the line that answers it; the gate is slow — with the host, the fixed duration budget when declared, the termination gate limit and the {const:SLOW_GATE_LANDINGS} runs, each a commit and its seconds, as `afkconvoy plan` has them, and the issue open for it when there is one; the host runner did not move onto the newer release installed where it was started from — it did not start, does not say its version, or waited past the release move limit — with the file, both releases and why, its `fix` that file's `--version` (all warning) — a concurrency is still named, which is ignored, as no number bounds a fleet's workers and admission alone decides each start: one this checkout keeps on the checkout list, as a `run --concurrency` said it, whose `fix` is `afkconvoy run <checkout> --concurrency default`, or one the repo's config names, whose `fix` is deleting the key; nothing is held up; the role or the team a stage in flight started under has moved since; and the repo's config declares no gate limit, so the gate has the default's {const:GATE_SECONDS} seconds before anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on this host is kept with no claim on its issue — said with what it holds that the remote does not (uncommitted changes, commits only it has, or nothing), and, where a settle kept it, the settle's recorded reason in `evidence`, naming where doctor now reads nothing held; its `fix` the line that removes it, pushing first whatever only it holds (all info). A checkout that names a harness no worker of this checkout starts on is said with the checkout, the harness and why — the role holds no limits for that harness, or the harness cannot start — and no other harness is started in its place.
 
 Moved: the role's directory holds something else at the head of its repo than at the commit the stage started under — a file added, removed or changed. A new commit is not it: in a repo of several roles a push gives every role a new commit, and moves the ones whose directory it changed. The team has moved when its directory has, without what a worker is not given of it: the directories of its roles, and the .claude/ at its top. So a push that changes only a role moves no team, one that changes only the team's rules — the CLAUDE.md at its top, which every worker is given — moves the team, and one that changes a workflow moves no role. A role in a repo of its own moves with every push that changes a file there. The two are compared in the copies this host keeps (copies/ under the cache directory); where the one the stage started under is no longer there, a different commit is all there is to go by, and it is said to have moved. `evidence` gives both commits.
 

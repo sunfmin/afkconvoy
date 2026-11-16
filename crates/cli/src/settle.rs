@@ -4,7 +4,7 @@
 use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::landing::{LandedPr, closes_grep};
-use afkconvoy_core::left::Kept;
+use afkconvoy_core::left::{Kept, KeptBecause};
 use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::settle::{
     Follow, SettleStep, carried_steps, cut_landing, follow, landed_comment, settle_steps,
@@ -15,10 +15,11 @@ use anyhow::{Result, bail};
 use crate::board::last_word;
 use crate::claims::{Me, release};
 use crate::fleet::Fleet;
+use crate::found::Found;
 use crate::gh::Tracker;
 use crate::git::{REMOTE, Repo};
 use crate::landing::joins_in;
-use crate::orca::{Ended, Source, Worktree};
+use crate::orca::{Ended, Source, Unremoved, Worktree};
 use crate::recovery::own_heads;
 use crate::remote::{Fresh, Push};
 
@@ -101,10 +102,12 @@ fn follow_base(fleet: &Fleet) -> Result<()> {
 /// process still in it, makes the settle wait, so the claim stays and a
 /// later tick tries again. A commit the remote does not have stays, and the
 /// settle goes on: the claim is released, and the worktree is noted kept for
-/// a later tick to look at again (`remove_kept`). `carried_by` is the PR,
-/// on the branch `carrier`, that carries this issue's.
+/// a later tick to look at again (`remove_kept`), and why is in `found`.
+/// `carried_by` is the PR, on the branch `carrier`, that carries this
+/// issue's.
 fn remove_settled(
     fleet: &Fleet,
+    found: &mut Found,
     issue: u64,
     worktree: &Worktree,
     carried_by: Option<(u64, &str)>,
@@ -141,6 +144,10 @@ fn remove_settled(
         return wait();
     }
     if let Some(kept) = settled_keeps(fleet, issue, worktree, carried_by.map(|(_, b)| b))? {
+        // The step says why before the note is written: a note that cannot
+        // be still leaves the reason in the tick log.
+        let said = kept.unwrap_or(Kept { because: KeptBecause::Unread, unpushed: None });
+        found.kept.push((issue, worktree.path.clone(), said));
         if let Some(kept) = kept {
             let by = carried_by.map(|(by, _)| by);
             KeptAtSettle::of(issue, &kept, by, fleet.now).write(worktree)?;
@@ -256,43 +263,60 @@ pub(crate) fn kept_at_settle(repo: &Repo) -> Result<Vec<(Worktree, KeptAtSettle)
 /// its PR is open, or their change on the base branch once that PR, or the
 /// round that took it, has landed — and no process is in it. One whose issue
 /// is claimed again is that claim's: its note goes, and its end decides.
-pub(crate) fn remove_kept(fleet: &Fleet) -> Result<()> {
+/// One that cannot be read or removed is that worktree's alone
+/// (sunfmin/control#1204): each other is still looked at, and the answer
+/// names each that failed, with why.
+pub(crate) fn remove_kept(fleet: &Fleet) -> Result<Vec<Unremoved>> {
     let kept = kept_at_settle(&fleet.repo)?;
     if kept.is_empty() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let open = fleet.gh.open_prs()?;
     let busy = crate::hot::working_directories()?;
+    let mut unremoved = vec![];
     for (worktree, note) in kept {
-        if fleet.scan.claim_of(note.issue).is_some() {
-            KeptAtSettle::forget(&worktree)?;
-            continue;
-        }
-        if crate::hot::occupies(&busy, &worktree.path) {
+        if crate::hot::occupies(&busy, &worktree.path) && fleet.scan.claim_of(note.issue).is_none()
+        {
             continue;
         }
         let carrier = note
             .carried_by
             .and_then(|by| open.iter().find(|pr| pr.number == by))
             .map(|pr| pr.head_branch.as_str());
-        let leaving = crate::judge::leaving_settled(fleet, note.issue, &worktree, carrier)?;
-        if afkconvoy_core::left::settle_keeps(&leaving.left) {
-            if let Some(kept) = leaving.left.kept() {
-                KeptAtSettle::of(note.issue, kept, note.carried_by, fleet.now).write(&worktree)?;
-            }
-            continue;
+        if let Err(error) = look_again(fleet, &worktree, &note, carrier) {
+            unremoved.push(Unremoved { path: worktree.path, issue: Some(note.issue), error });
         }
-        crate::account::refresh_stopped(&fleet.repo, &fleet.gh, note.issue)?;
-        worktree.remove()?;
     }
-    Ok(())
+    Ok(unremoved)
+}
+
+/// Looks again at one worktree a settle kept, as `remove_kept` says,
+/// `carrier` the branch of the PR that carries its issue's while it is open.
+fn look_again(
+    fleet: &Fleet,
+    worktree: &Worktree,
+    note: &KeptAtSettle,
+    carrier: Option<&str>,
+) -> Result<()> {
+    if fleet.scan.claim_of(note.issue).is_some() {
+        return KeptAtSettle::forget(worktree);
+    }
+    let leaving = crate::judge::leaving_settled(fleet, note.issue, worktree, carrier)?;
+    if afkconvoy_core::left::settle_keeps(&leaving.left) {
+        if let Some(kept) = leaving.left.kept() {
+            KeptAtSettle::of(note.issue, kept, note.carried_by, fleet.now).write(worktree)?;
+        }
+        return Ok(());
+    }
+    crate::account::refresh_stopped(&fleet.repo, &fleet.gh, note.issue)?;
+    worktree.remove()
 }
 
 /// Settles my claim on `issue`, whose work is on the base branch: what only
 /// the tick can do for it — `land` runs inside the worktree and holds no
 /// instance id. The claim is deleted last, so a settling that failed on the
 /// way is the next tick's to finish.
-pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Option<u64>> {
+pub fn settle(fleet: &mut Fleet, found: &mut Found, me: &Me, issue: u64) -> Result<Option<u64>> {
     let closed = fleet.gh.issue(issue)?.is_closed();
     let base_tip = fleet.task_tip(issue)?;
     let landed = landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, issue)?.is_some();
@@ -355,7 +379,7 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Option<u64>> {
                 };
                 let carried_by = carrier.as_ref().map(|pr| (pr.number, pr.head_branch.as_str()));
                 if let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?
-                    && let Some(since) = remove_settled(fleet, issue, &worktree, carried_by)?
+                    && let Some(since) = remove_settled(fleet, found, issue, &worktree, carried_by)?
                 {
                     return Ok(Some(since));
                 }
