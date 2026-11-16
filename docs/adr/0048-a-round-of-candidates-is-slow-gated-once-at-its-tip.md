@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, the slow lanes' count of places replaced by ADR-0087
 ---
 
 # A round of candidates is slow-gated once at its tip

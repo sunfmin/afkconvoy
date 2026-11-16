@@ -5,7 +5,7 @@ Every term afkconvoy's help uses, each with its one definition and the words to 
 ### The fleet
 
 **Host**:
-One user account on one machine, and what the fleet keeps for it there: its host runner, its checkout list and host settings, its host kit, its exclusive lanes and its panel. A machine shared by several accounts holds a host of each, each working its own checkouts and seeing nothing of the others' but their processes: `doctor` names the host runners of the other accounts on its machine, read from the process table alone.
+One user account on one machine, and what the fleet keeps for it there: its host runner, its checkout list and host settings, its host kit, its exclusive queue and its panel. A machine shared by several accounts holds a host of each, each working its own checkouts and seeing nothing of the others' but their processes: `doctor` names the host runners of the other accounts on its machine, read from the process table alone.
 _Avoid_: machine (the hardware every host on it shares)
 
 **Fleet**:
@@ -49,7 +49,7 @@ A fleet instance whose loop panicked or ended in an error — its tracker found 
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — the limits past which a worker is hot, the shares admission holds back at, afkconvoy's own share of its cores and memory (`--max-share-of-cores`, `--max-share-of-memory`, none by default), the share of the login's hourly GitHub quota its **shared readings** stay under (`--github-share`, 60% by default), the bound on an exclusive command holding others up, the number of worker lanes and of fast lanes, the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments, and an optional shell command that sends the human decisions a watch reports once per condition episode (`--notify-command`, none by default; `default` removes it), and where the **agent setup** is declared (`--agent-instructions`, `--agent-skills`, `--agent-guards`, none by default) — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — the limits past which a worker is hot, the shares admission holds back at, afkconvoy's own share of its cores and memory (`--max-share-of-cores`, `--max-share-of-memory`, none by default), the share of the login's hourly GitHub quota its **shared readings** stay under (`--github-share`, 60% by default), the bound on an exclusive command holding others up, the busy share of its cores under which the exclusive queue starts a command (`--busy-share`, 90% by default), the panel's port, the operator's directory a watch starts in and how often the host runner looks, the command that supplies a TypeSafe key for Jev's worker-health judgments, and an optional shell command that sends the human decisions a watch reports once per condition episode (`--notify-command`, none by default; `default` removes it), and where the **agent setup** is declared (`--agent-instructions`, `--agent-skills`, `--agent-guards`, none by default) — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Shared reading**:
@@ -155,7 +155,7 @@ Whether a tick starts another worker, which it alone decides: no number bounds a
 _Avoid_: throttling, backpressure
 
 **Disk floor**:
-The bytes free under which the disk a host builds on holds new work back: what the builds that may run at once take, measured — the largest **fresh build** on record in the worktrees of the checkouts on the list, times the exclusive queue's lanes and the worktrees a worker was started in — never under the share the host settings say or its default, nor over a quarter of the disk; a host that says its own share (`--admit-disk`) holds to that alone. Under it, admission starts no worker and the exclusive queue grants no new heavy command, running ones keeping their lanes; before either holds, the host runner reclaims the `target/` of every worktree no one builds in — its worker ended, or nothing wrote it for six hours. A disk under its floor, or falling faster than 2 GiB a minute, is an **episode** that `doctor` reports with the worktrees that build (ADR-0082).
+The bytes free under which the disk a host builds on holds new work back: what the builds that may run at once take, measured — the largest **fresh build** on record in the worktrees of the checkouts on the list, times four builds of the exclusive queue's own worktrees and the worktrees a worker was started in — never under the share the host settings say or its default, nor over a quarter of the disk; a host that says its own share (`--admit-disk`) holds to that alone. Under it, admission starts no worker and the exclusive queue grants no new heavy command, running ones running on; before either holds, the host runner reclaims the `target/` of every worktree no one builds in — its worker ended, or nothing wrote it for six hours. A disk under its floor, or falling faster than 2 GiB a minute, is an **episode** that `doctor` reports with the worktrees that build (ADR-0082).
 _Avoid_: disk quota
 
 **Host user's skills and rules**:
@@ -348,7 +348,7 @@ The host's second resident interactive Agent and Terminal, beside the watch and 
 _Avoid_: watch round (the watch's independent bounded task), notification (a one-way sending with no place to answer)
 
 **Exclusive queue**:
-The host runner's FIFO queue for heavy commands across its fleets. Commands run in worker lanes, as many as the host settings allow; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own lane. A worker's fast gate takes the fast lane.
+The host runner's FIFO queue for heavy commands across its fleets. A queued command starts once the host has room for it, not for a place in a lane: its cores under a busy share — 90% by default, the share admission holds at, which the host settings can change (`--busy-share`) — by the kernel's CPU ticks over the last minute, or the load alone where those cannot be read, and its memory over admission's floor. Starts are made one reading at a time, each counted at once as the CPU its kind of command took in its recent runs until the reading includes it; while nothing of the queue runs, the oldest command that may start starts whatever the reading says (ADR-0087). One turn of a repo at a time and same-repo isolation still hold; independently owned candidate worktrees of one repo may validate together. A light gate takes a turn in its repo's own line, one at a time. Cuts go first among the waiting.
 _Avoid_: gate queue
 
 **Heavy command**:
@@ -474,7 +474,7 @@ The part of the gate a worker passes before it opens or updates its PR: the chec
 _Avoid_: smoke test, pre-check, quick gate
 
 **Fast lane**:
-The places of the exclusive queue that only a worker's fast gate takes, as many as the host settings say. No slow gate, turn or other command holds one, and fast gates of one repo run side by side in it, each in its own worktree.
+What the exclusive queue calls a worker's fast gate: it has no count of places, and starts, as every command of the queue does, once the host has room for it (ADR-0087). No slow gate, turn or other command of its repo holds it apart, and fast gates of one repo run side by side, each in its own worktree.
 _Avoid_: fast queue, priority lane
 
 **Slow gate**:
@@ -506,7 +506,7 @@ A landing of the repo within the last 45 minutes, while this fleet's green work 
 _Avoid_: landing timeout, train health
 
 **Round**:
-The PRs that asked to land — each one's worker fast-green — taken together when it starts, and landed together through a pairing tree (ADR-0083): its pairs are fast-gated alone, and its root, merged onto the target tip, is gated whole, fast and slow, once; green, every PR of it lands in one fast-forward and each issue closes. Its size is the PRs that are ready, not the host's worker lanes. A PR that asks during it waits for the next, or, while its whole gate runs, stacks on it as a stacked round. A red root is not split to find whose change failed: the round's last-asked PR's worker fixes it whole, from the round's issues and its failing tests, and the round's other PRs stop, their changes carried by that PR.
+The PRs that asked to land — each one's worker fast-green — taken together when it starts, and landed together through a pairing tree (ADR-0083): its pairs are fast-gated alone, and its root, merged onto the target tip, is gated whole, fast and slow, once; green, every PR of it lands in one fast-forward and each issue closes. Its size is the PRs that are ready, not the host's room. A PR that asks during it waits for the next, or, while its whole gate runs, stacks on it as a stacked round. A red root is not split to find whose change failed: the round's last-asked PR's worker fixes it whole, from the round's issues and its failing tests, and the round's other PRs stop, their changes carried by that PR.
 _Avoid_: batch round (gone with ADR-0068), bisection, merge train, rollup
 
 **Pairing tree**:
