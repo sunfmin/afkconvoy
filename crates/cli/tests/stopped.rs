@@ -1825,3 +1825,88 @@ fn no_health_observation_is_overdue_for_a_worker_whose_checkout_left_the_list() 
     std::fs::write(list, json!({"checkouts": []}).to_string()).unwrap();
     assert_eq!(overdue(&world), [] as [Value; 0], "off the list, no fleet ticks for it");
 }
+
+/// What was typed at each worker, by its terminal.
+fn typed_each(world: &World) -> Vec<Vec<String>> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    terminals
+        .iter()
+        .filter(|terminal| terminal["command"] == common::trusted("agent"))
+        .map(|terminal| {
+            let sent = terminal["sent"].as_array().cloned().unwrap_or_default();
+            sent.iter().filter_map(|line| line["text"].as_str().map(str::to_string)).collect()
+        })
+        .collect()
+}
+
+fn disk_floor_steps(ticked: &Value) -> Vec<&Value> {
+    ticked["did"].as_array().unwrap().iter().filter(|step| step["do"] == "disk_floor").collect()
+}
+
+/// sunfmin/control#1230: three workers at work under the disk floor, whose
+/// harness never gives its model the line, hold no tick: each is typed its
+/// line once and the tick goes on, observing their health; once the harness
+/// takes the lines, the next tick sees them told, and types nothing again.
+#[test]
+fn a_tick_types_the_disk_floor_line_and_never_waits_for_it_to_be_taken() {
+    let world = World::new();
+    world.set_gate_config("gate_command: ./gate.sh\ngate_seconds: 600\nescalate_to: human");
+    for issue in [7, 8, 9] {
+        world.issue(issue, &["ready-for-agent", "bug"]);
+    }
+    let dispatched = tick(&world, 1000);
+    assert_eq!(
+        did(&dispatched).iter().filter(|step| step.starts_with("dispatch")).count(),
+        3,
+        "{dispatched}"
+    );
+    report(&world, "working", 1000, 1080);
+    // The harness only queues each line: it never reaches the model.
+    world.with_orca(|orca| orca["notes"] = json!("queued"));
+    // As in production: a line not taken could hold its sender 60s.
+    world.note_wait(60);
+    world.disk_free(1 << 30);
+
+    let began = std::time::Instant::now();
+    let held = tick(&world, 1090);
+    let took = began.elapsed();
+    assert!(took < std::time::Duration::from_secs(30), "the tick took {took:?}: {held}");
+    let steps = disk_floor_steps(&held);
+    assert_eq!(steps.len(), 3, "{held}");
+    assert!(steps.iter().all(|step| step["outcome"] == "queued"), "{held}");
+    let lines = typed_each(&world);
+    assert!(lines.iter().all(|sent| sent.len() == 2), "the brief, then the line: {lines:?}");
+    assert!(lines.iter().all(|sent| sent[1].contains("Stop writing now")), "{lines:?}");
+    assert!(lines.iter().all(|sent| sent[1].contains("[disk floor: convoy-disk-floor-1090]")));
+    let health = health_record(&world);
+    let observed = health["workers"].as_array().unwrap();
+    assert_eq!(observed.len(), 3, "each worker's health is observed in the same tick: {health}");
+
+    // Still queued: looked at once, typed nothing again.
+    let again = tick(&world, 1120);
+    assert!(disk_floor_steps(&again).iter().all(|step| step["outcome"] == "queued"), "{again}");
+    assert!(typed_each(&world).iter().all(|sent| sent.len() == 2));
+    // Queued past the bound: not waited on, but typed again at the next tick.
+    let past = tick(&world, 1150);
+    assert!(disk_floor_steps(&past).iter().all(|step| step["outcome"] == "failed"), "{past}");
+    assert!(typed_each(&world).iter().all(|sent| sent.len() == 2));
+    world.with_orca(|orca| orca["notes"] = json!("taken"));
+    let told = tick(&world, 1160);
+    assert!(disk_floor_steps(&told).iter().all(|step| step["outcome"] == "done"), "{told}");
+    let lines = typed_each(&world);
+    assert!(lines.iter().all(|sent| sent.len() == 3 && sent[2] == sent[1]), "{lines:?}");
+    // Told once: below the floor still, nothing more is typed.
+    assert!(disk_floor_steps(&tick(&world, 1170)).is_empty());
+
+    // Over the floor again: each one told is told to go on, once.
+    world.disk_free(500 << 30);
+    let free = tick(&world, 1200);
+    let steps = disk_floor_steps(&free);
+    assert_eq!(steps.len(), 3, "{free}");
+    assert!(steps.iter().all(|step| step["outcome"] == "done"), "{free}");
+    let lines = typed_each(&world);
+    assert!(lines.iter().all(|sent| sent.len() == 4 && sent[3].contains("go on")), "{lines:?}");
+    assert!(disk_floor_steps(&tick(&world, 1260)).is_empty());
+    assert!(typed_each(&world).iter().all(|sent| sent.len() == 4));
+}
