@@ -1109,3 +1109,5 @@ afkconvoy::cli tools::an_orca_only_where_the_ssh_remote_runtime_puts_its_cli_is_
 afkconvoy::cli tick::a_carried_issue_s_worktree_stays_while_its_carrier_is_open_and_goes_once_it_lands
 afkconvoy::cli tick::a_carried_issue_s_worktree_whose_commits_its_carrier_holds_goes_at_settle
 afkconvoy::cli tick::a_settled_worktree_with_a_commit_no_remote_ref_holds_stays_on_every_later_tick
+# Still TIMEOUT at 2s alone on a quiet host (load 12.95, 18 CPUs), in the pair of #948 and #944: it runs the real scheduler for two repos.
+afkconvoy::cli queue::the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_room
