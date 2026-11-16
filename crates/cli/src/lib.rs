@@ -53,6 +53,7 @@ pub mod disk;
 mod disk_floor;
 pub mod dispatch;
 pub mod distill;
+pub mod engine_accounts;
 pub mod doctor;
 pub mod draft;
 pub mod evidence;
@@ -171,7 +172,7 @@ use fleet::Fleet;
 use git::Repo;
 use host_settings::{
     ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV, AGENT_GUARDS_ENV,
-    AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, EXCLUSIVE_SECONDS_ENV, GITHUB_SHARE_ENV,
+    AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, EXCLUSIVE_SECONDS_ENV, GITHUB_SHARE_ENV, ACCOUNT_LIMIT_ENV,
     HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV,
     MAX_SHARE_OF_CORES_ENV, MAX_SHARE_OF_MEMORY_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV,
     WATCH_EVERY_ENV, jev_key_command_or_default, notify_command_or_default, percent_or_default,
@@ -630,6 +631,13 @@ enum Command {
         /// host setting; `default` changes it back [default: 60%]
         #[arg(long, env = GITHUB_SHARE_ENV, value_name = "PERCENT", value_parser = percent_or_default)]
         github_share: Option<To<u64>>,
+        /// The share of a usage window, a whole percent (`90%`), at or past which an engine
+        /// account takes no new worker until that window resets: the next worker starts on
+        /// another account of its harness, the one with the most left, and with none left its
+        /// workers wait. Workers running on it are not stopped. A host setting; `default`
+        /// changes it back [default: 90%]
+        #[arg(long, env = ACCOUNT_LIMIT_ENV, value_name = "PERCENT", value_parser = percent_or_default)]
+        account_limit: Option<To<u64>>,
         /// Seconds a running exclusive command may hold others up, counting only while
         /// another waits: a host setting; `default` changes it back
         /// [default: {const:EXCLUSIVE_SECONDS}]
@@ -1981,6 +1989,7 @@ fn start_of(
         max_share_of_cores,
         max_share_of_memory,
         github_share,
+        account_limit,
         exclusive_seconds,
         jev_key_command,
         notify_command,
@@ -2016,6 +2025,7 @@ fn start_of(
         max_share_of_cores,
         max_share_of_memory,
         github_share,
+        account_limit,
         exclusive_seconds,
         gate_lanes,
         slow_gate_lanes: slow_gate_lanes.map(|lanes| *lanes),

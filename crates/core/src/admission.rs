@@ -135,6 +135,11 @@ pub enum Hold {
     /// `conflict` or `speculative_conflict`, each a merge again and a
     /// gate again — and only `landed` landings (sunfmin/control#914).
     Landing { conflicts: u64, landed: u64, window: u64 },
+    /// No account of the harness `harness` takes a new worker
+    /// (`engine_account::choose`): each is past the host's share of a
+    /// window, rests from a limit it met, is full, or cannot start here
+    /// (sunfmin/control#1220). Its workers wait until one does.
+    Accounts { harness: String, accounts: Vec<(String, crate::engine_account::Refused)> },
 }
 
 /// How far back admission reads a repo's candidate chain, in seconds: an hour.

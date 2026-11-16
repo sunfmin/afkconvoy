@@ -177,12 +177,15 @@ pub struct Admission {
 
 /// What admission reads of the account a checkout's next worker starts on:
 /// the windows its workers' newest records say, and how many workers run on
-/// it.
+/// it — and, where its harness holds several accounts in mytokens, each of
+/// them, of which the next worker starts on the one with the most left
+/// (sunfmin/control#1220).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Usage {
     pub account: Harness,
     pub windows: Vec<Window>,
     pub running: usize,
+    pub accounts: Option<crate::engine_accounts::Accounts>,
 }
 
 impl Admission {
@@ -257,6 +260,14 @@ impl Admission {
         let mut held = holds(self.shares, &self.reading);
         if let Some(usage) = &self.usage {
             held.extend(window_holds(&usage.windows, |_| usage.running));
+            if let Some(accounts) = &usage.accounts
+                && accounts.chosen().is_none()
+            {
+                held.push(Hold::Accounts {
+                    harness: accounts.harness.key().to_string(),
+                    accounts: accounts.refused(),
+                });
+            }
         }
         held.extend(queue_hold(self.queue_drain, self.queue_bound));
         held.extend(cap_holds(self.cap, self.own, self.reading.cores, self.memory));
@@ -268,10 +279,15 @@ impl Admission {
     /// watch once held past its span: none, and none calls. The candidate
     /// chain is none of them: it drains as the workers already running land,
     /// and nothing of the host is the watch's to mend for it
-    /// (docs/adr/0076).
+    /// (docs/adr/0076). Nor are the accounts of a harness with none left:
+    /// nothing on the host gives an account's use back before its window
+    /// resets (sunfmin/control#1220).
     pub fn reasons(&self) -> Vec<Reason> {
         let reasons = self.holds().iter().map(Reason::of).collect::<Vec<_>>();
-        reasons.into_iter().filter(|reason| *reason != Reason::Landing).collect()
+        reasons
+            .into_iter()
+            .filter(|reason| !matches!(reason, Reason::Landing | Reason::Accounts))
+            .collect()
     }
 
     /// `hold` as a tick's line and `plan` say it.
@@ -324,6 +340,17 @@ impl Admission {
                 measure::said(*limit),
                 self.cap.memory.unwrap_or(100)
             ),
+            Hold::Accounts { harness, accounts } => {
+                let now = crate::clock();
+                let each: Vec<String> = accounts
+                    .iter()
+                    .map(|(name, why)| format!("`{name}`: {}", why.said(now)))
+                    .collect();
+                format!(
+                    "no {harness} account takes a new worker: {}; its workers wait",
+                    each.join("; ")
+                )
+            }
             Hold::Landing { conflicts, landed, window } => format!(
                 "landing contention, {conflicts} conflicts in the last {} against {landed} \
                  landing(s): its candidate chain cannot keep up, and starts no new worker of \
@@ -400,6 +427,9 @@ impl Admission {
                 "account": usage.account.key(),
                 "running": usage.running,
                 "windows": usage.windows,
+                "starts_on": usage.accounts.as_ref()
+                    .and_then(|accounts| accounts.chosen())
+                    .map(|chosen| chosen.name.clone()),
             })),
         })
     }
@@ -571,20 +601,16 @@ fn drain_of(
 /// says no reset, or has reset since it was said, is left out; so is one
 /// whose length neither its engine says nor its name tells.
 pub fn windows_of(
-    account: Harness,
+    account: &str,
     said: &[afkconvoy_core::harness::window::Window],
     now: u64,
 ) -> Vec<Window> {
     said.iter()
         .filter_map(|window| {
             let resets_in = window.resets_at?.checked_sub(now).filter(|left| *left > 0)?;
-            let minutes = window.minutes.or(match window.name.as_str() {
-                "five_hour" | "limit_5h" => Some(5 * 60),
-                "seven_day" | "seven_day_opus" | "seven_day_sonnet" => Some(7 * 24 * 60),
-                _ => None,
-            })?;
+            let minutes = window.minutes.or_else(|| minutes_of(&window.name))?;
             Some(Window {
-                account: account.key().to_string(),
+                account: account.to_string(),
                 window: window.name.clone(),
                 used: window.used_percent.max(0.0).round() as u64,
                 length: minutes.saturating_mul(60),
@@ -592,6 +618,16 @@ pub fn windows_of(
             })
         })
         .collect()
+}
+
+/// How long a window its engine names `name` is, in minutes, where its name
+/// tells it.
+pub(crate) fn minutes_of(name: &str) -> Option<u64> {
+    match name {
+        "five_hour" | "limit_5h" => Some(5 * 60),
+        "seven_day" | "seven_day_opus" | "seven_day_sonnet" => Some(7 * 24 * 60),
+        _ => None,
+    }
 }
 
 /// `seconds` in whole minutes, as a span is said: `14 min`.
@@ -787,10 +823,10 @@ mod readings_tests {
                 resets_at: Some(now + 60),
             },
         ];
-        let windows = windows_of(Harness::Codex, &said, now);
+        let windows = windows_of(Harness::Codex.key(), &said, now);
         assert_eq!(windows.len(), 1);
         assert_eq!((windows[0].used, windows[0].length, windows[0].resets_in), (60, 18_000, 9000));
-        let usage = Usage { account: Harness::Codex, windows, running: 2 };
+        let usage = Usage { account: Harness::Codex, windows, running: 2, accounts: None };
         let held = at_ease().with_usage(Some(usage));
         let holds = held.holds();
         assert_eq!(holds.len(), 1);
