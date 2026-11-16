@@ -355,6 +355,9 @@ afkconvoy::cli goodbye::ten_starts_and_stops_on_one_host_leave_at_most_one_heart
 afkconvoy::cli grok::a_grok_worker_gets_an_isolated_role_home_and_keeps_the_role_s_own_files
 afkconvoy::cli grok::missing_or_logged_out_grok_is_named_with_its_fix
 afkconvoy::cli grok::roles_do_not_share_a_home_and_the_host_user_s_skills_and_rules_are_named
+# Measured 2.5s on the fast gate: two ticks and two plans of a Grok worker on its accounts (sunfmin/control#1231).
+afkconvoy::cli grok::a_grok_account_that_met_a_429_rests_until_its_reset_and_its_worker_continues_on_the_other
+afkconvoy::cli grok::with_two_grok_accounts_the_worker_starts_on_the_login_of_the_one_with_most_left
 afkconvoy::cli help::a_help_names_every_key_its_command_answers_with
 afkconvoy::cli help::no_help_text_holds_a_word_the_glossary_says_to_avoid
 afkconvoy::cli host_runner::a_checkout_whose_startup_probe_fails_is_refused_and_not_left_on_the_list
