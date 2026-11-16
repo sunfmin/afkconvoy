@@ -257,8 +257,10 @@ fn takeover_fences_outbox(notify: bool) {
         "the second question never goes out"
     );
     if notify {
-        until(&world, "host condition still sends", || output.exists().then_some(()));
-        let lines = std::fs::read_to_string(&output).unwrap();
+        // `cat >>` makes the file before it writes the line: waited for whole.
+        let lines = until(&world, "host condition still sends", || {
+            std::fs::read_to_string(&output).ok().filter(|text| text.ends_with('\n'))
+        });
         let sent: Vec<Value> = lines.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0]["condition"], host);
