@@ -276,7 +276,7 @@ pub(crate) fn auxiliary(fleet: &Fleet, agent: &Agent, worktree: &Worktree) -> Re
         worktree,
         &fleet.gh.tracker,
         (&chosen).into(),
-        &command,
+        || Ok(command),
         false,
         None,
         fleet.now,

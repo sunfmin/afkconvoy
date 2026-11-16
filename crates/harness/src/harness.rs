@@ -475,6 +475,17 @@ impl Harness {
         }
     }
 
+    /// Whether its engine reports its account's usage windows at all
+    /// ([`Harness::windows`]): a harness that reports none is judged by the
+    /// host alone, and comes after those that do where the host kit chooses
+    /// (docs/adr/0088).
+    pub const fn reports_windows(self) -> bool {
+        match self {
+            Harness::ClaudeCode | Harness::Codex | Harness::Kimi => true,
+            Harness::Pi | Harness::Dsh | Harness::Grok => false,
+        }
+    }
+
     /// The limit one record of this harness says it met, read from the
     /// record's structured fields, with when it lifts where the record says:
     /// beside the screen words [`Harness::account_quota`] reads. A harness

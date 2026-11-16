@@ -233,12 +233,11 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         tracker: &fleet.gh.tracker,
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
-    let line = in_role(fleet, kept, name, &chosen, launch.as_str(), &checkout)?;
     let terminal = agent.start_worker(
         &checkout,
         &fleet.gh.tracker,
         (&chosen).into(),
-        &line,
+        || in_role(fleet, kept, name, &chosen, launch.as_str(), &checkout),
         true,
         None,
         me.now,
@@ -351,7 +350,9 @@ pub(crate) fn switch(
     let harness = chosen.harness();
     let skipped = fleet.skipped_before(harness, Some(role), None);
     let launch = agent.command(harness)?;
-    let line = in_role(fleet, &kept, name, &chosen, launch.as_str(), &checkout)?;
+    // A line that cannot be made is refused before the run's worker is
+    // ended; it is made again once its account is kept (`start_worker`).
+    in_role(fleet, &kept, name, &chosen, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
     checkout.stop_for_continuation()?;
     crate::dispatch::continue_brief(fleet, &checkout, None, None, &continuing)?;
@@ -359,7 +360,7 @@ pub(crate) fn switch(
         &checkout,
         &fleet.gh.tracker,
         (&chosen).into(),
-        &line,
+        || in_role(fleet, &kept, name, &chosen, launch.as_str(), &checkout),
         true,
         None,
         me.now,

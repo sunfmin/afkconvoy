@@ -43,6 +43,8 @@ at 92% is still known to be so once its worker has ended.
 
 ## Only a Claude Code account is handed to a worker yet
 
+_Amended by ADR-0088: a Codex, Grok or Kimi Code worker on an account starts in a kept home of that account, which links its login._
+
 A Claude Code session is given its account's token as
 `CLAUDE_CODE_OAUTH_TOKEN`, which Claude Code takes before the login kept in
 its configuration. The worker's line fetches it from mytokens as it starts —

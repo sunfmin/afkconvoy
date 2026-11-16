@@ -140,25 +140,34 @@ impl Agent {
     /// auxiliaries use `start`. An issue given here is exported for every
     /// command that worker runs; the train and watches carry no issue context.
     /// `tracker` is the fleet's, which the worker's commands read (`start`).
+    /// `command` makes its line once the account it starts on is kept on its
+    /// worktree: a refreshing login's worker is given a kept home that links
+    /// that account's login (`kept::for_worker`).
     #[allow(clippy::too_many_arguments)]
     pub fn start_worker(
         &self,
         worktree: &Worktree,
         tracker: &Tracker,
         selection: WorkerSelection<'_>,
-        command: &str,
+        command: impl FnOnce() -> Result<String>,
         in_role: bool,
         issue: Option<u64>,
         now: u64,
     ) -> Result<String> {
         let WorkerSelection { harness, model, source } = selection;
-        let prepared = crate::codex_launch::prepare_worker(
-            harness, worktree, model, source, command, in_role,
-        )?;
         // The account it starts on, of the several its harness may hold:
         // the one with the most left (sunfmin/control#1220). With none left
         // it does not start, and its claim is continued once one takes it.
         let account = crate::engine_accounts::choose(harness, now)?;
+        crate::engine_accounts::keep(worktree, account.as_ref())?;
+        let prepared = crate::codex_launch::prepare_worker(
+            harness,
+            worktree,
+            model,
+            source,
+            &command()?,
+            in_role,
+        )?;
         let prepared_command = match &account {
             Some(account) => account.line(&prepared.command),
             None => prepared.command,
@@ -174,7 +183,6 @@ impl Agent {
                 .done(),
             None => prepared_command,
         };
-        crate::engine_accounts::keep(worktree, account.as_ref())?;
         let terminal = self.start(worktree, tracker, harness, &command, None, now)?;
         std::fs::write(
             worktree.note("convoy-worker-model")?,
@@ -691,7 +699,7 @@ fn start(
                         cut,
                         &fleet.gh.tracker,
                         (&chosen).into(),
-                        &staged.command(launch, cut, model.as_deref())?,
+                        || staged.command(launch, cut, model.as_deref()),
                         true,
                         None,
                         fleet.now,
@@ -702,7 +710,7 @@ fn start(
                         cut,
                         &fleet.gh.tracker,
                         (&chosen).into(),
-                        &chosen.start_line(launch),
+                        || Ok(chosen.start_line(launch)),
                         false,
                         Some(number),
                         fleet.now,

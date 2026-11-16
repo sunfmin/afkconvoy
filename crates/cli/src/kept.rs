@@ -13,6 +13,7 @@ use afkconvoy_core::team::{SKILL_FILE, SKILLS};
 use anyhow::{Context, Result};
 
 use crate::copies::cache;
+use crate::engine_accounts::Login;
 
 /// Puts what this host keeps for `harness` in its directory as it stands
 /// now → the directory. Every start does: a file the tool carries is as this
@@ -22,7 +23,14 @@ use crate::copies::cache;
 /// `host_user` it is the directory that links to the host user's skills and
 /// rules too (`Kept::host_user`); without, the one that holds none of them.
 pub fn keep(harness: Harness, host_user: bool) -> Result<PathBuf> {
-    let dir = keep_under(&cache()?, home().as_deref(), harness, host_user)?;
+    keep_on(harness, host_user, None)
+}
+
+/// `keep`, for a worker on the account `login`, where it starts on one: a
+/// directory of that account's own, whose login links that account's
+/// (`keep_under_on`).
+fn keep_on(harness: Harness, host_user: bool, login: Option<&Login>) -> Result<PathBuf> {
+    let dir = keep_under_on(&cache()?, home().as_deref(), harness, host_user, login)?;
     if let Some(kept_package) = harness.kept_package() {
         // The installed program, as the login shell a worker gets finds it.
         // No terminal is opened.
@@ -57,7 +65,7 @@ pub(crate) fn outside_role(
         let dir = worktree
             .join(crate::worker_tmp::TMP_DIR)
             .join(format!("{OWN_HOME}{}", crate::unique()));
-        keep_at(&dir, home().as_deref(), harness, true)?;
+        keep_at(&dir, home().as_deref(), harness, true, None)?;
         configure(&dir, home().as_deref(), harness, true, None, None, guard)?;
         return Ok(dir.display().to_string());
     }
@@ -108,14 +116,27 @@ pub fn keep_under(
     harness: Harness,
     host_user: bool,
 ) -> Result<PathBuf> {
-    keep_under_with_dsh_homes(
-        cache,
-        home,
-        harness,
-        host_user,
-        std::env::var_os("DSH_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from),
-        std::env::var_os("DSH_AGENTS_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from),
-    )
+    keep_under_on(cache, home, harness, host_user, None)
+}
+
+/// `keep_under`, for a worker on the account `login`, where it starts on
+/// one: the directory is that account's own, named `<harness>@<account>`
+/// (`kept_name`), and its login links the account's, in its home, in place
+/// of the host user's (docs/adr/0088).
+fn keep_under_on(
+    cache: &Path,
+    home: Option<&Path>,
+    harness: Harness,
+    host_user: bool,
+    login: Option<&Login>,
+) -> Result<PathBuf> {
+    keep_into(cache, home, harness, host_user, login, dsh_homes())
+}
+
+/// The DSH homes this process's environment names.
+fn dsh_homes() -> (Option<PathBuf>, Option<PathBuf>) {
+    let dir = |name: &str| std::env::var_os(name).filter(|dir| !dir.is_empty()).map(PathBuf::from);
+    (dir("DSH_HOME"), dir("DSH_AGENTS_HOME"))
 }
 
 /// `keep_under` with the DSH homes supplied by its caller rather than the
@@ -129,26 +150,58 @@ pub fn keep_under_with_dsh_homes(
     dsh_home: Option<PathBuf>,
     dsh_agents_home: Option<PathBuf>,
 ) -> Result<PathBuf> {
-    let name = match host_user {
-        true => format!("{}-host-user", harness.key()),
-        false => harness.key().to_string(),
-    };
-    let dir = cache.join("harness").join(name);
-    keep_at_with_dsh_homes(&dir, home, harness, host_user, dsh_home, dsh_agents_home)?;
+    keep_into(cache, home, harness, host_user, None, (dsh_home, dsh_agents_home))
+}
+
+fn keep_into(
+    cache: &Path,
+    home: Option<&Path>,
+    harness: Harness,
+    host_user: bool,
+    login: Option<&Login>,
+    dsh_homes: (Option<PathBuf>, Option<PathBuf>),
+) -> Result<PathBuf> {
+    let dir = cache.join("harness").join(kept_name(harness, host_user, login));
+    keep_at_with_dsh_homes(&dir, home, harness, host_user, login, dsh_homes)?;
     configure(&dir, home, harness, host_user, None, None, None)?;
     Ok(dir)
 }
 
+/// The name of the directory kept for `harness` under a cache's `harness`:
+/// its key, `-host-user` where it links the host user's skills and rules,
+/// and `@<account>` where its worker starts on that account's login. An
+/// account's name holds no `@` (GLOSSARY: **Account**).
+fn kept_name(harness: Harness, host_user: bool, login: Option<&Login>) -> String {
+    let base = match host_user {
+        true => format!("{}{HOST_USER}", harness.key()),
+        false => harness.key().to_string(),
+    };
+    match login {
+        Some(login) => format!("{base}{ON_ACCOUNT}{}", login.name),
+        None => base,
+    }
+}
+
+const HOST_USER: &str = "-host-user";
+const ON_ACCOUNT: &str = "@";
+
+/// Whether `name` names a directory kept for `harness` (`kept_name`), of the
+/// host user's login or of any account's: whoever reads a worker's session
+/// reads each of them.
+pub(crate) fn is_kept_name(harness: Harness, name: &str) -> bool {
+    let base = name.split_once(ON_ACCOUNT).map_or(name, |(base, _)| base);
+    base == harness.key() || base.strip_suffix(HOST_USER) == Some(harness.key())
+}
+
 /// Materializes one kept directory and its current links.
-fn keep_at(dir: &Path, home: Option<&Path>, harness: Harness, host_user: bool) -> Result<()> {
-    keep_at_with_dsh_homes(
-        dir,
-        home,
-        harness,
-        host_user,
-        std::env::var_os("DSH_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from),
-        std::env::var_os("DSH_AGENTS_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from),
-    )
+fn keep_at(
+    dir: &Path,
+    home: Option<&Path>,
+    harness: Harness,
+    host_user: bool,
+    login: Option<&Login>,
+) -> Result<()> {
+    keep_at_with_dsh_homes(dir, home, harness, host_user, login, dsh_homes())
 }
 
 fn keep_at_with_dsh_homes(
@@ -156,8 +209,8 @@ fn keep_at_with_dsh_homes(
     home: Option<&Path>,
     harness: Harness,
     host_user: bool,
-    dsh_home: Option<PathBuf>,
-    dsh_agents_home: Option<PathBuf>,
+    login: Option<&Login>,
+    (dsh_home, dsh_agents_home): (Option<PathBuf>, Option<PathBuf>),
 ) -> Result<()> {
     let kept = harness.kept();
     let theirs = if host_user { kept.host_user } else { &[][..] };
@@ -174,8 +227,13 @@ fn keep_at_with_dsh_homes(
             .replace("@AFKCONVOY_DSH_MODELS@", &plugin("models.mjs"));
         carry(&dir.join(name), &text).with_context(|| put(name))?;
     }
-    for link in kept.links.iter().chain(theirs) {
-        let theirs = if harness == Harness::Dsh {
+    // A login of an account's is in its home as it is in the kept directory:
+    // both are the harness's user configuration (`Account::home`).
+    let logins = kept.links.iter().map(|link| (link, login));
+    for (link, login) in logins.chain(theirs.iter().map(|link| (link, None))) {
+        let theirs = if let Some(login) = login {
+            Some(login.home.join(link.kept))
+        } else if harness == Harness::Dsh {
             let custom =
                 link.home.strip_prefix(".dsh/").map(|path| ("DSH_HOME", path)).or_else(|| {
                     link.home.strip_prefix(".agents/").map(|path| ("DSH_AGENTS_HOME", path))
@@ -286,6 +344,9 @@ fn configure(
 /// started with of what this host keeps: the directory, put in place, and the
 /// skills of the host user's its role's stand for. A harness with generated
 /// role configuration gets a role-specific home so concurrent roles share none.
+/// A worker whose worktree's note names an account's refreshing login
+/// (`engine_accounts::login_of`) gets a directory of that account's, which
+/// links its login (docs/adr/0088): the note is kept before this is asked.
 pub fn for_worker(
     harness: Harness,
     host_user: bool,
@@ -294,16 +355,19 @@ pub fn for_worker(
     told: &afkconvoy_core::role::Told,
     guard: &str,
 ) -> Result<(String, Vec<String>)> {
-    let shared = keep(harness, host_user)?;
+    let worker = crate::orca::Worktree::at(worktree.to_path_buf(), String::new());
+    let login = home().and_then(|home| crate::engine_accounts::login_of(&worker, &home));
+    let login = login.as_ref();
+    let shared = keep_on(harness, host_user, login)?;
     // A harness that keeps a session apart gets a fresh directory, so a
     // choice it saves belongs to this session and to no other worker.
     let base = match crate::codex_launch::fresh_root(harness, worktree) {
-        Some(root) => keep_under(&root, home().as_deref(), harness, host_user)?,
+        Some(root) => keep_under_on(&root, home().as_deref(), harness, host_user, login)?,
         None => shared,
     };
-    let (dir, shadowed) = worker_at(base, home(), harness, host_user, role_dir, told, guard)?;
+    let (dir, shadowed) =
+        worker_at(base, home(), harness, host_user, login, role_dir, told, guard)?;
     if let Some(session) = harness.session() {
-        let worker = crate::orca::Worktree::at(worktree.to_path_buf(), String::new());
         std::fs::write(worker.note(session.note)?, &dir)?;
     }
     Ok((dir, shadowed))
@@ -320,14 +384,16 @@ pub fn for_worker_under(
     guard: &str,
 ) -> Result<(String, Vec<String>)> {
     let base = keep_under(cache, home, harness, host_user)?;
-    worker_at(base, home.map(Path::to_path_buf), harness, host_user, role_dir, told, guard)
+    worker_at(base, home.map(Path::to_path_buf), harness, host_user, None, role_dir, told, guard)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn worker_at(
     base: PathBuf,
     home: Option<PathBuf>,
     harness: Harness,
     host_user: bool,
+    login: Option<&Login>,
     role_dir: &Path,
     told: &afkconvoy_core::role::Told,
     guard: &str,
@@ -341,7 +407,7 @@ fn worker_at(
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         role_dir.hash(&mut hasher);
         let dir = base.join(format!("role-{:016x}", hasher.finish()));
-        keep_at(&dir, home.as_deref(), harness, host_user)?;
+        keep_at(&dir, home.as_deref(), harness, host_user, login)?;
         configure(
             &dir,
             home.as_deref(),
@@ -432,5 +498,49 @@ fn point(link: &Path, theirs: Option<&Path>) -> std::io::Result<()> {
         // Another start of this host put it there first: the same link.
         Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(()),
         made => made,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A worker on an account's refreshing login gets a directory of that
+    /// account's own, whose login links the one in the account's home, not
+    /// the host user's; the host user's skills are linked as before, and
+    /// whoever reads sessions knows the directory as the harness's
+    /// (sunfmin/control#1231).
+    #[test]
+    fn a_worker_on_an_account_gets_a_home_linking_that_account_s_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cache, home) = (dir.path().join("cache"), dir.path().join("home"));
+        let accounts = home.join(".agent-accounts");
+        for (harness, login) in [
+            (Harness::Grok, ".grok/auth.json"),
+            (Harness::Codex, ".codex/auth.json"),
+            (Harness::Kimi, ".kimi-code/credentials"),
+        ] {
+            let file = Path::new(login).file_name().unwrap();
+            for owner in [home.join(login), accounts.join("work").join(file)] {
+                std::fs::create_dir_all(owner.parent().unwrap()).unwrap();
+                std::fs::write(&owner, "{}").unwrap();
+            }
+            let account = Login { name: "work".into(), home: accounts.join("work") };
+            let kept = keep_under_on(&cache, Some(&home), harness, true, Some(&account)).unwrap();
+            assert_eq!(kept, cache.join(format!("harness/{}-host-user@work", harness.key())));
+            assert_eq!(
+                std::fs::read_link(kept.join(file)).unwrap(),
+                accounts.join("work").join(file)
+            );
+            let name = kept.file_name().unwrap().to_str().unwrap();
+            assert!(is_kept_name(harness, name), "{name}");
+
+            let own = keep_under(&cache, Some(&home), harness, true).unwrap();
+            assert_eq!(std::fs::read_link(own.join(file)).unwrap(), home.join(login));
+        }
+        assert!(is_kept_name(Harness::Grok, "grok"));
+        assert!(is_kept_name(Harness::Grok, "grok@a.b-c"));
+        assert!(!is_kept_name(Harness::Grok, "grok-other"));
+        assert!(!is_kept_name(Harness::Codex, "grok-host-user@codex"));
     }
 }
