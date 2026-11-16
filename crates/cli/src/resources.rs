@@ -137,6 +137,18 @@ pub fn samples(repo: &std::path::Path) -> Result<BTreeMap<PathBuf, afkconvoy_cor
     Ok(read()?.samples.remove(repo).unwrap_or_default())
 }
 
+/// The host's memory pressure now, and the episode of it `state` holds as of
+/// `now`: what `json`'s pressure condition is made of.
+fn pressure_held(state: &State, now: u64) -> (Option<u64>, Holding) {
+    let pressure = pressure_level();
+    let mut holding = state.pressure.clone();
+    holding.ticked(
+        now,
+        if pressure.is_some_and(|level| level >= 2) { &[Reason::Memory] } else { &[] },
+    );
+    (pressure, holding)
+}
+
 /// Current conditions, with stable episode identities. Inactive episodes are
 /// kept during their five-minute recovery, preserving a watch's coverage.
 /// Every checkout's admission comes from the look's shared host reading.
@@ -174,12 +186,7 @@ pub fn json(
             );
         }
     }
-    let pressure = pressure_level();
-    let mut holding = state.pressure.clone();
-    holding.ticked(
-        now,
-        if pressure.is_some_and(|level| level >= 2) { &[Reason::Memory] } else { &[] },
-    );
+    let (pressure, holding) = pressure_held(&state, now);
     if let Some(episode) = holding.episode() {
         let due = holding.due(now, span);
         // The workers each fleet's sampler watches now, on the listed checkouts.
@@ -374,7 +381,13 @@ pub fn looked(look: &Value) -> Result<()> {
 /// `plan`'s `memory_pressure`: the host's memory-pressure episode while
 /// another account holds the most memory — that account, what it holds, and
 /// whether a watch starts on it — or `None` while there is none.
+///
+/// The host's process table, every account's, is read only once there is an
+/// episode: on a host of 2,150 processes the listing took 110 ms of CPU, and
+/// every `plan` made it, nearly always to find no episode
+/// (sunfmin/control#1229).
 pub fn from_elsewhere(now: u64, readings: &crate::admission::Readings) -> Option<Value> {
+    pressure_held(&read().ok()?, now).1.episode()?;
     let table = crate::machine::Table::read().ok()?;
     let elsewhere = table.elsewhere()?;
     let resources = json(now, readings, Some(&elsewhere)).ok()?;

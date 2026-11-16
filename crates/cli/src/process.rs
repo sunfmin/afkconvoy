@@ -49,29 +49,45 @@ fn inherited() -> Vec<i32> {
         .collect()
 }
 
-/// Has `command` close each descriptor this process was handed and would
-/// pass on (`inherited`): afkconvoy's own `ps`, `git` and `gh` hold no
-/// gate's process scope or worker lane. A setuid `ps` an afkconvoy inside a
-/// gate started held its scope, which no kill of its user could end, and so
-/// every lane of the host, for four hours (sunfmin/control#1096).
-fn closing_inherited(command: &mut Command) -> &mut Command {
-    use std::os::unix::process::CommandExt;
-    let fds = inherited();
-    if fds.is_empty() {
-        return command;
+/// The descriptors this process was handed and would pass on (`inherited`),
+/// marked close-on-exec until it is dropped, then passed on again: what is
+/// started meanwhile — afkconvoy's own `ps`, `git` and `gh` — holds no gate's
+/// process scope or worker lane. A setuid `ps` an afkconvoy inside a gate
+/// started held its scope, which no kill of its user could end, and so every
+/// lane of the host, for four hours (sunfmin/control#1096).
+///
+/// The flags are set in this process, not closed in the child: a child
+/// prepared by a hook of its own (`pre_exec`) is started with `fork`, and one
+/// without by `posix_spawn`, which on macOS took 1.4 to 1.9 ms more wall and
+/// 0.6 ms more CPU a start (sunfmin/control#1229). Inside a gate every
+/// afkconvoy is handed its lane's lease, so each of its looks paid that.
+/// Held only while starting is (`starting`): no other start of this process
+/// sees the flags it sets.
+struct Withheld(Vec<i32>);
+
+impl Withheld {
+    fn inherited() -> Self {
+        let fds = inherited();
+        for &fd in &fds {
+            // SAFETY: the descriptor was open and inheritable as listed; only
+            // its close-on-exec flag is set.
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+        Withheld(fds)
     }
-    // SAFETY: fcntl and close are async-signal-safe; `fds` was made before
-    // the fork, and only one still without close-on-exec is closed.
-    unsafe {
-        command.pre_exec(move || {
-            for &fd in &fds {
+}
+
+impl Drop for Withheld {
+    fn drop(&mut self) {
+        for &fd in &self.0 {
+            // SAFETY: as above, only the flag set in `inherited` is cleared.
+            unsafe {
                 let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
-                    libc::close(fd);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
                 }
             }
-            Ok(())
-        })
+        }
     }
 }
 
@@ -114,7 +130,7 @@ const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 
 /// Runs `command` with no input, capturing both output streams. Every caller
 /// here wants these streams; commands with other streams use `spawn`. It
-/// inherits no descriptor this process was handed (`closing_inherited`):
+/// inherits no descriptor this process was handed (`Withheld`):
 /// what is run for its output is afkconvoy's own look, never a gate's work.
 ///
 /// The pipes are read while the child runs, so a full pipe cannot stall it.
@@ -152,9 +168,10 @@ fn output_bounded(
 ) -> io::Result<(Output, bool)> {
     let limit = limit.into().map(crate::waits::bound);
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
-    let command = closing_inherited(command);
-    let mut child =
-        starting(|| command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn())?;
+    let mut child = starting(|| {
+        let _withheld = Withheld::inherited();
+        command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+    })?;
     let writer = child.stdin.take();
     let stdout = child.stdout.take().ok_or_else(|| io::Error::other("stdout was not piped"))?;
     let stderr = child.stderr.take().ok_or_else(|| io::Error::other("stderr was not piped"))?;
@@ -285,11 +302,10 @@ pub(crate) fn status(command: &mut Command) -> io::Result<ExitStatus> {
 fn starting<T>(start: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     // macOS has no pipe2(O_CLOEXEC): cover pipe creation and flag setting
     // against every other start, including one capturing no output itself.
-    #[cfg(target_os = "macos")]
-    let _starting = {
-        static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        STARTING.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-    };
+    // On every system, a start of the gate's own work is not to find the
+    // descriptors it passes on withheld by another's (`Withheld`).
+    static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _starting = STARTING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     start()
 }
 
