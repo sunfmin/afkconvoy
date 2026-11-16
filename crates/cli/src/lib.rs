@@ -173,12 +173,12 @@ use fleet::Fleet;
 use git::Repo;
 use host_settings::{
     ACCOUNT_LIMIT_ENV, ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
-    AGENT_GUARDS_ENV, AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, EXCLUSIVE_SECONDS_ENV,
-    GITHUB_SHARE_ENV, HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV,
-    JEV_KEY_COMMAND_ENV, MAX_SHARE_OF_CORES_ENV, MAX_SHARE_OF_MEMORY_ENV, NOTIFY_COMMAND_ENV, To,
-    WATCH_DIR_ENV, WATCH_EVERY_ENV, jev_key_command_or_default, notify_command_or_default,
-    percent_or_default, port_or_default, thousandths_or_default, watch_dir_or_default,
-    watch_every_or_default, whole_or_default,
+    AGENT_GUARDS_ENV, AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, BUSY_SHARE_ENV,
+    EXCLUSIVE_SECONDS_ENV, GITHUB_SHARE_ENV, HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV,
+    HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, MAX_SHARE_OF_CORES_ENV, MAX_SHARE_OF_MEMORY_ENV,
+    NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV, jev_key_command_or_default,
+    notify_command_or_default, percent_or_default, port_or_default, thousandths_or_default,
+    watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -676,19 +676,20 @@ enum Command {
         /// system's name then; `default` lets the next `run` keep it afresh
         #[arg(long, env = HOST_NAME_ENV, value_name = "NAME", value_parser = boxed_host_name)]
         host_name: Option<Box<To<String>>>,
-        /// Worker lanes on this host, above zero, or `default` ({const:GATE_LANES}). Independent
-        /// candidate worktrees of one repo may validate together within this bound.
-        #[arg(long, env = "AFKCONVOY_GATE_LANES", value_parser = host_settings::watch_every_or_default)]
-        gate_lanes: Option<To<u64>>,
-        /// Slow lanes on this host, above zero, or `default` (1): how many rounds' slow gates
-        /// run at once, beside the worker lanes, where fast gates run.
-        #[arg(long, env = "AFKCONVOY_SLOW_GATE_LANES", value_parser = boxed_lanes)]
-        slow_gate_lanes: Option<Box<To<u64>>>,
-        /// Fast gates that may run at once on this host, above zero, or `default`
-        /// ({const:FAST_LANES}). They take a lane of their own, beside the worker lanes: no slow
-        /// gate holds them up, and fast gates of one repo run side by side.
-        #[arg(long, env = "AFKCONVOY_FAST_LANES", value_parser = boxed_lanes)]
-        fast_lanes: Option<Box<To<u64>>>,
+        /// The share of this host's cores under which its exclusive queue starts a queued
+        /// command: a host setting, read by the kernel's CPU ticks over the last minute;
+        /// `default` changes it back [default: {const:BUSY_SHARE}%]
+        #[arg(long, env = BUSY_SHARE_ENV, value_name = "PERCENT", value_parser = boxed_percent)]
+        busy_share: Option<Box<To<u64>>>,
+        /// Removed: the exclusive queue has no count of places
+        #[arg(long, hide = true, value_parser = removed_lanes)]
+        gate_lanes: Option<()>,
+        /// Removed: the exclusive queue has no count of places
+        #[arg(long, hide = true, value_parser = removed_lanes)]
+        slow_gate_lanes: Option<()>,
+        /// Removed: the exclusive queue has no count of places
+        #[arg(long, hide = true, value_parser = removed_lanes)]
+        fast_lanes: Option<()>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -1648,8 +1649,7 @@ pub fn manual() -> agent_help::Help {
         .constant("FIRST_START_SETTINGS", first_start::settings_help())
         .constant("FIRST_START_QUESTIONS", first_start::help())
         .constant("EXCLUSIVE_SECONDS", exclusive::SECONDS)
-        .constant("GATE_LANES", host_settings::GATE_LANES)
-        .constant("FAST_LANES", host_settings::FAST_LANES)
+        .constant("BUSY_SHARE", afkconvoy_core::exclusive::BUSY_SHARE)
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("NOTIFY_SECONDS", watch_notify::SECONDS)
         .constant("NOTIFY_FAILURES", watch_notify::FAILURES)
@@ -1883,15 +1883,35 @@ fn ran(
     Some(stage::Ran { role_commit, team_commit, harness, model })
 }
 
-/// `--slow-gate-lanes` and `--fast-lanes`, boxed: `Run` is the largest
-/// command, and clippy bounds it.
-fn boxed_lanes(said: &str) -> Result<Box<To<u64>>, String> {
-    host_settings::watch_every_or_default(said).map(Box::new)
-}
-
-/// `--account-limit`, boxed: `Run` is the largest command, and clippy bounds it.
+/// `--busy-share` and `--account-limit`, boxed: `Run` is the largest command,
+/// and clippy bounds it.
 fn boxed_percent(said: &str) -> Result<Box<To<u64>>, String> {
     percent_or_default(said).map(Box::new)
+}
+
+/// What `--gate-lanes`, `--slow-gate-lanes` and `--fast-lanes` say now.
+const REMOVED_LANES: &str = "is removed: the exclusive queue has no count of places, and starts \
+     a command once the host has room for it, by its CPU reading; \
+     `--busy-share PERCENT` sets the share of its cores it starts under";
+
+/// `--gate-lanes`, `--slow-gate-lanes` and `--fast-lanes`, still given.
+fn removed_lanes(_: &str) -> Result<(), String> {
+    Err(format!("the flag {REMOVED_LANES}"))
+}
+
+/// The variables that said the exclusive queue's counts of places: a `run`
+/// that finds one set says so, and goes on without it.
+const REMOVED_LANES_ENV: [&str; 3] =
+    ["AFKCONVOY_GATE_LANES", "AFKCONVOY_SLOW_GATE_LANES", "AFKCONVOY_FAST_LANES"];
+
+/// What a `run` says of each variable of `REMOVED_LANES_ENV` its environment
+/// still sets.
+fn removed_lanes_env(set: impl Fn(&str) -> bool) -> Vec<String> {
+    REMOVED_LANES_ENV
+        .iter()
+        .filter(|name| set(name))
+        .map(|name| format!("[afkconvoy] run: `{name}` is ignored; it {REMOVED_LANES}"))
+        .collect()
 }
 
 /// `--agent-instructions`, `--agent-skills` and `--agent-guards`, boxed: `Run` is the largest
@@ -2004,9 +2024,7 @@ fn start_of(
         agent_skills,
         agent_guards,
         host_name,
-        gate_lanes,
-        slow_gate_lanes,
-        fast_lanes,
+        busy_share,
         ticks,
         second_ms,
         panic_at_tick,
@@ -2034,9 +2052,7 @@ fn start_of(
         github_share,
         account_limit: account_limit.map(|limit| *limit),
         exclusive_seconds,
-        gate_lanes,
-        slow_gate_lanes: slow_gate_lanes.map(|lanes| *lanes),
-        fast_lanes: fast_lanes.map(|lanes| *lanes),
+        busy_share: busy_share.map(|share| *share),
         panel,
         watch_dir,
         watch_every,
@@ -2501,6 +2517,9 @@ fn run(
             plan::plan(&checkout?, now, instance.as_ref(), &proxy.worker_no_proxy)
         }
         Command::Run { .. } => {
+            for line in removed_lanes_env(|name| std::env::var_os(name).is_some()) {
+                eprintln!("{line}");
+            }
             let Some((foreground, start, settings)) = start_of(command, fixed_now) else {
                 unreachable!()
             };

@@ -94,6 +94,47 @@ pub fn busy() -> Option<u64> {
     }
 }
 
+/// The kernel's ticks over the last minute, as the host runner keeps them
+/// for its exclusive queue (docs/adr/0088): a sample at most each second,
+/// and the busy share since the oldest of the last `WINDOW`. A host runner
+/// that has read for less says it over what it has.
+#[derive(Debug, Default)]
+pub struct Minute {
+    samples: std::collections::VecDeque<(u64, Ticks)>,
+}
+
+impl Minute {
+    /// How busy the cores were, in percent, from the second the reading's
+    /// span began to `now`, in epoch seconds → the share, and that second;
+    /// `None`: the ticks cannot be read, or none passed yet. A test world's
+    /// stand-in (`AFKCONVOY_FAKE_CPU_BUSY`) says it over the whole window.
+    pub fn read(&mut self, now: u64) -> Option<(u64, u64)> {
+        let window = WINDOW.as_secs();
+        if let Some(fake) = std::env::var_os(FAKE) {
+            let busy = std::fs::read_to_string(fake).ok()?.trim().parse().ok()?;
+            return Some((busy, now.saturating_sub(window)));
+        }
+        if self.samples.back().is_none_or(|(at, _)| *at < now)
+            && let Some(ticks) = ticks()
+        {
+            self.samples.push_back((now, ticks));
+        }
+        self.said(now)
+    }
+
+    /// What the samples say at `now`: those older than the newest one of a
+    /// window ago are dropped, and the share is said since the oldest left.
+    fn said(&mut self, now: u64) -> Option<(u64, u64)> {
+        let start = now.saturating_sub(WINDOW.as_secs());
+        while self.samples.get(1).is_some_and(|(at, _)| *at <= start) {
+            self.samples.pop_front();
+        }
+        let (since, first) = *self.samples.front()?;
+        let (_, last) = *self.samples.back()?;
+        Some((last.busy_since(first)?, since))
+    }
+}
+
 /// The kernel's CPU ticks now.
 #[cfg(target_os = "macos")]
 pub fn ticks() -> Option<Ticks> {
@@ -155,6 +196,21 @@ mod tests {
         assert_eq!(Ticks { busy: 1400, total: 6000 }.busy_since(earlier), Some(40));
         assert_eq!(Ticks { busy: 1950, total: 6000 }.busy_since(earlier), Some(95));
         assert_eq!(earlier.busy_since(earlier), None, "no tick passed");
+    }
+
+    #[test]
+    fn a_minute_says_the_share_since_its_oldest_sample_of_the_last_minute() {
+        let mut minute = Minute::default();
+        let sample = |at, busy, total| (at, Ticks { busy, total });
+        minute.samples.extend([sample(90, 0, 0), sample(100, 0, 0), sample(130, 10, 100)]);
+        minute.samples.push_back(sample(161, 60, 200));
+        assert_eq!(minute.said(161), Some((30, 100)), "since the newest of a minute ago");
+        assert_eq!(minute.said(200), Some((50, 130)), "only the last minute's");
+        assert_eq!(Minute::default().said(5), None, "nothing read");
+        let read = Minute::default().read(crate::clock());
+        if std::env::var_os(FAKE).is_none() {
+            assert!(read.is_none_or(|(busy, _)| busy <= 100), "{read:?}");
+        }
     }
 
     #[test]
