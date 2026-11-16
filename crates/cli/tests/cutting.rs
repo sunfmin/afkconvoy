@@ -247,6 +247,10 @@ fn a_cut_keeps_its_claim_checkout_and_terminal_when_the_host_runner_moves() {
     let checkout = checkout(&world);
     let before = record(&checkout);
     assert!(claimed(&world));
+    // Orca names the cut's checkout by the version it makes (sunfmin/control#1226).
+    let name = format!("cut v{}", before["version"].as_str().unwrap());
+    let shown = world.orca()["shown"].clone();
+    assert_eq!(shown, json!([{"path": checkout, "displayName": name}]));
     let terminals = world.orca()["terminals"].clone();
     upgraded(&link, "999.0.0", &as_built());
     logged(&world, "host runner moved: ");

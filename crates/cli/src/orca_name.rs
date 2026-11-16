@@ -139,12 +139,10 @@ impl Label {
         let (done, ended) = channel();
         let at = path.to_path_buf();
         let first = Wanted { name, comment };
-        let spawned = std::thread::Builder::new()
-            .name("orca name".to_string())
-            .spawn(move || {
-                keep(&at, first, &asked);
-                let _ = done.send(());
-            });
+        let spawned = std::thread::Builder::new().name("orca name".to_string()).spawn(move || {
+            keep(&at, first, &asked);
+            let _ = done.send(());
+        });
         if let Err(error) = spawned {
             say_once(path, &format!("{error}"));
             return label;

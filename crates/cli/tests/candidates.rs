@@ -264,6 +264,11 @@ fn pairs(world: &World) -> Vec<(u64, u64)> {
         .collect()
 }
 
+/// Every Orca metadata set made, in order (`orca worktree set`).
+fn shown(world: &World) -> Vec<Value> {
+    world.orca()["shown"].as_array().cloned().unwrap_or_default()
+}
+
 /// The candidates of the chain, without the pairs beside it.
 fn chained(world: &World) -> Vec<Value> {
     let state = chain(world);
@@ -330,6 +335,23 @@ done"#,
     assert!(
         !world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]).is_empty()
     );
+}
+
+/// Orca refusing to name a worktree stops no landing: the turn says so once
+/// in its log and lands (sunfmin/control#1226).
+#[test]
+fn a_landing_goes_on_when_orca_refuses_to_name_its_worktrees() {
+    let world = World::new();
+    world.set_gate("true");
+    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
+    world.with_orca(|orca| orca["set_fails"] = json!(true));
+    let (source, _) = worker(&world, 1, "a");
+    let ran = world.afk_in(&source, &["land", "--issue", "1"]);
+    let said = ran.stderr.matches("warning: orca did not name the worktree").count();
+    assert_eq!(said, 1, "said once: {}", ran.stderr);
+    let landed = ran.ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert!(shown(&world).is_empty());
 }
 
 #[test]
@@ -1489,6 +1511,32 @@ fn a_round_gates_its_pair_then_its_root_whole_once_and_lands_both_together() {
     );
     assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-1"]), ah);
     assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-2"]), bh);
+    // Orca names each worktree by its issues, never a PR's, and says its
+    // gate's state as it changes (sunfmin/control#1226).
+    let tip = candidates[1]["worktree"].as_str().unwrap();
+    let shown = shown(&world);
+    fn said(row: &Value) -> (&str, Option<&str>) {
+        (row["displayName"].as_str().unwrap(), row["comment"].as_str())
+    }
+    let pair: Vec<_> =
+        shown.iter().filter(|row| row["path"] != tip && row["path"] != "").map(said).collect();
+    assert!(pair.contains(&("pair #1 + #2", Some("gating"))), "{shown:#?}");
+    assert!(pair.contains(&("pair #1 + #2", Some("green"))), "{shown:#?}");
+    let round: Vec<_> = shown.iter().filter(|row| row["path"] == tip).map(said).collect();
+    assert_eq!(
+        round,
+        [
+            ("round of #1, #2 · fast gate", Some("gating")),
+            ("round of #1, #2 · slow gate", Some("gating")),
+            ("round of #1, #2 · slow gate", Some("green")),
+        ],
+        "{shown:#?}"
+    );
+    assert!(shown.iter().all(|row| row["issue"].is_null()), "{shown:#?}");
+    assert!(
+        shown.iter().all(|row| !row["displayName"].as_str().unwrap().contains("#10")),
+        "no PR number: {shown:#?}"
+    );
     // The round put the whole gate on record for the new tip: the next turn
     // starts on it without a run of the whole gate.
     let (c, _) = worker(&world, 3, "c");
