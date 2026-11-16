@@ -1709,6 +1709,22 @@ mod tests {
         assert_eq!(chain.round_next("t4"), Some(RoundNext::Pair));
     }
 
+    /// A pair recorded before groups (sunfmin/control#1239) reads as a group
+    /// of two, and a group of more says its later nodes.
+    #[test]
+    fn a_pair_recorded_before_groups_reads_as_a_group_of_two() {
+        let old = r#"{"round":"r","level":0,"first":[1],"second":[2],"partner":"h2"}"#;
+        let pair: Paired = serde_json::from_str(old).unwrap();
+        assert_eq!(pair.joins().copied().collect::<Vec<_>>(), [1, 2]);
+        assert!(pair.later.is_empty() && !pair.stacked);
+        assert_eq!(serde_json::to_string(&pair).unwrap(), old, "a group of two writes as before");
+        let mut group = pair;
+        group.later.push(Node { changes: vec![3], commit: "h3".into() });
+        let read: Paired = serde_json::from_str(&serde_json::to_string(&group).unwrap()).unwrap();
+        assert_eq!(read.joins().copied().collect::<Vec<_>>(), [1, 2, 3]);
+        assert!(read.merges(&[3]) && read.merges(&[2]) && !read.merges(&[1]));
+    }
+
     /// Makes the stacked round's stacked merge, not gated yet → its id.
     fn make_stack(chain: &mut Chain) -> String {
         let (round, on, heads) = chain.to_stack().expect("a root to stack");
