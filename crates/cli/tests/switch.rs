@@ -144,6 +144,11 @@ fn assert_guarded_harness(world: &World, dir: &Path, harness: afkconvoy_core::ha
             command.contains("AFKCONVOY_GUARD=") && command.contains("--extension"),
             "{command}"
         );
+    } else if harness == afkconvoy_core::harness::Harness::Codex {
+        assert!(
+            command.contains("CODEX_HOME=") && command.contains("guard --terminal-input-only"),
+            "{command}"
+        );
     } else {
         assert!(command.contains("KIMI_CODE_HOME="), "{command}");
     }
@@ -503,7 +508,7 @@ fn screen_faults_are_judged_before_automatic_continuation_and_keep_the_scene() {
     );
     assert_eq!(payload["questions"]["login_refused"]["type"], "noul");
     assert!(!world.asked_a_harness_about(DISABLED));
-    assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Pi);
+    assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Codex);
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
     assert_eq!(world.claims().len(), 1);
@@ -514,7 +519,7 @@ fn screen_faults_are_judged_before_automatic_continuation_and_keep_the_scene() {
     assert!(brief.contains("Fault evidence and pending work"));
     let plan = world.afk(&["plan", "--now", "1101"]).ok();
     assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "continued");
-    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["successor"], "pi");
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["successor"], "codex");
     tick(&world, 1101);
     assert_eq!(std::fs::read_to_string(world.root.join("typesafe-request")).unwrap(), asked);
 }
@@ -574,7 +579,7 @@ fn structured_rate_limits_wait_for_retry_after_before_a_bounded_session_fallback
     tick(&world, 920);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     tick(&world, 1040);
-    assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Pi);
+    assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Codex);
     let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(book["faults"], json!([]), "a rate limit never pauses the entire account");
     assert!(!world.asked_a_harness_about(DISABLED), "classified runtime errors need no model");
@@ -607,7 +612,7 @@ fn account_faults_continue_stalled_workers_across_checkouts_and_switch_all_is_ho
     tick(&world, 800);
     world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "800"]).ok();
     for dir in [&seven, &eight] {
-        assert_guarded_harness(&world, dir, afkconvoy_core::harness::Harness::Pi);
+        assert_guarded_harness(&world, dir, afkconvoy_core::harness::Harness::Codex);
         assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "preserve");
     }
     assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
@@ -743,7 +748,7 @@ fn successful_recovery_restores_priority_for_new_work_without_moving_the_success
     });
     tick(&world, 800);
     let successor = open_commands(&world, &dir);
-    assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Pi);
+    assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Codex);
     world.probes_answer();
     tick(&world, 4400);
     let plan = world.afk(&["plan", "--now", "4401"]).ok();
@@ -1529,7 +1534,7 @@ fn an_account_quota_jev_judges_without_a_reset_continues_at_once() {
     tick(&world, 800);
     tick(&world, 1100);
 
-    assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Pi);
+    assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Codex);
     let health = world.afk(&["plan", "--now", "1101"]).ok();
     let worker = &health["host_kit"]["worker_health"]["workers"][0];
     assert_eq!(worker["action"], "continued");

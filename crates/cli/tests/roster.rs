@@ -297,7 +297,8 @@ fn a_role_with_nothing_it_can_run_safely_waits_and_goes_on_once_it_has() {
     world.issue(8, &["flow:audit", "harness:claude-code", "model:haiku"]);
 
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(said(&planned, 7)["harness"], "pi", "{planned}");
+    // Codex reports its windows: it comes before pi (docs/adr/0088).
+    assert_eq!(said(&planned, 7)["harness"], "codex", "{planned}");
     let waits = said(&planned, 8);
     assert!(waits.as_str().unwrap().contains("no currently eligible harness"), "{planned}");
     assert_eq!(planned["nothing_safe"][0]["role"], "reviewer", "{planned}");
@@ -347,9 +348,9 @@ fn a_role_s_range_leaves_out_a_harness_it_holds_no_limits_for_and_plan_and_check
         ])
     );
     let left_out = json!([
+        {"harness": "kimi", "why": "no limits for kimi"},
         {"harness": "pi", "why": "no limits for pi"},
         {"harness": "dsh", "why": "no limits for dsh"},
-        {"harness": "kimi", "why": "no limits for kimi"},
         {"harness": "grok", "why": "no limits for grok"},
     ]);
     assert_eq!(reviewer["left_out"], left_out);
@@ -402,8 +403,8 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
         drafted["unsaid"],
         json!([
             "what codex is good at",
-            "what dsh is good at",
             "what kimi is good at",
+            "what dsh is good at",
             "what grok is good at"
         ])
     );
@@ -421,16 +422,16 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
         "    run:\n",
         "      - { harness: claude-code, model: \"opus\", good_at: \"hard, wide work\" }\n",
         "      - { harness: claude-code, model: \"haiku\", good_at: \"reviews\" }\n",
-        "      - { harness: pi, model: \"a/fast\", good_at: \"small fixes\" }\n",
         "      - { harness: codex }\n",
-        "      - { harness: dsh }\n",
         "      - { harness: kimi }\n",
+        "      - { harness: pi, model: \"a/fast\", good_at: \"small fixes\" }\n",
+        "      - { harness: dsh }\n",
         "      - { harness: grok }\n",
         "  reviewer:\n",
         "    run:\n",
         "      - { harness: claude-code, model: \"opus\", good_at: \"hard, wide work\" }\n",
         "      - { harness: claude-code, model: \"haiku\", good_at: \"reviews\" }\n",
-        "    # left out: pi, codex, dsh, kimi, grok, which the role holds no limits for\n",
+        "    # left out: codex, kimi, pi, dsh, grok, which the role holds no limits for\n",
     );
     assert_eq!(
         written,

@@ -172,14 +172,19 @@ impl Kit {
         self.choosing().map(held).collect()
     }
 
-    /// Its harnesses in the order the host kit chooses a worker's: each that
-    /// reports its account's usage windows (`Harness::reports_windows`) in
-    /// the kit's order, then each that reports none, in the kit's order — a
-    /// harness whose account's use the host cannot see is spent only after
-    /// those it can (docs/adr/0088).
+    /// Its harnesses in the order the host kit chooses a worker's: its first,
+    /// which the operator's `switch` puts there; then each other that
+    /// reports its account's usage windows (`Harness::reports_windows`), in
+    /// the kit's order; then each other that reports none, in the kit's
+    /// order — a harness whose account's use the host cannot see is spent
+    /// only after those it can, unless the operator put it first
+    /// (docs/adr/0088).
     fn choosing(&self) -> impl Iterator<Item = &Held> {
-        let windows = self.harnesses.iter().filter(|held| held.harness.reports_windows());
-        windows.chain(self.harnesses.iter().filter(|held| !held.harness.reports_windows()))
+        let (first, rest) =
+            self.harnesses.split_first().map_or((None, &[][..]), |(f, r)| (Some(f), r));
+        let windows = rest.iter().filter(|held| held.harness.reports_windows());
+        let none = rest.iter().filter(|held| !held.harness.reports_windows());
+        first.into_iter().chain(windows).chain(none)
     }
 
     /// The host kit as this host can start it now: without the harnesses
@@ -1168,7 +1173,7 @@ The host kit is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/
 2. Models. Each harness found is asked for the models its own login runs, in that same login shell, and no terminal is opened. Claude Code is asked through its command with an `initialize` request and no prompt; Codex through its command with `debug models`, its server's list; pi through its command with `--list-models`; Kimi Code through its command with `provider list --json`, under the fleet's isolated home; Grok through its command with `models`, under the fleet's isolated home and with no prompt; DSH through `dsh headless`, whose listing plugin asks `https://api.deepseek.com/models` with DSH's account token from `$DSH_HOME/.credentials.yaml` (default `~/.dsh`), or its `DEEPSEEK_API_KEY` when no account token is held. The server's ids and display names are used, never a bundled catalog. This is the sole credential the fleet reads, through DSH's credential service, only for listing: never printed or stored, and sent only to DeepSeek. Not signed in or a server refusal leaves DSH out with the reason.
 3. Default first. No model is sent a prompt. A harness found and listed is held at once, each model it newly lists `research pending`, which no worker is started on. A harness with no placed model starts its workers on its own login's default model, with no model flag. Codex automatic workers instead read the user's current model preference from `~/.codex/config.toml`, unless an issue has a model label; with no preference they use Codex's native default. `plan` and `doctor` report the kit's `default_model` and `research_pending` independently of that preference.
 4. Names. A model's id is exactly the id its harness lists, and a worker is started on it. Its `names` are the names its listing shows it by (Claude Code's `Opus 5.5`) and the aliases research ties to it with a dated source.
-5. Order. Established harness and model order is retained, including switches made while listing or research run. New harnesses follow in this fixed order: claude-code, pi, codex, dsh, kimi, grok. New models follow established models; research may rank discoveries without displacing established priority. Harness order is this list. A worker's model is its issue's one `model:` label of the selected harness, where that label is followed, otherwise that harness's user default. A harness with no placed model starts with no model flag.
+5. Order. Established harness and model order is retained, including switches made while listing or research run. New harnesses follow in this fixed order: claude-code, pi, codex, dsh, kimi, grok. New models follow established models; research may rank discoveries without displacing established priority. Harness order is this list. A worker's harness is the first one this host can start, but past the first, each harness that reports its account's usage windows (claude-code, codex, kimi) is tried before each that reports none (pi, dsh, grok); the list itself is not reordered. A worker's model is its issue's one `model:` label of the selected harness, where that label is followed, otherwise that harness's user default. A harness with no placed model starts with no model flag.
 6. Research. The watch researches listed identities using its web tools, once across harnesses, and writes a JSON file through `afkconvoy kit --research <file>`. The kit itself calls no model. Unplaced models are a doctor finding: a watch started for other work takes them too; research alone starts one at most once a day. A harness with no placed model stays on its user default. Sourced research is kept as good_at, names, sources ({url, date}) and researched_at (epoch seconds), and is never refreshed on a schedule. `afkconvoy draft` copies good_at into a roster.
 
 On a Guild machine — a host whose user has Guild's home, `~/.guild` — writing the host kit also installs tmux, which Guild runs each instance in, where a login shell finds none and `~/.pixi/bin` holds none: with `pixi global install tmux`, or `brew install tmux` where Homebrew is at `/opt/homebrew` or `/usr/local`, which have bottles for it. A Homebrew in `~/homebrew` is not used: it would build tmux's ncurses and openssl from source. Where neither pixi nor a bottled Homebrew is there, it installs pixi itself first: the release of the version it pins, from GitHub, checked against the `.sha256` published next to it — nothing installed where they differ — and unpacked into `~/.pixi/bin`, with no shell profile changed. A tmux already there is left alone. A failed install fails no write of the kit: `doctor` names the Guild machine with no tmux and the line that fixes it.
@@ -1434,26 +1439,37 @@ mod tests {
     }
 
     /// Where the host kit chooses, a harness that reports no usage windows
-    /// comes after each that does, whatever the kit's order; among each,
-    /// the kit's order stands (sunfmin/control#1231).
+    /// comes after each that does, but for the kit's first, which the
+    /// operator's switch puts there; among each, the kit's order stands
+    /// (sunfmin/control#1231).
     #[test]
     fn a_harness_with_no_windows_comes_after_those_with() {
-        let kit = Kit {
+        let kit = |first: Harness| Kit {
             cast: Default::default(),
             harnesses: vec![
+                held(first, "first", &[]),
                 held(Harness::Grok, "grok", &[]),
                 held(Harness::Kimi, "kimi", &[]),
                 held(Harness::Pi, "pi", &[]),
-                held(Harness::ClaudeCode, "claude", &[]),
+                held(Harness::Codex, "codex", &[]),
             ],
             removed: vec![],
             _retired_consult: None,
         };
-        let order: Vec<Harness> = kit.range().iter().map(|held| held.harness).collect();
-        assert_eq!(order, [Harness::Kimi, Harness::ClaudeCode, Harness::Grok, Harness::Pi]);
-        assert_eq!(kit.first().map(|first| first.harness), Some(Harness::Kimi));
-        let kept: Vec<Harness> = kit.harnesses.iter().map(|held| held.harness).collect();
-        assert_eq!(kept[0], Harness::Grok, "the kit's own order is not rewritten");
+        let order = |kit: &Kit| kit.range().iter().map(|held| held.harness).collect::<Vec<_>>();
+        let claude = kit(Harness::ClaudeCode);
+        assert_eq!(
+            order(&claude),
+            [Harness::ClaudeCode, Harness::Kimi, Harness::Codex, Harness::Grok, Harness::Pi]
+        );
+        assert_eq!(claude.harnesses[1].harness, Harness::Grok, "the kit is not rewritten");
+        let switched = kit(Harness::Dsh);
+        assert_eq!(
+            order(&switched),
+            [Harness::Dsh, Harness::Kimi, Harness::Codex, Harness::Grok, Harness::Pi],
+            "the operator's first stays first"
+        );
+        assert_eq!(switched.first().map(|first| first.harness), Some(Harness::Dsh));
     }
 
     /// A host with Claude Code, Codex, pi and Kimi Code found, DSH absent;
