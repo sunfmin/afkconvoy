@@ -1899,7 +1899,9 @@ fn a_tick_types_the_disk_floor_line_and_never_waits_for_it_to_be_taken() {
     // Told once: below the floor still, nothing more is typed.
     assert!(disk_floor_steps(&tick(&world, 1170)).is_empty());
 
-    // Over the floor again: each one told is told to go on, once.
+    // Over the floor again: each one told, stopped at an empty prompt, is
+    // told to go on, once.
+    report(&world, "idle", 1180, 1180);
     world.disk_free(500 << 30);
     let free = tick(&world, 1200);
     let steps = disk_floor_steps(&free);

@@ -316,12 +316,6 @@ impl World {
         write(&self.home(), ".profile", &format!("{exported}{profile}"));
     }
 
-    /// Has one second of every production bound afkconvoy waits out — a
-    /// command's timeout, a grace, a retry's pause — take `ms` milliseconds in
-    /// every command of this world from now on, its host runner's among them
-    /// (`afkconvoy::waits`): a test of what happens once one has passed waits
-    /// milliseconds, not the production bound. Say it before the world's
-    /// host runner starts.
     /// A note typed at a worker may wait `seconds` for its harness to take
     /// it, as in production, in every command of this world from now on.
     pub fn note_wait(&self, seconds: u64) {
@@ -333,6 +327,12 @@ impl World {
         std::fs::write(self.root.join("disk-available"), (bytes / 1024).to_string()).unwrap();
     }
 
+    /// Has one second of every production bound afkconvoy waits out — a
+    /// command's timeout, a grace, a retry's pause — take `ms` milliseconds in
+    /// every command of this world from now on, its host runner's among them
+    /// (`afkconvoy::waits`): a test of what happens once one has passed waits
+    /// milliseconds, not the production bound. Say it before the world's
+    /// host runner starts.
     pub fn scale_waits(&self, ms: u64) {
         self.second_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
         self.write_profile();

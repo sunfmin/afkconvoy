@@ -197,6 +197,29 @@ mod tests {
         );
     }
 
+    /// sunfmin/control#1230: the line was typed with a mark it did not hold,
+    /// so no session ever showed it taken and each wait ran out its bound.
+    /// The line carries its mark: once Claude Code gives it to its model as
+    /// the user's, the session shows it taken.
+    #[test]
+    fn the_line_carries_the_mark_its_session_is_read_for() {
+        let harness = afkconvoy_core::harness::Harness::ClaudeCode;
+        let shows = |line: &str, mark: &str| {
+            harness
+                .note_files("/w", line, true, 1090)
+                .iter()
+                .any(|f| harness.holds_note(&f.body, mark))
+        };
+        for say in [Say::GoOn, Say::Stop { free: GIB, floor: 4 * GIB }] {
+            let pending = Pending::new(&say, 1090);
+            assert_eq!(pending.mark, "convoy-disk-floor-1090");
+            assert!(shows(&pending.line, &pending.mark), "{pending:?}");
+            assert!(!shows(&line(&say), &pending.mark), "the bare line is never seen taken");
+            let queued = harness.note_files("/w", &pending.line, false, 1090);
+            assert!(!queued.iter().any(|f| harness.holds_note(&f.body, &pending.mark)));
+        }
+    }
+
     fn below_of(held: &[Hold]) -> Option<(u64, u64)> {
         below(held)
     }
