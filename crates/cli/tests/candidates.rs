@@ -1041,7 +1041,8 @@ fn runner_restart_keeps_running_candidate_ownership_and_capacity() {
         restored = world.afk(&["queue"]).json;
         restored["status"] == "available"
     });
-    assert_eq!(restored["worker"]["used"], 1, "{restored}");
+    assert_eq!(restored["running"].as_array().unwrap().len(), 1, "{restored}");
+    assert!(restored["room"]["reading"].is_object(), "{restored}");
     assert!(restored["running"].as_array().unwrap().iter().any(|r| r["issue"] == 1), "{restored}");
     let ordinary_marker = world.root.join("ordinary-started");
     let ordinary_script = format!("touch {}", quote(&ordinary_marker));
