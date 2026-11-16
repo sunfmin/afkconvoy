@@ -586,9 +586,10 @@ fn human_notification_failures_retry_at_later_looks_and_doctor_finds_three_then_
 #[test]
 fn a_hung_human_notification_times_out_and_retries_without_holding_back_looks_or_rounds() {
     let world = World::new();
-    // The 30s the notify command is given takes 3s: room for another round
-    // to complete while it hangs, and no half minute waited out twice.
-    world.scale_waits(100);
+    // The 30s the notify command is given takes 15s: room for another round
+    // to complete while it hangs, on a host loaded from outside the fleet
+    // too (sunfmin/control#1183), and no half minute waited out twice.
+    world.scale_waits(500);
     let dir = operator(&world);
     paused(&world, "pi", "an account is needed");
     let file = world.root.join("hung.jsonl");

@@ -411,7 +411,7 @@ fn a_cut_gates_ahead_of_waiting_workers_and_its_queue_wait_does_not_end_its_gate
         .fixed(" exclusive -- sh -c ")
         .word("echo \"$MARK\" >> \"$CACHE/order\"")
         .own();
-    world.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 1"));
+    world.set_gate_config(&format!("gate_command: {gate}\ngate_seconds: 20"));
     let cutting = world.root.join("afkconvoy-cut-2");
     common::git(
         &world.clone,
@@ -449,8 +449,9 @@ fn a_cut_gates_ahead_of_waiting_workers_and_its_queue_wait_does_not_end_its_gate
     let first = Path::new(queue["waiting"][0]["dir"].as_str().unwrap());
     assert_eq!(first.file_name().unwrap(), "afkconvoy-cut-2", "{queue}");
     assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");
-    // Longer than the gate limit: the gate starts its clock after the grant.
-    std::thread::sleep(Duration::from_millis(1200));
+    // Longer than the gate limit, which is room for a loaded host to run an
+    // `echo` (sunfmin/control#1183): the gate starts its clock after the grant.
+    std::thread::sleep(Duration::from_secs(21));
     std::fs::write(cache.join("release"), "").unwrap();
     let out = cutting.wait_with_output().unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
