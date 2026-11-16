@@ -1126,7 +1126,7 @@ fn a_landing_hold_keeps_a_workers_turn_and_gate_off_until_it_is_lifted() {
     for now in 1500..1502 {
         let ticked = tick(&world, now);
         assert_eq!(ticked["errors"], json!([]), "{ticked}");
-        assert!(!did(&ticked).iter().any(|step| step.starts_with("watch 7")), "{ticked}");
+        assert!(did(&ticked).contains(&"watch 7 nothing".to_string()), "{ticked}");
         assert!(!notes.join("convoy-turn.log").exists(), "asked again while the hold stood");
     }
 
