@@ -157,18 +157,29 @@ impl Kit {
     /// placed model — none, its default, while it has none placed. `None` of
     /// a host kit that holds no harness.
     pub fn first(&self) -> Option<Named> {
-        let held = self.harnesses.first()?;
+        let held = self.choosing().next()?;
         Some(Named { harness: held.harness, model: held.placed().next().map(|m| m.model.clone()) })
     }
 
-    /// The host kit as a range (docs/adr/0020): each harness in order, with
-    /// its placed models in order — none, its default, while none is placed.
+    /// The host kit as a range (docs/adr/0020): each harness in the order
+    /// the host kit chooses them (`choosing`), with its placed models in
+    /// order — none, its default, while none is placed.
     pub fn range(&self) -> Vec<afkconvoy_core::casting::Held> {
         let held = |held: &Held| afkconvoy_core::casting::Held {
             harness: held.harness,
             models: held.placed().map(Seen::as_model).collect(),
         };
-        self.harnesses.iter().map(held).collect()
+        self.choosing().map(held).collect()
+    }
+
+    /// Its harnesses in the order the host kit chooses a worker's: each that
+    /// reports its account's usage windows (`Harness::reports_windows`) in
+    /// the kit's order, then each that reports none, in the kit's order — a
+    /// harness whose account's use the host cannot see is spent only after
+    /// those it can (docs/adr/0088).
+    fn choosing(&self) -> impl Iterator<Item = &Held> {
+        let windows = self.harnesses.iter().filter(|held| held.harness.reports_windows());
+        windows.chain(self.harnesses.iter().filter(|held| !held.harness.reports_windows()))
     }
 
     /// The host kit as this host can start it now: without the harnesses
