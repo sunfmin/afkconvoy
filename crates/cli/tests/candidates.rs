@@ -562,12 +562,12 @@ fn a_pr_retargeted_during_validation_is_invalidated_without_publishing() {
     assert_eq!(world.gh()["issues"][0]["state"], "open");
 }
 
-/// Four ready, mutually clean PRs (docs/adr/0083): the turn builds two
-/// pairs and fast-gates both at once, then their pair, then gates the root
-/// merged onto the tip whole once, and lands all four in one fast-forward;
-/// each issue closes.
+/// Four ready, mutually clean PRs (docs/adr/0083, sunfmin/control#1239):
+/// the turns build one group of all four, fast-gated once by the last-asked
+/// PR's turn, then gate the root merged onto the tip whole once, and land
+/// all four in one fast-forward; each issue closes.
 #[test]
-fn four_ready_prs_pair_twice_gate_their_pair_and_land_in_one_fast_forward() {
+fn four_ready_prs_are_one_group_gated_fast_once_and_land_in_one_fast_forward() {
     let world = split_world(3);
     let (e, _) = worker(&world, 5, "e");
     let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
@@ -588,15 +588,16 @@ fn four_ready_prs_pair_twice_gate_their_pair_and_land_in_one_fast_forward() {
         },
     );
     let base = world.remote(&["rev-parse", "refs/heads/main"]);
-    // The two pairs gate at once, each by its later-asked PR's turn.
-    until(|| started(&world, "fast", "b") && started(&world, "fast", "d"));
-    assert!(!started(&world, "fast", "a") && !started(&world, "fast", "c"));
-    assert_eq!(pairs(&world), [(0, 20), (0, 40)]);
-    let_go(&world, "fast", "b", false);
+    // One group, gated by its last-asked PR's turn.
+    until(|| started(&world, "fast", "d"));
+    assert_eq!(pairs(&world), [(0, 40)], "one fast gate, not three");
     let_go(&world, "fast", "d", false);
-    // Their pair, then the root's whole gate, at the last-asked PR's turn.
+    // Then the root's whole gate, at the last-asked PR's turn.
     until(|| started(&world, "slow", "d"));
-    assert_eq!(pairs(&world), [(0, 20), (0, 40), (1, 40)]);
+    assert_eq!(pairs(&world), [(0, 40)]);
+    for name in ["a", "b", "c"] {
+        assert!(!started(&world, "fast", name), "no other fast gate ran");
+    }
     for name in ["a", "b", "c"] {
         assert!(!started(&world, "slow", name), "the root is gated whole once");
     }
@@ -628,18 +629,23 @@ fn four_ready_prs_pair_twice_gate_their_pair_and_land_in_one_fast_forward() {
     }
 }
 
-/// A pair whose fast gate is red stops no other pair (docs/adr/0083): its
-/// later-asked PR carries its partner — its branch fast-forwarded to the
-/// pair's merge and pushed, its turn given the red run — and the partner is
-/// closed "carried by #…", its branch deleted, its issue told where its
-/// work went on; the rest of the round lands.
+/// A group whose fast gate is red stops no other group (docs/adr/0083,
+/// sunfmin/control#1239): its last-asked PR carries the others — its branch
+/// fast-forwarded to the group's merge and pushed, its turn given the red
+/// run — and each other is closed "carried by #…", its branch deleted, its
+/// issue told where its work went on; the rest of the round lands. c and d
+/// conflict with a and b, so the level is two groups, gated at once.
 #[test]
-fn a_red_pair_has_its_later_pr_carry_its_partner_and_the_rest_lands() {
+fn a_red_group_has_its_last_pr_carry_the_others_and_the_rest_lands() {
     let world = split_world(3);
     let (e, _) = worker(&world, 5, "e");
-    let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
+    let workers: Vec<_> = [(1, "x", "a"), (2, "y", "b"), (3, "x", "c"), (4, "y", "d")]
         .into_iter()
-        .map(|(n, name)| worker(&world, n, name))
+        .map(|(n, file, name)| {
+            let dir = world.worker(n, &format!("{file}.txt"), name);
+            let head = git(&dir, &["rev-parse", "HEAD"]);
+            (dir, head)
+        })
         .collect();
     let _runner = world.host_held();
     let turns: Vec<(&Path, u64)> =
@@ -655,6 +661,7 @@ fn a_red_pair_has_its_later_pr_carry_its_partner_and_the_rest_lands() {
         },
     );
     until(|| started(&world, "fast", "b") && started(&world, "fast", "d"));
+    assert_eq!(pairs(&world), [(0, 20), (0, 40)], "two groups, at once");
     let_go(&world, "fast", "b", true);
     let b = children.remove(1);
     let red = finish(b);
@@ -666,7 +673,7 @@ fn a_red_pair_has_its_later_pr_carry_its_partner_and_the_rest_lands() {
     assert!(red["detail"].as_str().unwrap().contains("carried by this PR"), "{red}");
     let pair = red["pair"]["commit"].as_str().unwrap();
     assert_eq!(world.remote(&["rev-parse", "refs/heads/issue-2"]), pair, "pushed");
-    assert_eq!(git(&workers[1].0, &["rev-parse", "HEAD"]), pair, "its branch holds the pair");
+    assert_eq!(git(&workers[1].0, &["rev-parse", "HEAD"]), pair, "its branch holds the group");
     let a = children.remove(0);
     let carried = finish(a);
     assert_eq!(carried["outcome"], "carried", "{carried}");
@@ -693,9 +700,8 @@ fn a_red_pair_has_its_later_pr_carry_its_partner_and_the_rest_lands() {
     for answer in children.into_iter().map(finish) {
         assert_eq!(answer["outcome"], "merged", "{answer}");
     }
-    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
-    for (name, landed) in [("a", false), ("b", false), ("c", true), ("d", true)] {
-        assert_eq!(files.lines().any(|f| f == format!("{name}.txt")), landed, "{files}");
+    for (file, name) in [("x", "c"), ("y", "d")] {
+        assert_eq!(world.remote(&["show", &format!("refs/heads/main:{file}.txt")]), name);
     }
     assert_eq!(world.state(1), "open", "a carried issue stays open until its carrier lands");
     assert_eq!(world.state(2), "open");
@@ -848,7 +854,7 @@ fn a_dead_turns_gate_without_its_scope_is_stopped_and_the_next_land_lands() {
 
 /// The PRs that asked to land are taken into a round as it starts, its root
 /// one chain of candidates; a PR asking during the round waits for the next
-/// (docs/adr/0083). An odd PR goes up a level unpaired.
+/// (docs/adr/0083). Its three clean PRs are one group (sunfmin/control#1239).
 #[test]
 fn a_round_takes_the_prs_that_asked_and_one_asking_during_it_waits_for_the_next() {
     let world = world(3);
@@ -862,13 +868,10 @@ fn a_round_takes_the_prs_that_asked_and_one_asking_during_it_waits_for_the_next(
         workers[..3].iter().zip(1..).map(|((dir, _), n)| (dir.as_path(), n)).collect();
     let children =
         one_round(&world, &e, &turns, || began(&world, "e"), || release(&world, "e", false));
-    began(&world, "b");
-    assert_eq!(pairs(&world), [(0, 20)], "c goes up unpaired");
+    began(&world, "c");
+    assert_eq!(pairs(&world), [(0, 30)], "one group of the three");
     let mut fourth = start(&world, &workers[3].0, &world.cache(), 4);
     until(|| chain(&world)["pending"].as_array().is_some_and(|p| p.len() == 1));
-    release(&world, "b", false);
-    began(&world, "c");
-    assert_eq!(pairs(&world), [(0, 20), (1, 30)]);
     std::thread::sleep(Duration::from_millis(200));
     assert!(fourth.try_wait().unwrap().is_none());
     assert!(!world.root.join("start-d").exists(), "it asked during the round");
@@ -1690,8 +1693,11 @@ fn a_pr_conflicting_with_every_partner_carries_the_earliest_and_lands_both() {
     assert_eq!(world.state(1), "closed", "the carried issue closes as its carrier lands");
 }
 
+/// With one lane, three clean PRs are one group, fast-gated once by the
+/// last-asked PR's turn (sunfmin/control#1239), and the round lands on one
+/// slow gate.
 #[test]
-fn with_one_lane_every_pair_gates_in_turn_and_the_round_lands_on_one_slow_gate() {
+fn with_one_lane_a_round_s_one_group_gates_and_the_round_lands_on_one_slow_gate() {
     let world = split_world(1);
     let (e, _) = worker(&world, 5, "e");
     let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]
@@ -1711,13 +1717,12 @@ fn with_one_lane_every_pair_gates_in_turn_and_the_round_lands_on_one_slow_gate()
             let_go(&world, "slow", "e", false);
         },
     );
-    until(|| started(&world, "fast", "b"));
-    assert!(!started(&world, "fast", "c"), "c goes up unpaired");
-    let_go(&world, "fast", "b", false);
     until(|| started(&world, "fast", "c"));
+    assert_eq!(pairs(&world), [(0, 30)], "one group of the three");
     let_go(&world, "fast", "c", false);
     until(|| started(&world, "slow", "c"));
     assert!(!started(&world, "slow", "a") && !started(&world, "slow", "b"));
+    assert!(!started(&world, "fast", "a") && !started(&world, "fast", "b"));
     let_go(&world, "slow", "c", false);
     let answers: Vec<Value> = children.into_iter().map(finish).collect();
     for answer in &answers {

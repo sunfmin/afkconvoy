@@ -163,6 +163,7 @@ kinds! {
     OrcaUnasked: Critical, "cannot be asked about this checkout";
     OrcaNotRunning: Critical, "is not running";
     NoCheckout: Critical, "does not know this checkout";
+    OrcaDisagrees: Warning, "answer different repo lists";
     LaunchStartsNone: Critical, "cannot start a worker";
     LaunchTakesNoRole: Critical, "cannot start a worker in its role";
     NoRun: Critical, "no `afkconvoy run` is alive";
@@ -171,6 +172,7 @@ kinds! {
     RepoUnworked: Warning, "no fleet has taken";
     RepoUnreadable: Warning, "remote could not be read";
     GithubQuota: Warning, "GitHub quota is spent";
+    AccountsSpent: Warning, "account takes a new worker";
     StepFailed: Critical, "failed in each of the last";
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
@@ -270,10 +272,12 @@ impl Kind {
                 | Kind::RunnerBusy
                 | Kind::DiskFilling
                 | Kind::PathStale
+                | Kind::OrcaDisagrees
                 | Kind::OtherAccount
                 | Kind::RepoUnworked
                 | Kind::RepoUnreadable
                 | Kind::GithubQuota
+                | Kind::AccountsSpent
                 | Kind::WorkerHealth
                 | Kind::HealthOverdue
                 | Kind::ExitWaiting
@@ -294,9 +298,11 @@ impl Kind {
                 | Kind::NotifyFailed
                 | Kind::DaybookUnwritten
                 | Kind::PathStale
+                | Kind::OrcaDisagrees
                 | Kind::NotUpgraded
                 | Kind::LandingContention
                 | Kind::GithubQuota
+                | Kind::AccountsSpent
         )
     }
 }
@@ -781,11 +787,11 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                     START_ORCA.to_string(),
                 ),
             },
-            Found::KnowsNoCheckout(path) => (
+            Found::KnowsNoCheckout { orca, checkout } => (
                 Kind::NoCheckout,
                 format!("`{name}` does not know this checkout: no worker can be started"),
-                format!("`orca repo list` names no repo at {path}"),
-                add_checkout(path),
+                format!("`{orca} repo list` names no repo at {checkout}"),
+                add_checkout(orca, checkout),
             ),
         };
         found.push(finding(kind, json!(["tool", name]), what, evidence, fix));
@@ -2150,7 +2156,7 @@ fn host_json(host: &Host) -> Value {
             Found::LoggedOut(_) => "logged_out",
             Found::NotRunning if host.orca_unasked.is_some() => "unasked",
             Found::NotRunning => "not_running",
-            Found::KnowsNoCheckout(_) => "knows_no_checkout",
+            Found::KnowsNoCheckout { .. } => "knows_no_checkout",
         };
         let mut said = json!({"name": tool.name(), "state": state});
         // Which orca the fleet runs, and where: its calls all go there.
@@ -2901,6 +2907,7 @@ impl Look {
         findings.extend(crate::queue::retained_findings(&host["exclusive"], now));
         findings.extend(crate::machine::findings(&others, host_runner::runs()));
         findings.extend(crate::machine::path_findings());
+        findings.extend(crate::tools::orca_findings());
         findings.extend(crate::kit_research::findings());
         findings.extend(crate::agent_setup::findings());
         findings.extend(crate::tmux::findings());
@@ -3052,6 +3059,9 @@ pub fn all_since_rounds(
         of_host.push(crate::unworked::quota_finding(&quota));
         once.insert("github_quota".into(), quota);
     }
+    // A harness with no account left is one finding of the host's, not one
+    // per issue its workers wait with (sunfmin/control#1220).
+    of_host.extend(crate::engine_accounts::findings(now));
     // Said once, named for the first checkout on the list: the lines are
     // equal while they are gathered, and each runs from any directory.
     if let Some(checkout) = listed.first() {
@@ -3478,7 +3488,9 @@ mod tests {
             let line = ["afkconvoy ", "gh ", "orca ", "brew ", "curl ", "claude "]
                 .iter()
                 .any(|program| fix.starts_with(program))
-                || fix == "pi";
+                || fix == "pi"
+                // a program named by its absolute path, as the orca that was asked
+                || fix.starts_with("'/") && fix.contains("/orca' ");
             let file = fix.split(": ").next().is_some_and(|file| file.ends_with(".md"));
             assert!(line || file, "a fix that is neither a line nor a file and key: {fix:?}");
             assert!(!fix.contains('\n') && !finding.evidence.is_empty(), "{finding:?}");
@@ -3521,11 +3533,14 @@ mod tests {
         assert!(found.iter().all(|finding| finding.severity == Severity::Critical));
 
         let mut unknown = host();
-        unknown.tools[2].1 = Found::KnowsNoCheckout("/repos/widgets".into());
+        unknown.tools[2].1 = Found::KnowsNoCheckout {
+            orca: "/home/h/.local/bin/orca".into(),
+            checkout: "/repos/widgets".into(),
+        };
         let found = self::found(&unknown, &run(vec![]), &state());
         assert_eq!(
             fixes(&found, "`orca` does not know this checkout"),
-            ["orca repo add --path '/repos/widgets'"]
+            ["'/home/h/.local/bin/orca' repo add --path '/repos/widgets'"]
         );
         // an orca that is not running, and one that runs and cannot say
         let mut stopped = host();

@@ -10,6 +10,21 @@ Felix: 「我想把这个逻辑改成。并发的寻找和自己不冲突的 PR�
 
 In a candidate chain each candidate is merged onto the one before it, so a red or invalid candidate cancels every candidate behind it (ADR-0037), green or not. From `refs/convoy/candidates/main`, 2026-11-11..15: afkconvoy had 29 candidates cancelled by another's failure, 20 of them already fast-green; guild 46, 34 fast-green. `predecessor_failed` was 12 and 17 of those: the cancellations a pairing tree saves. `round_red`, 14 and 23, stays: a red round is still not bisected.
 
+## Amendment: a level merges every clean node into one group (sunfmin/control#1239)
+
+Decided by Felix, control session 2026-11-16 ~19:10 JST: 「Afkconvoy 里面我们之前改的一对一对的合并。我觉着应该给它改成所有不冲突的都给它合到一起。不限制两个。」 — the pairing tree merges two by two; instead, everything that does not conflict is merged together, not limited to two.
+
+What gives way is the **pair**, two nodes merged and fast-gated alone. It is now a **group**:
+
+- At each level, in the order the nodes asked to land, the first node not yet taken starts a group, and every later node that merges cleanly with what that group holds so far (`git merge-tree`, textual conflicts only) is merged into it, the earlier-asked first, each onto the merge before. This repeats until every node of the level is taken. A node no later node merges with goes up alone. A level of N mutually clean PRs is one group with one fast gate, not N−1.
+- Each group is fast-gated alone, in its own worktree and lane, by its last-asked PR's turn; the groups of a level gate at once. Levels repeat until one node is left, the root, merged onto the target tip and gated whole, fast and slow, once.
+- **A red group**, as a red pair before: every side of it leaves the round; its last-asked PR carries every other PR in it, its branch fast-forwarded to the group's merge and handed the red run. The cost: one red change sends every PR merged with it back to one worker, where a pair sent two.
+- **A node that conflicts with every other node of its level**, each asked alone: carried as before, the earliest-asked conflicting node no group took, one a level.
+- **The stacked round**: its PRs group among themselves as any round's do; one that asks later joins it as a node of the level it groups, its groups not yet on the chain, or a level above its root, as before.
+- Unchanged: the root's landing, reused runs (ADR-0069), barriers landing alone, no bisection, one implementation in the landing crate (`pairing::groups`) for afkconvoy's turns and the plain runner `Lander::land` (ADR-0060).
+
+The code and the records keep this ADR's names: the module `pairing`, a group's candidate `Candidate::pair`, its record `Paired` — its first node, its second (`second`, `partner`) and the nodes merged after (`later`). A pair recorded before has no `later` and reads as a group of two. Below, a **pair** is read as a group, and "the later-asked PR" of one as its last-asked.
+
 ## The decision
 
 - **Who is in a round**: every PR that asked to land and whose worker's fast gate is green, taken when the round starts. A PR that asks during a round waits for the next — unless the round's whole gate runs: then it stacks on the round (below).
@@ -69,7 +84,8 @@ The plain runner (`Lander::land`) carries the same way among the changes it is g
 
 - One red change no longer cancels the changes asked after it: its pair alone is red.
 - A PR that asks while a round's whole gate runs is fast-gated beside it: when that round lands, the next starts with its fast gate done. Each PR that joins a stacked round above its root costs one more pair and one more stacked merge, fast only.
-- A round of N mutually clean PRs runs N−1 pair gates, fast only, about log2 N levels deep and each level's at once, and one whole gate; before, it ran N fast gates one behind the other and one slow gate.
+- A round of N mutually clean PRs runs one group's fast gate, one level deep, and one whole gate — whose fast part is that run, reused, where its PRs held the tip; as first decided here it ran N−1 pair gates, about log2 N levels deep, and before that N fast gates one behind the other and one slow gate (sunfmin/control#1239). Textual conflicts split a level into more groups, each gating at once.
+- One red change sends every PR of its group back to one worker, which carries them all; a pair sent two.
 - A pair's fast gate runs on a tree that is not the target's: a change that breaks only with the tip's newer commits is first seen by the root's whole gate.
 - `Phase::Batched` and a candidate's `batch` now mean a candidate of a round's root, not gated alone; records of batch rounds still read.
 - Guild lands with the same crate, and its `land_with` and `Landing` are gone with the batch round.

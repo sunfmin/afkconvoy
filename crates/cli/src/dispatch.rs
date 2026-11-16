@@ -155,6 +155,14 @@ impl Agent {
         let prepared = crate::codex_launch::prepare_worker(
             harness, worktree, model, source, command, in_role,
         )?;
+        // The account it starts on, of the several its harness may hold:
+        // the one with the most left (sunfmin/control#1220). With none left
+        // it does not start, and its claim is continued once one takes it.
+        let account = crate::engine_accounts::choose(harness, now)?;
+        let prepared_command = match &account {
+            Some(account) => account.line(&prepared.command),
+            None => prepared.command,
+        };
         let command = match issue {
             Some(issue) => Line::new()
                 .fixed("export ")
@@ -162,10 +170,11 @@ impl Agent {
                 .fixed("=")
                 .number(issue)
                 .fixed(" && ")
-                .launch(&prepared.command)
+                .launch(&prepared_command)
                 .done(),
-            None => prepared.command,
+            None => prepared_command,
         };
+        crate::engine_accounts::keep(worktree, account.as_ref())?;
         let terminal = self.start(worktree, tracker, harness, &command, None, now)?;
         std::fs::write(
             worktree.note("convoy-worker-model")?,

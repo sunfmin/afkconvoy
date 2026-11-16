@@ -28,6 +28,10 @@ pub enum Reason {
     /// The repo's candidate chain, which cannot keep up (docs/adr/0076). It
     /// drains as the running workers land, and calls for no watch.
     Landing,
+    /// No account of the harness its workers start on takes one
+    /// (sunfmin/control#1220): nothing on the host gives an account's use
+    /// back before its window resets, and it calls for no watch.
+    Accounts,
 }
 
 impl Reason {
@@ -41,6 +45,7 @@ impl Reason {
             Hold::Queue { .. } => Reason::Queue,
             Hold::OwnCores { .. } | Hold::OwnMemory { .. } => Reason::Share,
             Hold::Landing { .. } => Reason::Landing,
+            Hold::Accounts { .. } => Reason::Accounts,
         }
     }
 
@@ -54,6 +59,7 @@ impl Reason {
             Reason::Queue => "queue",
             Reason::Share => "share",
             Reason::Landing => "landing",
+            Reason::Accounts => "accounts",
         }
     }
 
@@ -66,6 +72,7 @@ impl Reason {
             Reason::Queue,
             Reason::Share,
             Reason::Landing,
+            Reason::Accounts,
         ]
         .into_iter()
         .find(|reason| reason.word() == word)

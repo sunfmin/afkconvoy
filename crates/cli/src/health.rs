@@ -1569,8 +1569,20 @@ fn decide(
         }
         _ => {}
     }
+    // An account's quota rests that account, of the several its harness may
+    // hold, until the reset it names or an hour (sunfmin/control#1220): the
+    // harness itself, on another account, still takes work.
+    let account_rests = diagnosis.is(Class::Quota)
+        && diagnosis.scope == Scope::Account
+        && crate::engine_accounts::rest(
+            worktree,
+            fleet.now,
+            diagnosis.retry_after,
+            &diagnosis.evidence.join("; "),
+        )?;
     if observed.command_key.is_some()
         && diagnosis.scope != Scope::Worker
+        && !account_rests
         && let Some(held) = kit.harnesses.iter().find(|h| h.harness == observed.harness)
     {
         let fault = Fault {

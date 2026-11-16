@@ -110,10 +110,10 @@ pub struct Candidate<N = Plain> {
     /// candidate up to it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub batch: bool,
-    /// It is a pair of a round's pairing tree, not a candidate of the chain:
-    /// what it joins (`pairing::Paired`). Its `change` is the later-asked
-    /// PR's, whose turn gates it, and its `predecessor` the earlier node's
-    /// commit, its first parent.
+    /// It is a group of a round's pairing tree (a pair, as recorded before
+    /// sunfmin/control#1239), not a candidate of the chain: what it joins
+    /// (`pairing::Paired`). Its `change` is the last-asked PR's, whose turn
+    /// gates it, and its `predecessor` the first node's commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pair: Option<crate::pairing::Paired>,
     /// When it was assigned, in epoch seconds; `None` on a record written
@@ -354,7 +354,7 @@ impl<N> Candidate<N> {
         ) && self.cancelled_by.is_none()
     }
 
-    /// It is a pair of a round's pairing tree, beside the chain, not one of
+    /// It is a group of a round's pairing tree, beside the chain, not one of
     /// its candidates (`pair`).
     pub fn is_pair(&self) -> bool {
         self.pair.is_some()

@@ -146,6 +146,8 @@ fn on_stock_claude_the_stock_command_is_used_and_nobody_is_asked() {
             "type -- 'claude'",
             "gh auth status",
             "claude auth status",
+            // the host look's: every orca a login shell finds (sunfmin/control#1236)
+            "which -a orca",
             &flags
         ]
         .contains(&line.as_str())),
@@ -189,9 +191,10 @@ fn on_a_custom_provider_the_passed_command_is_preserved_and_worktree_trust_is_ad
     assert!(asked.iter().any(|line| line == "type -- 'kim'"));
     let flags = afkconvoy_core::harness::Harness::ClaudeCode.flags_question(passed);
     assert!(
-        asked
-            .iter()
-            .all(|line| ["type -- 'kim'", "gh auth status", &flags].contains(&line.as_str())),
+        asked.iter().all(|line| {
+            // `which -a orca` is the host look's, of no harness (sunfmin/control#1236)
+            ["type -- 'kim'", "gh auth status", "which -a orca", &flags].contains(&line.as_str())
+        }),
         "opaque wrapper credentials are never inspected: {asked:?}"
     );
 

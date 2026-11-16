@@ -168,7 +168,10 @@ fn in_a_checkout_orca_does_not_know_no_patrol_is_run_and_no_slot_held() {
     ] {
         let error = start.error();
         assert!(
-            error.contains("orca does not know this checkout: orca repo add --path '"),
+            error.contains(&format!(
+                "orca does not know this checkout: '{}' repo add --path '",
+                world.orca_program().display()
+            )),
             "{error}"
         );
     }
