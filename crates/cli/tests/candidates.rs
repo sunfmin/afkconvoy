@@ -1618,8 +1618,11 @@ fn a_pr_conflicting_with_every_partner_carries_the_earliest_and_lands_both() {
     assert_eq!(world.state(1), "closed", "the carried issue closes as its carrier lands");
 }
 
+/// With one lane, three clean PRs are one group, fast-gated once by the
+/// last-asked PR's turn (sunfmin/control#1239), and the round lands on one
+/// slow gate.
 #[test]
-fn with_one_lane_every_pair_gates_in_turn_and_the_round_lands_on_one_slow_gate() {
+fn with_one_lane_a_round_s_one_group_gates_and_the_round_lands_on_one_slow_gate() {
     let world = split_world(1);
     let (e, _) = worker(&world, 5, "e");
     let workers: Vec<_> = [(1, "a"), (2, "b"), (3, "c")]
@@ -1639,13 +1642,12 @@ fn with_one_lane_every_pair_gates_in_turn_and_the_round_lands_on_one_slow_gate()
             let_go(&world, "slow", "e", false);
         },
     );
-    until(|| started(&world, "fast", "b"));
-    assert!(!started(&world, "fast", "c"), "c goes up unpaired");
-    let_go(&world, "fast", "b", false);
     until(|| started(&world, "fast", "c"));
+    assert_eq!(pairs(&world), [(0, 30)], "one group of the three");
     let_go(&world, "fast", "c", false);
     until(|| started(&world, "slow", "c"));
     assert!(!started(&world, "slow", "a") && !started(&world, "slow", "b"));
+    assert!(!started(&world, "fast", "a") && !started(&world, "fast", "b"));
     let_go(&world, "slow", "c", false);
     let answers: Vec<Value> = children.into_iter().map(finish).collect();
     for answer in &answers {

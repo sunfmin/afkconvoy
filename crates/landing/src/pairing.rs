@@ -288,44 +288,80 @@ pub fn groups<M, E>(
     let mut taken: Vec<usize> = vec![];
     let mut groups = vec![];
     for first in 0..n {
-        if taken.contains(&first) {
-            continue;
-        }
-        let mut held = vec![first];
-        let mut merged: Option<M> = None;
-        for later in first + 1..n {
-            if taken.contains(&later) {
-                continue;
+        if !taken.contains(&first) {
+            let (held, merged) = group(first, n, &taken, &mut known, &mut merge)?;
+            if let Some(m) = merged {
+                taken.extend(&held);
+                groups.push((held, m));
             }
-            let made = merge(merged.as_ref(), &held, later)?;
-            if merged.is_none() {
-                known.push(((first, later), made.is_some()));
-            }
-            if let Some(m) = made {
-                merged = Some(m);
-                held.push(later);
-            }
-        }
-        if let Some(m) = merged {
-            taken.extend(&held);
-            groups.push((held, m));
         }
     }
-    let mut carry = None;
-    for alone in (0..n).rev().filter(|x| !taken.contains(x)) {
+    let carry = carry(n, &taken, &mut known, &mut merge)?;
+    Ok(Grouping { groups, carry })
+}
+
+/// The group `first` starts among `n` nodes, the nodes `taken` set aside:
+/// its nodes, and their merge, `None` where no later node merges with it.
+/// What `merge` says of `first` and one other node alone goes in `known`.
+fn group<M, E>(
+    first: usize,
+    n: usize,
+    taken: &[usize],
+    known: &mut Vec<((usize, usize), bool)>,
+    merge: &mut impl FnMut(Option<&M>, &[usize], usize) -> Result<Option<M>, E>,
+) -> Result<(Vec<usize>, Option<M>), E> {
+    let mut held = vec![first];
+    let mut merged: Option<M> = None;
+    for later in first..n {
+        if later == first || taken.contains(&later) {
+            continue;
+        }
+        let made = merge(merged.as_ref(), &held, later)?;
+        if merged.is_none() {
+            known.push(((first, later), made.is_some()));
+        }
+        if let Some(m) = made {
+            merged = Some(m);
+            held.push(later);
+        }
+    }
+    Ok((held, merged))
+}
+
+/// Whether nodes `a` and `b`, `a` the earlier, merge cleanly alone, asked of
+/// `merge` once.
+fn clean<M, E>(
+    (a, b): (usize, usize),
+    known: &mut Vec<((usize, usize), bool)>,
+    merge: &mut impl FnMut(Option<&M>, &[usize], usize) -> Result<Option<M>, E>,
+) -> Result<bool, E> {
+    if let Some((_, said)) = known.iter().find(|(k, _)| *k == (a, b)) {
+        return Ok(*said);
+    }
+    let said = merge(None, &[a], b)?.is_some();
+    known.push(((a, b), said));
+    Ok(said)
+}
+
+/// The last-asked of `n` nodes no group took that conflicts with every
+/// other node, each alone, and the earliest-asked of those no group took.
+fn carry<M, E>(
+    n: usize,
+    taken: &[usize],
+    known: &mut Vec<((usize, usize), bool)>,
+    merge: &mut impl FnMut(Option<&M>, &[usize], usize) -> Result<Option<M>, E>,
+) -> Result<Option<(usize, usize)>, E> {
+    for alone in (0..n).rev() {
+        if taken.contains(&alone) {
+            continue;
+        }
         let mut with = None;
         let mut conflicts = true;
-        for other in (0..n).filter(|&y| y != alone) {
-            let key = (alone.min(other), alone.max(other));
-            let clean = match known.iter().find(|(k, _)| *k == key) {
-                Some((_, said)) => *said,
-                None => {
-                    let said = merge(None, &[key.0], key.1)?.is_some();
-                    known.push((key, said));
-                    said
-                }
-            };
-            if clean {
+        for other in 0..n {
+            if other == alone {
+                continue;
+            }
+            if clean((alone.min(other), alone.max(other)), known, merge)? {
                 conflicts = false;
                 break;
             }
@@ -333,12 +369,11 @@ pub fn groups<M, E>(
                 with = Some(other);
             }
         }
-        if let Some(other) = with.filter(|_| conflicts) {
-            carry = Some((alone, other));
-            break;
+        if let (true, Some(other)) = (conflicts, with) {
+            return Ok(Some((alone, other)));
         }
     }
-    Ok(Grouping { groups, carry })
+    Ok(None)
 }
 
 impl Round {
@@ -761,10 +796,13 @@ impl<N: Clone> Chain<N> {
         }
         let r = r.clone();
         for b in built {
-            let held: Option<Vec<&Node>> = b.nodes.iter().map(|&i| r.nodes.get(i)).collect();
-            let Some([first, second, later @ ..]) = held.as_deref() else { continue };
-            let mut joins: Vec<u64> =
-                held.iter().flatten().flat_map(|n| &n.changes).copied().collect();
+            let held: Vec<&Node> = b.nodes.iter().filter_map(|&i| r.nodes.get(i)).collect();
+            let (Some(first), Some(second)) = (held.first(), held.get(1)) else { continue };
+            if held.len() != b.nodes.len() {
+                continue;
+            }
+            let later: Vec<Node> = held.iter().skip(2).map(|&n| n.clone()).collect();
+            let mut joins: Vec<u64> = held.iter().flat_map(|n| &n.changes).copied().collect();
             joins.sort_by_key(|&change| r.place(change));
             // The later-asked PR still in the round: one whose turn ended has no
             // place, and sorts last.
@@ -790,7 +828,7 @@ impl<N: Clone> Chain<N> {
                     first: first.changes.clone(),
                     second: second.changes.clone(),
                     partner: second.commit.clone(),
-                    later: later.iter().map(|&n| n.clone()).collect(),
+                    later,
                     stacked: false,
                 },
             }
