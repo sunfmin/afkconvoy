@@ -334,3 +334,86 @@ fn kit_discovers_grok_models_through_its_isolated_home() {
         line.contains("export GROK_HOME=") && line.ends_with("&& grok --always-approve models")
     }));
 }
+
+/// This machine's name, as an account's `MACHINE` names the one its login
+/// is on.
+fn machine() -> String {
+    let ran = std::process::Command::new("hostname").arg("-s").output().unwrap();
+    String::from_utf8(ran.stdout).unwrap().trim().to_string()
+}
+
+/// Two Grok accounts whose logins are on this machine, each logged in in
+/// its home, `~/.agent-accounts/<name>`, and the host user's own login.
+fn two_grok_accounts(world: &World) {
+    write(&world.home(), ".grok/auth.json", "{\"theirs\": \"host user\"}\n");
+    for name in ["first", "second"] {
+        world.mytokens_account(name, &[("HARNESS", "grok"), ("MACHINE", &machine())]);
+        write(&world.home(), &format!(".agent-accounts/{name}/auth.json"), "{}\n");
+    }
+}
+
+/// The account the worker in `dir` started on, as its note names it.
+fn noted_account(dir: &Path) -> String {
+    let git_dir = git(dir, &["rev-parse", "--absolute-git-dir"]);
+    std::fs::read_to_string(Path::new(git_dir.trim()).join("convoy-account")).unwrap()
+}
+
+/// With two Grok accounts, the next Grok worker starts in a home kept for
+/// the one with the most left, which links that account's login, not the
+/// host user's (sunfmin/control#1231).
+#[test]
+fn with_two_grok_accounts_the_worker_starts_on_the_login_of_the_one_with_most_left() {
+    let world = bound_with(TEAM);
+    two_grok_accounts(&world);
+    world.account_book(&[("first", 70, 4_000_000_000), ("second", 20, 4_000_000_000)]);
+    world.issue(7, &["flow:feature"]);
+    tick(&world);
+
+    let tree = worktree(&world, 7);
+    let kept = kept_from(&started(&world, &tree));
+    let own = world.cache().join("afkconvoy/harness/grok-host-user@second");
+    assert!(kept.starts_with(&own), "{kept:?}");
+    assert_eq!(
+        std::fs::read_link(kept.join("auth.json")).unwrap(),
+        world.home().join(".agent-accounts/second/auth.json")
+    );
+    assert_eq!(noted_account(&tree), "second");
+    let plan = world.afk(&["plan", "--now", "1000"]).ok();
+    let accounts = plan["accounts"]["accounts"].as_array().unwrap();
+    assert!(accounts.iter().all(|account| account["takes_work"] == true), "{plan}");
+}
+
+/// A Grok account that met a 429 of its usage rests until the reset it
+/// names: the worker on it continues on Grok's other account at once, and
+/// the account takes work again once its rest is over (sunfmin/control#1231).
+#[test]
+fn a_grok_account_that_met_a_429_rests_until_its_reset_and_its_worker_continues_on_the_other() {
+    let world = bound_with(TEAM);
+    two_grok_accounts(&world);
+    world.issue(7, &["flow:feature"]);
+    tick(&world);
+    let tree = worktree(&world, 7);
+    assert_eq!(noted_account(&tree), "first", "of equals, the first mytokens lists");
+
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "idle", "error": {"status": 429,
+                "code": "usage_limit_reached", "retry_after": 900}});
+        }
+    });
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "1100"]).ok();
+
+    let line = started(&world, &tree);
+    assert!(line.contains(" && grok --always-approve"), "still on grok: {line}");
+    let own = world.cache().join("afkconvoy/harness/grok-host-user@second");
+    assert!(kept_from(&line).starts_with(&own), "{line}");
+    assert_eq!(noted_account(&tree), "second");
+
+    let resting = world.afk(&["plan", "--now", "1500"]).ok();
+    let first = &resting["accounts"]["accounts"][0];
+    assert_eq!(first["name"], "first", "{resting}");
+    assert_eq!(first["takes_work"], false, "{resting}");
+    assert_eq!(first["rests_until"], 2000, "{resting}");
+    let rested = world.afk(&["plan", "--now", "2001"]).ok();
+    assert_eq!(rested["accounts"]["accounts"][0]["takes_work"], true, "{rested}");
+}
