@@ -1136,6 +1136,24 @@ impl World {
         log.lines().map(str::to_string).collect()
     }
 
+    /// What `read` reads while this test holds the lock file `lock`, under
+    /// the cache. A loop that holds that lock throughout each pass and counts
+    /// the pass under it began every pass it counts after `read`, after it:
+    /// a test waits for such a count to pass what `read` read to know the
+    /// loop has looked again since (sunfmin/control#1280).
+    pub fn holding<T>(&self, lock: &str, read: impl FnOnce() -> T) -> T {
+        let path = self.cache().join(lock);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .unwrap();
+        file.lock().unwrap();
+        read()
+    }
+
     /// Has every `git` call afkconvoy makes from here on logged (`git_calls`).
     pub fn watch_git(&self) {
         let (git, log) = (git_program(), self.root.join("git.log"));
