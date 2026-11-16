@@ -1433,6 +1433,29 @@ mod tests {
         Held { harness, command: command.into(), models }
     }
 
+    /// Where the host kit chooses, a harness that reports no usage windows
+    /// comes after each that does, whatever the kit's order; among each,
+    /// the kit's order stands (sunfmin/control#1231).
+    #[test]
+    fn a_harness_with_no_windows_comes_after_those_with() {
+        let kit = Kit {
+            cast: Default::default(),
+            harnesses: vec![
+                held(Harness::Grok, "grok", &[]),
+                held(Harness::Kimi, "kimi", &[]),
+                held(Harness::Pi, "pi", &[]),
+                held(Harness::ClaudeCode, "claude", &[]),
+            ],
+            removed: vec![],
+            _retired_consult: None,
+        };
+        let order: Vec<Harness> = kit.range().iter().map(|held| held.harness).collect();
+        assert_eq!(order, [Harness::Kimi, Harness::ClaudeCode, Harness::Grok, Harness::Pi]);
+        assert_eq!(kit.first().map(|first| first.harness), Some(Harness::Kimi));
+        let kept: Vec<Harness> = kit.harnesses.iter().map(|held| held.harness).collect();
+        assert_eq!(kept[0], Harness::Grok, "the kit's own order is not rewritten");
+    }
+
     /// A host with Claude Code, Codex, pi and Kimi Code found, DSH absent;
     /// Claude Code lists three ids and Codex lists three, one duplicated.
     fn composed(current: &Kit) -> (Kit, Vec<LeftOut>) {

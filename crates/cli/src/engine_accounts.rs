@@ -609,6 +609,48 @@ mod tests {
         assert!(!line.contains("sk-idle"), "the line holds where the token is, never it");
     }
 
+    /// A Codex account whose `primary` or `secondary` window is at 90% takes
+    /// no new worker: the next starts on its other account, whose login is
+    /// on this machine (sunfmin/control#1231).
+    #[test]
+    fn a_codex_account_at_ninety_percent_of_either_window_sends_the_next_to_the_other() {
+        let held = Held(vec![
+            ("agent-account-first", json!({"HARNESS": "codex", "MACHINE": "studio"})),
+            ("agent-account-second", json!({"HARNESS": "codex", "MACHINE": "studio"})),
+        ]);
+        let read = read(&held).unwrap();
+        let listed = Listed {
+            accounts: read.accounts,
+            refused: read.refused,
+            program: PathBuf::from("/bin/mytokens"),
+        };
+        let home = tempfile::tempdir().unwrap();
+        for name in ["first", "second"] {
+            let login = home.path().join(account::HOMES).join(name).join("auth.json");
+            std::fs::create_dir_all(login.parent().unwrap()).unwrap();
+            std::fs::write(login, "{}").unwrap();
+        }
+        let window = |name: &str, used| Window { name: name.into(), used, resets_at: NOW + 3600 };
+        for (busy, other) in [("first", "second"), ("second", "first")] {
+            for full in ["primary", "secondary"] {
+                let mut book = Book::default();
+                let low = if full == "primary" { "secondary" } else { "primary" };
+                observe(&mut book, busy, NOW - 60, vec![window(full, 90), window(low, 5)]);
+                observe(&mut book, other, NOW - 60, vec![window("primary", 60)]);
+                let standings = standings_of(
+                    &listed,
+                    &book,
+                    Harness::Codex,
+                    "studio",
+                    home.path(),
+                    &BTreeMap::new(),
+                );
+                let accounts = Accounts { harness: Harness::Codex, standings, limit: 90, now: NOW };
+                assert_eq!(accounts.chosen().map(|c| c.name.as_str()), Some(other), "{full}");
+            }
+        }
+    }
+
     #[test]
     fn with_every_account_at_its_limit_none_starts_and_each_says_why() {
         let listed = two_claude_accounts();

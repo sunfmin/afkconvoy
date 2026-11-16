@@ -888,6 +888,36 @@ mod tests {
         }
     }
 
+    /// A worker on an account's refreshing login is started in a directory
+    /// kept for that account, `<harness>[-host-user]@<account>`, and its
+    /// harness records its turn there: it is read as the worker's
+    /// (sunfmin/control#1231). Grok and Kimi Code keep it under the fleet's
+    /// cache; Codex under the worktree's own fresh directory, which its
+    /// launch notes, and which its windows and limits are read in after.
+    #[test]
+    fn a_turn_in_the_home_kept_for_an_account_is_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("work");
+        std::fs::create_dir(&cwd).unwrap();
+        let root = crate::codex_launch::fresh_root(Harness::Codex, &cwd).unwrap();
+        let codex = root.join("harness/codex-host-user@work");
+        std::fs::create_dir_all(&codex).unwrap();
+        assert!(worker_homes(&cwd, Harness::Codex).unwrap().contains(&codex));
+
+        for harness in [Harness::Grok, Harness::Kimi] {
+            let dir = tempfile::tempdir().unwrap();
+            let cwd = dir.path().join("work");
+            std::fs::create_dir(&cwd).unwrap();
+            let name = format!("{}-host-user@work", harness.key());
+            let home = crate::copies::cache().unwrap().join("harness").join(&name).join("role-1");
+            std::fs::create_dir_all(&home).unwrap();
+            let read = || read_turn(&cwd, harness, Some(AT - 2), Some(AT - 2)).unwrap();
+            assert_eq!(read(), None, "{}: no turn recorded is no start", harness.key());
+            write_session(&home, harness, &cwd_str(&cwd), true, AT).unwrap();
+            assert_eq!(read(), Some(Turn::Open { since: AT }), "{}", harness.key());
+        }
+    }
+
     #[test]
     fn every_harness_round_trips_an_open_and_a_closed_turn() {
         let dir = tempfile::tempdir().unwrap();

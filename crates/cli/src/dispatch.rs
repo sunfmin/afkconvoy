@@ -161,7 +161,12 @@ impl Agent {
         let account = crate::engine_accounts::choose(harness, now)?;
         crate::engine_accounts::keep(worktree, account.as_ref())?;
         let prepared = crate::codex_launch::prepare_worker(
-            harness, worktree, model, source, &command()?, in_role,
+            harness,
+            worktree,
+            model,
+            source,
+            &command()?,
+            in_role,
         )?;
         let prepared_command = match &account {
             Some(account) => account.line(&prepared.command),

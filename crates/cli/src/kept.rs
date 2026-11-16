@@ -500,3 +500,47 @@ fn point(link: &Path, theirs: Option<&Path>) -> std::io::Result<()> {
         made => made,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A worker on an account's refreshing login gets a directory of that
+    /// account's own, whose login links the one in the account's home, not
+    /// the host user's; the host user's skills are linked as before, and
+    /// whoever reads sessions knows the directory as the harness's
+    /// (sunfmin/control#1231).
+    #[test]
+    fn a_worker_on_an_account_gets_a_home_linking_that_account_s_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cache, home) = (dir.path().join("cache"), dir.path().join("home"));
+        let accounts = home.join(".agent-accounts");
+        for (harness, login) in [
+            (Harness::Grok, ".grok/auth.json"),
+            (Harness::Codex, ".codex/auth.json"),
+            (Harness::Kimi, ".kimi-code/credentials"),
+        ] {
+            let file = Path::new(login).file_name().unwrap();
+            for owner in [home.join(login), accounts.join("work").join(file)] {
+                std::fs::create_dir_all(owner.parent().unwrap()).unwrap();
+                std::fs::write(&owner, "{}").unwrap();
+            }
+            let account = Login { name: "work".into(), home: accounts.join("work") };
+            let kept = keep_under_on(&cache, Some(&home), harness, true, Some(&account)).unwrap();
+            assert_eq!(kept, cache.join(format!("harness/{}-host-user@work", harness.key())));
+            assert_eq!(
+                std::fs::read_link(kept.join(file)).unwrap(),
+                accounts.join("work").join(file)
+            );
+            let name = kept.file_name().unwrap().to_str().unwrap();
+            assert!(is_kept_name(harness, name), "{name}");
+
+            let own = keep_under(&cache, Some(&home), harness, true).unwrap();
+            assert_eq!(std::fs::read_link(own.join(file)).unwrap(), home.join(login));
+        }
+        assert!(is_kept_name(Harness::Grok, "grok"));
+        assert!(is_kept_name(Harness::Grok, "grok@a.b-c"));
+        assert!(!is_kept_name(Harness::Grok, "grok-other"));
+        assert!(!is_kept_name(Harness::Codex, "grok-host-user@codex"));
+    }
+}
