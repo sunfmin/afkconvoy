@@ -5,7 +5,7 @@
 //! way.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
@@ -21,7 +21,7 @@ use afkconvoy_core::launch::{TrustGap, Waited};
 use afkconvoy_core::legacy::TRAIN_WORKTREE;
 use afkconvoy_core::line::niced;
 use afkconvoy_core::stopped::Nudged;
-use afkconvoy_core::tools::{Found, add_checkout};
+use afkconvoy_core::tools::{Found, Tool, add_checkout};
 use afkconvoy_core::tracker::Tracker;
 use afkconvoy_core::worker::{WorkerState, is_worktree_named, short_branch, worker_state};
 use anyhow::{Context, Result, anyhow, bail};
@@ -576,7 +576,7 @@ fn startup_redacted(text: &str) -> String {
 /// none. What orca takes from where it is run — the worktree a call names
 /// none of — is then never the directory afkconvoy happens to run in, which
 /// no command is about (docs/adr/0023).
-fn asked_from() -> PathBuf {
+pub(crate) fn asked_from() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     home.filter(|home| home.is_dir()).unwrap_or_else(|| PathBuf::from("/"))
 }
@@ -604,8 +604,46 @@ pub fn found(repo: &Repo) -> Result<Found> {
     };
     Ok(match Source::at(&main)? {
         Some(_) => Found::Ready,
-        None => Found::KnowsNoCheckout(main.display().to_string()),
+        None => Found::KnowsNoCheckout { orca: asked(), checkout: main.display().to_string() },
     })
+}
+
+/// The absolute path of the orca every call of this process goes to: the one
+/// a line that fixes what it answered must name, since another `orca` on
+/// another `PATH` keeps a repo list of its own (sunfmin/control#1236).
+pub(crate) fn asked() -> String {
+    crate::tools::orca_place()
+        .map(|(path, _)| std::path::absolute(&path).unwrap_or(path))
+        .map_or_else(|| Tool::Orca.name().to_string(), |path| path.display().to_string())
+}
+
+/// The repos the orca every call of this process goes to lists, by path,
+/// from this look's listing (`REPOS`).
+pub(crate) fn listed_repos() -> Result<BTreeSet<PathBuf>> {
+    Ok(repo_paths(&repo_list()?))
+}
+
+/// The repos the orca at `program` lists, by path: another orca than the one
+/// this process asks, which keeps a repo list of its own. It only asks.
+pub(crate) fn repos_listed_by(program: &Path) -> Result<BTreeSet<PathBuf>> {
+    let shown = program.display();
+    let out = crate::process::output(
+        Command::new(program).args(["repo", "list", "--json"]).current_dir(asked_from()),
+    )
+    .with_context(|| format!("{shown} repo list could not run"))?;
+    let answer = read_answer(&out.stdout).unwrap_or(Value::Null);
+    if !out.status.success() || answer["ok"] != true {
+        bail!("{shown} repo list failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(repo_paths(&answer["result"]))
+}
+
+/// The paths of the repos a `repo list` answer names, each as the directory
+/// it is: one repo named by two spellings of its path is one.
+fn repo_paths(listed: &Value) -> BTreeSet<PathBuf> {
+    let rows = listed["repos"].as_array().into_iter().flatten();
+    let paths = rows.filter_map(|row| row["path"].as_str()).map(PathBuf::from);
+    paths.map(|path| path.canonicalize().unwrap_or(path)).collect()
 }
 
 /// The repo orca cuts this checkout's worktrees from.
@@ -656,7 +694,7 @@ impl Source {
             let path = main.display().to_string();
             anyhow!(
                 "orca knows no repo at {path} — add this checkout once with `{}`",
-                add_checkout(&path)
+                add_checkout(&asked(), &path)
             )
         })
     }

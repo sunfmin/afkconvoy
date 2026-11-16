@@ -1151,6 +1151,13 @@ impl World {
         append(&self.root.join("shell-types"), &line);
     }
 
+    /// The `orca` afkconvoy finds first on its PATH in this world, by its
+    /// absolute path: the stand-in.
+    pub fn orca_program(&self) -> PathBuf {
+        let only = self.root.join("path");
+        if only.exists() { only.join("orca") } else { self.bin.join("orca") }
+    }
+
     /// Takes a command off the PATH afkconvoy runs under, which from here on
     /// holds nothing but `git` and the stand-ins not taken off it.
     pub fn take_off_path(&self, name: &str) {
@@ -2123,6 +2130,11 @@ case "$2" in
         esac ;;
     esac
     exit 0 ;;
+  "which -a orca")
+    # Every orca on the login shell's PATH: what `shell-orcas` holds, else
+    # the stand-in alone.
+    if [ -f "$root/shell-orcas" ]; then cat "$root/shell-orcas"; exit 0; fi
+    echo "${0%/*}/orca"; exit 0 ;;
   "type -- "*)
     word=${2#type -- \'}; word=${word%\'}
     if [ -f "$root/shell-types" ]; then

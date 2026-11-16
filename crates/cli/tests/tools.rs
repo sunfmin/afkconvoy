@@ -214,7 +214,10 @@ fn a_start_in_a_checkout_orca_does_not_know_refuses_naming_the_line_that_adds_it
     let world = backlog();
     world.with_orca(|orca| orca["repos"] = json!([]));
     let checkout = common::git(&world.clone, &["rev-parse", "--show-toplevel"]);
-    let line = format!("  orca does not know this checkout: orca repo add --path '{checkout}'");
+    // The orca the check asked, by its absolute path: another `orca` on
+    // another PATH keeps a repo list of its own (sunfmin/control#1236).
+    let orca = world.orca_program().display().to_string();
+    let line = format!("  orca does not know this checkout: '{orca}' repo add --path '{checkout}'");
     for start in starts(&world) {
         assert_eq!(start.code, 1);
         let error = start.error();
@@ -361,7 +364,7 @@ fn the_readme_gives_the_install_lines_a_refusal_gives() {
         None,
     );
     let start = said.unwrap().rsplit(": ").next().unwrap().to_string();
-    let add = afkconvoy_core::tools::add_checkout("\"$PWD\"").replace('\'', "");
+    let add = afkconvoy_core::tools::add_checkout("orca", "\"$PWD\"").replace('\'', "");
     for line in [start, add] {
         assert!(readme.contains(&format!("`{line}`")), "the README lost `{line}`");
         assert!(

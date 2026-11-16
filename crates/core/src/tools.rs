@@ -161,9 +161,15 @@ pub enum Found {
     LoggedOut(LoginAnswer),
     /// Installed, and not running: orca, which every call goes to as an app.
     NotRunning,
-    /// Running, and it has no repo at this path, the checkout's main worktree:
-    /// orca, which cuts a worktree only from a repo it was given.
-    KnowsNoCheckout(String),
+    /// Running, and it has no repo at `checkout`, the checkout's main
+    /// worktree: orca, which cuts a worktree only from a repo it was given.
+    /// `orca` is the absolute path of the orca that was asked: a host can
+    /// have more than one, each with its own repo list, and the line that
+    /// fixes this must give the checkout to that one (sunfmin/control#1236).
+    KnowsNoCheckout {
+        orca: String,
+        checkout: String,
+    },
 }
 
 /// Where Orca's SSH remote runtime puts its CLI, under the home directory:
@@ -174,9 +180,10 @@ pub const ORCA_REMOTE_CLI: &str = ".orca/cli/bin";
 /// The line that starts orca.
 pub const START_ORCA: &str = "orca open";
 
-/// The line that gives orca the checkout at `path`, once.
-pub fn add_checkout(path: &str) -> String {
-    format!("orca repo add --path {}", quoted(path))
+/// The line that gives the orca at `orca` — the one that was asked, by its
+/// absolute path — the checkout at `path`, once.
+pub fn add_checkout(orca: &str, path: &str) -> String {
+    format!("{} repo add --path {}", quoted(orca), quoted(path))
 }
 
 /// The tool a program a harness cannot start without is (`Harness::needs`).
@@ -316,8 +323,8 @@ pub fn fault(tool: Tool, found: &Found, host: Option<&str>, callers: &[String]) 
         Found::Missing => ("is not installed".to_string(), tool.when_missing()),
         Found::LoggedOut(_) => (tool.logged_out().to_string(), tool.login(host)),
         Found::NotRunning => ("is not running".to_string(), START_ORCA.to_string()),
-        Found::KnowsNoCheckout(path) => {
-            ("does not know this checkout".to_string(), add_checkout(path))
+        Found::KnowsNoCheckout { orca, checkout } => {
+            ("does not know this checkout".to_string(), add_checkout(orca, checkout))
         }
     };
     let called = match callers {
@@ -514,7 +521,10 @@ mod tests {
         assert!(said.ends_with("\n  orca is not running: orca open"), "{said}");
         assert!(said.contains("nothing was started"), "{said}");
 
-        let unknown = Found::KnowsNoCheckout("/Users/kim/hospital demo".to_string());
+        let unknown = Found::KnowsNoCheckout {
+            orca: "/Users/kim/.local/bin/orca".to_string(),
+            checkout: "/Users/kim/hospital demo".to_string(),
+        };
         let said = refusal(
             &[(Tool::Gh, Found::LoggedOut(LoginAnswer::default())), (Tool::Orca, unknown)],
             None,
@@ -526,7 +536,8 @@ mod tests {
             lines,
             [
                 "  gh is not logged in: gh auth login",
-                "  orca does not know this checkout: orca repo add --path '/Users/kim/hospital demo'",
+                "  orca does not know this checkout: \
+                 '/Users/kim/.local/bin/orca' repo add --path '/Users/kim/hospital demo'",
             ]
         );
     }
