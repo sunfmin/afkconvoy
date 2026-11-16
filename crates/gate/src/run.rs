@@ -415,6 +415,7 @@ pub fn gate(
     let mut child = Command::new("sh")
         .args(["-c", command.text()])
         .current_dir(&git.worktree)
+        .env(crate::builds::SERIAL_BUILDS.0, crate::builds::SERIAL_BUILDS.1)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -16,6 +16,12 @@ pub const SAMPLE_EVERY: u64 = 10;
 /// for it to turn hot: two minutes.
 pub const CPU_HELD: u64 = 120;
 
+/// How long, in seconds, a process of a worker must have taken no CPU and
+/// had no child, holding build-directory locks, for its worker to turn
+/// stalled (docs/adr/0088): three minutes. A build waiting on one that runs
+/// waits on a holder that takes CPU or has children, so it never stalls.
+pub const STALL_HELD: u64 = 180;
+
 /// How long, in seconds, the host's memory pressure must stay at level 2 or
 /// above, sample after sample, for a worker's memory under its exclusive
 /// commands to count against the memory limit: two minutes, as `CPU_HELD`. A
@@ -88,6 +94,10 @@ pub struct Sample {
     /// What the worker's worktree holds, measured with this sample; `None`
     /// when it was not, for measuring it is slow: the measure before stands.
     pub held: Option<Built>,
+    /// Whether a process of it is stalled: at no CPU with no children for
+    /// `STALL_HELD`, holding build-directory locks every holder of which is
+    /// stalled too, or takes no CPU and has no children.
+    pub stalled: bool,
 }
 
 /// A run of samples with the host's memory pressure at level 2 or above,
@@ -125,6 +135,10 @@ pub enum Why {
     Written,
     /// Its worktree has outgrown its fresh build (`landing::outgrown`).
     Held,
+    /// A process of it has waited on build-directory locks at no CPU, with
+    /// no children, for `STALL_HELD`, and so has every holder of them: a
+    /// deadlock nothing ends.
+    Stalled,
 }
 
 impl Why {
@@ -135,6 +149,7 @@ impl Why {
             Why::Memory => "memory",
             Why::Written => "disk written",
             Why::Held => "disk held",
+            Why::Stalled => "stalled",
         }
     }
 }
@@ -256,7 +271,9 @@ impl Watch {
         }
         let outgrown = self.held.is_some_and(Built::outgrown);
         let held = self.held.map_or(0, |held| held.built);
-        let why = if cpu_held {
+        let why = if sample.stalled {
+            Some(Why::Stalled)
+        } else if cpu_held {
             Some(Why::Cpu)
         } else if memory_over {
             Some(Why::Memory)
@@ -291,7 +308,7 @@ impl Watch {
             episode.pressed = counting;
         }
         self.hot = Some(episode);
-        let under = !cpu_over && !memory_over && !written_over && !outgrown;
+        let under = !cpu_over && !memory_over && !written_over && !outgrown && !sample.stalled;
         if !under {
             self.under_since = None;
             return None;
@@ -322,6 +339,7 @@ mod tests {
             pressure: None,
             written: Some(0),
             held: None,
+            stalled: false,
         }
     }
 
@@ -415,6 +433,7 @@ mod tests {
             pressure: None,
             written: None,
             held: None,
+            stalled: false,
         };
         assert_eq!(watch.sampled(&first, &LIMITS, SAMPLE_EVERY), None);
         assert_eq!(watch, Watch::default());
@@ -656,5 +675,20 @@ mod tests {
         assert!(run_disk(&mut watch, 5010, 5010, 0, back).is_empty());
         let turned = run_disk(&mut watch, 5020, 5400, 0, None);
         assert_eq!(turned.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [5310]);
+    }
+
+    #[test]
+    fn a_stalled_worker_turns_hot_as_it_is_found_and_cools_five_minutes_after_it_moves() {
+        let mut watch = Watch::default();
+        let stalled = |at| Sample { stalled: true, ..sample(at, 0, GIB) };
+        let Some(Turned::Hot(episode)) = watch.sampled(&stalled(1000), &LIMITS, SAMPLE_EVERY)
+        else {
+            panic!("{watch:?}")
+        };
+        assert_eq!((episode.why, episode.since), (Why::Stalled, 1000));
+        assert_eq!(watch.sampled(&stalled(1010), &LIMITS, SAMPLE_EVERY), None, "hot once only");
+        // its build moves again: under every limit for five minutes, it cools
+        let turned = run(&mut watch, 1020, 1020 + COOLS_AFTER, 0, GIB);
+        assert_eq!(turned.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [1020 + COOLS_AFTER]);
     }
 }

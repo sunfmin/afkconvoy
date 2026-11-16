@@ -28,7 +28,8 @@ use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::hot::{
-    CPU_HELD, Episode, Limits, SAMPLE_EVERY, Sample, Turned, WRITTEN_WITHIN, Watch, Why, millicores,
+    CPU_HELD, Episode, Limits, SAMPLE_EVERY, STALL_HELD, Sample, Turned, WRITTEN_WITHIN, Watch,
+    Why, millicores,
 };
 use afkconvoy_core::landing::{Built, OUTGROWN_FLOOR, OUTGROWN_TIMES};
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,7 @@ use crate::host_settings;
 use crate::log::What;
 use crate::measure;
 use crate::orca::{Source, Worktree};
+use crate::stall::{self, Idle, Stall};
 use crate::stop::Stop;
 use crate::wake::Waker;
 use crate::worker_tmp;
@@ -628,6 +630,8 @@ struct Watched {
     hottest: Option<u32>,
     /// What they held resident at each of the last samples, oldest first.
     resident: VecDeque<(u64, u64)>,
+    /// Its stall, as last found: `None` where none was.
+    stall: Option<Stall>,
 }
 
 impl Watched {
@@ -641,6 +645,7 @@ impl Watched {
             pids: vec![],
             hottest: None,
             resident: VecDeque::new(),
+            stall: None,
         }
     }
 }
@@ -705,6 +710,8 @@ fn known(watched: &Watched, episode: &Episode, limits: &Limits) -> Taken {
         pids: watched.pids.clone(),
         hottest: watched.hottest,
         resident: watched.resident.iter().copied().collect(),
+        stall: watched.stall.as_ref().filter(|_| episode.why == Why::Stalled).map(Stall::said),
+        issue: watched.issue,
     }
 }
 
@@ -732,6 +739,8 @@ struct Sampler {
     watched: BTreeMap<PathBuf, Watched>,
     /// Samples carried over from the preceding host runner.
     resumed: BTreeMap<PathBuf, Watch>,
+    /// Since when each process of the workers has been idle.
+    idle: Idle,
 }
 
 impl Sampler {
@@ -787,7 +796,13 @@ impl Sampler {
         let exclusive = crate::exclusive::running_work(queue, &procs).pids;
         let mut taken = vec![];
         let mut hot_now = vec![];
-        for (path, worker, worktree, issue) in &self.listed {
+        let trees: Vec<Vec<&Proc>> =
+            self.listed.iter().map(|(path, ..)| tree(&procs, path)).collect();
+        let worker_of: HashMap<u32, String> = (self.listed.iter().zip(&trees))
+            .flat_map(|((_, worker, ..), tree)| tree.iter().map(|proc| (proc.pid, worker.clone())))
+            .collect();
+        self.idle.sampled(&trees.iter().flatten().copied().collect::<Vec<_>>(), &procs, at);
+        for ((path, worker, worktree, issue), tree) in self.listed.iter().zip(&trees) {
             let watched = self.watched.entry(path.clone()).or_insert_with(|| {
                 let mut watched = Watched::new(worker.clone(), worktree.clone(), *issue);
                 if let Some(previous) = self.resumed.remove(path) {
@@ -795,15 +810,18 @@ impl Sampler {
                 }
                 watched
             });
-            let took = took(watched, &tree(&procs, path), &exclusive);
+            let idle: Vec<u32> =
+                tree.iter().map(|proc| proc.pid).filter(|pid| self.idle.held(*pid, at)).collect();
+            watched.stall = stall::of(&idle, &self.idle, &procs, &worker_of, at);
+            let took = took(watched, tree, &exclusive);
             watched.resident.push_back((at, took.resident));
             if watched.resident.len() > RESIDENT_KEPT {
                 watched.resident.pop_front();
             }
             let held = if measuring { held(path) } else { None };
-            taken.push((path.clone(), took, held));
+            taken.push((path.clone(), took, held, watched.stall.is_some()));
         }
-        for (path, took, held) in taken {
+        for (path, took, held, stalled) in taken {
             let sample = Sample {
                 at,
                 millicores: took.cpu_ms.map(|cpu| millicores(cpu, wall_ms)),
@@ -812,6 +830,7 @@ impl Sampler {
                 pressure,
                 written: took.written,
                 held,
+                stalled,
             };
             let watched = self.watched.get_mut(&path).expect("watched above");
             match watched.watch.sampled(&sample, &self.limits, every) {
@@ -866,6 +885,9 @@ pub fn why_said(why: Why, limits: &Limits) -> String {
             "its worktree past {OUTGROWN_TIMES} times its fresh build and past {}",
             measure::said(OUTGROWN_FLOOR)
         ),
+        Why::Stalled => format!(
+            "a process at no CPU with no children for {STALL_HELD}s, holding build-directory locks no busy process holds"
+        ),
     };
     format!("{}: {past}", why.word())
 }
@@ -905,6 +927,20 @@ fn hot(worker: String, episode: &Episode, limits: &Limits) -> What {
 
 fn cooled(worker: String, episode: &Episode, gone: bool) -> What {
     What::Cooled { worker, since: episode.since, held: held_said(episode), gone }
+}
+
+/// Names a stalled worker's stall, with the holders of the locks it waits
+/// on, on its issue (docs/adr/0088): nothing else ends a deadlock, and its
+/// worker cannot see it. A worker turned hot for anything else, or linked to
+/// no issue, is named nowhere.
+fn name_stall(repo: &Repo, taken: &Taken) -> anyhow::Result<()> {
+    let (Some(stall), Some(issue)) = (&taken.stall, taken.issue) else { return Ok(()) };
+    let body = format!(
+        "**afkconvoy** — this worker's build is stalled: {stall}.\n\n\
+         Nothing releases these locks: end the stalled processes (SIGTERM) so their \
+         builds run again (docs/adr/0088)."
+    );
+    crate::gh::GitHub::of(repo)?.comment(issue, &body)
 }
 
 /// Who hears what a watcher finds (`watch`): its fleet instance.
@@ -948,6 +984,7 @@ pub fn watch(
             &repo.main_checkout().unwrap_or_else(|_| repo.dir.clone()),
         )
         .unwrap_or_default(),
+        idle: Idle::default(),
     };
     std::thread::spawn(move || {
         let started = (clock(), Instant::now());
@@ -986,11 +1023,18 @@ pub fn watch(
             }
             for (worktree, taken) in to_take {
                 let (waker, hears) = (waker.clone(), Arc::clone(&hears));
+                let repo = Repo::new(repo.dir.clone());
                 std::thread::spawn(move || {
                     if let Err(error) = evidence::take(&worktree, &taken) {
                         let worker = &taken.worker;
                         hears.warn(&format!(
                             "what shows {worker} hot was not taken down: {error:#}"
+                        ));
+                    }
+                    if let Err(error) = name_stall(&repo, &taken) {
+                        let worker = &taken.worker;
+                        hears.warn(&format!(
+                            "{worker}'s stall was not named on its issue: {error:#}"
                         ));
                     }
                     waker.wake();
