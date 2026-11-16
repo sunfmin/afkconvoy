@@ -1825,6 +1825,7 @@ mod tests {
         let reading = Reading {
             cores: 8,
             load: Some(150),
+            cpu_busy: None,
             memory_free: Some(40),
             disk: Some(Disk { free: 5 << 30, size: 100 << 30 }),
             reserve: None,

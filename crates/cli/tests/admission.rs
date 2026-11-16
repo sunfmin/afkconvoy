@@ -119,6 +119,7 @@ fn a_busy_host_dispatches_nothing_new_and_the_frontier_waits_for_the_next_tick()
     let by = held["held_back_by"][0].as_str().unwrap();
     assert!(by.starts_with("the load 100000.00 is past "), "{by}");
     assert!(by.contains("200% of its "), "{by}");
+    assert!(by.ends_with("and how busy its cores are could not be read"), "{by}");
     assert!(world.claims().is_empty());
 
     // The host at ease again: the next tick starts them.
@@ -126,6 +127,31 @@ fn a_busy_host_dispatches_nothing_new_and_the_frontier_waits_for_the_next_tick()
     let admitted = tick(&world, "1090");
     assert_eq!(dispatched(&admitted), [3, 5]);
     assert!(admitted["held_back_by"].is_null(), "{admitted}");
+}
+
+/// A load past the share with most cores idle is not the host's being
+/// busy: macOS counts another account's idle simulators in its load
+/// (docs/adr/0084, sunfmin/control#1168).
+#[test]
+fn a_load_past_its_share_holds_only_while_the_cores_are_busy() {
+    let world = backlog(&[3]);
+    world.busy(&past_the_share());
+    world.cores_busy(95);
+    let held = tick(&world, "1000");
+    assert!(dispatched(&held).is_empty(), "{held}");
+    let by = held["held_back_by"][0].as_str().unwrap();
+    assert!(by.ends_with(", and its cores are 95% busy, past 90%"), "{by}");
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1000"]).ok();
+    assert_eq!(plan["admission"]["reading"]["cpu_busy_percent"], 95, "{plan}");
+    assert_eq!(plan["admission"]["thresholds"]["cpu_busy_percent"], 90, "{plan}");
+
+    world.cores_busy(40);
+    let admitted = tick(&world, "1090");
+    assert_eq!(dispatched(&admitted), [3], "{admitted}");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1090"]).json;
+    let reading = &doctor["host"]["admission"]["reading"];
+    assert_eq!(reading["cpu_busy_percent"], 40, "{doctor}");
+    assert!(reading["load"].as_f64().unwrap() > reading["cores"].as_f64().unwrap() * 2.0);
 }
 
 #[test]
