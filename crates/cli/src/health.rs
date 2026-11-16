@@ -230,27 +230,31 @@ fn ticks_observe(set: &WorkingSet, issue: u64) -> bool {
 }
 
 /// How a fleet instance ticks, as its workers' health observations wait on
-/// it: the sleep and the time of its last tick, the worktrees its claims
-/// hold, and of those the ones its ticks do not observe (`ticks_observe`).
+/// it: the sleep and the time of its last tick, when its tick in progress
+/// began, the worktrees its claims hold, and of those the ones its ticks do
+/// not observe (`ticks_observe`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pace {
     sleep: u64,
     took: u64,
+    ticking: Option<u64>,
     worktrees: Vec<PathBuf>,
     left_alone: Vec<PathBuf>,
 }
 
 impl Pace {
     /// A fleet instance that sleeps `sleep` between ticks, whose last tick
-    /// took `took`, holding `claims` — each an issue and its worktree — of
-    /// the working set `set`, where it was read.
+    /// took `took` and whose tick in progress, if any, began at `ticking`,
+    /// holding `claims` — each an issue and its worktree — of the working
+    /// set `set`, where it was read.
     pub fn new(
         sleep: u64,
         took: u64,
+        ticking: Option<u64>,
         set: Option<&WorkingSet>,
         claims: impl IntoIterator<Item = (u64, PathBuf)>,
     ) -> Pace {
-        let mut pace = Pace { sleep, took, ..Pace::default() };
+        let mut pace = Pace { sleep, took, ticking, ..Pace::default() };
         for (issue, worktree) in claims {
             if set.is_some_and(|set| !ticks_observe(set, issue)) {
                 pace.left_alone.push(worktree.clone());
@@ -264,12 +268,16 @@ impl Pace {
 /// How long past its time an observation is left to a tick: the sleep and
 /// the time of the last tick of the fleet instance whose claim holds its
 /// worktree. A worktree no claim holds gets the longest any instance says;
-/// with none said, there is no grace. A worktree whose claim a fleet lock
-/// keeps its fleet off is left alone by its ticks, so its observation is
-/// never overdue while the lock stands.
+/// with none said, there is no grace. An observation due when that
+/// instance's tick in progress began is left to that tick and the next,
+/// however long it takes: the tick reschedules what it observes to its own
+/// start. A worktree whose claim a fleet lock keeps its fleet off is left
+/// alone by its ticks, so its observation is never overdue while the lock
+/// stands.
 #[derive(Debug, Clone, Default)]
 struct Cadence {
     of_worktree: std::collections::BTreeMap<PathBuf, u64>,
+    ticking: std::collections::BTreeMap<PathBuf, u64>,
     longest: u64,
     left_alone: std::collections::BTreeSet<PathBuf>,
 }
@@ -283,6 +291,9 @@ impl Cadence {
             cadence.longest = cadence.longest.max(ticks);
             for worktree in &pace.worktrees {
                 cadence.of_worktree.insert(worktree.clone(), ticks);
+                if let Some(began) = pace.ticking {
+                    cadence.ticking.insert(worktree.clone(), began);
+                }
             }
             cadence.left_alone.extend(pace.left_alone.iter().cloned());
         }
@@ -292,16 +303,26 @@ impl Cadence {
     fn grace(&self, path: &std::path::Path) -> u64 {
         self.of_worktree.get(path).copied().unwrap_or(self.longest)
     }
+
+    /// Whether the observation of `path` due at `due` is past its tick's
+    /// chance at `now`.
+    fn missed(&self, path: &std::path::Path, due: u64, now: u64) -> bool {
+        !self.left_alone.contains(path)
+            && !self.ticking.get(path).is_some_and(|began| *began >= due)
+            && due.saturating_add(self.grace(path)) <= now
+    }
 }
 
 impl Health {
     /// Every observation past its time by more than its tick's grace at
     /// `now`, by the pace of every fleet instance `paces` says: the waiting
-    /// workers first, then the failed observations.
+    /// workers first, then the failed observations. A worker waiting on its
+    /// landing turn is none: a tick retires its observation
+    /// (`waiting_on_turn`).
     pub fn overdue(&self, paces: &[Pace], now: u64) -> Vec<Overdue> {
         let cadence = Cadence::of(paces);
         let missed = |path: &std::path::Path, due: u64| {
-            !cadence.left_alone.contains(path) && due.saturating_add(cadence.grace(path)) <= now
+            cadence.missed(path, due, now) && !waiting_on_turn(path)
         };
         let waiting = self
             .workers
@@ -1861,8 +1882,10 @@ mod tests {
     fn an_observation_is_overdue_only_past_its_tick_s_chance() {
         // The instance holding /w sleeps 90s and its last tick took 10s; one
         // holding nothing here ticks every 300s.
-        let cadence =
-            [Pace::new(90, 10, None, [(7, PathBuf::from("/w"))]), Pace::new(280, 20, None, [])];
+        let cadence = [
+            Pace::new(90, 10, None, None, [(7, PathBuf::from("/w"))]),
+            Pace::new(280, 20, None, None, []),
+        ];
         let at = |next: u64| {
             health(
                 vec![observed("/w", next, "waiting", &[])],
@@ -1921,7 +1944,7 @@ mod tests {
         );
         let claims = || [(4, PathBuf::from("/wt/4")), (9, PathBuf::from("/wt/9"))];
         let overdue = |set: Option<&WorkingSet>| -> Vec<PathBuf> {
-            let paces = [Pace::new(90, 10, set, claims())];
+            let paces = [Pace::new(90, 10, None, set, claims())];
             let found = book.overdue(&paces, 1000).into_iter();
             found
                 .map(|overdue| match overdue {
@@ -1934,6 +1957,33 @@ mod tests {
         set.locks = vec![];
         assert_eq!(overdue(Some(&set)).len(), 2, "the lock lifted");
         assert_eq!(overdue(None).len(), 2, "no working set read: no lock is known");
+    }
+
+    #[test]
+    fn an_observation_due_as_the_tick_in_progress_began_is_left_to_it_however_long() {
+        let book = health(vec![observed("/w", 1000, "healthy", &[])], vec![]);
+        let pace = |ticking: Option<u64>| [Pace::new(90, 6, ticking, None, [(7, "/w".into())])];
+        assert!(book.overdue(&pace(Some(1000)), 1174).is_empty(), "the tick that set it runs");
+        assert!(book.overdue(&pace(Some(1205)), 1300).is_empty(), "the next tick runs");
+        assert_eq!(book.overdue(&pace(Some(990)), 1174).len(), 1, "a tick begun before it");
+        assert_eq!(book.overdue(&pace(None), 1174).len(), 1, "no tick in progress");
+    }
+
+    #[test]
+    fn a_worker_waiting_on_its_landing_turn_is_never_overdue() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::new(dir.path().to_path_buf());
+        repo.git(&["init", "-q"]).unwrap();
+        let book =
+            health(vec![observed(&dir.path().to_string_lossy(), 100, "healthy", &[])], vec![]);
+        let pace = [Pace::new(90, 10, None, None, [(7, dir.path().to_path_buf())])];
+        assert_eq!(book.overdue(&pace, 1000).len(), 1, "no turn asked: overdue");
+        crate::turn_answer::noted(&repo, None, 1700, || {
+            assert!(book.overdue(&pace, 1000).is_empty(), "its `land` waits for its turn");
+            Ok(json!({"outcome": afkconvoy_core::ending::Ending::Locked.word()}))
+        })
+        .unwrap();
+        assert!(book.overdue(&pace, 1000).is_empty(), "its turn's answer waits");
     }
 
     #[test]

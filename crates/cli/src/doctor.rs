@@ -2417,7 +2417,8 @@ fn pace_of(checkout: &Path, run: &Run, state: Option<&State>) -> Pace {
     let claims = held.iter().filter_map(|held| Some((held.issue, held.worktree.clone()?)));
     let sleep = run.last_tick().map(|(_, tick)| tick.sleep).unwrap_or(0);
     let set = state.map(|state| &state.set);
-    let pace = crate::health::Pace::new(sleep, run.last_took.unwrap_or(0), set, claims);
+    let took = run.last_took.unwrap_or(0);
+    let pace = crate::health::Pace::new(sleep, took, run.tick_started, set, claims);
     Pace { checkout: checkout.to_path_buf(), pace }
 }
 
@@ -4143,7 +4144,7 @@ mod tests {
     #[test]
     fn a_health_observation_is_overdue_only_past_its_ticks_chance() {
         // The instance holding /w sleeps 90s between ticks, and its last took 10s.
-        let pace = crate::health::Pace::new(90, 10, None, [(7, PathBuf::from("/w"))]);
+        let pace = crate::health::Pace::new(90, 10, None, None, [(7, PathBuf::from("/w"))]);
         let paces = [Pace { checkout: "/c".into(), pace }];
         let health = |next: u64| -> crate::health::Health {
             serde_json::from_value(json!({
@@ -4200,6 +4201,37 @@ mod tests {
                 r#"host:["health-overdue","/wt/issue-9"]"#
             ],
             "the lock lifted: #4's overdue observation is found again"
+        );
+    }
+
+    /// sunfmin/control#1261: the lock lifts, the next tick observes the
+    /// worker at its start and leaves the next look to the tick after, and
+    /// that tick runs long, dispatching. Its observation is left to it.
+    #[test]
+    fn an_observation_a_long_tick_left_to_the_next_after_a_lock_is_not_overdue() {
+        let mut state = state();
+        state.held = vec![held(4)];
+        let health: crate::health::Health = serde_json::from_value(json!({
+            "workers": [{"path": "/wt/issue-4", "terminal": "t", "harness": "codex",
+                "snapshots": [], "next_check": 1000, "rate_retries": 0, "source": "rule",
+                "action": "healthy"}],
+            "observations_failed": []}))
+        .unwrap();
+        let found = |run: &Run, now: u64| -> Vec<String> {
+            let pace = pace_of(Path::new("/c"), run, Some(&state));
+            overdue_of(&health, &[pace], now).into_iter().map(|finding| finding.watch_id).collect()
+        };
+        // The tick before took 6s, and the instance does not sleep. The tick that
+        // began at 1000 is still running at 1174.
+        let long = Run { last_took: Some(6), tick_started: Some(1000), ..run(vec![]) };
+        assert_eq!(found(&long, 1174), Vec::<String>::new(), "left to the tick in progress");
+        let next = Run { last_took: Some(204), tick_started: Some(1205), ..run(vec![]) };
+        assert_eq!(found(&next, 1260), Vec::<String>::new(), "and to the tick after it");
+        let missed = Run { last_took: Some(58), tick_started: None, ..run(vec![]) };
+        assert_eq!(
+            found(&missed, 1400),
+            [r#"host:["health-overdue","/wt/issue-4"]"#],
+            "a tick ended after it without observing it: it is overdue"
         );
     }
 
