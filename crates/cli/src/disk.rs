@@ -80,7 +80,7 @@ pub fn worktrees(checkout: &Path) -> Vec<Worktree> {
 
 /// The builds of the exclusive queue's own worktrees — candidates', a
 /// round's, a cut's — counted as building at once: the four places it had by
-/// default before it started by the host's room (docs/adr/0087), one worker,
+/// default before it started by the host's room (docs/adr/0088), one worker,
 /// two fast and one slow. A fast gate builds in its worker's worktree, which
 /// is counted apart.
 pub const QUEUE_BUILDS: u64 = 4;

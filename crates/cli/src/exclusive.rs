@@ -83,7 +83,7 @@ const SHARED: [&str; 1] = ["NEXTEST_TEST_THREADS"];
 /// Gives a gate's tests, run as `command` in the lane of the process `own`,
 /// their share of the host — its cores over the commands of the queue running
 /// with it — as `NEXTEST_TEST_THREADS`, unless the environment already says
-/// it, and only while another command of the queue runs (docs/adr/0087). Tests
+/// it, and only while another command of the queue runs (docs/adr/0088). Tests
 /// run side by side would otherwise each take every core, and a test far
 /// under the fast gate's line would cross its end on load alone
 /// (sunfmin/control#245). A gate alone in the queue keeps every core: held to
@@ -372,7 +372,7 @@ impl Drop for Permit {
 
 /// The host's exclusive queue, as its host runner holds it: the gate
 /// crate's holder (`afkconvoy_gate::holder`), told how busy this host is
-/// (docs/adr/0087), the share and bound its settings say, the leases a gate's descendants inherit, and the
+/// (docs/adr/0088), the share and bound its settings say, the leases a gate's descendants inherit, and the
 /// cleanup a candidate's lane waits on. A clone is the same.
 #[derive(Clone)]
 pub struct Queue {
@@ -569,7 +569,7 @@ impl Host<Note> for Hosted {
 }
 
 /// How busy this host is at `now`, as the queue starts a command by it
-/// (docs/adr/0087): its cores by the kernel's ticks over the last minute
+/// (docs/adr/0088): its cores by the kernel's ticks over the last minute
 /// (`minute`), or the load average alone over its cores where those cannot
 /// be read; and its memory free, where it is under admission's floor.
 /// `None`: neither can be read.
@@ -625,7 +625,7 @@ impl Queue {
         *self.holder.host().read.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
-    /// What the queue starts commands by now (docs/adr/0087).
+    /// What the queue starts commands by now (docs/adr/0088).
     pub fn room(&self) -> afkconvoy_core::exclusive::Room {
         self.holder.room_now()
     }

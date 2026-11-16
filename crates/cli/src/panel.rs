@@ -268,7 +268,7 @@ pub struct Host {
     /// What its host runner says of the exclusive queue; why it cannot.
     pub exclusive: Result<crate::queue::Said, String>,
     /// The busy share its exclusive queue starts a command under, in
-    /// percent, where its host runner says none (docs/adr/0087).
+    /// percent, where its host runner says none (docs/adr/0088).
     pub share: u64,
     /// Its host kit, every harness in it; why it cannot be read.
     pub kit: Result<Kit, String>,
@@ -279,6 +279,9 @@ pub struct Host {
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
     pub paused: Vec<afkconvoy_core::casting::Paused>,
+    /// The engine accounts mytokens holds, as `plan` says them
+    /// (`engine_accounts::json`).
+    pub accounts: serde_json::Value,
 }
 
 impl Host {
@@ -311,6 +314,7 @@ impl Host {
             watch: crate::host_watch::json(watch.as_ref(), false),
             asking: crate::host_asking::json(),
             paused: crate::paused::read(),
+            accounts: crate::engine_accounts::json(now),
         }
     }
 }
@@ -1158,6 +1162,7 @@ fn host_part(out: &mut String, page: &Page) {
     exclusive(out, host);
 
     kit(out, host);
+    accounts(out, host);
     out.push_str("</section>\n");
 }
 
@@ -1194,7 +1199,7 @@ fn admission(out: &mut String, host: &Host) {
 
 /// What the exclusive queue starts a command by, as the panel says it: the
 /// host's reading and the busy share, in place of a count of places
-/// (docs/adr/0087).
+/// (docs/adr/0088).
 fn room_line(room: &afkconvoy_core::exclusive::Room) -> String {
     let Some(reading) = room.reading else {
         return format!(
@@ -1401,6 +1406,57 @@ fn kit(out: &mut String, host: &Host) {
          host can start, in order of preference.</p>\
          <ul class=\"harnesses\">{}</ul></section>",
         harnesses.concat(),
+    );
+}
+
+/// The engine accounts the host's workers start on: each with its harness,
+/// its windows used and when they reset, and whether it takes work. None
+/// held, and nothing is shown.
+fn accounts(out: &mut String, host: &Host) {
+    let Some(accounts) = host.accounts["accounts"].as_array().filter(|a| !a.is_empty()) else {
+        return;
+    };
+    let rows: Vec<String> = accounts
+        .iter()
+        .map(|account| {
+            let text = |key: &str| esc(account[key].as_str().unwrap_or_default());
+            let windows: Vec<String> = account["windows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|window| {
+                    format!(
+                        "<code>{}</code> {}% used, resets in {}",
+                        esc(window["window"].as_str().unwrap_or_default()),
+                        window["used"].as_u64().unwrap_or_default(),
+                        lasted(window["resets_in"].as_u64().unwrap_or_default())
+                    )
+                })
+                .collect();
+            let windows = match windows.is_empty() {
+                true => "no window heard".to_string(),
+                false => windows.join(", "),
+            };
+            let takes = match account["takes_work"].as_bool() {
+                Some(true) => "takes work".to_string(),
+                _ => format!("takes no work: {}", text("why")),
+            };
+            format!(
+                "<li data-account=\"{name}\"><b>{name}</b> {harness} · {windows} · {} on it · \
+                 {takes}</li>",
+                account["running"].as_u64().unwrap_or_default(),
+                name = text("name"),
+                harness = text("harness"),
+            )
+        })
+        .collect();
+    let _ = writeln!(
+        out,
+        "<section class=\"kit\" data-accounts><h2>Accounts</h2><p class=\"by\">The engine \
+         accounts mytokens holds: a worker starts on the one of its harness with the most left, \
+         and none past {}% of a window.</p><ul class=\"harnesses\">{}</ul></section>",
+        host.accounts["limit_percent"].as_u64().unwrap_or_default(),
+        rows.concat(),
     );
 }
 
@@ -1867,6 +1923,7 @@ mod tests {
             watch: serde_json::json!({}),
             asking: serde_json::json!({}),
             paused: vec![],
+            accounts: serde_json::json!({"accounts": []}),
         }
     }
 
@@ -1879,6 +1936,28 @@ mod tests {
         let checkouts =
             parts.into_iter().map(|part| checkout(&format!("/w/{}", part.repo), part)).collect();
         Page { host, live: true, checkouts }
+    }
+
+    #[test]
+    fn each_account_shows_its_harness_its_windows_and_whether_it_takes_work() {
+        let mut host = host_of(1000);
+        assert!(!render(&page_of(host.clone(), vec![])).contains("data-accounts"), "none held");
+        host.accounts = serde_json::json!({"limit_percent": 90, "accounts": [
+            {"name": "busy", "harness": "claude-code", "running": 2, "takes_work": false,
+             "why": "its `five_hour` window is 92% used, at or past 90%, and resets in 40 min",
+             "windows": [{"window": "five_hour", "used": 92, "resets_in": 2400}]},
+            {"name": "idle", "harness": "claude-code", "running": 0, "takes_work": true,
+             "why": null, "windows": []}
+        ]});
+        let html = render(&page_of(host, vec![]));
+        assert!(html.contains("<h2>Accounts</h2>"), "{html}");
+        assert!(html.contains("none past 90% of a window"), "{html}");
+        assert!(html.contains("<li data-account=\"busy\"><b>busy</b> claude-code · <code>five_hour</code> 92% used, resets in"), "{html}");
+        assert!(html.contains("takes no work: its `five_hour` window is 92% used"), "{html}");
+        assert!(
+            html.contains("<b>idle</b> claude-code · no window heard · 0 on it · takes work"),
+            "{html}"
+        );
     }
 
     #[test]

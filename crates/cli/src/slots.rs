@@ -1,6 +1,6 @@
 //! Kernel-held places survive owner and host-runner death: each running
 //! command of the exclusive queue holds a place of its own, which says it
-//! runs — the queue has no count of places (docs/adr/0087). A gate inherits
+//! runs — the queue has no count of places (docs/adr/0088). A gate inherits
 //! its descriptor, so a replaced host runner still counts it running until
 //! every gate descendant exits. The JSON is recovery input only; flock is
 //! the authority on whether the place is still held — but for a lock
@@ -109,7 +109,7 @@ pub(crate) fn recover() -> Result<()> {
 
 /// Takes the lane's place at `path`, which `file` holds locked and so nothing
 /// else holds, off its path: each command takes a place of its own, and one
-/// whose command ended is not taken again (docs/adr/0087). A repo lease is
+/// whose command ended is not taken again (docs/adr/0088). A repo lease is
 /// kept, as is one another made at the path meanwhile.
 fn remove_free(path: &Path, file: &File) -> Result<()> {
     if path_named_repo(path) {
@@ -434,7 +434,7 @@ impl Slot {
         let repo = take_repo(ticket, &owner)?;
         let owner_bytes = serde_json::to_vec(&owner)?;
         // A place of its own, which says it runs: the queue has no count of
-        // places (docs/adr/0087). One of its pid that an earlier process of
+        // places (docs/adr/0088). One of its pid that an earlier process of
         // that pid left held, by what it started, is passed over.
         let _dir = lock_dir(&cache)?;
         let mut n: u32 = 0;

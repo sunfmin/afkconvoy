@@ -95,7 +95,7 @@ pub fn busy() -> Option<u64> {
 }
 
 /// The kernel's ticks over the last minute, as the host runner keeps them
-/// for its exclusive queue (docs/adr/0087): a sample at most each second,
+/// for its exclusive queue (docs/adr/0088): a sample at most each second,
 /// and the busy share since the oldest of the last `WINDOW`. A host runner
 /// that has read for less says it over what it has.
 #[derive(Debug, Default)]

@@ -27,6 +27,7 @@ use crate::forge::{Pulls, Refusal};
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::orca::Unremoved;
+use crate::orca_name::{Label, Shown, State};
 use crate::remote::{Fresh, Push};
 
 /// What a turn says when the issue's pinned target moved off the branch it
@@ -664,13 +665,15 @@ fn in_group(group: u32) -> Result<Vec<u32>> {
 /// process is stopped on its own, never its group at once: a process this
 /// user cannot kill is never stopped, as nothing could end it then; it is
 /// left to run and is waited for (`Signalled::unkillable`).
+///
+/// A recorded gate whose scope is gone — its turn died after the scope went
+/// with the run that held it, as between a round's fast and slow gate — is
+/// still stopped: its gate by its identity, what it started by its recorded
+/// descendants, their parents and its mark. Refusing it would hold its lane
+/// for good, with no turn left to free it (sunfmin/control#1247).
 fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Signalled> {
     let scope = crate::process_scope::path(&candidate.worktree);
     let has_scope = scope.exists();
-    ensure!(
-        candidate.gate.is_none() || has_scope,
-        "gate process ownership is missing; its lane remains occupied"
-    );
     let owned: Vec<Process> = candidate
         .descendants
         .iter()
@@ -685,10 +688,12 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Signall
     if let Some(gate) = &candidate.gate
         && gate.host == crate::this_host()
     {
+        // Its kernel start time is its identity: the same process, which leads
+        // its own group while it runs. Where its scope is there, it must also
+        // hold it.
         let current = identity(gate.pid)?;
         if current.as_ref() == Some(gate)
-            && has_scope
-            && crate::process_scope::owns(gate.pid, &scope)?
+            && (!has_scope || crate::process_scope::owns(gate.pid, &scope)?)
         {
             // Its group is killed at the end, never stopped as one.
             frozen.group = Some(gate.pid);
@@ -1898,6 +1903,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         (candidate.result.clone().expect("a fast-green candidate has its gate result"), None)
     } else {
         add_candidate_worktree(repo, &path, &candidate.commit)?;
+        let name = Shown::Landing { of, title: &pr.title }.name(forge.tracker);
+        let label = Label::show(&path, name.clone(), Some(State::Gating));
         let checkout = Repo::new(path.clone());
         let command = GateCommand::new(&candidate.command);
         let hook = Gate { repo, config, id: &id, slow: false, clock: &clock };
@@ -1911,7 +1918,10 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             &hook,
         );
         match result {
-            Ok((evidence, judged)) => (evidence, Some(judged)),
+            Ok((evidence, judged)) => {
+                label.end(name, State::of(evidence.green()));
+                (evidence, Some(judged))
+            }
             Err(error) => {
                 invalidate(repo, config, &id, "gate_interrupted")?;
                 return Err(error);
@@ -2318,7 +2328,7 @@ fn carrying(
     result["carried"] = json!(carry_held(turn, &head)?);
     if red.is_some() {
         result["detail"] = json!(format!(
-            "the fast gate ran red on this PR's pair with {named}, whose merge is `pair.commit`: \
+            "the fast gate ran red on this PR's group with {named}, whose merge is `pair.commit`: \
              each is green alone, and the failing tests fail with them together. That merge is \
              now this PR's branch, pushed, and {named} are closed as carried by this PR, which \
              lands their change with its own: fix it so the fast gate passes, commit, push, and \
@@ -2339,7 +2349,7 @@ fn carried_answer(mut answer: Value, by: u64) -> Value {
     answer
 }
 
-/// The answer of a turn whose pair ran red on its fast gate: the pair's
+/// The answer of a turn whose group ran red on its fast gate: the group's
 /// run, which this PR's worker is given (docs/adr/0083).
 fn pair_red(answer: Value, p: &Candidate) -> Value {
     let mut result = match &p.result {
@@ -2353,35 +2363,38 @@ fn pair_red(answer: Value, p: &Candidate) -> Value {
     result["pair"] = json!({ "candidate": p.id, "commit": p.commit, "with": partners });
     let with: Vec<String> = partners.iter().map(|n| format!("#{n}")).collect();
     result["detail"] = json!(format!(
-        "the fast gate ran red on this PR's pair with {}, whose merge is `pair.commit`: each \
-         is green alone, and the failing tests fail with them together; fix this PR's change \
-         so that it passes with theirs, commit, and ask for a turn again",
+        "the fast gate ran red on this PR's group with {}, whose merge is `pair.commit`: \
+         each is green alone, and the failing tests fail with them together; fix this PR's \
+         change so that it passes with theirs, commit, and ask for a turn again",
         with.join(", ")
     ));
     result
 }
 
-/// Pairs the round's level as `chain` names it (`Chain::to_pair`): each
-/// pair its two nodes' merge, which `git merge-tree` finds clean, as a
-/// commit of its own, its fast gate the one its commit declares.
+/// Groups the round's level as `chain` names it (`Chain::to_pair`,
+/// `pairing::groups`): each group its nodes merged one after another, each
+/// onto the merge before, where `git merge-tree` finds it clean, as a commit
+/// of its own, its fast gate the one its commit declares.
 fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
     let InRound { repo, config, root, clock, .. } = *turn;
     let Some((round, level, nodes)) = chain.to_pair() else { return Ok(()) };
-    let mut merges: Vec<((usize, usize), String)> = vec![];
-    let made = pairing::pairs(nodes.len(), |a, b| {
-        let (Some(first), Some(second)) = (nodes.get(a), nodes.get(b)) else {
-            return Ok(false);
+    let named =
+        |changes: &[u64]| changes.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
+    let made = pairing::groups(nodes.len(), |held: Option<&String>, at: &[usize], node| {
+        let (Some(first), Some(next)) = (at.first().and_then(|&i| nodes.get(i)), nodes.get(node))
+        else {
+            return Ok(None);
         };
-        let named = |changes: &[u64]| {
-            changes.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ")
-        };
-        let message = format!("Pair {} with {}", named(&first.changes), named(&second.changes));
-        let merged =
-            crate::turn::merged_onto(repo, &first.commit, &second.commit, &message, clock())?;
-        Ok::<bool, anyhow::Error>(merged.map(|commit| merges.push(((a, b), commit))).is_some())
+        let mut changes: Vec<u64> = vec![];
+        for &i in at {
+            changes.extend(nodes.get(i).iter().flat_map(|n| &n.changes));
+        }
+        let message = format!("Group {} with {}", named(&changes), named(&next.changes));
+        let onto = held.unwrap_or(&first.commit);
+        crate::turn::merged_onto(repo, onto, &next.commit, &message, clock())
     })?;
     let mut built = vec![];
-    for (at, commit) in merges.into_iter().filter(|(at, _)| made.pairs.contains(at)) {
+    for (at, commit) in made.groups {
         let declared = crate::turn::tip_config(repo, &commit)?;
         let own = Declared {
             whole: declared.gate_command.clone(),
@@ -2390,14 +2403,7 @@ fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
         }
         .own();
         let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
-        built.push(Built {
-            first: at.0,
-            second: at.1,
-            commit,
-            tree,
-            command: own.command,
-            seconds: own.seconds,
-        });
+        built.push(Built { nodes: at, commit, tree, command: own.command, seconds: own.seconds });
     }
     let worktree = |id: &str| root.join(id).to_string_lossy().into_owned();
     let now = clock();
@@ -2471,6 +2477,8 @@ fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
     })?;
     let Some(p) = started else { return Ok(()) };
     add_candidate_worktree(repo, &path, &p.commit)?;
+    let name = paired(turn, &p).name(turn.forge.tracker);
+    let label = Label::show(&path, name.clone(), Some(State::Gating));
     let checkout = Repo::new(path.clone());
     let command = GateCommand::new(&p.command);
     let hook = Gate { repo, config, id: pair, slow: false, clock };
@@ -2497,6 +2505,7 @@ fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
             return Err(error);
         }
     };
+    label.end(name, State::of(evidence.green()));
     let chain = change(repo, config, |chain| chain.finish(pair, evidence.clone()))?;
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, pair)?;
@@ -2648,6 +2657,8 @@ fn whole(round: Round<'_>) -> Result<Option<Value>> {
             }
             None => {
                 add_candidate_worktree(repo, &path, &tip.commit)?;
+                let named = |gate| rounded(&members, gate).name(round.tracker);
+                let label = Label::show(&path, named("fast"), Some(State::Gating));
                 let checkout = Repo::new(path.clone());
                 let fast = GateCommand::new(&tip.command);
                 let ran = {
@@ -2673,6 +2684,7 @@ fn whole(round: Round<'_>) -> Result<Option<Value>> {
                 };
                 match &tip.slow {
                     Some(slow) if fast_evidence.green() => {
+                        label.set(named("slow"), Some(State::Gating));
                         // The fast gate's processes are confirmed gone before the
                         // slow gate's are owned through a scope of their own.
                         let scope = crate::process_scope::path(&tip.worktree);
@@ -2718,9 +2730,13 @@ fn whole(round: Round<'_>) -> Result<Option<Value>> {
                                 evidence.not_recorded = Some(why);
                             }
                         }
+                        label.end(named("slow"), State::of(evidence.green()));
                         (evidence, judged, "slow")
                     }
-                    _ => (fast_evidence, fast_judged, "fast"),
+                    _ => {
+                        label.end(named("fast"), State::of(fast_evidence.green()));
+                        (fast_evidence, fast_judged, "fast")
+                    }
                 }
             }
         };
@@ -2746,6 +2762,48 @@ fn whole(round: Round<'_>) -> Result<Option<Value>> {
     };
     let ran = Ran { gate, red: &red, members: &members, tip: &tip, at };
     Ok(Some(red_round(&round, &ran, result)?))
+}
+
+/// A round's tip, as Orca names its worktree: the issues of `members`,
+/// the round's candidates, and which of its gates runs there.
+fn rounded<'a>(members: &[Candidate], gate: &'a str) -> Shown<'a> {
+    let mut issues: Vec<u64> = vec![];
+    for issue in members.iter().filter_map(|m| m.note.issue) {
+        if !issues.contains(&issue) {
+            issues.push(issue);
+        }
+    }
+    Shown::Round { issues, gate }
+}
+
+/// A pair of a round's pairing tree, `pair`, as Orca names its worktree:
+/// the issues its two nodes' PRs close. This turn's PR's is its own issue;
+/// another's is read from its description, and one that cannot be read is
+/// left out — the name is no reason to stop a gate.
+fn paired(turn: &InRound<'_>, pair: &Candidate) -> Shown<'static> {
+    let Some(paired) = &pair.pair else {
+        return Shown::Pair { first: vec![], second: turn.issue.into_iter().collect() };
+    };
+    let of = |prs: &[u64]| {
+        let mut issues: Vec<u64> = vec![];
+        for &pr in prs {
+            let closes = if pr == turn.asked.number {
+                turn.issue.into_iter().collect()
+            } else {
+                turn.gh
+                    .pr_body(pr)
+                    .map(|body| turn.forge.tracker.closed_by(&body, &[], None))
+                    .unwrap_or_default()
+            };
+            for issue in closes {
+                if !issues.contains(&issue) {
+                    issues.push(issue);
+                }
+            }
+        }
+        issues
+    };
+    Shown::Pair { first: of(&paired.first), second: of(&paired.second) }
 }
 
 /// What a round's red gate ran on: which gate, what it said, the round's
@@ -2835,6 +2893,8 @@ fn round(round: Round<'_>) -> Result<Option<Value>> {
     // gets one of its own, at the same place, and it goes when it ends.
     let path = PathBuf::from(&tip.worktree);
     add_candidate_worktree(repo, &path, &tip.commit)?;
+    let name = rounded(&members, "slow").name(round.tracker);
+    let label = Label::show(&path, name.clone(), Some(State::Gating));
     let checkout = Repo::new(path.clone());
     // The fast gate's scope was confirmed free when it stopped; the slow
     // gate's processes are owned through a scope of their own.
@@ -2861,6 +2921,7 @@ fn round(round: Round<'_>) -> Result<Option<Value>> {
             return Err(error);
         }
     };
+    label.end(name, State::of(evidence.green()));
     if evidence.green() {
         let tree = Tree::named(&tip.tree);
         let parts = (&GateCommand::new(&slow.whole), &GateCommand::new(&tip.command), &command);

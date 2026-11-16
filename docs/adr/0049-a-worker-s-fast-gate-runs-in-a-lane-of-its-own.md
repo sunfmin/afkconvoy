@@ -1,5 +1,5 @@
 ---
-status: accepted, the fast lane's count of places replaced by ADR-0087
+status: accepted, the fast lane's count of places replaced by ADR-0088
 ---
 
 # A worker's fast gate runs in a lane of its own

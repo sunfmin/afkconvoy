@@ -212,6 +212,9 @@ pub struct World {
     /// The milliseconds one second of afkconvoy's production bounds takes in
     /// this world (`waits`), 0 while they are whole: `scale_waits`.
     second_ms: std::sync::atomic::AtomicU64,
+    /// The seconds a note typed at a worker may wait for its harness to take
+    /// it in this world: 0, a test checks once, unless `note_wait` says more.
+    note_wait: std::sync::atomic::AtomicU64,
 }
 
 /// One answer of the CLI: the JSON object it printed, and its exit code.
@@ -271,11 +274,14 @@ impl World {
         }
         // The machine is this account's alone, and its `afkconvoy` this build.
         write_script(&bin.join("ps"), PS);
+        // The engine accounts a fleet reads: none of the host's keychain.
+        write_script(&bin.join("mytokens"), MYTOKENS);
         std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), bin.join("afkconvoy")).unwrap();
         let world = World {
             repository_templates: std::sync::atomic::AtomicBool::new(false),
             termination_clock: std::sync::atomic::AtomicBool::new(false),
             second_ms: std::sync::atomic::AtomicU64::new(0),
+            note_wait: std::sync::atomic::AtomicU64::new(0),
             tmp_links: tempfile::tempdir_in("/tmp").unwrap(),
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
@@ -310,6 +316,17 @@ impl World {
             .collect();
         let profile = "export AFKCONVOY_TEST_LOGIN=1\necho 'a line an rc file printed'\n";
         write(&self.home(), ".profile", &format!("{exported}{profile}"));
+    }
+
+    /// A note typed at a worker may wait `seconds` for its harness to take
+    /// it, as in production, in every command of this world from now on.
+    pub fn note_wait(&self, seconds: u64) {
+        self.note_wait.store(seconds, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The bytes free on the stand-in `df`'s disk of 1000 GiB from now on.
+    pub fn disk_free(&self, bytes: u64) {
+        std::fs::write(self.root.join("disk-available"), (bytes / 1024).to_string()).unwrap();
     }
 
     /// Has one second of every production bound afkconvoy waits out — a
@@ -500,7 +517,8 @@ impl World {
         // already written it when send returns, so a test checks once.
         env.push(("AFKCONVOY_TURN_WAIT_SECONDS".to_string(), "0".to_string()));
         // The same for a note typed at a worker (`afkconvoy tell`).
-        env.push(("AFKCONVOY_NOTE_WAIT_SECONDS".to_string(), "0".to_string()));
+        let note_wait = self.note_wait.load(std::sync::atomic::Ordering::Relaxed);
+        env.push(("AFKCONVOY_NOTE_WAIT_SECONDS".to_string(), note_wait.to_string()));
         // A cut's gate red only on TIMEOUTs it cannot classify under
         // overload runs again at once.
         env.push(("AFKCONVOY_CUT_GATE_RETRY_SECONDS".to_string(), "0".to_string()));
@@ -515,6 +533,53 @@ impl World {
     /// of a team and its roles are under it.
     pub fn cache(&self) -> PathBuf {
         self.root.join("cache")
+    }
+
+    /// Puts a Claude Code account of each of `names` in the world's
+    /// mytokens, each holding the token `sk-ant-<name>`.
+    pub fn claude_accounts(&self, names: &[&str]) {
+        for name in names {
+            let token = format!("sk-ant-{name}");
+            self.mytokens_account(
+                name,
+                &[("HARNESS", "claude-code"), ("CLAUDE_CODE_OAUTH_TOKEN", &token)],
+            );
+        }
+    }
+
+    /// Writes the host's account book as a worker on each account of
+    /// `accounts` last recorded its `five_hour` window: `used` percent,
+    /// resetting at `resets_at`.
+    pub fn account_book(&self, accounts: &[(&str, u64, u64)]) {
+        let dir = self.cache().join("afkconvoy/accounts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut book = serde_json::Map::new();
+        for (name, used, resets_at) in accounts {
+            book.insert(
+                name.to_string(),
+                json!({"windows_at": 900, "windows": [{"name": "five_hour", "used": used,
+                    "resets_at": resets_at}]}),
+            );
+        }
+        std::fs::write(dir.join("book.json"), json!({"accounts": book}).to_string()).unwrap();
+    }
+
+    /// Puts the engine account `name` in the world's mytokens, holding
+    /// `fields` (GLOSSARY: Account).
+    pub fn mytokens_account(&self, name: &str, fields: &[(&str, &str)]) {
+        let dir = self.root.join("mytokens");
+        std::fs::create_dir_all(&dir).unwrap();
+        let service = format!("agent-account-{name}");
+        let map: serde_json::Map<String, Value> =
+            fields.iter().map(|(key, value)| (key.to_string(), json!(value))).collect();
+        std::fs::write(
+            dir.join(format!("{service}.json")),
+            json!({"fields": map, "level": "server"}).to_string(),
+        )
+        .unwrap();
+        for (key, value) in fields {
+            std::fs::write(dir.join(format!("{service}.{key}")), value).unwrap();
+        }
     }
 
     /// This world's worker link for `worktree`, with the production key but
@@ -1100,6 +1165,13 @@ impl World {
     pub fn shell_knows(&self, word: &str, resolution: Option<&str>) {
         let line = format!("{word}\t{}\n", resolution.unwrap_or("-"));
         append(&self.root.join("shell-types"), &line);
+    }
+
+    /// The `orca` afkconvoy finds first on its PATH in this world, by its
+    /// absolute path: the stand-in.
+    pub fn orca_program(&self) -> PathBuf {
+        let only = self.root.join("path");
+        if only.exists() { only.join("orca") } else { self.bin.join("orca") }
     }
 
     /// Takes a command off the PATH afkconvoy runs under, which from here on
@@ -2074,6 +2146,11 @@ case "$2" in
         esac ;;
     esac
     exit 0 ;;
+  "which -a orca")
+    # Every orca on the login shell's PATH: what `shell-orcas` holds, else
+    # the stand-in alone.
+    if [ -f "$root/shell-orcas" ]; then cat "$root/shell-orcas"; exit 0; fi
+    echo "${0%/*}/orca"; exit 0 ;;
   "type -- "*)
     word=${2#type -- \'}; word=${word%\'}
     if [ -f "$root/shell-types" ]; then
@@ -2114,11 +2191,12 @@ esac
 "#;
 
 /// The stand-in `df`, for admission: a disk of 1000 GiB, half of it free —
-/// never the disk of whoever runs the tests.
+/// never the disk of whoever runs the tests — or what `disk_free` says.
 const DF: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../df.log"
+free=$(cat "${0%/*}/../disk-available" 2>/dev/null || echo 524288000)
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
-echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
+echo "/dev/stand-in 1048576000 $((1048576000 - free)) $free 50% /"
 "#;
 
 /// The stand-in `ps`: the real one, but where asked for the uids of the
@@ -2128,6 +2206,27 @@ echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 /// core, the share of a core each process takes is the one it says, and
 /// none for every other; a pid it says that no process has is listed too,
 /// running the program its fourth word names, or `stand-in`.
+/// mytokens, as far as a fleet asks it: `list`, and `get <service>` with
+/// `--json` or `--field <name>`, of the secrets `World::mytokens_account` put.
+const MYTOKENS: &str = r#"#!/bin/sh
+dir=${0%/*}/../mytokens
+case "$1" in
+list)
+    for f in "$dir"/*.json; do
+        [ -f "$f" ] || continue
+        name=${f##*/}
+        printf '%s/default\tprofile\tserver\n' "${name%.json}"
+    done ;;
+get)
+    case "$3" in
+    --json) cat "$dir/$2.json" ;;
+    --field) cat "$dir/$2.$4" ;;
+    *) exit 2 ;;
+    esac ;;
+*) exit 2 ;;
+esac
+"#;
+
 const PS: &str = r#"#!/bin/sh
 table=${0%/*}/../admission-processes
 case "$*" in

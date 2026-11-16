@@ -779,7 +779,11 @@ impl Sampler {
                 turned.push(cooled(watched.worker, &episode, true));
             }
         }
-        let procs = processes();
+        // No worker, nothing to measure: the host's every process is listed,
+        // and each one's writes read, only for a worker's tree. A fleet with
+        // none listed them every sample, 116 ms of CPU each on a host of
+        // 2,150 processes (sunfmin/control#1229).
+        let procs = if self.listed.is_empty() { vec![] } else { processes() };
         let exclusive = crate::exclusive::running_work(queue, &procs).pids;
         let mut taken = vec![];
         let mut hot_now = vec![];

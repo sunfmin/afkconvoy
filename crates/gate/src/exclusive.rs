@@ -4,7 +4,7 @@
 //! in, how many are ahead of a ticket, and since when a worktree has waited in
 //! it are decided here; holding it is the holder's.
 //!
-//! A queued command starts once the host has room for it (docs/adr/0087):
+//! A queued command starts once the host has room for it (docs/adr/0088):
 //! its cores under a busy share by the kernel's CPU ticks over the last
 //! minute, counting each start the reading does not include yet, one start to
 //! a reading, and the first while nothing of the queue runs whatever the
@@ -162,10 +162,10 @@ pub const BUSY_SHARE: u64 = 90;
 /// The CPU, in percent of the host's, a running command whose kind has no
 /// run kept is counted as until the reading includes it: a quarter of the
 /// host, what one of the four places the queue had by default took
-/// (docs/adr/0087).
+/// (docs/adr/0088).
 pub const UNMEASURED: u64 = 25;
 
-/// How busy the host is, as one reading says it (docs/adr/0087): what the
+/// How busy the host is, as one reading says it (docs/adr/0088): what the
 /// queue starts its commands by, in place of a count of places.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reading {
@@ -200,7 +200,7 @@ pub struct Short {
     pub floor: u64,
 }
 
-/// What the queue starts commands by, at one observation (docs/adr/0087).
+/// What the queue starts commands by, at one observation (docs/adr/0088).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Room {
     /// The host's reading; `None`: it could not be read, and a command
@@ -407,7 +407,7 @@ pub struct Constraint {
 pub enum ConstraintKind {
     SameRepo,
     /// The host's cores are busy at or past the share, or could not be read
-    /// with a command of the queue running (docs/adr/0087).
+    /// with a command of the queue running (docs/adr/0088).
     HostBusy,
     /// A command already started on this reading: the next starts on the
     /// next, which counts that one.
@@ -445,7 +445,7 @@ pub struct Scheduling {
 }
 
 /// Interpret every request with the very same reservations used to grant
-/// a start, with cuts before ordinary waiters (docs/adr/0087). A command
+/// a start, with cuts before ordinary waiters (docs/adr/0088). A command
 /// starts while the host has room: its cores under the busy share, counting
 /// what the reading does not include yet, and its memory over admission's
 /// floor; one start to a reading. While nothing of the queue runs, the first
@@ -636,7 +636,7 @@ pub struct Snapshot<N = Plain> {
     /// returns.
     pub disk: Option<Low>,
     /// What a command starts by, in place of a count of places
-    /// (docs/adr/0087): the host's reading, the busy share, and what the
+    /// (docs/adr/0088): the host's reading, the busy share, and what the
     /// reading does not include yet.
     pub room: Room,
     pub repos: Vec<RepoLane>,

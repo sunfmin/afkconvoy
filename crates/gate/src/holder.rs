@@ -2,7 +2,7 @@
 //! one process of a host that keeps every ticket waiting or running, grants
 //! each its lane in the order `exclusive` decides, and ends the hold of a
 //! command that held others up past the host's bound (docs/adr/0031). A
-//! command starts once the host has room for it (docs/adr/0087).
+//! command starts once the host has room for it (docs/adr/0088).
 //!
 //! A host process embeds it — afkconvoy's host runner, or another program's
 //! daemon — and says through `Host` what only it knows: the time, how busy
@@ -31,7 +31,7 @@ pub trait Host<N>: Send + Sync {
     /// The time, in epoch seconds: when a ticket's command begins to run.
     fn now(&self) -> u64;
 
-    /// How busy the host is now, over the last minute (docs/adr/0087): its
+    /// How busy the host is now, over the last minute (docs/adr/0088): its
     /// cores by the kernel's CPU ticks, or by the load alone where those
     /// cannot be read, and its memory where it is under its floor. `None`: it
     /// cannot be read, and a command starts only while nothing of the queue
@@ -125,7 +125,7 @@ pub struct Bound {
 }
 
 /// A host's exclusive queue, as one process holds it: commands run in the
-/// room the host has (docs/adr/0087), held apart by repo. Requests keep
+/// room the host has (docs/adr/0088), held apart by repo. Requests keep
 /// their order, and each leaves as its asker leaves. A clone is the same.
 pub struct Holder<N, H> {
     held: Arc<(Mutex<Joined<N>>, Condvar)>,
@@ -483,7 +483,7 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
     }
 
     /// What the queue starts commands by now, beside the queue too
-    /// (docs/adr/0087): the host's reading, the share, what the reading does
+    /// (docs/adr/0088): the host's reading, the share, what the reading does
     /// not include yet, and whether a command already started on it. Those
     /// beside it that cannot be read are left out.
     pub fn room_now(&self) -> Room {

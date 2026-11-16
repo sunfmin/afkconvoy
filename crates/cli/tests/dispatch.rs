@@ -613,3 +613,59 @@ fn a_fork_s_pr_that_closes_a_ready_issue_holds_it_off_from_nobody() {
     assert!(prompt.contains("**Implement**") && !prompt.contains("#98"), "{prompt}");
     assert_eq!(world.comments(98), [] as [String; 0]);
 }
+
+/// The command line orca was asked to start a terminal with.
+fn started_line(world: &World) -> String {
+    let calls = world.orca_calls();
+    let created = calls.iter().find(|call| common::asked(call) == "terminal create").unwrap();
+    let at = created.iter().position(|word| word == "--command").unwrap();
+    created[at + 1].clone()
+}
+
+#[test]
+fn the_next_worker_starts_on_the_account_not_at_ninety_percent_with_its_token() {
+    let world = ready_world();
+    world.claude_accounts(&["busy", "idle"]);
+    world.account_book(&[("busy", 92, 5000), ("idle", 30, 5000)]);
+    let started = dispatch(&world, "7").ok();
+    let line = started_line(&world);
+    assert!(
+        line.contains("CLAUDE_CODE_OAUTH_TOKEN=\"$(")
+            && line.contains(
+                " get 'agent-account-idle' --field \
+             CLAUDE_CODE_OAUTH_TOKEN)\" && export CLAUDE_CODE_OAUTH_TOKEN && "
+            ),
+        "{line}"
+    );
+    assert!(!line.contains("sk-ant"), "the line holds where the token is, never it: {line}");
+    let worktree = Path::new(started["worktree"].as_str().unwrap());
+    let git_dir = git(worktree, &["rev-parse", "--absolute-git-dir"]);
+    let noted = std::fs::read_to_string(Path::new(git_dir.trim()).join("convoy-account"));
+    assert_eq!(noted.unwrap(), "idle");
+}
+
+#[test]
+fn with_every_account_at_ninety_percent_no_worker_starts_until_a_window_resets() {
+    let world = ready_world();
+    world.claude_accounts(&["busy", "idle"]);
+    world.account_book(&[("busy", 92, 5000), ("idle", 95, 6000)]);
+    let error = dispatch(&world, "7").error();
+    assert!(error.contains("no claude-code account takes a new worker"), "{error}");
+    assert!(
+        error.contains("`busy`: its `five_hour` window is 92% used, at or past 90%"),
+        "{error}"
+    );
+    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
+
+    // `busy`'s window resets before the next start: it takes the worker.
+    world.account_book(&[("busy", 92, 999), ("idle", 95, 6000)]);
+    dispatch(&world, "7").ok();
+    assert!(started_line(&world).contains("'agent-account-busy'"));
+}
+
+#[test]
+fn a_harness_with_no_accounts_starts_on_its_own_login() {
+    let world = ready_world();
+    dispatch(&world, "7").ok();
+    assert!(!started_line(&world).contains("CLAUDE_CODE_OAUTH_TOKEN"));
+}

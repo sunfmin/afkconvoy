@@ -143,9 +143,18 @@ fn scratch(root: &Path) -> (PathBuf, PathBuf) {
 /// A change on the branch `source`, adding `file`, pushed: one that asks to
 /// land on `main`.
 fn change(work: &Path, number: u64, source: &str, file: &str) -> Change {
+    change_of(work, number, source, &[file])
+}
+
+/// A change adding `files`, each holding its source's name: two changes
+/// adding one file conflict.
+fn change_of(work: &Path, number: u64, source: &str, files: &[&str]) -> Change {
     git(work, &["checkout", "--quiet", "-b", source, "main"]);
-    std::fs::write(work.join(file), source).unwrap();
-    git(work, &["add", file]);
+    for file in files {
+        std::fs::write(work.join(file), source).unwrap();
+        git(work, &["add", file]);
+    }
+    let file = files[0];
     git(work, &["commit", "--quiet", "-m", &format!("add {file}")]);
     git(work, &["push", "--quiet", "origin", source]);
     git(work, &["checkout", "--quiet", "main"]);
@@ -497,30 +506,28 @@ fn ended(outcomes: Vec<(u64, Outcome<String>)>) -> Vec<(u64, Option<Decision>)> 
         .collect()
 }
 
-/// Four ready, mutually clean changes: two pairs, fast-gated at once, then
-/// their pair, then the root merged onto the tip, gated whole once; all four
-/// land in one fast-forward, and the forge is told each landed.
+/// Four ready, mutually clean changes: one group, fast-gated once, then the
+/// root merged onto the tip, gated whole once; all four land in one
+/// fast-forward, and the forge is told each landed (sunfmin/control#1239).
 #[test]
-fn four_clean_changes_pair_twice_gate_their_pair_and_land_in_one_fast_forward() {
+fn four_clean_changes_are_one_group_with_one_fast_gate_and_land_in_one_fast_forward() {
     let root = tempfile::tempdir().unwrap();
     let (work, ran) = scratch(root.path());
     let base = git(&work, &["rev-parse", "main"]);
     let asked = changes(&work, 4, &[]);
     let forge = Fake::default();
     let worktrees = root.path().join("candidates");
-    std::fs::write(root.path().join("concurrent"), "").unwrap();
 
     let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
 
     assert_eq!(ended(outcomes), (1..=4).map(|n| (n, Some(Decision::Landed))).collect::<Vec<_>>());
     let chain = recorded(&work);
-    let pairs = paired(&chain);
+    let groups = paired(&chain);
     let levels: Vec<(u32, u64)> =
-        pairs.iter().map(|p| (p.pair.as_ref().unwrap().level, p.change)).collect();
-    assert_eq!(levels, [(0, 2), (0, 4), (1, 4)], "two pairs, then their pair");
-    // The two pairs of level 0 gated at once: both started before either ended.
-    let order = std::fs::read_to_string(root.path().join("order")).unwrap();
-    assert!(order.starts_with("start\nstart\nend\nend\n"), "{order}");
+        groups.iter().map(|p| (p.pair.as_ref().unwrap().level, p.change)).collect();
+    assert_eq!(levels, [(0, 4)], "one group, gated by its last-asked change");
+    let joined: Vec<u64> = groups[0].pair.as_ref().unwrap().joins().copied().collect();
+    assert_eq!(joined, [1, 2, 3, 4]);
     let chained = chained(&chain);
     let tip = chained.last().unwrap();
     assert_eq!(chained.len(), 4);
@@ -528,7 +535,7 @@ fn four_clean_changes_pair_twice_gate_their_pair_and_land_in_one_fast_forward() 
     let gates: Vec<(String, String)> = runs(&ran);
     let slow: Vec<&(String, String)> = gates.iter().filter(|(g, _)| g == "slow").collect();
     assert_eq!(slow, [&("slow".to_string(), tip.commit.clone())], "gated whole once");
-    assert_eq!(gates.len(), 4, "three pairs' fast gates, the root's reused, one slow: {gates:?}");
+    assert_eq!(gates.len(), 2, "one group's fast gate, the root's reused, one slow: {gates:?}");
     git(&work, &["fetch", "--quiet", "origin"]);
     assert_eq!(git(&work, &["rev-parse", "origin/main"]), tip.commit, "one fast-forward");
     let history = git(&work, &["rev-list", "--first-parent", &format!("{base}..origin/main")]);
@@ -538,13 +545,13 @@ fn four_clean_changes_pair_twice_gate_their_pair_and_land_in_one_fast_forward() 
     assert!(forge.sent_back.borrow().is_empty());
 }
 
-/// A pair red on its fast gate stops no other pair: its later-asked change
-/// is sent back carrying its partner, with the red run and the pair's merge,
-/// its partner is carried, and the rest of the round lands. Its author
-/// merges that in and fixes it; asked again, the carrying change closes the
-/// carried one, takes its description, deletes its source, and lands both.
+/// A group red on its fast gate: its last-asked change is sent back carrying
+/// every other change of it, with the red run and the group's merge, and
+/// they are carried. Its author merges that in and fixes it; asked again,
+/// the carrying change closes the carried ones, takes their descriptions,
+/// deletes their sources, and lands them all.
 #[test]
-fn a_red_pair_has_its_later_change_carry_its_partner_and_the_rest_of_the_round_lands() {
+fn a_red_group_of_three_has_its_last_change_carry_the_other_two() {
     let root = tempfile::tempdir().unwrap();
     let (work, _) = scratch(root.path());
     // Each of the first two passes alone; together they break the fast gate.
@@ -552,59 +559,63 @@ fn a_red_pair_has_its_later_change_carry_its_partner_and_the_rest_of_the_round_l
         change(&work, 1, "change-1", "red-x"),
         change(&work, 2, "change-2", "red-y"),
         change(&work, 3, "change-3", "file-3.txt"),
-        change(&work, 4, "change-4", "file-4.txt"),
     ];
     let forge = Fake::default();
     let worktrees = root.path().join("candidates");
 
     let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
 
-    let mut outcomes = outcomes;
-    let rest = outcomes.split_off(2);
-    assert_eq!(outcomes, [(1, Outcome::Carried(2)), (2, Outcome::Carrying(vec![1]))]);
-    assert_eq!(ended(rest), [(3, Some(Decision::Landed)), (4, Some(Decision::Landed))]);
+    assert_eq!(
+        outcomes,
+        [(1, Outcome::Carried(3)), (2, Outcome::Carried(3)), (3, Outcome::Carrying(vec![1, 2]))]
+    );
     let sent = forge.sent_back.borrow().clone();
-    let [(2, Some(run), merge, carried)] = &sent[..] else { panic!("{sent:?}") };
+    let [(3, Some(run), merge, carried)] = &sent[..] else { panic!("{sent:?}") };
     assert!(run.excerpt.iter().any(|line| line == "FAIL"), "sent back with its red run");
-    assert_eq!(carried, &[1]);
-    assert_eq!(landed_files(&work), ["file-3.txt", "file-4.txt"]);
+    assert_eq!(carried, &[1, 2]);
+    assert!(landed_files(&work).is_empty());
     let chain = recorded(&work);
-    let red = paired(&chain).into_iter().find(|p| p.change == 2).unwrap();
-    assert_eq!(merge, std::slice::from_ref(&red.commit), "handed the pair's merge");
-    assert!(forge.closed.borrow().is_empty(), "nothing is closed before it holds the partner");
+    let red = paired(&chain).into_iter().find(|p| p.change == 3).unwrap();
+    assert_eq!(merge, std::slice::from_ref(&red.commit), "handed the group's merge");
+    assert!(forge.closed.borrow().is_empty(), "nothing is closed before it holds the others");
 
-    // Its author merges the pair in and fixes it.
-    let one = git(&work, &["rev-parse", "change-1"]);
-    git(&work, &["checkout", "--quiet", "change-2"]);
+    // Its author merges the group in and fixes it.
+    let heads = [git(&work, &["rev-parse", "change-1"]), git(&work, &["rev-parse", "change-2"])];
+    git(&work, &["checkout", "--quiet", "change-3"]);
     git(&work, &["merge", "--quiet", "--ff-only", &red.commit]);
     git(&work, &["rm", "--quiet", "red-y"]);
     std::fs::write(work.join("file-2.txt"), "fixed").unwrap();
     git(&work, &["add", "file-2.txt"]);
-    git(&work, &["commit", "--quiet", "-m", "fix 2 with 1"]);
-    git(&work, &["push", "--quiet", "origin", "change-2"]);
+    git(&work, &["commit", "--quiet", "-m", "fix 3 with 1 and 2"]);
+    git(&work, &["push", "--quiet", "origin", "change-3"]);
     git(&work, &["checkout", "--quiet", "main"]);
 
-    let outcomes = lander(&work, &worktrees, &forge).land(&asked[..2]).unwrap();
+    let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
 
     let mut outcomes = outcomes;
-    let landed = outcomes.split_off(1);
-    assert_eq!(outcomes, [(1, Outcome::Carried(2))]);
-    assert!(matches!(landed[..], [(2, Outcome::Landed(_))]), "{landed:?}");
-    assert_eq!(*forge.closed.borrow(), [(1, "carried by #2".to_string())]);
-    assert_eq!(*forge.deleted.borrow(), [("change-1".to_string(), one)]);
+    let landed = outcomes.split_off(2);
+    assert_eq!(outcomes, [(1, Outcome::Carried(3)), (2, Outcome::Carried(3))]);
+    assert!(matches!(landed[..], [(3, Outcome::Landed(_))]), "{landed:?}");
+    let closed = forge.closed.borrow().clone();
+    assert_eq!(closed, [(1, "carried by #3".into()), (2, "carried by #3".into())]);
+    let deleted = forge.deleted.borrow().clone();
+    let [one, two] = heads;
+    assert_eq!(deleted, [("change-1".into(), one), ("change-2".into(), two)]);
     let described = forge.described.borrow();
-    let [(2, description)] = &described[..] else { panic!("{described:?}") };
+    // Rewritten as each is carried, the last holds them all.
+    let Some((3, description)) = described.last() else { panic!("{described:?}") };
     assert!(
-        description.starts_with("Change 2.\n\n<!--carries change=1-->\n## Carries #1: Add red-x")
+        description.starts_with("Change 3.\n\n<!--carries change=1-->\n## Carries #1: Add red-x")
     );
-    assert!(description.ends_with("Change 1.\n"), "{description}");
-    assert_eq!(landed_files(&work), ["file-2.txt", "file-3.txt", "file-4.txt", "red-x"]);
+    assert!(description.contains("## Carries #2: Add red-y"), "{description}");
+    assert_eq!(landed_files(&work), ["file-2.txt", "file-3.txt", "red-x"]);
 }
 
-/// An odd change goes up a level unpaired; one that conflicts with every
-/// node of its level carries the earliest-asked of them.
+/// Three clean changes are one group; of three where the last conflicts with
+/// the first only, the first two are a group, the last goes up alone, and,
+/// conflicting with that group at the next level, carries it.
 #[test]
-fn an_odd_change_goes_up_unpaired_and_one_conflicting_with_every_node_carries_one() {
+fn a_change_conflicting_with_one_of_a_group_goes_up_alone_and_carries_it_next() {
     let root = tempfile::tempdir().unwrap();
     let (work, _) = scratch(root.path());
     let asked = changes(&work, 3, &[]);
@@ -615,17 +626,17 @@ fn an_odd_change_goes_up_unpaired_and_one_conflicting_with_every_node_carries_on
 
     assert_eq!(ended(outcomes), (1..=3).map(|n| (n, Some(Decision::Landed))).collect::<Vec<_>>());
     let chain = recorded(&work);
-    let levels: Vec<(u32, Vec<u64>, Vec<u64>)> = paired(&chain)
+    let levels: Vec<(u32, Vec<u64>)> = paired(&chain)
         .iter()
         .map(|p| {
             let q = p.pair.as_ref().unwrap();
-            (q.level, q.first.clone(), q.second.clone())
+            (q.level, q.joins().copied().collect())
         })
         .collect();
-    assert_eq!(levels, [(0, vec![1], vec![2]), (1, vec![1, 2], vec![3])]);
+    assert_eq!(levels, [(0, vec![1, 2, 3])]);
 
-    // 6 conflicts with 4: it goes up unpaired, and conflicts with the pair of
-    // 4 and 5, its only partner: it carries them.
+    // 6 conflicts with 4 alone: 4 and 5 are a group, 6 goes up alone, and
+    // conflicts with that group, its only other node: it carries them.
     let asked = vec![
         change(&work, 4, "change-4", "file-4.txt"),
         change(&work, 5, "change-5", "file-5.txt"),
@@ -640,6 +651,47 @@ fn an_odd_change_goes_up_unpaired_and_one_conflicting_with_every_node_carries_on
     let sent = forge.sent_back.borrow();
     let [(6, None, merge, _)] = &sent[..] else { panic!("{sent:?}") };
     assert_eq!(merge.len(), 2, "its own node, then the node it conflicts with");
+}
+
+/// Two groups of one level gate at once: 3 and 4 conflict with 1 and 2's
+/// group, and are a group of their own. At the next level the two conflict:
+/// the later carries the earlier.
+#[test]
+fn the_groups_of_a_level_gate_at_once() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, _) = scratch(root.path());
+    let asked = vec![
+        change_of(&work, 1, "change-1", &["file-1.txt", "x-a"]),
+        change_of(&work, 2, "change-2", &["file-2.txt", "x-b"]),
+        change_of(&work, 3, "change-3", &["file-3.txt", "x-a"]),
+        change_of(&work, 4, "change-4", &["file-4.txt", "x-b"]),
+    ];
+    let forge = Fake::default();
+    let worktrees = root.path().join("candidates");
+    std::fs::write(root.path().join("concurrent"), "").unwrap();
+
+    let outcomes = lander(&work, &worktrees, &forge).land(&asked).unwrap();
+
+    let chain = recorded(&work);
+    let levels: Vec<(u32, u64, Vec<u64>)> = paired(&chain)
+        .iter()
+        .map(|p| {
+            let q = p.pair.as_ref().unwrap();
+            (q.level, p.change, q.joins().copied().collect())
+        })
+        .collect();
+    assert_eq!(levels, [(0, 2, vec![1, 2]), (0, 4, vec![3, 4])]);
+    let order = std::fs::read_to_string(root.path().join("order")).unwrap();
+    assert_eq!(order, "start\nstart\nend\nend\n", "both started before either ended");
+    assert_eq!(
+        outcomes,
+        [
+            (1, Outcome::Carried(4)),
+            (2, Outcome::Carried(4)),
+            (3, Outcome::Carried(4)),
+            (4, Outcome::Carrying(vec![1, 2, 3]))
+        ]
+    );
 }
 
 /// What the crate depends on: Flux's attributes, serde and the gate crate —

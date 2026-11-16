@@ -25,7 +25,7 @@ struct Answer {
     /// holds nothing for it.
     #[serde(default)]
     disk: Option<crate::disk::Seen>,
-    /// What it starts commands by (docs/adr/0087); `None` from an older
+    /// What it starts commands by (docs/adr/0088); `None` from an older
     /// runner, which counted places.
     #[serde(default)]
     exclusive_room: Option<Room>,

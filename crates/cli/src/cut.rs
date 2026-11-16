@@ -5,7 +5,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,7 @@ use crate::gh::GitHub;
 use crate::git::Repo;
 use crate::log::What;
 use crate::orca::{Source, Worktree};
+use crate::orca_name::{Label, Shown};
 use crate::remote::{Fresh, Push};
 use crate::stage::Flows;
 
@@ -373,6 +374,8 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Opti
     clear_branches(fleet, &record.version, &base)?;
     let checkout = Worktree::cut(&source, CHECKOUT, &base, None)?;
     checkout.record_cut(&record)?;
+    let name = Shown::Cut { version: &record.version }.name(&fleet.gh.tracker);
+    Label::once(&checkout.path, name);
     let path = checkout.path.display().to_string();
     let command = crate::own_command_in(&path).fixed(" cut; exit").own();
     let title = format!("afkconvoy cut v{}", record.version);
@@ -1013,6 +1016,7 @@ impl Cutting<'_> {
                     (unsettled.red, true)
                 }
             };
+            let shown = self.keep_red(&output, &record.version, now);
             let mut why = red.said(&format!("the gate on {commit}"));
             if overloaded {
                 why.push_str(&format!(
@@ -1021,7 +1025,12 @@ impl Cutting<'_> {
                     time / 60
                 ));
             }
-            self.red = Some(RedGate { tests: red.tests, quote: red.quote, output: shown.clone() });
+            let lines: Vec<String> = std::fs::read_to_string(&shown)
+                .map(|text| text.lines().map(String::from).collect())
+                .unwrap_or_default();
+            let panics = afkconvoy_gate::gate::panics(&lines, &red.tests);
+            self.red =
+                Some(RedGate { tests: red.tests, panics, quote: red.quote, output: shown.clone() });
             bail!("{why}; its output is in {shown}")
         }
     }
@@ -1043,6 +1052,45 @@ impl Cutting<'_> {
                 return Ok(file);
             }
             n += 1;
+        }
+    }
+
+    /// Keeps the output of a red gate run started at `started`, `output`, in
+    /// the host's cache, where the next cut, which removes this checkout and
+    /// its git dir, leaves it: `cut-failed/<owner>/<repo>/<version>-<started>.log`.
+    /// Only the newest `KEPT_RED` of a repo stay. Where it cannot be kept
+    /// there, the run's own file in the checkout's git dir is named instead.
+    fn keep_red(&self, output: &Path, version: &str, started: u64) -> String {
+        let kept = (|| -> Result<PathBuf> {
+            // `<owner>/<repo>`; a remote that is a directory, by its name.
+            let repo = crate::checkout_list::repo_of(self.repo)?;
+            let repo = match Path::new(&repo).file_name() {
+                Some(name) if Path::new(&repo).is_absolute() => PathBuf::from(name),
+                _ => PathBuf::from(&repo),
+            };
+            let dir = crate::copies::cache()?.join("cut-failed").join(repo);
+            std::fs::create_dir_all(&dir)?;
+            let kept = (0..)
+                .map(|n| match n {
+                    0 => dir.join(format!("{version}-{started}.log")),
+                    n => dir.join(format!("{version}-{started}-{n}.log")),
+                })
+                .find(|kept| !kept.exists())
+                .ok_or_else(|| anyhow!("no free name in {}", dir.display()))?;
+            std::fs::copy(output, &kept)?;
+            prune_red(&dir, KEPT_RED)?;
+            Ok(kept)
+        })();
+        match kept {
+            Ok(kept) => kept.display().to_string(),
+            Err(error) => {
+                eprintln!(
+                    "[afkconvoy] cut: the red gate's output could not be kept in the host's \
+                     cache ({error:#}); it is in {} until the next cut starts",
+                    output.display()
+                );
+                output.display().to_string()
+            }
         }
     }
 
@@ -1207,6 +1255,24 @@ fn branch(record: &Record) -> String {
 }
 
 /// The repo's name, as its remote `origin` names it: `afkconvoy`.
+/// How many red gate runs' outputs of a repo the host's cache keeps.
+pub(crate) const KEPT_RED: usize = 20;
+
+/// Removes all but the newest `keep` outputs in `dir`, newest by when each
+/// was kept.
+fn prune_red(dir: &Path, keep: usize) -> Result<()> {
+    let mut kept: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    kept.sort_by(|a, b| b.cmp(a));
+    for (_, old) in kept.iter().skip(keep) {
+        std::fs::remove_file(old)?;
+    }
+    Ok(())
+}
+
 fn repo_name(repo: &Repo) -> Result<String> {
     let of = crate::checkout_list::repo_of(repo)?;
     Ok(of.rsplit('/').next().unwrap_or(&of).to_string())
@@ -1230,7 +1296,7 @@ A cut is a worker in no role, started the way a watch is: its own checkout, the 
 
 The fleet titles its terminal `afkconvoy cut v<version>`. Before its first step, including when continued with `--from <step>`, it prints one line naming the version, the tag it is cut past (or the initial version), the PRs it holds, the steps it will take, and the paths to `convoy-cut.log` and `convoy-cut.json`. Each step prints a start line and an end line with its seconds and whether it passed or failed; its commands' output stays between those lines. These lines and the commands' output go to stderr; stdout holds the JSON answer.
 
-The step `gate` writes the whole output of each run it makes to a file of that run's own in the checkout's git dir, `convoy-cut-gate-<seconds>.log`, named for when the run started; a later run, as with `--from gate`, writes another and leaves it. A red run fails the step naming the tests its output says failed (nextest's `FAIL`, `TIMEOUT` and signal lines) and that file; the answer names it as `gate_output`. The issue the failure opens names those tests, quotes the output from the first of them on — its end, where it names none — and names that file.
+The step `gate` writes the whole output of each run it makes to a file of that run's own in the checkout's git dir, `convoy-cut-gate-<seconds>.log`, named for when the run started; a later run, as with `--from gate`, writes another and leaves it. A red run's output is kept besides in the host's cache, `cut-failed/<owner>/<repo>/<version>-<seconds>.log` (`afkconvoy help cache`), where the next cut, which removes the checkout, leaves it; the newest {const:CUT_KEPT_RED} of a repo stay. A red run fails the step naming the tests its output says failed (nextest's `FAIL`, `TIMEOUT` and signal lines) and that kept file; the answer names it as `gate_output`. The issue the failure opens names those tests, what each of them panicked with as its output says it, trimmed, quotes the output from the first of them on — its end, where it names none — and names that file.
 
 ## Turning it on
 

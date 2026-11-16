@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use afkconvoy_core::before::{Before, Lost};
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::lease::stamp_age;
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
@@ -645,8 +646,12 @@ const WINDOWS_FRESH: u64 = 3600;
 /// The account the next worker of `fleet` starts on — its checkout's own
 /// harness, or the host kit's first — as the newest records of its workers
 /// at work on it say its windows, with how many run on it: those of my
-/// claims at work in `set`, and `started` more, each counted as on it. `None`:
-/// none of them said a window within `WINDOWS_FRESH` — its harness reports
+/// claims at work in `set`, and `started` more, each counted as on it.
+/// Where its harness holds several accounts in mytokens, the one of them a
+/// worker starts on now (`engine_accounts::of`), what this host last heard
+/// of each kept first from the records of its workers at work
+/// (`engine_accounts::sync`). `None`: none of them said a window within
+/// `WINDOWS_FRESH` and its harness holds no accounts — its harness reports
 /// none, or nothing could be read — and admission judges the host alone.
 pub(crate) fn usage_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Option<Usage> {
     let account = match fleet.pinned {
@@ -662,9 +667,41 @@ pub(crate) fn usage_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Optio
         .collect();
     let source = crate::orca::Source::of(&fleet.repo).ok()?;
     let linked = Worktree::linked(&source).ok()?;
+    let working: Vec<(Worktree, Harness)> = linked
+        .into_iter()
+        .filter(|(issue, _)| at_work.contains(issue))
+        .filter_map(|(_, worktree)| {
+            let harness = worktree.recorded_harness().ok().flatten()?;
+            Some((worktree, harness))
+        })
+        .collect();
+    crate::engine_accounts::sync(&working, now);
+    if let Some(accounts) = crate::engine_accounts::of(account, now) {
+        let chosen = accounts.chosen();
+        let windows: Vec<afkconvoy_core::admission::Window> = chosen
+            .map(|chosen| {
+                chosen
+                    .current(now)
+                    .into_iter()
+                    .filter_map(|window| {
+                        let length = crate::admission::minutes_of(&window.name)? * 60;
+                        Some(afkconvoy_core::admission::Window {
+                            account: format!("{} `{}`", account.key(), chosen.name),
+                            window: window.name.clone(),
+                            used: window.used,
+                            length,
+                            resets_in: window.resets_at.saturating_sub(now),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let running = chosen.map_or(0, |chosen| chosen.running);
+        return Some(Usage { account, windows, running, accounts: Some(accounts) });
+    }
     let (mut running, mut newest) = (0, None::<(u64, Vec<_>)>);
-    for (issue, worktree) in &linked {
-        if !at_work.contains(issue) || worktree.recorded_harness().ok().flatten() != Some(account) {
+    for (worktree, harness) in &working {
+        if *harness != account {
             continue;
         }
         running += 1;
@@ -676,8 +713,8 @@ pub(crate) fn usage_of(fleet: &Fleet, set: &WorkingSet, started: usize) -> Optio
         }
     }
     let (_, said) = newest?;
-    let windows = crate::admission::windows_of(account, &said, now);
-    Some(Usage { account, windows, running: running + started })
+    let windows = crate::admission::windows_of(account.key(), &said, now);
+    Some(Usage { account, windows, running: running + started, accounts: None })
 }
 
 /// A fact of a claim as it was read (`tick::Fact`).
@@ -1794,7 +1831,7 @@ Errors: a command the fleet needs is missing or logged out, or orca is not runni
 
 - With a fleet lock standing a tick works lock issues only (`afkconvoy lock --help`). It dispatches nothing else, runs no patrol, takes no stale claim of another issue, hands no other issue to a human, and leaves alone every claim of its own on another issue whose PR is not on the base branch: no judge, no watch, no advance, no nudge. What those workers declared is acted on by the first tick after the last lock issue closed. Their claims take no slot meanwhile; the line of `run` shows them apart, as `left alone`.
 - A claim whose worker declared a verdict under it takes no slot either: the slot is free the tick it is read, though the claim is held until the verdict is acted on — once its worker has been quiet the grace period, as ever. A verdict on the issue from before the claim was created is not one declared under it. The line of `run` shows them apart, as `taking no slot`.
-- Admission holds only new workers. While it holds for the disk — the disk under the checkout below its floor — each worker of this fleet at work is told once, in its terminal, to stop writing: no build, test, gate or download; commit, push and end its turn. Once the disk is over its floor again, each worker told is told to go on. Each telling is a `did` step, {do: "disk_floor", issue, outcome, comment}, and its line says `told #7: the disk floor, stop` (sunfmin/control#1112).
+- Admission holds only new workers. While it holds for the disk — the disk under the checkout below its floor — each worker of this fleet at work is told once, in its terminal, to stop writing: no build, test, gate or download; commit, push and end its turn. Once the disk is over its floor again, each worker told is told to go on. Each telling is a `did` step, {do: "disk_floor", issue, outcome, comment}, and its line says `told #7: the disk floor, stop` (sunfmin/control#1112). A tick never waits for a worker to take its line: it types the line once, looks once whether the harness gave it to its model, and goes on; a line still queued is a `queued` step, with `since`, looked at again at the next tick and not typed twice, and one queued past the note bound is typed again at the next tick, under the same mark (sunfmin/control#1230).
 - A landing claim — its PR open and not on the base branch — takes a slot while its worker is changing the tree: resolving a `conflict` or `speculative_conflict`, fixing a `gate_red`, or still preparing the branch for the turn. While its worker is gone or idle, or its turn is being asked for, or the last turn answered a wait (`afkconvoy land --help`), it takes none, and is still held until the PR lands. Its worker stops on a wait; the tick asks for the turn again itself (`asked for a turn again for #7` in its line), in the worktree, with no harness started. Before it asks, it drops the worktree's build output — each directory git ignores at the worktree's top that is not hidden, `target/`, `node_modules/` — which the next build makes again; a file git ignores and a hidden directory stay (sunfmin/control#1112). If that turn answers `conflict`, `speculative_conflict` or `gate_red`, the next tick hands its worker the answer, including the files or failing output, the ending's instructions and the worktree's full `convoy-turn.log` path. Its line says `told its turn's answer to #7`. A worker gone is continued onto its land step with that answer in its brief. Giving the worker this answer waits for a free slot; once the worker takes it, the claim takes that slot until it asks for a turn again, even while its harness still reports idle. Changes the fleet's turn made in the worktree count as no worker sign of life.
 - What a closed lock explains is run again, not carried out. In a bound repo, a stage whose own worker declared `escalate` before the lock closed and was not acted on since — and one whose worker stayed silent past a nudge sent before it closed — is not handed to its consult or to a human: the fleet leaves a stage record (`verdict=lock-closed by=fleet`), the claim is released (`advance`, `done`), and the next tick starts a worker on that stage, whose brief says a lock stood. It is no rework. A `pass`, a `blocked` and an `already-satisfied` stand as they are. What landed is still settled.
 - A step that failed is not a failed command: the exit is 0 and the failure is in `errors`. Read `errors`, not the exit code.

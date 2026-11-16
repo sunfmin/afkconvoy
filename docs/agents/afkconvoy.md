@@ -36,7 +36,7 @@ budget only with a deliberate baseline review; never raise it per run.
 The gate is two gates, run one after the other by `./gate.sh` (ADR-0047):
 the fast gate, which a worker passes before it opens or updates its PR, and
 the slow gate, which runs the tests `.config/slow-tests` marks slow. A landing
-turn runs the fast gate on each pair of a round's pairing tree, and the whole
+turn runs the fast gate on each group of a round's pairing tree, and the whole
 gate, fast and slow, once per round, at its root merged onto the tip
 (ADR-0083). Older versions skip this block, and land
 on `gate_command`, both; this repo's fleet is upgraded by hand before it
@@ -123,7 +123,7 @@ So the gate runs through the host's exclusive queue (ADR-0019), in every
 checkout — a worker's standalone gate or landing turn, and a gate in a
 temporary checkout that certifies the base branch: each starts once the host
 has room for it, its cores under the busy share by their CPU reading, and one
-at a time while the host is busy (ADR-0087). The workers keep editing while
+at a time while the host is busy (ADR-0088). The workers keep editing while
 their gates wait. A worker's fast gate, `afkconvoy gate --fast`, is held apart
 from none of these: it runs beside the other fast gates, whatever their repo,
 as the host's room allows (ADR-0049).

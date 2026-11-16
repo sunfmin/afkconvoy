@@ -59,14 +59,18 @@ pub struct Settings {
     /// host's shared readings stay under, a whole percent, so that the workers'
     /// own `gh` calls keep the rest (sunfmin/control#1111).
     pub github_share: Option<u64>,
+    /// `--account-limit`: the share of a usage window, a whole percent, at
+    /// or past which an engine account takes no new worker until the
+    /// window resets (sunfmin/control#1220).
+    pub account_limit: Option<u64>,
     /// `--exclusive-seconds`: seconds a running command may hold others up.
     pub exclusive_seconds: Option<u64>,
     /// `--busy-share`: the share of the host's cores, a whole percent, under
-    /// which the exclusive queue starts a command (docs/adr/0087).
+    /// which the exclusive queue starts a command (docs/adr/0088).
     pub busy_share: Option<u64>,
     /// An old checkout list may still name `train_lanes`, `gate_lanes`,
     /// `slow_gate_lanes` and `fast_lanes`: the queue's counts of places,
-    /// which the host's room replaced (docs/adr/0087). None is a setting:
+    /// which the host's room replaced (docs/adr/0088). None is a setting:
     /// known fields so `rest` does not keep them, and left out of every write.
     #[serde(default, skip_serializing)]
     train_lanes: Option<u64>,
@@ -126,6 +130,7 @@ pub struct Named {
     pub max_share_of_cores: Option<To<u64>>,
     pub max_share_of_memory: Option<To<u64>>,
     pub github_share: Option<To<u64>>,
+    pub account_limit: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
     pub busy_share: Option<To<u64>>,
     pub panel: Option<To<u16>>,
@@ -280,6 +285,7 @@ impl Settings {
         lay(&mut self.max_share_of_cores, named.max_share_of_cores.as_ref());
         lay(&mut self.max_share_of_memory, named.max_share_of_memory.as_ref());
         lay(&mut self.github_share, named.github_share.as_ref());
+        lay(&mut self.account_limit, named.account_limit.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.busy_share, named.busy_share.as_ref());
         lay(&mut self.panel, named.panel.as_ref());
@@ -332,7 +338,7 @@ impl Settings {
 
     /// The busy share of the host's cores the exclusive queue starts a
     /// command under, in percent: admission's where the host says none
-    /// (docs/adr/0087).
+    /// (docs/adr/0088).
     pub fn busy_share(&self) -> u64 {
         self.busy_share.unwrap_or(afkconvoy_core::exclusive::BUSY_SHARE)
     }
@@ -399,6 +405,7 @@ impl Settings {
             "max_share_of_cores": self.max_share_of_cores,
             "max_share_of_memory": self.max_share_of_memory,
             "github_share": self.github_share(),
+            "account_limit": self.account_limit.unwrap_or(afkconvoy_core::engine_account::LIMIT),
             "exclusive_seconds": self.exclusive_seconds(),
             "busy_share": self.busy_share(),
             "panel": self.panel_port(),
@@ -519,6 +526,7 @@ pub const ADMIT_INSPECT_AFTER_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
 pub const MAX_SHARE_OF_CORES_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_CORES";
 pub const MAX_SHARE_OF_MEMORY_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_MEMORY";
 pub const GITHUB_SHARE_ENV: &str = "AFKCONVOY_GITHUB_SHARE";
+pub const ACCOUNT_LIMIT_ENV: &str = "AFKCONVOY_ACCOUNT_LIMIT";
 pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
 pub const BUSY_SHARE_ENV: &str = "AFKCONVOY_BUSY_SHARE";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";

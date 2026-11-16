@@ -272,7 +272,7 @@ fn a_heavy_command_waits_its_turn_behind_those_that_asked_before_it() {
 }
 
 /// With room on the host, a command starts beside one running; one start to
-/// a reading (docs/adr/0087).
+/// a reading (docs/adr/0088).
 #[test]
 fn with_room_a_command_starts_beside_one_running() {
     let holder = Holder::new(OneEach::new());

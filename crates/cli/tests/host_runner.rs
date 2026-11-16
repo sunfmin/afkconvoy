@@ -766,7 +766,7 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
         "{refused}"
     );
     assert_eq!(world.checkout_list(), unchanged);
-    // The queue's counts of places are gone (docs/adr/0087): a flag that
+    // The queue's counts of places are gone (docs/adr/0088): a flag that
     // names one is refused with what to say instead, and a variable that
     // still sets one is said to be ignored.
     for flag in ["--gate-lanes", "--fast-lanes", "--slow-gate-lanes"] {

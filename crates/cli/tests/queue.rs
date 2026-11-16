@@ -51,7 +51,7 @@ impl Local {
     }
 
     /// Host settings that say the busy share `share`, beside an old count
-    /// of worker lanes, which reads and counts for nothing (docs/adr/0087).
+    /// of worker lanes, which reads and counts for nothing (docs/adr/0088).
     fn settings(&self, share: u64) {
         std::fs::write(
             self.cache().join("checkouts.json"),

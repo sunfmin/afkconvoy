@@ -603,3 +603,43 @@ the 8 the cap allows. Its slowest test took 66.9 s
 (`host_watch::a_hung_human_notification_times_out_and_retries_without_holding_back_looks_or_rounds`).
 A landing's gate on Studio64 now comes to about 460 seconds, against 678 to
 803.
+
+## Every look inside a gate was started by fork (sunfmin/control#1229)
+
+`Studio64` recorded five landings past the 600 s budget: 743, 674, 806, 609
+and 636 seconds. Their records split them: fast gates of 137–257 s and slow
+gates of 486–643 s, against budgets of 180 and 420. The slow gate is still
+most of it, and its tests are still the processes they start.
+
+Inside a gate every afkconvoy a test starts is handed its lane's lease. From
+sunfmin/control#1096 each of its looks — every `git`, `gh` and `ps` it runs
+for its output — closed that descriptor in the child, by a hook of its own
+(`pre_exec`), and a child with a hook is started by `fork`, not
+`posix_spawn`: on macOS 1.4 to 1.9 ms more wall and 0.6 ms more CPU a
+start. From this change the descriptors it would pass on are marked
+close-on-exec in afkconvoy itself while it starts a look, and cleared again
+after (`process::Withheld`), under the lock every start already takes.
+
+Two reads of the whole process table go too: the hot-worker sampler listed
+every process, and read each one's writes, every sample even with no worker
+to measure (116 ms of CPU each, on a host of 2,150 processes), and every
+`plan` listed the table to look for another account's memory-pressure
+episode, nearly always to find none (110 ms). Each is now read only where
+it is needed: with a worker, in an episode.
+
+### Before and after
+
+Every sixth slow test (177), `2d2fe4a1` (`main`) and this change in turns,
+each through the exclusive queue alone, 16 at a time, with `/usr/bin/time`,
+on Studio64 on 2026-11-16 at load averages 28–57 at their starts:
+
+| Build | Wall seconds | User seconds | System seconds |
+| --- | ---: | ---: | ---: |
+| before | 61.4, 60.6 | 197, 194 | 340, 350 |
+| after | 55.2, 52.1 | 177, 176 | 293, 296 |
+
+About a tenth off the slow tests' wall time and an eighth off their CPU.
+System time is still more than half of it. The same tests run once more
+with a `ps` that counts its calls first on the PATH started 56 `ps`
+between them: the table is not what is left. What is left is the processes
+each test starts, one after another, as above.
