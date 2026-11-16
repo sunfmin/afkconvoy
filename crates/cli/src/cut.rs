@@ -993,8 +993,22 @@ impl Cutting<'_> {
             let now = clock();
             let output = self.gate_output(now)?;
             let gated = {
-                let _lane = crate::exclusive::Permit::cut_gate(self.repo, command.text(), heavy)?;
-                crate::gate::gated(self.repo, &command, self.host, now, limit, None, Some(&output))?
+                let lane = crate::exclusive::Permit::cut_gate(self.repo, command.text(), heavy)?;
+                let gated = crate::gate::gated(
+                    self.repo,
+                    &command,
+                    self.host,
+                    now,
+                    limit,
+                    None,
+                    Some(&output),
+                );
+                // An older host runner may still end a cut's gate at the
+                // exclusive bound: the step says so (sunfmin/control#1263).
+                if let Some(line) = lane.ended() {
+                    bail!("the gate on {commit} {line}; its output is in {}", output.display());
+                }
+                gated?
             };
             let shown = output.display().to_string();
             let time = cut::time_limit(gate_seconds);
@@ -1352,7 +1366,7 @@ The base branch never receives the version commit: it pushes its own branch and 
 
 It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past (`from: null` for an initial cut), the PRs it holds, its branch and its commit, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: three hours beside the two gate limits (`gate_seconds`), for its gate and its wait for a worker lane — five hours at the default.
 
-A cut's gate and exclusive commands go ahead of waiting worker commands, keeping request order among cuts. They never interrupt a running command. Queue waits count toward the cut's time limit; the gate's own limit starts once its worker lane is granted. The tick line that starts a cut says whether the fleet was `idle` or `busy`.
+A cut's gate and exclusive commands go ahead of waiting worker commands, keeping request order among cuts. They never interrupt a running command, and the exclusive bound never ends them: a cut's gate is bounded by its own limit (`gate_seconds`). Where an older host runner ends one at the bound anyway, the step fails saying `ended at the exclusive bound` with its seconds. Queue waits count toward the cut's time limit; the gate's own limit starts once its worker lane is granted. The tick line that starts a cut says whether the fleet was `idle` or `busy`.
 
 A cut that took every step is a line of the tick log — `cut v0.5.17 (past v0.5.16, holding #451, #452) · its commit 0123456789 on afkconvoy-cut/v0.5.17-1793666786 · set 3s, push 2s, gate 610s, tag 1s, publish 95s` — `afkconvoy doctor` lists it among its events, and the panel shows it; its checkout is removed.
 

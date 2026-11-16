@@ -218,6 +218,7 @@ fn inherited(checkout: Option<&Repo>) -> Option<u32> {
 pub struct Permit {
     stop: Arc<AtomicBool>,
     monitor: Option<std::thread::JoinHandle<()>>,
+    ended: Arc<Mutex<Option<String>>>,
 }
 
 impl Permit {
@@ -313,40 +314,39 @@ impl Permit {
         };
         let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
         let stop = Arc::new(AtomicBool::new(false));
+        let ended = Arc::new(Mutex::new(None));
         let monitor = match turn(&ticket, &acting, &crate::clock, until)? {
             Turn::Queued(place, _) => {
                 acting.say(crate::clock(), runs_line(&ticket, crate::clock(), 0));
                 let watch = Watch::new(place)?;
                 let stopping = stop.clone();
                 let watching = ticket.clone();
+                let ending = ended.clone();
                 Some(std::thread::spawn(move || {
                     let began = Instant::now();
-                    while !stopping.load(Ordering::Acquire) {
-                        let heard = watch.read.recv_timeout(CHECK_EVERY);
-                        if matches!(heard, Err(mpsc::RecvTimeoutError::Disconnected)) {
-                            std::thread::sleep(CHECK_EVERY);
+                    let said = watched(&watch.read, &stopping, &watching, began, &ending, |line| {
+                        // Freeze each child before walking below it. The
+                        // owning CLI remains able to reap and exit.
+                        for child in
+                            crate::hot::listed().iter().filter(|p| p.ppid == std::process::id())
+                        {
+                            end_descendants(child.pid);
                         }
-                        if let Ok(bound) = heard {
-                            // Freeze each child before walking below it. The
-                            // owning CLI remains able to reap and exit.
-                            for child in
-                                crate::hot::listed().iter().filter(|p| p.ppid == std::process::id())
-                            {
-                                end_descendants(child.pid);
-                            }
-                            let line = format!(
-                                "ended at the exclusive bound of {}s after {}s with {} commands waiting: `{}`",
-                                bound.bound,
-                                began.elapsed().as_secs(),
-                                bound.waiting,
-                                watching.command
-                            );
-                            acting.say(crate::clock(), line.clone());
-                            eprintln!("[afkconvoy] exclusive: {line}");
-                            println!("{}", json!({"error": line}));
-                            std::process::exit(i32::from(BOUND_CODE));
-                        }
+                        acting.say(crate::clock(), line.to_string());
+                        eprintln!("[afkconvoy] exclusive: {line}");
+                    });
+                    if let Some(line) = said
+                        && !watching.cut
+                    {
+                        println!("{}", json!({"error": line}));
+                        std::process::exit(i32::from(BOUND_CODE));
                     }
+                    // A cut's lane is kept, its watch with it, until its
+                    // permit drops: the cut says why its step failed.
+                    while !stopping.load(Ordering::Acquire) {
+                        std::thread::sleep(CHECK_EVERY);
+                    }
+                    drop(watch);
                 }))
             }
             Turn::AtOnce(_) => None,
@@ -355,8 +355,48 @@ impl Permit {
         let slot = crate::slots::Slot::take(&ticket)?;
         SLOT.with_borrow_mut(|held| *held = Some(slot));
         HELD.set(true);
-        Ok(Some(Self { stop, monitor }))
+        Ok(Some(Self { stop, monitor, ended }))
     }
+
+    /// The line the exclusive bound ended this permit's commands with, where
+    /// it did: a cut's permit is told the bound and keeps its process, so the
+    /// cut says it as its step's failure rather than vanishing
+    /// (sunfmin/control#1263). Any other permit's process exits at the bound.
+    pub(crate) fn ended(&self) -> Option<String> {
+        self.ended.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+}
+
+/// Watches `read` for the bound until `stopping` → the line it ended the
+/// command `ticket` runs with, having said it and ended what runs (`end`);
+/// `None`: the permit dropped first. The line is kept in `ended` too.
+fn watched(
+    read: &mpsc::Receiver<Bound>,
+    stopping: &AtomicBool,
+    ticket: &Ticket,
+    began: Instant,
+    ended: &Mutex<Option<String>>,
+    end: impl FnOnce(&str),
+) -> Option<String> {
+    while !stopping.load(Ordering::Acquire) {
+        let heard = read.recv_timeout(CHECK_EVERY);
+        if matches!(heard, Err(mpsc::RecvTimeoutError::Disconnected)) {
+            std::thread::sleep(CHECK_EVERY);
+        }
+        if let Ok(bound) = heard {
+            let line = format!(
+                "ended at the exclusive bound of {}s after {}s with {} commands waiting: `{}`",
+                bound.bound,
+                began.elapsed().as_secs(),
+                bound.waiting,
+                ticket.command
+            );
+            *ended.lock().unwrap_or_else(PoisonError::into_inner) = Some(line.clone());
+            end(&line);
+            return Some(line);
+        }
+    }
+    None
 }
 
 impl Drop for Permit {
@@ -1311,6 +1351,35 @@ mod tests {
             ran: None,
             retained: None,
         }
+    }
+
+    /// A cut's gate permit told the bound used to exit the whole cut, which
+    /// then said only that its terminal was gone (sunfmin/control#1263): the
+    /// watch says the bound in plain words, ends what runs, and keeps the
+    /// line for the cut to fail its step with.
+    #[test]
+    fn the_bound_is_said_in_plain_words_and_kept_for_the_cut() {
+        let (send, read) = mpsc::channel();
+        send.send(Bound { bound: 1200, waiting: 5 }).unwrap();
+        let mut cut = ticket("./gate.sh", 1);
+        cut.cut = true;
+        let ended = Mutex::new(None);
+        let mut ran_end = None;
+        let said = watched(&read, &AtomicBool::new(false), &cut, Instant::now(), &ended, |line| {
+            ran_end = Some(line.to_string());
+        });
+        let line =
+            "ended at the exclusive bound of 1200s after 0s with 5 commands waiting: `./gate.sh`";
+        assert_eq!(said.as_deref(), Some(line));
+        assert_eq!(ran_end.as_deref(), Some(line), "what runs is ended, and it is said");
+        assert_eq!(ended.lock().unwrap().as_deref(), Some(line), "the cut reads it");
+
+        let (_send, read) = mpsc::channel::<Bound>();
+        let ended = Mutex::new(None);
+        let stopped = AtomicBool::new(true);
+        let said = watched(&read, &stopped, &cut, Instant::now(), &ended, |_| panic!("not ended"));
+        assert_eq!(said, None, "a permit dropped first was not ended");
+        assert_eq!(*ended.lock().unwrap(), None);
     }
 
     /// An asker on the queue's line: what it was told first, and the line.
