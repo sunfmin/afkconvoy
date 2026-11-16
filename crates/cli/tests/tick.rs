@@ -1484,6 +1484,47 @@ fn a_carried_issue_s_worktree_stays_while_its_carrier_is_open_and_goes_once_it_l
     assert_eq!(kept_at_settle(&world), Vec::<Value>::new());
 }
 
+/// An issue whose carrier landed and that its landing did not close is a
+/// `doctor` finding, whose fix closes it (sunfmin/control#1248); none while
+/// the carrier is open.
+#[test]
+fn doctor_names_an_open_issue_whose_carrier_landed() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    carried_by_40(&world, &worktree, false);
+    let what = "is open though the PR that carried it landed";
+    let said = |doctor: &Value| -> Vec<Value> {
+        let found = doctor["findings"].as_array().unwrap_or_else(|| panic!("{doctor}"));
+        found.iter().filter(|f| f["what"].as_str().unwrap().contains(what)).cloned().collect()
+    };
+    let before = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(said(&before), Vec::<Value>::new(), "its carrier is open");
+
+    git(&world.clone, &["fetch", "-q", "origin"]);
+    git(
+        &world.clone,
+        &["merge", "-q", "--no-ff", "-m", "pr 40 (#40)\n\nCloses #4", "origin/issue-4"],
+    );
+    git(&world.clone, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    world.with_gh(|gh| {
+        for pr in gh["prs"].as_array_mut().unwrap() {
+            if pr["number"] == 40 {
+                pr["state"] = json!("merged");
+            }
+        }
+    });
+    world.close_issue(4);
+    let after = world.afk(&["doctor", "--host", "h1"]).json;
+    let found = said(&after);
+    assert_eq!(found.len(), 1, "{after}");
+    assert_eq!(
+        found[0]["what"],
+        "#3 is open though the PR that carried it landed: #40 carried its #30"
+    );
+    assert_eq!(found[0]["fix"], "gh issue close 3");
+}
+
 #[test]
 fn a_carried_issue_s_worktree_whose_commits_its_carrier_holds_goes_at_settle() {
     let world = backlog(&[3]);

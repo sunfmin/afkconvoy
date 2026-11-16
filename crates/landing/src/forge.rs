@@ -91,6 +91,15 @@ pub trait Forge {
         let _ = (carried, by);
         Ok(())
     }
+
+    /// The changes `change` carried, as the program recorded each when it
+    /// was told of it (`carried`), whatever `change`'s description says now:
+    /// its author may have rewritten it since. Each as `carry` was handed
+    /// it, its source as it was; none, unless the program says.
+    fn carries(&self, change: &Change) -> Result<Vec<Change>, Self::Error> {
+        let _ = change;
+        Ok(vec![])
+    }
 }
 
 /// What a carrying change is handed as it leaves its round (`Forge::sent_back`).
@@ -160,6 +169,29 @@ pub fn carry<F: Forge>(
     forge.carried(carried, by)
 }
 
+/// Rewrites `by`'s description to carry again each change it carried
+/// (`Forge::carries`) that it no longer says it does (`together`): asked
+/// just before `by` lands, so that whatever closes with a carried change
+/// closes with `by`, though its author rewrote its description after
+/// `carry` (sunfmin/control#1248).
+pub fn described<F: Forge>(forge: &F, by: &Change) -> Result<(), F::Error> {
+    let carries = forge.carries(by)?;
+    if carries.is_empty() {
+        return Ok(());
+    }
+    let description = forge.description(by)?;
+    let mut both = description.clone();
+    for carried in &carries {
+        if !carried_in(&both).contains(&carried.number) {
+            both = together(&both, carried, &forge.description(carried)?);
+        }
+    }
+    if both != description {
+        forge.describe(by, &both)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +208,76 @@ mod tests {
         assert_eq!(together(&both, &carried, "Theirs, edited."), both, "carried once");
         assert_eq!(carried_in(&both), [7]);
         assert_eq!(carried_in("Mine."), Vec::<u64>::new());
+    }
+
+    /// A forge of descriptions alone, which says what each change carried.
+    struct Described {
+        descriptions: std::cell::RefCell<std::collections::BTreeMap<u64, String>>,
+        carries: Vec<Change>,
+    }
+
+    impl Forge for Described {
+        type Error = String;
+        type Note = ();
+        type Refusal = ();
+        fn current(&self, change: &Change) -> Result<Option<Change>, String> {
+            Ok(Some(change.clone()))
+        }
+        fn note(&self, _: &Change) {}
+        fn message(&self, change: &Change) -> String {
+            change.title.clone()
+        }
+        fn may_land(&self, _: &Change) -> Result<Result<(), ()>, String> {
+            Ok(Ok(()))
+        }
+        fn landed(&self, _: &Change, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn description(&self, change: &Change) -> Result<String, String> {
+            Ok(self.descriptions.borrow().get(&change.number).cloned().unwrap_or_default())
+        }
+        fn describe(&self, change: &Change, description: &str) -> Result<(), String> {
+            self.descriptions.borrow_mut().insert(change.number, description.to_string());
+            Ok(())
+        }
+        fn close(&self, _: &Change, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete_source(&self, _: &Change, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn carries(&self, _: &Change) -> Result<Vec<Change>, String> {
+            Ok(self.carries.clone())
+        }
+    }
+
+    /// A carrying description its author rewrote is written back to carry
+    /// what it carried before it lands, once (sunfmin/control#1248).
+    #[test]
+    fn a_rewritten_carrying_description_carries_again_what_it_carried() {
+        let change = |number: u64| Change {
+            number,
+            source: format!("b{number}"),
+            target: "main".into(),
+            title: format!("Change {number}"),
+        };
+        let forge = Described {
+            descriptions: std::cell::RefCell::new(
+                [(20, "Rewritten.\n\nCloses o/t#2\n".to_string()), (10, "Closes o/t#1".into())]
+                    .into(),
+            ),
+            carries: vec![change(10)],
+        };
+        described(&forge, &change(20)).unwrap();
+        let after = forge.description(&change(20)).unwrap();
+        assert_eq!(
+            after,
+            "Rewritten.\n\nCloses o/t#2\n\n<!--carries change=10-->\n## Carries #10: Change 10\n\nCloses o/t#1\n"
+        );
+        described(&forge, &change(20)).unwrap();
+        assert_eq!(forge.description(&change(20)).unwrap(), after, "carried once");
+        let none = Described { carries: vec![], ..forge };
+        described(&none, &change(30)).unwrap();
+        assert!(!none.descriptions.borrow().contains_key(&30), "nothing carried, nothing written");
     }
 }

@@ -705,6 +705,30 @@ fn a_red_group_has_its_last_pr_carry_the_others_and_the_rest_lands() {
     }
     assert_eq!(world.state(1), "open", "a carried issue stays open until its carrier lands");
     assert_eq!(world.state(2), "open");
+    // Its worker rewrites its description, dropping what it carries, and
+    // #10's says no issue any more; fixed, it lands, and the carried issue
+    // closes with it all the same, by the record the fleet left on it
+    // (sunfmin/control#1248).
+    world.describe_pr(20, "Closes #2\n");
+    world.describe_pr(10, "Nothing.\n");
+    let fixed_b = &workers[1].0;
+    git(fixed_b, &["fetch", "-q", "origin", "main"]);
+    git(fixed_b, &["merge", "-q", "--no-edit", "-X", "ours", "FETCH_HEAD"]);
+    git(fixed_b, &["push", "-q", "origin", "HEAD"]);
+    for part in ["fast", "slow"] {
+        let_go(&world, part, "b", false);
+    }
+    let landed = finish(start(&world, fixed_b, &world.cache(), 2));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let body =
+        world.gh()["prs"].as_array().unwrap().iter().find(|p| p["number"] == 20).unwrap()["body"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    assert!(body.contains("<!--carries change=10-->\n## Carries #10: pr 10"), "{body}");
+    assert!(!body.contains("Closes #1"), "{body}");
+    assert_eq!(world.state(2), "closed");
+    assert_eq!(world.state(1), "closed", "the carried issue closes as its carrier lands");
 }
 
 #[test]
@@ -1603,8 +1627,13 @@ fn a_red_root_is_fixed_on_the_spot_by_its_last_asked_pr_which_carries_the_round(
     assert_eq!(pr(10)["state"], "closed", "carried at once");
     assert!(pr(20)["body"].as_str().unwrap().contains("<!--carries change=10-->"));
     assert_eq!(world.state(1), "open", "the carried issue stays open until its carrier lands");
+    // Its worker rewrites its description, dropping what it carries
+    // (sunfmin/control#1248): landing writes it back before it lands.
+    world.describe_pr(20, "Closes #2\n");
     let_go(&world, "slow", "b", false);
     let fixed = finish(start(&world, &b, &world.cache(), 2));
+    let body = pr(20)["body"].as_str().unwrap().to_string();
+    assert!(body.contains("<!--carries change=10-->") && body.contains("Closes #1"), "{body}");
     assert_eq!(fixed["outcome"], "merged", "{fixed}");
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
     assert!(files.lines().any(|f| f == "a.txt") && files.lines().any(|f| f == "b.txt"));
@@ -1657,9 +1686,18 @@ fn a_pr_conflicting_with_every_partner_carries_the_earliest_and_lands_both() {
     for part in ["fast", "slow"] {
         let_go(&world, part, "b", false);
     }
+    // Its worker rewrote its description before the turn that carries #10
+    // (sunfmin/control#1248): that turn writes what it carries back in.
+    world.describe_pr(20, "Resolved.\n\nCloses #2\n");
     let landed = finish(start(&world, &b, &world.cache(), 2));
     assert_eq!(landed["outcome"], "merged", "{landed}");
     assert_eq!(landed["carried"], json!([10]), "{landed}");
+    let gh = world.gh();
+    let body = gh["prs"].as_array().unwrap().iter().find(|p| p["number"] == 20).unwrap()["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains("<!--carries change=10-->") && body.contains("Closes #1"), "{body}");
     assert_eq!(open(10), "closed");
     assert_eq!(world.remote(&["show", "refs/heads/main:x.txt"]), "ab");
     assert_eq!(world.state(2), "closed");

@@ -76,7 +76,14 @@ pub fn carried_comment(pr: u64, by: u64, branch: &str) -> String {
 /// The PR that carries an issue's work, from its comments' bodies, oldest
 /// first: the latest record's.
 pub fn carried_by<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<u64> {
-    record::latest_marker(CARRIED, bodies).and_then(|(_, fields)| fields.number("by"))
+    carried(bodies).map(|(_, by)| by)
+}
+
+/// The latest record that an issue's PR is carried, from its comments'
+/// bodies, oldest first: that PR, and the PR that carries it.
+pub fn carried<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<(u64, u64)> {
+    let (_, fields) = record::latest_marker(CARRIED, bodies)?;
+    Some((fields.number("pr")?, fields.number("by")?))
 }
 
 /// The branches the fleet recorded on an issue, from its comments' bodies,

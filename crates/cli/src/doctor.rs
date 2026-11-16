@@ -225,6 +225,7 @@ kinds! {
     WaitedLong: Warning, "has waited for a human for";
     WaitTaken: Info, "human wait is taken by";
     NotOurs: Warning, "is held off by a PR not the fleet's";
+    CarriedLanded: Warning, "is open though the PR that carried it landed";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
@@ -603,6 +604,9 @@ pub struct State {
     /// The claims on issues GitHub says were deleted, transferred or never
     /// issued.
     pub on_gone: Vec<OnGone>,
+    /// The open issues whose PR a PR carried that has landed
+    /// (sunfmin/control#1248).
+    pub carried_landed: Vec<CarriedLanded>,
     /// Candidate state from the same remote listing as the working set.
     pub candidates: Value,
     /// The pending places live lands of this host hold on its chains, from
@@ -625,6 +629,17 @@ pub struct OnGone {
     pub claim_ref: String,
     /// The fleet instance that holds it, as its record names it.
     pub holder: Option<String>,
+}
+
+/// An open issue whose PR, `pr`, was carried by PR `by` (docs/adr/0083),
+/// which has landed at `commit`: its change is on the base branch, and
+/// the landing did not close it (sunfmin/control#1248).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarriedLanded {
+    pub issue: u64,
+    pub pr: u64,
+    pub by: u64,
+    pub commit: String,
 }
 
 /// An open ready issue no claim holds, kept off the frontier by an open PR
@@ -1496,6 +1511,18 @@ fn not_ours_finding(held_off: &NotOurs) -> Finding {
     )
 }
 
+/// An open issue whose carrier landed: the line that closes it.
+fn carried_landed_finding(tracker: &Tracker, carried: &CarriedLanded) -> Finding {
+    let CarriedLanded { issue, pr, by, commit } = carried;
+    finding(
+        Kind::CarriedLanded,
+        json!(["carried-landed", issue, by]),
+        format!("#{issue} is open though the PR that carried it landed: #{by} carried its #{pr}"),
+        format!("#{by} landed on the base branch at {commit}, and #{issue} is still open"),
+        tracker.gh_issue("close", *issue).own(),
+    )
+}
+
 /// A claim on an issue that is gone: the line that deletes it, for a holder
 /// whose ticks do not.
 fn on_gone_finding(on: &OnGone) -> Finding {
@@ -1756,6 +1783,9 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(state.left_watch.iter().map(|left| left_watch_finding(left, seen.now)));
             found.extend(state.not_ours.iter().map(not_ours_finding));
             found.extend(state.on_gone.iter().map(on_gone_finding));
+            found.extend(
+                state.carried_landed.iter().map(|c| carried_landed_finding(&state.tracker, c)),
+            );
             found.extend(pending_finding(&state.pending));
         }
         Err(why) => found.push(finding(
@@ -2071,6 +2101,7 @@ fn finish_state(
                 .map(|owner| owner.instance.clone()),
         })
         .collect();
+    let carried_landed = read_carried_landed(&fleet, &open)?;
     let prefix = fleet.repo.layout().under("candidates/");
     let chains = fleet.records_at_open(&format!("{prefix}*"));
     let candidates = crate::candidates::view(&fleet.repo, &fleet.config, &chains)
@@ -2100,12 +2131,41 @@ fn finish_state(
         left_watch,
         not_ours,
         on_gone,
+        carried_landed,
         candidates,
         pending,
         base_moved,
         deliveries,
     };
     Ok((state, report))
+}
+
+/// The open issues whose latest record says a PR carries theirs, where that
+/// PR is open no more and the base branch holds its landing.
+fn read_carried_landed(fleet: &Fleet, open: &crate::gh::Open) -> Result<Vec<CarriedLanded>> {
+    let mut found = vec![];
+    let mut tip = None;
+    for issue in &open.issues.rows {
+        let bodies = open.issues.comments(issue.number).iter().map(|c| c.body.as_str());
+        let Some((pr, by)) = afkconvoy_core::worker::carried(bodies) else { continue };
+        if open.prs.iter().any(|open| open.number == by) {
+            continue;
+        }
+        let tip = match &tip {
+            Some(tip) => tip,
+            None => tip.insert(fleet.base_tip()?),
+        };
+        let grep = format!("--grep=(#{by})");
+        let joins = crate::landing::joins_in(
+            &fleet.repo,
+            &fleet.gh.tracker,
+            &["--fixed-strings", &grep, tip.as_str()],
+        )?;
+        if let Some(join) = joins.into_iter().rfind(|join| join.pr == by) {
+            found.push(CarriedLanded { issue: issue.number, pr, by, commit: join.commit });
+        }
+    }
+    Ok(found)
 }
 
 /// The worktrees on this host whose issue holds no claim, each with what it
@@ -3381,6 +3441,7 @@ mod tests {
             left_watch: vec![],
             not_ours: vec![],
             on_gone: vec![],
+            carried_landed: vec![],
             candidates: json!([]),
             pending: vec![],
             base_moved: None,
