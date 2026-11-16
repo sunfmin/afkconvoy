@@ -524,10 +524,11 @@ fn run(
     }
     let head = repo.git(&["rev-parse", "HEAD"])?;
     repo.remote().push(&Push::set(&head, &format!("refs/heads/{}", pr.head_branch)))?;
-    crate::candidates::run(
+    let answer = crate::candidates::run(
         crate::candidates::Request { repo, config, tracker, pr, of, host, now },
         answer,
-    )
+    )?;
+    Ok(crate::candidates::red_told(repo, answer))
 }
 
 /// Why a turn of `issue`, closed, lands nothing.

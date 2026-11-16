@@ -219,6 +219,26 @@ fn switch_outcome(answer: &Value) -> String {
     moved.join("; ")
 }
 
+/// A turn's ending, `outcome`, as its line says it: a red one names the
+/// tests its gate's output names as failing and the file that keeps that
+/// output (`candidates::red_told`), as a cut's red gate step does.
+fn red_said(outcome: String, answer: &Value) -> String {
+    if answer["failing"].is_null() && answer["gate_output"].is_null() {
+        return outcome;
+    }
+    let failing: Vec<&str> =
+        answer["failing"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let failing = match failing.as_slice() {
+        [] => "its output names no failing test".to_string(),
+        named => format!("failing {}", named.join(", ")),
+    };
+    let output = match answer["gate_output"].as_str() {
+        Some(file) => format!("gate output {file}"),
+        None => "its gate output not kept".to_string(),
+    };
+    format!("{outcome}: {failing}; {output}")
+}
+
 /// How a command that acted came out, in a few words, from what it answers.
 pub fn outcome(command: &str, answer: &Value) -> String {
     let word = |key: &str| answer[key].as_str().map(str::to_string);
@@ -275,7 +295,7 @@ pub fn outcome(command: &str, answer: &Value) -> String {
             Some(true) => "raised".to_string(),
             _ => "a lock already".to_string(),
         }),
-        "land" => word("outcome"),
+        "land" => word("outcome").map(|outcome| red_said(outcome, answer)),
         "gate" if !answer["termination"].is_null() => word("detail"),
         "gate" => word("status"),
         "tick" => {
@@ -308,6 +328,17 @@ mod tests {
         let took = json!({"action": "taken", "taken": [4, 7], "lost": []});
         assert_eq!(outcome("takeover", &took), "taken: took [#4, #7], lost []");
         assert_eq!(outcome("land", &json!({"outcome": "joined"})), "joined");
+        let red = json!({"outcome": "gate_red", "failing": ["cli turns::a", "cli turns::b"],
+            "gate_output": "/r/.git/convoy-gate-c1-fast.log"});
+        assert_eq!(
+            outcome("land", &red),
+            "gate_red: failing cli turns::a, cli turns::b; gate output /r/.git/convoy-gate-c1-fast.log"
+        );
+        let unnamed = json!({"outcome": "gate_red", "failing": [], "gate_output": null});
+        assert_eq!(
+            outcome("land", &unnamed),
+            "gate_red: its output names no failing test; its gate output not kept"
+        );
         assert_eq!(outcome("gate", &json!({"status": "green"})), "green");
         assert_eq!(outcome("release", &json!({"released": true})), "done");
     }
