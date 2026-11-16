@@ -31,6 +31,12 @@ const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam:
 
 /// A world whose repo is bound to a team with the one workflow `feature`.
 fn bound() -> World {
+    bound_with(FEATURE)
+}
+
+/// A world whose repo is bound to a team with the one workflow `feature`, as
+/// `feature` writes it.
+fn bound_with(feature: &str) -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
@@ -40,7 +46,7 @@ fn bound() -> World {
         "acme/reviewer",
         &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
     );
-    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", feature)]);
     write(&world.clone, "docs/agents/afkconvoy.md", CONFIG);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
@@ -483,4 +489,70 @@ fn a_label_that_cannot_be_derived_fails_its_step_and_nothing_else() {
     assert!(errors[0]["error"].as_str().unwrap().contains("the team acme/team has"), "{broken}");
     assert_eq!(stage_labels(&world, 7), ["stage:build"]);
     assert!(Path::new(&world.clone).exists());
+}
+
+/// A PR whose landing turns went red twice in a row is handed to a new
+/// worker in a new worktree (docs/adr/0088), and that is no way round the
+/// Breaker: no stage record is written, so the issue's rework counts — and
+/// so where its breakers trip — are what they were.
+#[test]
+fn a_pr_handed_to_a_new_worker_after_two_red_turns_keeps_the_issue_s_rework_counts() {
+    let landing =
+        FEATURE.replace("on: { pass: done, reject: build }", "on: { pass: land, reject: build }");
+    let landing = landing.trim_end().strip_suffix("```").unwrap();
+    let landing = format!("{landing}land: {{ by: dev, do: implement }}\n```\n");
+    let world = bound_with(&landing);
+    let red =
+        "if test -f seven.txt; then echo '        FAIL [   0.1s] afkconvoy turns::a'; exit 1; fi";
+    write(
+        &world.clone,
+        "docs/agents/afkconvoy.md",
+        &format!(
+            "```yaml\nbase_branch: main\ngate_command: {red:?}\ngate_seconds: 600\nteam: acme/team\n```\n"
+        ),
+    );
+    git(&world.clone, &["commit", "-q", "-am", "a gate that fails on the change"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.issue(7, &["flow:feature"]);
+    stage(&world, 1000, "build", "pass");
+    stage(&world, 2000, "review", "reject");
+    stage(&world, 3000, "build", "pass");
+    stage(&world, 4000, "review", "pass");
+    let before = show(&world);
+    assert_eq!(before["position"]["is"], "landing", "{before}");
+    assert_eq!(before["rework"], json!({"had": 1, "left": 2}), "{before}");
+
+    // What the build stage pushed, and the PR it opened.
+    git(&world.clone, &["checkout", "-q", "-b", "issue-7"]);
+    common::commit(&world.clone, "seven.txt", "7\n");
+    git(&world.clone, &["push", "-q", "origin", "issue-7"]);
+    git(&world.clone, &["checkout", "-q", "main"]);
+    git(&world.clone, &["branch", "-q", "-D", "issue-7"]);
+    world.pr(70, 7, "issue-7");
+    world.comment(7, "<!--convoy:branch name=issue-7-->\nafkconvoy works this issue on `issue-7`.");
+    let started = tick(&world, 5000);
+    assert_eq!(started["errors"], json!([]), "{started}");
+    let dir = world.worktrees().first().cloned().unwrap_or_else(|| panic!("{started}"));
+    assert!(dir.join("seven.txt").exists(), "the landing worker is on the PR's branch");
+    for _ in 0..2 {
+        let answer = world.afk_in(&dir, &["land", "--issue", "7"]).ok();
+        assert_eq!(answer["outcome"], "gate_red", "{answer}");
+    }
+    std::fs::write(dir.join("scratch.txt"), "half a fix\n").unwrap();
+    let handed = tick(&world, 5500);
+    assert_eq!(handed["errors"], json!([]), "{handed}");
+    let new = world.worktrees().last().unwrap().clone();
+    assert!(!new.join("scratch.txt").exists(), "a new worktree: {handed}");
+    let notes = PathBuf::from(git(&new, &["rev-parse", "--absolute-git-dir"]));
+    let prompt = std::fs::read_to_string(notes.join("convoy-worker-prompt.md")).unwrap();
+    assert!(prompt.contains("gated red in 2 landing turns in a row"), "{prompt}");
+
+    let after = show(&world);
+    assert_eq!(after["position"], before["position"]);
+    assert_eq!(
+        after["rework"], before["rework"],
+        "the new worker's rework counts with the old one's"
+    );
+    assert_eq!(after["consecutive_rework"], before["consecutive_rework"]);
+    assert_eq!(after["records"], before["records"], "no stage record is written");
 }

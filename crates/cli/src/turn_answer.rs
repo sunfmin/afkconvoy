@@ -349,3 +349,59 @@ pub fn ask_again(worktree: &Worktree, issue: u64) -> Result<()> {
     std::thread::spawn(move || child.wait());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use afkconvoy_core::landing_worker::RED_TURNS_IN_A_ROW;
+    use serde_json::json;
+
+    fn row(answers: &[Option<Value>]) -> Vec<RedTurn> {
+        let mut reds = vec![];
+        for (at, answer) in answers.iter().enumerate() {
+            reds = in_a_row(reds, answer.as_ref(), at as u64);
+        }
+        reds
+    }
+
+    fn red(test: &str) -> Option<Value> {
+        Some(json!({"outcome": "gate_red", "status": "red", "failing": [test],
+            "gate_output": format!("/g/{test}.log")}))
+    }
+
+    #[test]
+    fn two_red_turns_in_a_row_are_a_row_of_two_with_what_each_said() {
+        let reds = row(&[red("a"), red("b")]);
+        assert_eq!(reds.len(), RED_TURNS_IN_A_ROW);
+        assert_eq!(
+            reds[1],
+            RedTurn { at: 1, failing: vec!["b".into()], gate_output: Some("/g/b.log".into()) }
+        );
+    }
+
+    #[test]
+    fn a_green_or_conflicting_turn_between_two_red_ones_leaves_a_row_of_one() {
+        for between in [
+            json!({"outcome": "merged"}),
+            json!({"outcome": "conflict", "files": ["a.rs"]}),
+            json!({"outcome": "speculative_conflict"}),
+            json!({"outcome": "gate_red", "status": "green", "recorded": false}),
+        ] {
+            let reds = row(&[red("a"), Some(between.clone()), red("b")]);
+            assert_eq!(reds.len(), 1, "{between}");
+            assert!(reds.len() < RED_TURNS_IN_A_ROW, "{between} starts no new worker");
+        }
+    }
+
+    #[test]
+    fn a_wait_or_a_failed_ask_between_two_red_ones_counts_for_nothing() {
+        for between in [
+            Some(json!({"outcome": "waited_past_bound"})),
+            Some(json!({"outcome": "round_red"})),
+            Some(json!({"outcome": "base_red"})),
+            None,
+        ] {
+            assert_eq!(row(&[red("a"), between.clone(), red("b")]).len(), 2, "{between:?}");
+        }
+    }
+}
