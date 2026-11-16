@@ -817,43 +817,77 @@ fn panic_of(lines: &[String], test: &str) -> Option<Vec<String>> {
     // `thread 'a::test' panicked at`, or, as later Rust prints it, with its
     // thread's id: `thread 'a::test' (12345) panicked at`.
     let thread = format!("thread '{path}'");
-    let own = |line: &str| line.contains(&thread) && line.contains("panicked at");
-    let block: Vec<&String> = lines
-        .iter()
-        .skip_while(|line| failed_test(line) != Some(test))
-        .skip(1)
-        .take_while(|line| !nextest_status(line))
-        .collect();
-    let from = |found: &dyn Fn(&str) -> bool| -> Option<Vec<String>> {
-        let start = block.iter().position(|line| found(line))?;
-        Some(panic_from(block.iter().skip(start).map(|line| line.as_str())))
-    };
-    from(&own).or_else(|| from(&|line| line.contains("panicked at"))).or_else(|| {
-        let start = lines.iter().position(|line| own(line))?;
-        Some(panic_from(lines.iter().skip(start).map(String::as_str)))
-    })
+    // What the test printed: from after the line nextest names it failing
+    // by up to nextest's next line.
+    let mut block: Vec<&str> = vec![];
+    let mut inside = false;
+    for line in lines {
+        if inside {
+            if nextest_status(line) {
+                break;
+            }
+            block.push(line);
+        } else if failed_test(line) == Some(test) {
+            inside = true;
+        }
+    }
+    let all: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let mut found = panic_in(&block, Some(&thread));
+    if found.is_none() {
+        found = panic_in(&block, None);
+    }
+    if found.is_none() {
+        found = panic_in(&all, Some(&thread));
+    }
+    found
 }
 
-/// A panic's lines from its `panicked at` line on (`panics`).
-fn panic_from<'a>(mut lines: impl Iterator<Item = &'a str>) -> Vec<String> {
-    let Some(first) = lines.next() else {
-        return vec![];
+/// The panic in `lines` from its first `panicked at` line on — of the
+/// `thread` named, where one is — (`panic_from`), where there is one.
+fn panic_in(lines: &[&str], thread: Option<&str>) -> Option<Vec<String>> {
+    let mut from: Vec<&str> = vec![];
+    for line in lines {
+        let starts = line.contains("panicked at")
+            && match thread {
+                Some(thread) => line.contains(thread),
+                None => true,
+            };
+        if !from.is_empty() || starts {
+            from.push(line);
+        }
+    }
+    if from.is_empty() { None } else { Some(panic_from(&from)) }
+}
+
+/// A panic's lines from its `panicked at` line, the first of `lines`, on
+/// (`panics`).
+fn panic_from(lines: &[&str]) -> Vec<String> {
+    let mut said: Vec<String> = vec![];
+    let Some(first) = lines.first() else {
+        return said;
     };
     let indent = first.len().saturating_sub(first.trim_start().len());
-    let trim = |line: &str| -> String {
-        let line = line.get(indent..).filter(|_| line.is_char_boundary(indent)).unwrap_or(line);
-        line.trim_end().chars().take(PANIC_WIDTH).collect()
-    };
-    let rest = lines.take_while(|line| {
-        let line = line.trim();
-        !line.is_empty()
-            && !line.starts_with("note: run with `RUST_BACKTRACE")
-            && !line.starts_with("stack backtrace:")
-            && !line.starts_with("────")
-            && !line.starts_with("---")
-            && !nextest_status(line)
-    });
-    std::iter::once(first).chain(rest).take(PANIC_LINES).map(trim).collect()
+    for line in lines {
+        if said.len() >= PANIC_LINES {
+            break;
+        }
+        let trimmed = line.trim();
+        let ends = trimmed.is_empty()
+            || trimmed.starts_with("note: run with `RUST_BACKTRACE")
+            || trimmed.starts_with("stack backtrace:")
+            || trimmed.starts_with("────")
+            || trimmed.starts_with("---")
+            || nextest_status(trimmed);
+        if !said.is_empty() && ends {
+            break;
+        }
+        let unindented = match line.get(indent..) {
+            Some(rest) => rest,
+            None => line,
+        };
+        said.push(unindented.trim_end().chars().take(PANIC_WIDTH).collect());
+    }
+    said
 }
 
 /// Whether `line` is one of nextest's own lines that says how a test went or
