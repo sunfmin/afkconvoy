@@ -32,9 +32,9 @@ one of ours exclude each other whole.
 What it costs:
 
 - **Disk**: nothing more. The worktrees of a repo still share one build
-  directory. What the fork kept in `shared-deps` for them is no longer used
-  by the fleet's builds (584 MiB on macnoMac-Studio, beside the repo's
-  4.2 GiB build directory).
+  directory, and what was built there stands: built with fine-grain
+  locking, `afkconvoy-gate` was fresh, all 24 units, at once without it
+  (measured on macnoMac-Studio).
 - **Build time**: the compiles of one repo's worktrees run one at a time,
   each waiting for the one compiling. Only compiling holds the lock: a
   `cargo test` whose test ran 12 s let another build of its directory finish
