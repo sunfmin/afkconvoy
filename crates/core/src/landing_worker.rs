@@ -114,12 +114,11 @@ pub enum Answered {
 }
 
 impl Answered {
-    /// Whether the last turn answered a wait (`Ending::waits`) or failed
-    /// before giving the worker anything to change; either is asked again.
+    /// Whether the last turn answered a wait (`Ending::waits`) — a failed
+    /// turn among them (`Ending::Error`) — and is asked again.
     pub fn waits(&self) -> bool {
         let Answered::Said(outcome) = self else { return false };
-        outcome == "error"
-            || crate::ending::Ending::ALL.iter().any(|e| e.word() == outcome && e.waits())
+        crate::ending::Ending::ALL.iter().any(|e| e.word() == outcome && e.waits())
     }
 }
 

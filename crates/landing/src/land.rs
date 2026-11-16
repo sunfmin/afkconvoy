@@ -195,6 +195,18 @@ fn git_in(dir: &Path, args: &[&str], input: Option<&str>) -> Result<String, Stri
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// `git commit-tree` of `tree` on `parents`, its `message` on stdin and
+/// ended by a newline, as `-m` ends it: no message is too long for git to
+/// start, as one in its arguments can be (sunfmin/control#1267).
+fn commit_tree(dir: &Path, tree: &str, parents: &[&str], message: &str) -> Result<String, String> {
+    let mut args = vec!["commit-tree", tree];
+    for parent in parents {
+        args.extend(["-p", parent]);
+    }
+    args.extend(["-F", "-"]);
+    git_in(dir, &args, Some(&format!("{message}\n")))
+}
+
 impl<F> Lander<'_, F>
 where
     F: Forge,
@@ -391,10 +403,7 @@ where
                 .unwrap_or_default()
                 .to_string();
             let message = self.forge.message(&change);
-            let commit = git(
-                self.dir(),
-                &["commit-tree", &tree, "-p", &predecessor, "-p", &original, "-m", &message],
-            )?;
+            let commit = commit_tree(self.dir(), &tree, &[&predecessor, &original], &message)?;
             let own = (self.declared)(self.dir(), &commit)?.own();
             let id = read.chain.unused_id(format!(
                 "{}-{}-{}",
@@ -1013,10 +1022,7 @@ where
                 changes.extend(nodes.get(i).iter().flat_map(|n| &n.changes));
             }
             let message = format!("Group {} with {}", named(&changes), named(&next.changes));
-            let commit = git(
-                self.dir(),
-                &["commit-tree", &tree, "-p", onto, "-p", &next.commit, "-m", &message],
-            )?;
+            let commit = commit_tree(self.dir(), &tree, &[onto, &next.commit], &message)?;
             Ok::<_, String>(Some(commit))
         })?;
         let mut built = vec![];
@@ -1060,10 +1066,7 @@ where
             let Some((at, _)) = merged.take() else { break };
             let Some(tree) = merged_tree(self.dir(), &at, &head.head)? else { break };
             let message = format!("Stack !{} onto {}", head.change, on.get(..12).unwrap_or(&on));
-            let commit = git(
-                self.dir(),
-                &["commit-tree", &tree, "-p", &at, "-p", &head.head, "-m", &message],
-            )?;
+            let commit = commit_tree(self.dir(), &tree, &[&at, &head.head], &message)?;
             merged = Some((commit, tree));
         }
         let made = match merged {

@@ -376,6 +376,39 @@ fn carry<M, E>(
     Ok(None)
 }
 
+/// `nodes` without the PRs `changes`: each node keeps the rest of its PRs,
+/// and one left with none goes.
+fn without(nodes: Vec<Node>, changes: &[u64]) -> Vec<Node> {
+    let mut kept = vec![];
+    for mut node in nodes {
+        node.changes.retain(|c| !changes.contains(c));
+        if !node.changes.is_empty() {
+            kept.push(node);
+        }
+    }
+    kept
+}
+
+/// `nodes` with each PR in one of them only, the first that holds it: a
+/// level never holds a PR twice, so no group merges a PR with itself and
+/// no merge lists it twice (sunfmin/control#1267). A node left with none of
+/// its PRs goes.
+fn distinct(nodes: Vec<Node>) -> Vec<Node> {
+    let mut seen: Vec<u64> = vec![];
+    let mut kept = vec![];
+    for mut node in nodes {
+        node.changes.retain(|&c| {
+            let new = !seen.contains(&c);
+            seen.push(c);
+            new
+        });
+        if !node.changes.is_empty() {
+            kept.push(node);
+        }
+    }
+    kept
+}
+
 impl Round {
     /// A round named `id` of `asked`, at its first level, standing on `on`.
     fn of(id: &str, asked: Vec<Ask>, on: Option<On>) -> Round {
@@ -1014,9 +1047,12 @@ impl<N: Clone> Chain<N> {
             if gating {
                 return;
             }
+            // A PR that rejoined goes up as it asked again, not as it was.
+            let rejoined: Vec<u64> = round.joining.iter().flat_map(|n| n.changes.clone()).collect();
+            let mut up = without(up, &rejoined);
             up.append(&mut round.joining);
             up.sort_by_key(|n| n.changes.first().map_or(usize::MAX, |&c| round.place(c)));
-            round.nodes = up;
+            round.nodes = distinct(up);
             round.level = round.level.saturating_add(1);
             round.paired = false;
         }
@@ -1040,6 +1076,7 @@ impl<N: Clone> Chain<N> {
         round.carrying.retain(|&c| c != asks.change);
         round.asked.retain(|a| a.asks.change != asks.change);
         let node = Node { changes: vec![asks.change], commit: asks.head.clone() };
+        let me = [asks.change];
         round.asked.push(Ask {
             id: place.id,
             owner: place.owner,
@@ -1047,13 +1084,18 @@ impl<N: Clone> Chain<N> {
             left: None,
             candidate: None,
         });
+        // Its node as it asked before goes: the round holds each PR once
+        // (sunfmin/control#1267).
         if let Some(root) = round.root.take() {
-            round.nodes = vec![root, node];
+            round.nodes = without(vec![root], &me);
+            round.nodes.push(node);
             round.level = round.level.saturating_add(1);
             round.paired = false;
         } else if round.paired {
+            round.joining = without(std::mem::take(&mut round.joining), &me);
             round.joining.push(node);
         } else {
+            round.nodes = without(std::mem::take(&mut round.nodes), &me);
             round.nodes.push(node);
         }
         self.advance_round();
@@ -1509,6 +1551,56 @@ mod tests {
         gate(&mut chain, &level[0].1, true);
         assert_eq!(root(&chain).unwrap().changes, [2, 3]);
         assert!(chain.round.as_ref().unwrap().carrying.is_empty());
+    }
+
+    /// A PR that carries another and asks again while its level's groups
+    /// still gate, its head as before, goes up once: its old node and the
+    /// one it rejoined with are one PR (sunfmin/control#1267). Before, both
+    /// went up, grouped with each other — one commit merged onto itself —
+    /// and each green group sent its merge up twice, the PR listed 2^n times
+    /// by level n.
+    #[test]
+    fn a_carrying_pr_that_rejoins_while_its_level_gates_is_in_the_round_once() {
+        // 1 and 2 group; 3 and 4 conflict with every other PR: 4 carries 3.
+        let mut chain = asking(4);
+        chain.open_round("r");
+        pair(&mut chain, |a, b| each(a, b, |x, y| (x, y) == (1, 2)));
+        let carry = Carry { pair: None, merge: vec!["h4".into(), "h3".into()], carried: vec![3] };
+        assert_eq!(chain.round_next("t4"), Some(RoundNext::Left(Left::Carrying(carry))));
+        let level = gating(&chain);
+        assert_eq!(level.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [2]);
+        // 4 asks again, its head unchanged, while 1 and 2 gate.
+        chain.pending.push(Barrier {
+            id: "t9".into(),
+            owner: owner(4),
+            since: Some(9),
+            asks: Some(Asks { change: 4, branch: "b4".into(), head: "h4".into() }),
+        });
+        assert!(chain.rejoin("t9"));
+        gate(&mut chain, &level[0].1, true);
+        let nodes = chain.to_pair().expect("the next level").2;
+        let changes: Vec<Vec<u64>> = nodes.iter().map(|n| n.changes.clone()).collect();
+        assert_eq!(changes, [vec![1, 2], vec![4]], "4 is in the level once");
+        pair(&mut chain, |_, _| true);
+        for c in chain.candidates.iter().filter_map(|c| c.pair.as_ref().map(|p| (c, p))) {
+            assert_ne!(c.0.predecessor, c.1.partner, "no node merges onto itself");
+        }
+        let level = gating(&chain);
+        assert_eq!(level.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [4]);
+        gate(&mut chain, &level[0].1, true);
+        assert_eq!(root(&chain).unwrap().changes, [1, 2, 4], "each PR once");
+        assert_eq!(chain.round_next("t1"), Some(RoundNext::Assign));
+    }
+
+    /// A level never holds a PR twice: the first node that holds it keeps it.
+    #[test]
+    fn a_level_holds_each_pr_once() {
+        let node = |changes: &[u64], commit: &str| Node {
+            changes: changes.to_vec(),
+            commit: commit.into(),
+        };
+        let nodes = vec![node(&[1, 2], "a"), node(&[2], "b"), node(&[3, 3, 1], "c")];
+        assert_eq!(distinct(nodes), [node(&[1, 2], "a"), node(&[3], "c")]);
     }
 
     /// A PR no group takes goes up alone; a PR asking during a round waits
