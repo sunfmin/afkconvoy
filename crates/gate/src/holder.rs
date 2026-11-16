@@ -309,19 +309,24 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
     /// it reached, once it held others up longer than the host's bound;
     /// `None` once it left first. It keeps its lane either way, until it
     /// leaves: the next command is not given its turn before what it ran
-    /// is ended.
+    /// is ended. A cut's command (`Ticket::cut`) never reaches the bound:
+    /// the cut is the queue's priority, and ending it would only start it
+    /// again from scratch, while every waiter's turn still comes after it
+    /// (sunfmin/control#1263). Its gate's own limit bounds it.
     pub fn overdue(&self, number: u64) -> Option<Bound> {
         let (_, turned) = &*self.held;
         let mut joined = self.joined();
         loop {
-            if !joined.tickets.iter().any(|ticket| ticket.number == number) {
+            let Some(ticket) = joined.tickets.iter().find(|ticket| ticket.number == number) else {
                 return None;
-            }
+            };
+            let cut = ticket.cut;
             let room = self.own_room(&joined);
             joined.count(Instant::now(), room);
             let bound = self.host.bound();
             let waiting = joined.waiting_for(number, room);
-            if waiting > 0
+            if !cut
+                && waiting > 0
                 && joined.waited.get(&number).copied().unwrap_or_default()
                     >= Duration::from_secs(bound)
             {
@@ -625,6 +630,45 @@ mod tests {
         holder.retry();
         assert!(holder.observation().unwrap().0.is_empty(), "the lane is freed");
         assert_eq!(*holder.host().asked.lock().unwrap(), 3);
+    }
+
+    /// A host that cannot be read, so one command runs at a time, whose
+    /// bound ends a command as soon as another waits.
+    struct Strict;
+
+    impl Host<Plain> for Strict {
+        fn now(&self) -> u64 {
+            1_000
+        }
+        fn bound(&self) -> u64 {
+            0
+        }
+    }
+
+    /// A cut's gate, ahead of waiting worker commands on a loaded host, ran
+    /// past the bound and was ended, so the cut could never finish
+    /// (sunfmin/control#1263): a cut's command holds its lane until it
+    /// leaves, while another's is ended at the bound.
+    #[test]
+    fn a_cuts_command_is_never_ended_at_the_bound_though_others_wait() {
+        let holder = Holder::new(Strict);
+        let mut cut = ticket("./gate.sh", 1);
+        cut.cut = true;
+        let (gate, _) = holder.join(cut);
+        assert!(matches!(holder.turn(gate), Turn::Runs(_)));
+        let (_waiter, _) = holder.join(ticket("worker", 2));
+        let watching = holder.clone();
+        let overdue = std::thread::spawn(move || watching.overdue(gate));
+        std::thread::sleep(CHECK_EVERY * 5);
+        assert!(!overdue.is_finished(), "the cut's gate is not ended at the bound");
+        holder.leave(gate);
+        assert_eq!(overdue.join().unwrap(), None, "it left by itself");
+
+        let holder = Holder::new(Strict);
+        let (other, _) = holder.join(ticket("./gate.sh", 1));
+        assert!(matches!(holder.turn(other), Turn::Runs(_)));
+        let (_waiter, _) = holder.join(ticket("worker", 2));
+        assert_eq!(holder.overdue(other), Some(Bound { bound: 0, waiting: 1 }));
     }
 
     /// The host's cores a tenth busy: room for more.
