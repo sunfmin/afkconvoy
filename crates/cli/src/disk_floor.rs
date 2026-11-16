@@ -118,10 +118,13 @@ mod tests {
         assert_eq!(due(true, false, None), Some(Say::GoOn));
         assert_eq!(due(false, true, None), None, "never told, nothing to take back");
         assert_eq!(
-            below_of(&[Hold::Load { load: 3, limit: 2 }, Hold::Disk { free: 1, floor: 2 }]),
+            below_of(&[
+                Hold::Load { load: 3, limit: 2, busy: None },
+                Hold::Disk { free: 1, floor: 2 }
+            ]),
             Some((1, 2))
         );
-        assert_eq!(below_of(&[Hold::Load { load: 3, limit: 2 }]), None);
+        assert_eq!(below_of(&[Hold::Load { load: 3, limit: 2, busy: None }]), None);
         assert!(
             line(&due(false, true, below).unwrap())
                 .contains("1.0 GiB free, under its floor of 4.0 GiB")

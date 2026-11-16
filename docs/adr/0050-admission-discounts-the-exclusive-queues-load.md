@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0072 and ADR-0078
+status: accepted, amended by ADR-0072, ADR-0078 and ADR-0084
 ---
 
 # Admission discounts the exclusive queue's load

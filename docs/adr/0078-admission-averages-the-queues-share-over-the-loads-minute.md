@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0084
 ---
 
 # Admission averages the queue's share over the load's minute
