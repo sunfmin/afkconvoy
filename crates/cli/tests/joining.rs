@@ -1089,55 +1089,6 @@ fn a_landing_stopped_at_a_fleet_lock_is_asked_again_by_the_tick_once_the_lock_cl
     assert!(notes.join("convoy-turn.log").exists(), "the turn was not asked again");
 }
 
-#[test]
-fn a_landing_hold_keeps_a_workers_turn_and_gate_off_until_it_is_lifted() {
-    let world = joining();
-    let dir = worktree(&world);
-    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
-    let raised = world.afk(&["hold", "--reason", "28 PRs as one"]).ok();
-    assert_eq!(raised["hold"]["reason"], "28 PRs as one", "{raised}");
-    assert_eq!(raised["hold"]["issue"], Value::Null, "{raised}");
-
-    // The worker's own turn starts nothing, and says the hold.
-    let landed = world.afk_in(&dir, &["land", "--issue", "7"]).ok();
-    assert_eq!(landed["outcome"], "held", "{landed}");
-    assert!(landed["detail"].as_str().unwrap().contains("landing hold"), "{landed}");
-    assert!(pr_is_open(&world), "a held turn landed");
-
-    // So does its gate, run as a worker runs it.
-    let program = env!("CARGO_BIN_EXE_afkconvoy");
-    let gated = world
-        .command(program, &dir)
-        .env(afkconvoy_core::role::ISSUE_ENV, "7")
-        .args(["gate", "--fast"])
-        .output()
-        .unwrap();
-    assert!(!gated.status.success(), "a worker's gate ran under the hold");
-    let said = String::from_utf8_lossy(&gated.stdout);
-    assert!(said.contains("landing hold"), "{said}");
-
-    // Its worker is idle, and its turn answered a wait: the tick leaves it.
-    world.with_orca(|orca| {
-        for terminal in orca["terminals"].as_array_mut().unwrap() {
-            terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_050_000});
-            terminal["lastOutputAt"] = json!(1_050_000);
-        }
-    });
-    for now in 1500..1502 {
-        let ticked = tick(&world, now);
-        assert_eq!(ticked["errors"], json!([]), "{ticked}");
-        assert!(did(&ticked).contains(&"watch 7 nothing".to_string()), "{ticked}");
-        assert!(!notes.join("convoy-turn.log").exists(), "asked again while the hold stood");
-    }
-
-    let lifted = world.afk(&["hold", "--lift"]).ok();
-    assert_eq!(lifted["lifted"], true, "{lifted}");
-    let ticked = tick(&world, 1502);
-    assert_eq!(ticked["errors"], json!([]), "{ticked}");
-    assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
-    assert!(notes.join("convoy-turn.log").exists(), "the held turn was not asked again");
-}
-
 /// Every line of this world's tick log, as `run` would print it.
 fn logged(world: &World) -> Vec<String> {
     let runs = world.cache().join("afkconvoy/runs");
@@ -1320,4 +1271,53 @@ fn a_worker_that_cannot_be_confirmed_stopped_gets_no_successor_and_this_is_repor
     assert_eq!(worktree(&world), dir);
     let common = world.clone.join(".git");
     assert!(!common.join("convoy-salvage").exists(), "nothing written before it stopped");
+}
+
+#[test]
+fn a_landing_hold_keeps_a_workers_turn_and_gate_off_until_it_is_lifted() {
+    let world = joining();
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    let raised = world.afk(&["hold", "--reason", "28 PRs as one"]).ok();
+    assert_eq!(raised["hold"]["reason"], "28 PRs as one", "{raised}");
+    assert_eq!(raised["hold"]["issue"], Value::Null, "{raised}");
+
+    // The worker's own turn starts nothing, and says the hold.
+    let landed = world.afk_in(&dir, &["land", "--issue", "7"]).ok();
+    assert_eq!(landed["outcome"], "held", "{landed}");
+    assert!(landed["detail"].as_str().unwrap().contains("landing hold"), "{landed}");
+    assert!(pr_is_open(&world), "a held turn landed");
+
+    // So does its gate, run as a worker runs it.
+    let program = env!("CARGO_BIN_EXE_afkconvoy");
+    let gated = world
+        .command(program, &dir)
+        .env(afkconvoy_core::role::ISSUE_ENV, "7")
+        .args(["gate", "--fast"])
+        .output()
+        .unwrap();
+    assert!(!gated.status.success(), "a worker's gate ran under the hold");
+    let said = String::from_utf8_lossy(&gated.stdout);
+    assert!(said.contains("landing hold"), "{said}");
+
+    // Its worker is idle, and its turn answered a wait: the tick leaves it.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_050_000});
+            terminal["lastOutputAt"] = json!(1_050_000);
+        }
+    });
+    for now in 1500..1502 {
+        let ticked = tick(&world, now);
+        assert_eq!(ticked["errors"], json!([]), "{ticked}");
+        assert!(did(&ticked).contains(&"watch 7 nothing".to_string()), "{ticked}");
+        assert!(!notes.join("convoy-turn.log").exists(), "asked again while the hold stood");
+    }
+
+    let lifted = world.afk(&["hold", "--lift"]).ok();
+    assert_eq!(lifted["lifted"], true, "{lifted}");
+    let ticked = tick(&world, 1502);
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
+    assert!(notes.join("convoy-turn.log").exists(), "the held turn was not asked again");
 }

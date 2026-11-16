@@ -327,6 +327,13 @@ pub fn locked(mut answer: Value, locks: &[u64]) -> Value {
     answer
 }
 
+/// `printed`, the `{"error": …}` of a turn that could not finish, with its
+/// ending (`Ending::Error`): a worker reads it as any other outcome, never a
+/// bare error its brief does not cover (sunfmin/control#1267).
+pub(crate) fn unfinished(printed: &mut Value) {
+    printed["outcome"] = json!(Ending::Error);
+}
+
 /// The answer of a `land` turn the hold keeps off.
 pub fn held(mut answer: Value, hold: &crate::landing_hold::Hold) -> Value {
     answer["outcome"] = json!(Ending::Held);
@@ -337,13 +344,6 @@ pub fn held(mut answer: Value, hold: &crate::landing_hold::Hold) -> Value {
         hold.line()
     ));
     answer
-}
-
-/// `printed`, the `{"error": …}` of a turn that could not finish, with its
-/// ending (`Ending::Error`): a worker reads it as any other outcome, never a
-/// bare error its brief does not cover (sunfmin/control#1267).
-pub(crate) fn unfinished(printed: &mut Value) {
-    printed["outcome"] = json!(Ending::Error);
 }
 
 pub fn land(
@@ -676,6 +676,33 @@ mod tests {
             "base tip abc is red: it exited 1; failing: nx a_test; worker turns wait for its repair"
         );
         assert!(red_tip("abc", &red).starts_with(&red.said("base tip abc")));
+    }
+
+    /// A merge's message goes to git on stdin, so one past the OS's
+    /// `ARG_MAX` is committed whole; and a head merged onto itself is given
+    /// as its parent once (sunfmin/control#1266).
+    #[test]
+    fn a_merge_commits_a_message_past_arg_max_and_each_parent_once() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out =
+                std::process::Command::new("git").current_dir(root.path()).args(args).output();
+            let out = out.unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "a"]);
+        git(&["config", "user.email", "a@b"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let repo = Repo::new(root.path().to_path_buf());
+        // Past macOS's 1 MiB and Linux's 2 MiB ARG_MAX.
+        let message = "Group #125, ".repeat(400_000);
+        let made = merged_onto(&repo, &head, &head, &message, 1).unwrap().unwrap();
+        assert_eq!(git(&["rev-parse", &format!("{made}^@")]), head, "one parent, once");
+        let said = git(&["log", "-1", "--format=%B", &made]);
+        assert_eq!(said.len(), message.trim_end().len());
     }
 
     /// The land step teaches each word the turn returns, and no other.
