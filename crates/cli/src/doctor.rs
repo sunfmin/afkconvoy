@@ -3482,7 +3482,9 @@ mod tests {
             let line = ["afkconvoy ", "gh ", "orca ", "brew ", "curl ", "claude "]
                 .iter()
                 .any(|program| fix.starts_with(program))
-                || fix == "pi";
+                || fix == "pi"
+                // a program named by its absolute path, as the orca that was asked
+                || fix.starts_with("'/") && fix.contains("/orca' ");
             let file = fix.split(": ").next().is_some_and(|file| file.ends_with(".md"));
             assert!(line || file, "a fix that is neither a line nor a file and key: {fix:?}");
             assert!(!fix.contains('\n') && !finding.evidence.is_empty(), "{finding:?}");
