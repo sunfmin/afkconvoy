@@ -35,6 +35,12 @@ pub struct Shares {
 /// tenth of its memory free, a hundredth of its disk free.
 pub const SHARES: Shares = Shares { load: 200, memory: 10, disk: 1 };
 
+/// The share of the host's cores, in percent, past which their being busy
+/// lets a load past its share hold (docs/adr/0084). macOS counts in its
+/// load average more than the threads that want a core: another account's
+/// idle simulators keep it near 100 on a host whose cores are mostly idle.
+pub const CPU_BUSY: u64 = 90;
+
 /// What the effect layer read of the host. `None`: it could not be read, and
 /// holds nothing back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -43,6 +49,10 @@ pub struct Reading {
     pub cores: u64,
     /// Its 1-minute load average, in hundredths.
     pub load: Option<u64>,
+    /// The share of its cores' time busy over the reading's window, in
+    /// percent, as the kernel's CPU ticks say it; `None`: not read, and the
+    /// load alone decides (docs/adr/0084).
+    pub cpu_busy: Option<u64>,
     /// The share of its memory free, in percent: what the kernel counts as
     /// available, so that it falls as memory pressure rises.
     pub memory_free: Option<u64>,
@@ -90,8 +100,10 @@ pub fn thresholds(shares: Shares, reading: &Reading) -> Thresholds {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "by", rename_all = "snake_case")]
 pub enum Hold {
-    /// The load, in hundredths, is past `limit`.
-    Load { load: u64, limit: u64 },
+    /// The load, in hundredths, is past `limit`, and the cores are `busy`
+    /// percent busy, past `CPU_BUSY`; `busy` `None`: how busy they are was
+    /// not read, and the load held alone.
+    Load { load: u64, limit: u64, busy: Option<u64> },
     /// The share of memory free, in percent, is under `floor`.
     Memory { free: u64, floor: u64 },
     /// The bytes free on the checkout's volume are under `floor`.
@@ -348,8 +360,9 @@ pub fn holds(shares: Shares, reading: &Reading) -> Vec<Hold> {
     let mut holds = vec![];
     if let Some(load) = reading.load
         && load > limits.load
+        && reading.cpu_busy.is_none_or(|busy| busy > CPU_BUSY)
     {
-        holds.push(Hold::Load { load, limit: limits.load });
+        holds.push(Hold::Load { load, limit: limits.load, busy: reading.cpu_busy });
     }
     if let Some(free) = reading.memory_free
         && free < limits.memory_free
@@ -375,6 +388,7 @@ mod tests {
         Reading {
             cores: 10,
             load: Some(100),
+            cpu_busy: None,
             memory_free: Some(60),
             disk: Some(Disk { free: 500 * GIB, size: 1000 * GIB }),
             reserve: None,
@@ -399,7 +413,24 @@ mod tests {
         let at = Reading { load: Some(2000), ..idle() };
         assert_eq!(holds(SHARES, &at), []);
         let past = Reading { load: Some(2001), ..idle() };
-        assert_eq!(holds(SHARES, &past), [Hold::Load { load: 2001, limit: 2000 }]);
+        assert_eq!(holds(SHARES, &past), [Hold::Load { load: 2001, limit: 2000, busy: None }]);
+    }
+
+    #[test]
+    fn a_load_past_its_limit_holds_only_while_the_cores_are_busy() {
+        // A load of 200 on 16 cores, the other account's idle simulators
+        // its most: 60% of the cores' time idle admits, 5% holds.
+        let host = |busy| Reading { cores: 16, load: Some(20_000), cpu_busy: Some(busy), ..idle() };
+        assert_eq!(holds(SHARES, &host(40)), []);
+        assert_eq!(holds(SHARES, &host(CPU_BUSY)), [], "at its share, not past it");
+        assert_eq!(
+            holds(SHARES, &host(95)),
+            [Hold::Load { load: 20_000, limit: 3200, busy: Some(95) }]
+        );
+        // Busy cores under a load within its share hold nothing: the queue's
+        // own gates may take every core (docs/adr/0050).
+        let gates = Reading { load: Some(1000), cpu_busy: Some(100), ..idle() };
+        assert_eq!(holds(SHARES, &gates), []);
     }
 
     #[test]
@@ -432,6 +463,7 @@ mod tests {
         let busy = Reading {
             cores: 10,
             load: Some(9000),
+            cpu_busy: None,
             memory_free: Some(3),
             disk: Some(Disk { free: GIB, size: 1000 * GIB }),
             reserve: None,
@@ -450,7 +482,14 @@ mod tests {
 
     #[test]
     fn what_was_not_read_holds_nothing_back() {
-        let unread = Reading { cores: 1, load: None, memory_free: None, disk: None, reserve: None };
+        let unread = Reading {
+            cores: 1,
+            load: None,
+            cpu_busy: None,
+            memory_free: None,
+            disk: None,
+            reserve: None,
+        };
         assert_eq!(holds(Shares { load: 0, memory: 100, disk: 100 }, &unread), []);
     }
 
