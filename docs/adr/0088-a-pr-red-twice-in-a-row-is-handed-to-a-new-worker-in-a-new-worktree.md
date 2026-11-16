@@ -73,8 +73,9 @@ whole output to a file of its own in the checkout's git dir
 (`convoy-gate-<candidate>-<fast|slow>.log`). Only the newest 40 are kept. A
 turn that answers `gate_red` adds `failing`, the tests that output names as
 failing, and `gate_output`, the file, to its answer. Its tick-log line names
-both, as a cut's red gate step already does: `gate_red: failing <tests>;
-gate output <file>`. The brief of the new worker reads them from the row,
+both, as a cut's red gate step already does: `gate_red: gate output <file>;
+failing <tests>`. The file comes first, so a line cut at its length cuts the
+tests, not the file. The brief of the new worker reads them from the row,
 which keeps each red answer's.
 
 ## The Breaker is not a way round

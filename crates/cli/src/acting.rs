@@ -219,9 +219,11 @@ fn switch_outcome(answer: &Value) -> String {
     moved.join("; ")
 }
 
-/// A turn's ending, `outcome`, as its line says it: a red one names the
-/// tests its gate's output names as failing and the file that keeps that
-/// output (`candidates::red_told`), as a cut's red gate step does.
+/// A turn's ending, `outcome`, as its line says it: a red one names the file
+/// that keeps its gate's output, then the tests that output names as failing
+/// (`candidates::red_told`), as a cut's red gate step does. The file comes
+/// first: a line is cut at its length (`one_line`), and a long list of tests
+/// is what it cuts.
 fn red_said(outcome: String, answer: &Value) -> String {
     if answer["failing"].is_null() && answer["gate_output"].is_null() {
         return outcome;
@@ -236,7 +238,7 @@ fn red_said(outcome: String, answer: &Value) -> String {
         Some(file) => format!("gate output {file}"),
         None => "its gate output not kept".to_string(),
     };
-    format!("{outcome}: {failing}; {output}")
+    format!("{outcome}: {output}; {failing}")
 }
 
 /// How a command that acted came out, in a few words, from what it answers.
@@ -332,12 +334,12 @@ mod tests {
             "gate_output": "/r/.git/convoy-gate-c1-fast.log"});
         assert_eq!(
             outcome("land", &red),
-            "gate_red: failing cli turns::a, cli turns::b; gate output /r/.git/convoy-gate-c1-fast.log"
+            "gate_red: gate output /r/.git/convoy-gate-c1-fast.log; failing cli turns::a, cli turns::b"
         );
         let unnamed = json!({"outcome": "gate_red", "failing": [], "gate_output": null});
         assert_eq!(
             outcome("land", &unnamed),
-            "gate_red: its output names no failing test; its gate output not kept"
+            "gate_red: its gate output not kept; its output names no failing test"
         );
         assert_eq!(outcome("gate", &json!({"status": "green"})), "green");
         assert_eq!(outcome("release", &json!({"released": true})), "done");

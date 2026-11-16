@@ -1136,8 +1136,15 @@ fn a_red_turn_names_its_failing_tests_and_its_gate_output_in_its_answer_and_its_
     let kept = std::fs::read_to_string(output).unwrap();
     assert!(kept.contains("FAIL [   0.1s] afkconvoy turns::first"), "{kept}");
     let line =
-        format!("land #7 (worker): gate_red: failing afkconvoy turns::first; gate output {output}");
-    assert!(logged(&world).contains(&line), "{line} in {:#?}", logged(&world));
+        format!("land #7 (worker): gate_red: gate output {output}; failing afkconvoy turns::first");
+    // A line is cut at its length; the gate runs these tests in a directory
+    // deep enough to cut this one.
+    let logged = logged(&world);
+    let said = logged.iter().find(|said| said.starts_with("land #7 (worker): gate_red: "));
+    let said = said.unwrap_or_else(|| panic!("{line} in {logged:#?}"));
+    let kept = said.strip_suffix('…').unwrap_or(said);
+    assert!(line.starts_with(kept), "{line} as {said}");
+    assert!(kept.chars().count() >= line.chars().count().min(300), "{said}");
     assert_eq!(reds(&dir).len(), 1);
 }
 
