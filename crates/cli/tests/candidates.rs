@@ -366,7 +366,6 @@ fn a_turn_that_cannot_finish_answers_the_error_ending() {
     let ran = world.afk_in(&source, &["land", "--issue", "1"]);
     assert_eq!(ran.json["outcome"], "error", "{}", ran.json);
     let error = ran.error();
-    assert!(error.starts_with("the turn could not finish: "), "{error}");
     assert!(error.contains("uncommitted changes"), "{error}");
 }
 

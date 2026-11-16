@@ -2250,6 +2250,9 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     // not: where it cannot be had, the command is refused before it starts. A
     // wake is about the checkout it is run in, named or not: in none, it has
     // no fleet to wake and no tick log to say so in.
+    // A turn, `land` or `gate --land`, that cannot finish answers its ending
+    // beside the error (sunfmin/control#1267).
+    let turn = matches!(cli.command, Command::Land { .. } | Command::Gate { land: true, .. });
     let ran = match checkout {
         Err(error) if named.is_some() || matches!(cli.command, Command::Wake { .. }) => Err(error),
         checkout => {
@@ -2292,7 +2295,11 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
                 // The host runner's own words, with which host runner said them.
                 println!("{answer}");
             } else {
-                println!("{}", error_json(&e));
+                let mut printed = error_json(&e);
+                if turn {
+                    turn::unfinished(&mut printed);
+                }
+                println!("{printed}");
             }
             ExitCode::from(1)
         }
@@ -2302,12 +2309,6 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 /// What a command prints for an error: {"error", "faults"} of a team's
 /// refusal, {"error", "see"} where a topic explains it, else {"error"}.
 pub(crate) fn error_json(e: &anyhow::Error) -> Value {
-    let mut printed = error_json_of(e);
-    turn::said_unfinished(e, &mut printed);
-    printed
-}
-
-fn error_json_of(e: &anyhow::Error) -> Value {
     if let Some(refused) = e.downcast_ref::<team::Refused>() {
         json!({ "error": refused.to_string(), "faults": refused.json() })
     } else if let Some(refused) = e.downcast_ref::<first_start::Refused>() {

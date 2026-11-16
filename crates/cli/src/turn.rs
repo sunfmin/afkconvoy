@@ -327,39 +327,14 @@ pub fn locked(mut answer: Value, locks: &[u64]) -> Value {
     answer
 }
 
-/// What every failure of an issue's turn is marked with: the turn could
-/// not finish. Its answer says so as an ending (`Ending::Error`,
-/// `said_unfinished`), so a worker reads it as any other outcome, never a
-/// bare `{"error": …}` its brief does not cover (sunfmin/control#1267).
-#[derive(Debug)]
-pub struct Unfinished;
-
-impl std::fmt::Display for Unfinished {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the turn could not finish")
-    }
-}
-
-/// `printed`, the `{"error": …}` of `e`, with the turn's ending where `e` is
-/// a turn that could not finish (`Unfinished`).
-pub(crate) fn said_unfinished(e: &anyhow::Error, printed: &mut Value) {
-    if e.downcast_ref::<Unfinished>().is_some() {
-        printed["outcome"] = json!(Ending::Error);
-    }
+/// `printed`, the `{"error": …}` of a turn that could not finish, with its
+/// ending (`Ending::Error`): a worker reads it as any other outcome, never a
+/// bare error its brief does not cover (sunfmin/control#1267).
+pub(crate) fn unfinished(printed: &mut Value) {
+    printed["outcome"] = json!(Ending::Error);
 }
 
 pub fn land(
-    repo: &Repo,
-    config: &Config,
-    gh: &GitHub,
-    issue: u64,
-    host: &str,
-    now: u64,
-) -> Result<Value> {
-    anyhow::Context::context(land_turn(repo, config, gh, issue, host, now), Unfinished)
-}
-
-fn land_turn(
     repo: &Repo,
     config: &Config,
     gh: &GitHub,
