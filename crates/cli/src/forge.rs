@@ -54,9 +54,21 @@ pub(crate) fn change(pr: &PullRequest) -> Change {
 
 impl Pulls<'_> {
     /// The open issues of the fleet's tracker whose latest record says PR
-    /// `by` carries their PR (`carried_comment`), each with that PR.
+    /// `by` carries their PR (`carried_comment`), each with that PR. Where
+    /// the open issues cannot be read — GitHub's GraphQL is down, say — none
+    /// is told, with a warning: a landing never waits on them, its
+    /// description still names what it carried, and doctor names a carried
+    /// issue left open once its carrier landed (`carried_landed`).
     fn told_carried(&self, by: u64) -> Result<BTreeMap<u64, u64>> {
-        let open = self.gh.open_issues()?;
+        let open = match self.gh.open_issues() {
+            Ok(open) => open,
+            Err(error) => {
+                eprintln!(
+                    "[afkconvoy] land: the issues PR #{by} was told it carries cannot be read, so its description alone says them: {error:#}"
+                );
+                return Ok(BTreeMap::new());
+            }
+        };
         let mut told = BTreeMap::new();
         for issue in &open.rows {
             let bodies = open.comments(issue.number).iter().map(|c| c.body.as_str());
