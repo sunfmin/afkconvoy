@@ -27,7 +27,7 @@ worker and kept its work:
 one note in the repo's git dir (`convoy-landing-hold`), which every worktree
 of the repo on the host shares, so a worker's own commands read the hold the
 fleet's tick reads, with no GitHub read and no process signalled. It may name
-one issue it lets through (`--issue`), the batch's turn; a watch's
+one issue it lets through (`--issue`), the turn of the PR to land; a watch's
 `land --watch` is always let through. `hold --lift` removes the note.
 
 While it stands, for every issue but the one it lets through:
@@ -55,8 +55,8 @@ no stall. The watch acts on no such finding; it is lifted by whoever raised it.
   process mid-command, holding its locks and its place in the exclusive
   queue, and a harness frozen past its API timeouts loses its turn.
 - **A hold on GitHub, as a lock is** — it would hold every host's fleet of
-  the repo, and every worker's `gate` would read GitHub before it ran. A batch
-  lands from one host, and the build directory it contends for is that host's.
+  the repo, and every worker's `gate` would read GitHub before it ran. One PR
+  lands alone from one host, and the build directory it contends for is that host's.
 - **Make the hold wait instead of refuse** — a worker waiting inside `gate`
   holds its harness turn open with no bound; refusing ends the turn, and the
   fleet already knows how to take a stopped worker up again.

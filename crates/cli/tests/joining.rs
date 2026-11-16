@@ -1094,8 +1094,8 @@ fn a_landing_hold_keeps_a_workers_turn_and_gate_off_until_it_is_lifted() {
     let world = joining();
     let dir = worktree(&world);
     let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
-    let raised = world.afk(&["hold", "--reason", "batch of 28"]).ok();
-    assert_eq!(raised["hold"]["reason"], "batch of 28", "{raised}");
+    let raised = world.afk(&["hold", "--reason", "28 PRs as one"]).ok();
+    assert_eq!(raised["hold"]["reason"], "28 PRs as one", "{raised}");
     assert_eq!(raised["hold"]["issue"], Value::Null, "{raised}");
 
     // The worker's own turn starts nothing, and says the hold.

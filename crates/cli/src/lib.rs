@@ -247,7 +247,7 @@ const READER: &str = "Run by whoever reads this manual";
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` selects a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` converts old ones; `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something it must know; `takeover` takes another fleet instance's claims; `daybook` records, after the fact, what an agent did outside any issue.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` picks a task's target; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `hold` for one PR; `queue` for the exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` old ones; `kit`, `cast`, `switch` for harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something; `takeover` takes another instance's claims; `daybook` records what an agent did off any issue.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -994,10 +994,10 @@ enum Command {
         #[command(flatten)]
         at: AtFlag,
     },
-    /// Hold this host's landings of the repo, or lift the hold: running workers take no turn and run no gate meanwhile, keeping their claims
+    /// Hold this host's landings, or lift the hold
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = landing_hold::HELP)]
     Hold {
-        /// The one issue whose turn and gates it lets through: the batch to land [default: none; a watch's `land --watch` is always let through]
+        /// The one issue whose turn and gates it lets through: the one PR to land [default: none; a watch's `land --watch` is always let through]
         #[arg(long, conflicts_with = "lift")]
         issue: Option<u64>,
         /// Why it is raised, as `plan`, `doctor` and every refusal say it
