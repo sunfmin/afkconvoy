@@ -327,7 +327,39 @@ pub fn locked(mut answer: Value, locks: &[u64]) -> Value {
     answer
 }
 
+/// What every failure of an issue's turn is marked with: the turn could
+/// not finish. Its answer says so as an ending (`Ending::Error`,
+/// `said_unfinished`), so a worker reads it as any other outcome, never a
+/// bare `{"error": …}` its brief does not cover (sunfmin/control#1267).
+#[derive(Debug)]
+pub struct Unfinished;
+
+impl std::fmt::Display for Unfinished {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the turn could not finish")
+    }
+}
+
+/// `printed`, the `{"error": …}` of `e`, with the turn's ending where `e` is
+/// a turn that could not finish (`Unfinished`).
+pub(crate) fn said_unfinished(e: &anyhow::Error, printed: &mut Value) {
+    if e.downcast_ref::<Unfinished>().is_some() {
+        printed["outcome"] = json!(Ending::Error);
+    }
+}
+
 pub fn land(
+    repo: &Repo,
+    config: &Config,
+    gh: &GitHub,
+    issue: u64,
+    host: &str,
+    now: u64,
+) -> Result<Value> {
+    anyhow::Context::context(land_turn(repo, config, gh, issue, host, now), Unfinished)
+}
+
+fn land_turn(
     repo: &Repo,
     config: &Config,
     gh: &GitHub,
@@ -595,7 +627,7 @@ An unrecorded base tip is gated alone in a separate checkout using its own gate 
 
 {const:LAND_ENDINGS}
 
-Errors are {"error": …} with non-zero exit: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
+Errors are {"error": …} with non-zero exit, and its outcome is error, as its ending above says: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
 
 ## What trips you up
 

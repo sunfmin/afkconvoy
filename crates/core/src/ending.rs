@@ -25,11 +25,12 @@ pub enum Ending {
     WaitedPastBound,
     Blocked,
     Locked,
+    Error,
 }
 
 impl Ending {
     /// Every ending, in the order a reader is told them.
-    pub const ALL: [Ending; 17] = [
+    pub const ALL: [Ending; 18] = [
         Ending::Merged,
         Ending::Conflict,
         Ending::GateRed,
@@ -47,6 +48,7 @@ impl Ending {
         Ending::WaitedPastBound,
         Ending::Blocked,
         Ending::Locked,
+        Ending::Error,
     ];
 
     /// The word a turn's answer carries as `outcome`.
@@ -69,6 +71,7 @@ impl Ending {
             Ending::WaitedPastBound => "waited_past_bound",
             Ending::Blocked => "blocked",
             Ending::Locked => "locked",
+            Ending::Error => "error",
         }
     }
 
@@ -125,6 +128,9 @@ impl Ending {
             }
             Ending::Locked => {
                 "a fleet lock stands, named by `locks`; nothing landed: ask for a turn again once no lock stands"
+            }
+            Ending::Error => {
+                "the turn could not finish, and `error` says why; nothing landed and nothing is recorded red. Where `error` names something of your branch to fix — no open PR, uncommitted tracked changes — fix it, commit and run this again; otherwise it is afkconvoy's own failure, not your change's: ask for a turn again"
             }
         }
     }

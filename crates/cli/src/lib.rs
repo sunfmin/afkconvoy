@@ -2302,6 +2302,12 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 /// What a command prints for an error: {"error", "faults"} of a team's
 /// refusal, {"error", "see"} where a topic explains it, else {"error"}.
 pub(crate) fn error_json(e: &anyhow::Error) -> Value {
+    let mut printed = error_json_of(e);
+    turn::said_unfinished(e, &mut printed);
+    printed
+}
+
+fn error_json_of(e: &anyhow::Error) -> Value {
     if let Some(refused) = e.downcast_ref::<team::Refused>() {
         json!({ "error": refused.to_string(), "faults": refused.json() })
     } else if let Some(refused) = e.downcast_ref::<first_start::Refused>() {

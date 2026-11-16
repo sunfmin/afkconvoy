@@ -235,7 +235,12 @@ fn git_raw(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, St
 
 /// One git call in `dir` with `env`, given `input` on stdin, that must
 /// succeed → its stdout, trimmed: for text too long for an argument.
-fn git_given(dir: &Path, args: &[&str], env: &[(&str, &str)], input: &str) -> Result<String, String> {
+fn git_given(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    input: &str,
+) -> Result<String, String> {
     use std::io::Write;
     let mut child = Command::new("git")
         .current_dir(dir)
