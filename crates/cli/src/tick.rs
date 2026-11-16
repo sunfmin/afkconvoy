@@ -74,6 +74,9 @@ enum Cleanup {
     Kept,
     /// The watch's checkouts a watch left (`watch_checkout::remove_left`).
     WatchLeft,
+    /// The worktrees of detached gates whose process is gone
+    /// (`gate::remove_orphans`).
+    GatesLeft,
 }
 
 impl Cleanup {
@@ -84,6 +87,7 @@ impl Cleanup {
             Cleanup::FailedRemovals => "finish_removals",
             Cleanup::Kept => "remove_kept",
             Cleanup::WatchLeft => "remove_watch_left",
+            Cleanup::GatesLeft => "remove_gates_left",
         }
     }
 
@@ -266,6 +270,9 @@ pub fn tick(
     // grace (sunfmin/control#1063).
     let left = crate::watch_checkout::remove_left(&fleet.repo, base, fleet.now);
     cleanup_failures.extend(Cleanup::WatchLeft.failures(left));
+    // A base tip's or delivery's gate worktree whose gate was ended from
+    // outside, before it could remove it (sunfmin/control#1276).
+    cleanup_failures.extend(Cleanup::GatesLeft.failures(crate::gate::remove_orphans(&fleet.repo)));
     // Cover interruption after an internal task landed but before final review.
     // A bad delivery does not prevent unrelated task reconciliation.
     let delivery_failure = crate::delivery::reconcile(&fleet).err();
@@ -1802,7 +1809,7 @@ Settling a claim removes that worker's worktree. Directories the gate left under
 {"did", "errors", "held", "frontier_remaining", "idle", "locks"} — and "held_back_by" when admission held back a worker it would have started
 
 - `did`: each step taken: {do, issue, outcome}. do is settle, forget, judge, watch, advance, escalate, end_patrol, patrol, end_cut, unlock, reclaim, dispatch, slow_gate, cut, board, stage_label or heartbeat; outcome is done, nudged, waiting, continued, restarted, nothing, lost, blocked, gone or failed. A step whose worker waits on its own background work says since when it was first seen to (epoch seconds): {do, issue, outcome, waiting_since}. A step on a patrol has a null issue and names it: {do, issue, patrol, outcome}. An `advance` that read a verdict and left the issue at a stage names it: {do, issue, outcome, stage} — `land` once the last stage passed to a landing turn. A step that escalated its issue says why, in a few words: {do, issue, outcome, escalated}. A `slow_gate` step also has `evidence`, naming the warning threshold, termination limit, host and recorded run durations; the tick log retains it and prints the same evidence when opening the issue. A `dispatch` that found an open blocker says which: {do, issue, outcome: "blocked", blocked_by}. A `settle` that kept its worktree says which and why, so the reason outlives the worktree: {do, issue, outcome, kept: {worktree, kept_because, unpushed}}, `kept_because` being `dirty`, `unpushed` or `unread`
-- `errors`: each step that failed: {do, issue, error}, with `patrol` as in `did` — and `see`, where a help topic explains what refused it: the command that prints the topic. A claimed issue the rebuild could not read is {do: "read", issue, error}: the rest of the tick is made, with it taken for open. Each tick first cleans up the worktrees nothing claims; a cleanup that failed is {do, issue, worktree, error}, do being `remove_candidates` (a stopped candidate's worktree), `finish_removals` (a removal orca answered success for that left the directory), `remove_kept` (a worktree a settle kept) or `remove_watch_left` (a watch's checkout a watch left), `worktree` the one it failed on and `issue` its issue, where it knows them. One worktree that fails does not stop the cleanup from the others, and the next tick tries it again
+- `errors`: each step that failed: {do, issue, error}, with `patrol` as in `did` — and `see`, where a help topic explains what refused it: the command that prints the topic. A claimed issue the rebuild could not read is {do: "read", issue, error}: the rest of the tick is made, with it taken for open. Each tick first cleans up the worktrees nothing claims; a cleanup that failed is {do, issue, worktree, error}, do being `remove_candidates` (a stopped candidate's worktree), `finish_removals` (a removal orca answered success for that left the directory), `remove_kept` (a worktree a settle kept), `remove_watch_left` (a watch's checkout a watch left) or `remove_gates_left` (a base tip's or delivery's gate worktree whose gate was ended from outside), `worktree` the one it failed on and `issue` its issue, where it knows them. One worktree that fails does not stop the cleanup from the others, and the next tick tries it again
 - `held`: the claims the instance holds after the pass, a patrol's run still going among them
 - `frontier_remaining`: the frontier issues it left undispatched
 - `idle`: whether the fleet instance is idle after the pass: it holds nothing, nothing of its is on the base branch, its frontier is empty, and no cut it started is going. `afkconvoy checkouts` answers it of each checkout's last tick

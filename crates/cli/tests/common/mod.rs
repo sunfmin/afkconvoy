@@ -1551,8 +1551,8 @@ fn copy_repository(from: &Path, to: &Path) {
 
 /// A host runner this world started ends with it: killed, so that none is
 /// left ticking against a world that is gone. The copies a fleet kept are
-/// read-only, directories included: they are opened again so that the world's
-/// directory can be removed.
+/// read-only, directories included, and so is what a test seals: every
+/// directory under the world is opened again so that it can be removed.
 impl Drop for World {
     fn drop(&mut self) {
         // No test's host runner serves the panel on the host's own port, nor
@@ -1575,9 +1575,10 @@ impl Drop for World {
             std::thread::sleep(Duration::from_millis(50));
         }
         end_left_behind(&self.root);
-        if self.cache().exists() {
-            let _ = Command::new("chmod").arg("-R").arg("u+w").arg(self.cache()).status();
-        }
+        // Every directory under it, not the cache's alone: a fixture's skill
+        // under its home, a test's own sealed directory, passing or panicking
+        // (sunfmin/control#1276).
+        afkconvoy::copies::removable(&self.root);
     }
 }
 

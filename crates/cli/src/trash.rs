@@ -164,6 +164,22 @@ mod tests {
 
     use super::*;
 
+    /// A test's directory whose directories are opened as it goes, passing
+    /// or panicking, so that it can be removed.
+    struct Opened(tempfile::TempDir);
+
+    impl Opened {
+        fn path(&self) -> &Path {
+            self.0.path()
+        }
+    }
+
+    impl Drop for Opened {
+        fn drop(&mut self) {
+            crate::copies::removable(self.0.path());
+        }
+    }
+
     fn gone_soon(path: &Path) -> bool {
         let until = afkconvoy_patience::deadline();
         while Instant::now() < until {
@@ -177,7 +193,7 @@ mod tests {
 
     #[test]
     fn a_discarded_directory_frees_its_path_at_once_and_a_child_deletes_it() {
-        let root = tempfile::tempdir().unwrap();
+        let root = Opened(tempfile::tempdir().unwrap());
         let path = root.path().join("worktree");
         let copy = path.join("target/role/inner");
         std::fs::create_dir_all(&copy).unwrap();
