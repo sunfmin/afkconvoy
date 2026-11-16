@@ -94,6 +94,7 @@ pub mod kept;
 mod kit;
 mod kit_research;
 pub mod landing;
+pub mod landing_hold;
 pub mod launch;
 pub mod legacy;
 pub mod lock;
@@ -247,7 +248,7 @@ const READER: &str = "Run by whoever reads this manual";
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` selects a task's destination; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `queue` for the local exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` converts old ones; `kit`, `cast`, `switch` for workers' harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something it must know; `takeover` takes another fleet instance's claims; `daybook` records, after the fact, what an agent did outside any issue.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` picks a task's target; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `hold` for one PR; `queue` for the exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` old ones; `kit`, `cast`, `switch` for harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something; `takeover` takes another instance's claims; `daybook` records what an agent did off any issue.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -994,6 +995,21 @@ enum Command {
         #[command(flatten)]
         at: AtFlag,
     },
+    /// Hold this host's landings, or lift the hold
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = landing_hold::HELP)]
+    Hold {
+        /// The one issue whose turn and gates it lets through: the one PR to land [default: none; a watch's `land --watch` is always let through]
+        #[arg(long, conflicts_with = "lift")]
+        issue: Option<u64>,
+        /// Why it is raised, as `plan`, `doctor` and every refusal say it
+        #[arg(long, conflicts_with = "lift")]
+        reason: Option<String>,
+        /// Lift the hold standing: the next tick asks again for every turn it held
+        #[arg(long)]
+        lift: bool,
+        #[command(flatten)]
+        at: AtFlag,
+    },
     /// Have a patrol run now, past its interval and its daily bound: the next tick runs it
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = patrol::HELP)]
     PatrolNow {
@@ -1484,7 +1500,7 @@ fn kind(name: &str) -> Kind {
     let worker_acts = Kind { acts: true, worktree: Worktree::Its, starts: false };
     match name {
         "dispatch" | "close" | "escalate" | "park" | "nudge" | "tell" | "restart" | "switch"
-        | "claim" | "release" | "heartbeat" | "patrol-now" => Kind::ACTS,
+        | "claim" | "release" | "heartbeat" | "patrol-now" | "hold" => Kind::ACTS,
         "takeover" => Kind { worktree: Worktree::Reads(Some("from")), ..Kind::ACTS },
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
         | "intake" | "lock" | "over" | "cut" | "wake" | "rewrite-accounts" => worker_acts,
@@ -2403,6 +2419,8 @@ impl Command {
             }
             Command::Delivery { final_target: None, .. } => return None,
             Command::Lock { issue, .. } => of("lock", issue, None),
+            Command::Hold { lift: true, .. } => Acting::new("hold").on("lift".to_string()),
+            Command::Hold { issue, .. } => Acting::new("hold").on_issue(*issue),
             Command::PatrolNow { name, .. } => {
                 Acting::new("patrol-now").on(name.trim().to_string())
             }
@@ -2567,6 +2585,15 @@ fn run(
         Command::Gate { land, fast, slow, host, .. } => {
             let repo = checkout?;
             claims::own_issue_on_this_host(&repo)?;
+            // A worker's gate is held; one run by hand, or a watch's, is not.
+            let worker = std::env::var(ISSUE_ENV).ok().and_then(|raw| raw.trim().parse().ok());
+            if let Some(hold) = worker.and_then(|n| landing_hold::keeping_off(&repo, n)) {
+                bail!(
+                    "{}: no worker's gate runs; nothing in your tree is to change — stop, and \
+                     the fleet asks for your turn again once it is lifted",
+                    hold.line()
+                );
+            }
             let config = config::load(&repo.dir.join(config::FILE))?;
             let host = host.unwrap_or_else(this_host);
             match (fast, slow) {
@@ -2713,6 +2740,10 @@ fn run(
             let gh = gh::GitHub::of(&repo)?;
             let role = role.as_deref().map(str::trim).filter(|role| !role.is_empty());
             lock::lock(&config, &gh, issue.number(), role)
+        }
+        Command::Hold { issue, reason, lift, .. } => {
+            let reason = reason.map(|why| why.trim().to_string()).filter(|why| !why.is_empty());
+            landing_hold::hold(&checkout?, issue, reason, lift, now)
         }
         Command::PatrolNow { name, .. } => patrol::ask(&checkout?, name.trim(), &this_host(), now),
         Command::Over { run, .. } => {

@@ -233,6 +233,7 @@ kinds! {
     LaneRetained: Warning, "its lane retained for a cleanup it could not confirm";
     LandingContention: Warning, "its candidate chain cannot keep up";
     LandingStalled: Critical, "its fleet lands nothing";
+    LandingHeld: Info, "a landing hold stands";
     PendingLands: Warning, "live lands hold pending turns";
     FetchCorrupt: Warning, "a fetch of the remote keeps failing corrupt";
     Moved: Info, "moved since the stage";
@@ -304,6 +305,7 @@ impl Kind {
                 | Kind::LandingContention
                 | Kind::GithubQuota
                 | Kind::AccountsSpent
+                | Kind::LandingHeld
         )
     }
 }
@@ -2577,7 +2579,11 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
             host: &crate::this_host(),
             base_moved: state.base_moved,
         };
-        found.extend(stalled_finding(&waiting, &lands, now));
+        // A hold stands to land nothing: what it holds is no stall.
+        match crate::landing_hold::standing(repo) {
+            Some(hold) => found.push(held_finding(&hold)),
+            None => found.extend(stalled_finding(&waiting, &lands, now)),
+        }
     }
     found.extend(look.trackers.findings(repo));
     found.extend(crate::paused::findings(now));
@@ -2630,6 +2636,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         Err(error) => json!({"error":format!("{error:#}")}),
     };
     fleet["tracker"] = report.tracker.clone();
+    fleet["landing_hold"] = crate::landing_hold::json(repo);
     let deliveries = match &state {
         Ok(state) => state.deliveries.clone(),
         Err(error) => vec![json!({ "error": error })],
@@ -2832,6 +2839,20 @@ fn stalled_finding(seen: &LandWait, entries: &[Entry], now: u64) -> Option<Findi
         ),
         "afkconvoy plan".to_string(),
     ))
+}
+
+/// The operator's landing hold standing on this host (`afkconvoy hold`):
+/// said, never acted on — the watch lifts no hold it did not raise.
+fn held_finding(hold: &crate::landing_hold::Hold) -> Finding {
+    finding(
+        Kind::LandingHeld,
+        json!(["landing-held", hold.at]),
+        format!("a landing hold stands: {}", hold.line()),
+        "no `land` turn of a held issue starts and no worker's gate runs; claims and \
+         worktrees are kept"
+            .to_string(),
+        "afkconvoy hold --lift".to_string(),
+    )
 }
 
 /// How many live lands of one repo holding pending turns are a finding: a

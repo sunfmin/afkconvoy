@@ -334,6 +334,18 @@ pub(crate) fn unfinished(printed: &mut Value) {
     printed["outcome"] = json!(Ending::Error);
 }
 
+/// The answer of a `land` turn the hold keeps off.
+pub fn held(mut answer: Value, hold: &crate::landing_hold::Hold) -> Value {
+    answer["outcome"] = json!(Ending::Held);
+    answer["hold"] = json!(hold);
+    answer["detail"] = json!(format!(
+        "{}: no turn starts; nothing in your tree is to change; the fleet asks for this turn \
+         again once it is lifted",
+        hold.line()
+    ));
+    answer
+}
+
 pub fn land(
     repo: &Repo,
     config: &Config,
@@ -342,6 +354,11 @@ pub fn land(
     host: &str,
     now: u64,
 ) -> Result<Value> {
+    // A landing hold keeps the turn from starting: nothing is read or merged.
+    if let Some(hold) = crate::landing_hold::keeping_off(repo, issue) {
+        let asked = json!({"issue": issue});
+        return crate::turn_answer::noted(repo, Some(issue), now, || Ok(held(asked, &hold)));
+    }
     let looked = crate::target::once(repo, config, &gh.tracker, issue)?;
     let mut answer = crate::turn_answer::noted(repo, Some(issue), now, || {
         land_task(repo, gh, issue, host, now, looked)
