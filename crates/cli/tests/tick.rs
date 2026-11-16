@@ -1411,3 +1411,112 @@ fn a_claimed_issue_the_rebuild_cannot_read_is_an_error_of_that_tick_alone() {
     assert_eq!(did(&ticked)[..2], ["settle 5 done", "dispatch 9 done"]);
     assert_eq!(world.claims(), alpha(&[3, 9]));
 }
+
+/// Issue #3's worker pushed its commit, and PR #40 of issue #4 carries it
+/// (docs/adr/0083): #40's branch holds that commit, #3's own branch is
+/// deleted, and #3 is told so. `local_merge` leaves in #3's worktree a merge
+/// of #40's branch no remote ref holds, as a turn's merge left there is.
+fn carried_by_40(world: &World, worktree: &Path, local_merge: bool) {
+    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    common::commit(worktree, "three.txt", "3\n");
+    git(worktree, &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")]);
+    let carrier = world.worker(4, "four.txt", "4\n");
+    git(&carrier, &["fetch", "-q", "origin", &branch]);
+    git(&carrier, &["merge", "-q", "--no-edit", "FETCH_HEAD"]);
+    git(&carrier, &["push", "-q", "origin", "HEAD"]);
+    if local_merge {
+        git(worktree, &["fetch", "-q", "origin", "issue-4"]);
+        git(worktree, &["merge", "-q", "--no-ff", "--no-edit", "FETCH_HEAD"]);
+    }
+    world.remote(&["update-ref", "-d", &format!("refs/heads/{branch}")]);
+    world.comment(3, "<!--convoy:carried pr=30 by=40-->\n<!--convoy:branch name=issue-4-->");
+}
+
+/// What `doctor` names as kept at settle.
+fn kept_at_settle(world: &World) -> Vec<Value> {
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    doctor["kept_at_settle"].as_array().unwrap_or_else(|| panic!("{doctor}")).clone()
+}
+
+#[test]
+fn a_carried_issue_s_worktree_stays_while_its_carrier_is_open_and_goes_once_it_lands() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    carried_by_40(&world, &worktree, true);
+
+    let ticked = tick(&world, "1090");
+    assert!(did(&ticked).contains(&"settle 3 done".to_string()), "{ticked}");
+    assert!(worktree.is_dir(), "its merge is on no remote ref, and its change not on the base");
+    assert_eq!(world.claims(), []);
+    let kept = kept_at_settle(&world);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0]["issue"], 3);
+    assert_eq!(kept[0]["kept_because"], "unpushed");
+    assert_eq!(kept[0]["carried_by"], 40);
+    assert_eq!(kept[0]["path"], json!(worktree));
+
+    tick(&world, "1180");
+    assert!(worktree.is_dir(), "it stays while its carrier is open");
+
+    // #40 lands: a merge of its branch on main closes both issues.
+    git(&world.clone, &["fetch", "-q", "origin"]);
+    git(
+        &world.clone,
+        &["merge", "-q", "--no-ff", "-m", "Merge #40\n\nCloses #4", "origin/issue-4"],
+    );
+    git(&world.clone, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    world.with_gh(|gh| {
+        for pr in gh["prs"].as_array_mut().unwrap() {
+            if pr["number"] == 40 {
+                pr["state"] = json!("merged");
+            }
+        }
+    });
+    world.close_issue(3);
+    world.close_issue(4);
+
+    let ticked = tick(&world, "1270");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(!worktree.exists(), "the first tick after its carrier landed removes it");
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!common::worktree_listed(&listed, &worktree), "{listed}");
+    assert_eq!(kept_at_settle(&world), Vec::<Value>::new());
+}
+
+#[test]
+fn a_carried_issue_s_worktree_whose_commits_its_carrier_holds_goes_at_settle() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    carried_by_40(&world, &worktree, false);
+
+    let ticked = tick(&world, "1090");
+    assert!(did(&ticked).contains(&"settle 3 done".to_string()), "{ticked}");
+    assert!(!worktree.exists(), "the carrier's branch holds every commit of it");
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_settled_worktree_with_a_commit_no_remote_ref_holds_stays_on_every_later_tick() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    common::commit(&worktree, "three.txt", "3\n");
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert_eq!(world.claims(), []);
+    for now in ["1180", "1270"] {
+        let again = tick(&world, now);
+        assert!(again["errors"].as_array().unwrap().is_empty(), "{again}");
+        assert!(worktree.is_dir(), "a commit only it holds keeps it");
+    }
+    let kept = kept_at_settle(&world);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0]["issue"], 3);
+    assert_eq!(kept[0]["kept_because"], "unpushed");
+    assert_eq!(kept[0]["unpushed"], 1);
+    assert_eq!(kept[0]["since"], 1090);
+}

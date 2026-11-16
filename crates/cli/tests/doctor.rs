@@ -299,12 +299,14 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
             "fleet",
             "host",
             "issues",
+            "kept_at_settle",
             "refusals",
             "targets",
             "waiting_on_human"
         ]
     );
     assert_eq!(answer["candidates"], json!([]));
+    assert_eq!(answer["kept_at_settle"], json!([]), "no settle kept a worktree");
     // both open issues are destinations on the configured base; only the dispatched one is pinned
     let targets = answer["targets"].as_array().unwrap();
     assert_eq!(targets.len(), 2, "{answer}");

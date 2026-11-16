@@ -8,7 +8,7 @@ use afkconvoy_core::blocked::Blocked;
 use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::{Claim, releasable};
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::left::{Held, Left};
+use afkconvoy_core::left::{Held, KeptBecause, Left};
 use afkconvoy_core::plan::{Status, closing_pr};
 use afkconvoy_core::prompt::nudge_line;
 use afkconvoy_core::role::followed;
@@ -150,6 +150,49 @@ fn leaving_with(fleet: &Fleet, issue: u64, worktree: &Worktree, at_open: bool) -
     } else {
         fleet.remote.fetched(&branch, Fresh::Process)?
     });
+    held_beyond(worktree, &known)
+}
+
+/// What the worktree of a settled claim on `issue` holds that nothing else
+/// does (sunfmin/control#1161): as `leaving`, with the branch of the PR that
+/// carries its PR, `carrier`, known too, and its commits held by the base
+/// branch once their change is all there — a round or a carrier landed them
+/// under commits of its own, so they are on the base by their change and not
+/// by their hash.
+pub(crate) fn leaving_settled(
+    fleet: &Fleet,
+    issue: u64,
+    worktree: &Worktree,
+    carrier: Option<&str>,
+) -> Result<Leaving> {
+    let tip = fleet.task_tip(issue)?;
+    let mut known = vec![tip.clone()];
+    for branch in std::iter::once(worktree.branch.as_str()).chain(carrier) {
+        known.extend(fleet.remote.fetched(&format!("refs/heads/{branch}"), Fresh::Process)?);
+    }
+    let mut leaving = held_beyond(worktree, &known)?;
+    if !leaving.unpushed.is_empty() && change_is_on(&Repo::new(worktree.path.clone()), &tip)? {
+        let dirty = matches!(&leaving.left, Left::Kept(kept) if kept.because == KeptBecause::Dirty);
+        leaving = Leaving { left: Left::of(&Held { dirty, unpushed: Some(0) }), unpushed: vec![] };
+    }
+    Ok(leaving)
+}
+
+/// Whether merging HEAD of `repo` into `tip` changes nothing: every change
+/// its commits make is already in `tip`. A merge that conflicts, or that
+/// cannot be made, is a change `tip` lacks.
+fn change_is_on(repo: &Repo, tip: &str) -> Result<bool> {
+    let merged = repo.try_git(&["merge-tree", "--write-tree", tip, "HEAD"])?;
+    if !merged.ok {
+        return Ok(false);
+    }
+    let tree = repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?;
+    Ok(merged.stdout.lines().next() == Some(tree.as_str()))
+}
+
+/// What `worktree` holds that none of `known` does: anything uncommitted, and
+/// the commits of HEAD on none of them.
+fn held_beyond(worktree: &Worktree, known: &[String]) -> Result<Leaving> {
     let repo = Repo::new(worktree.path.clone());
     let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
     let mut args = vec!["log", "--format=%s", "HEAD", "--not"];

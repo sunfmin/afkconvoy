@@ -2532,8 +2532,28 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         "refusals": state.as_ref().ok().map(|state| &state.refusals),
         "waiting_on_human": waiting,
         "candidates": state.as_ref().ok().map(|state| &state.candidates),
+        "kept_at_settle": kept_at_settle_json(repo),
     });
     Ok(Examined { answer, found, pace, not_alive })
+}
+
+/// Every worktree a settle kept on this host, with why (sunfmin/control#1161):
+/// each later tick looks at it again, and removes it once nothing in it is
+/// held only there.
+fn kept_at_settle_json(repo: &Repo) -> Value {
+    match crate::settle::kept_at_settle(repo) {
+        Ok(kept) => Value::Array(
+            kept.into_iter()
+                .map(|(worktree, note)| {
+                    json!({"issue": note.issue, "path": worktree.path,
+                        "branch": worktree.branch, "kept_because": note.kept_because,
+                        "unpushed": note.unpushed, "carried_by": note.carried_by,
+                        "since": note.since})
+                })
+                .collect(),
+        ),
+        Err(error) => json!({"error": format!("{error:#}")}),
+    }
 }
 
 /// Each recent bound outcome is evidence for splitting the work or checking
@@ -3074,6 +3094,7 @@ It also reads every tracker that list names once for repo-labelled work, includi
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; a session that says busy while orca reports the agent done says disputed instead, with session: "busy", and raises a finding once orca has said so for the grace period. A claim left alone by a fleet lock instead says {state: "waiting_on_lock", locks: [issue numbers]} and raises no stopped or missing worker finding; the lock's own worker keeps its findings. gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
+- `kept_at_settle`: each worktree of this checkout on this host that a settle kept, [] with none: {issue, path, branch, kept_because, unpushed, carried_by, since}. `kept_because` is `dirty`, `unpushed` or `unread`; `unpushed` how many commits only it holds; `carried_by` the PR that carries its issue's, or null; `since` when a settle first kept it. Each tick looks at it again and removes it once it holds nothing the remote does not.
 - `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round, assigned}. `assigned` is when it was assigned, in epoch seconds, or null on a record older than that. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. A candidate of a round's root carries `batch: true` and its phase is `batched` until its round's whole gate runs at the root's last candidate; a pair of a round's pairing tree carries `pair`, {round, level, first, second, partner}: the PRs of its two nodes and the second's commit. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_round_gate` (batched, until its round's whole gate runs at the root's last candidate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
 - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`) unless a model label is followed (`model_label`; a stored `casting` is read as that), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
