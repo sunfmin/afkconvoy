@@ -78,10 +78,17 @@ pub fn worktrees(checkout: &Path) -> Vec<Worktree> {
     found
 }
 
+/// The builds of the exclusive queue's own worktrees — candidates', a
+/// round's, a cut's — counted as building at once: the four places it had by
+/// default before it started by the host's room (docs/adr/0088), one worker,
+/// two fast and one slow. A fast gate builds in its worker's worktree, which
+/// is counted apart.
+pub const QUEUE_BUILDS: u64 = 4;
+
 /// The bytes the builds that may run at once on this host take, measured:
 /// the largest fresh build on record in the worktrees of `checkouts`, times
-/// the queue's `lanes` and the worktrees a worker was started in, which
-/// build beside them. `None`: none is on record, or the host said its own
+/// `QUEUE_BUILDS` and the worktrees a worker was started in, which build
+/// beside them. `None`: none is on record, or the host said its own
 /// disk share (`admit_disk`), which then stands alone.
 pub fn reserve_of(settings: &Settings, checkouts: &[PathBuf]) -> Option<u64> {
     if settings.admit_disk.is_some() {
@@ -89,9 +96,8 @@ pub fn reserve_of(settings: &Settings, checkouts: &[PathBuf]) -> Option<u64> {
     }
     let worktrees: Vec<Worktree> = checkouts.iter().flat_map(|dir| worktrees(dir)).collect();
     let build = worktrees.iter().filter_map(Worktree::fresh).max()?;
-    let lanes = settings.lanes();
     let workers = worktrees.iter().filter(|worktree| worktree.a_workers()).count() as u64;
-    let at_once = lanes.worker.saturating_add(lanes.fast).saturating_add(lanes.slow) + workers;
+    let at_once = QUEUE_BUILDS + workers;
     Some(reserve(build, at_once))
 }
 
@@ -553,8 +559,7 @@ mod tests {
             std::fs::write(git.join(worker).join(crate::orca::BRIEF_FILE), "brief").unwrap();
         }
         let settings = Settings::default();
-        let lanes = settings.lanes();
-        let at_once = lanes.worker + lanes.fast + lanes.slow + 2;
+        let at_once = QUEUE_BUILDS + 2;
         let checkouts = [checkout];
         assert_eq!(reserve_of(&settings, &checkouts), Some(5 * GIB * at_once));
         let mut said = Settings::default();

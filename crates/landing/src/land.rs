@@ -586,6 +586,11 @@ where
                 return none();
             }
         }
+        // What a member carried closes with it, though its author rewrote
+        // its description since (sunfmin/control#1248).
+        for m in &members {
+            forge::described(self.forge, &asked(m)).map_err(Error::Forge)?;
+        }
         let last =
             members.last().ok_or_else(|| "a landing takes at least one candidate".to_string())?;
         let whole = GateCommand::new(turn::whole(last));

@@ -874,6 +874,16 @@ impl World {
         });
     }
 
+    /// Rewrites PR `number`'s description as `body`, as its worker's
+    /// `gh pr edit --body` would.
+    pub fn describe_pr(&self, number: u64, body: &str) {
+        self.with_gh(|gh| {
+            let prs = gh["prs"].as_array_mut().unwrap();
+            let pr = prs.iter_mut().find(|pr| pr["number"] == number).unwrap();
+            pr["body"] = json!(body);
+        });
+    }
+
     /// Adds an open PR from a fork's `branch` whose body closes issue
     /// `closes`: anyone's, its head in another repository.
     pub fn fork_pr(&self, number: u64, closes: u64, branch: &str) {

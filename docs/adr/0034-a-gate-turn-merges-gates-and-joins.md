@@ -1,5 +1,5 @@
 ---
-status: accepted, the train lane replaced by ADR-0037
+status: accepted, the train lane replaced by ADR-0037, the count of worker lanes by ADR-0088
 ---
 
 # A gate turn merges, gates and joins on the train's green tip

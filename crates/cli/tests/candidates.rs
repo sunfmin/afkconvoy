@@ -92,7 +92,7 @@ test ! -f "$root/fail-$name"
         .own();
     world.set_gate(&command);
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
-    world.say_host_settings(json!({"gate_lanes": lanes}));
+    room_for(&world, lanes);
     Fleet(world)
 }
 
@@ -705,6 +705,30 @@ fn a_red_group_has_its_last_pr_carry_the_others_and_the_rest_lands() {
     }
     assert_eq!(world.state(1), "open", "a carried issue stays open until its carrier lands");
     assert_eq!(world.state(2), "open");
+    // Its worker rewrites its description, dropping what it carries, and
+    // #10's says no issue any more; fixed, it lands, and the carried issue
+    // closes with it all the same, by the record the fleet left on it
+    // (sunfmin/control#1248).
+    world.describe_pr(20, "Closes #2\n");
+    world.describe_pr(10, "Nothing.\n");
+    let fixed_b = &workers[1].0;
+    git(fixed_b, &["fetch", "-q", "origin", "main"]);
+    git(fixed_b, &["merge", "-q", "--no-edit", "-X", "ours", "FETCH_HEAD"]);
+    git(fixed_b, &["push", "-q", "origin", "HEAD"]);
+    for part in ["fast", "slow"] {
+        let_go(&world, part, "b", false);
+    }
+    let landed = finish(start(&world, fixed_b, &world.cache(), 2));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let body =
+        world.gh()["prs"].as_array().unwrap().iter().find(|p| p["number"] == 20).unwrap()["body"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    assert!(body.contains("<!--carries change=10-->\n## Carries #10: pr 10"), "{body}");
+    assert!(!body.contains("Closes #1"), "{body}");
+    assert_eq!(world.state(2), "closed");
+    assert_eq!(world.state(1), "closed", "the carried issue closes as its carrier lands");
 }
 
 #[test]
@@ -822,6 +846,33 @@ fn dead_owner_is_cancelled_before_replacement_and_duplicate_requests_never_start
     gone(&world, "a");
     release(&world, "a", false);
     assert_eq!(finish(duplicate)["outcome"], "merged");
+    assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
+}
+
+/// A turn that dies holding a gating candidate whose process scope is gone
+/// — as between a round's fast and slow gate — leaves no lane held for good:
+/// the next `land` stops its gate and what it started, frees the lane, and
+/// lands (sunfmin/control#1247). It once answered only
+/// `{"error":"gate process ownership is missing; its lane remains occupied"}`.
+#[test]
+fn a_dead_turns_gate_without_its_scope_is_stopped_and_the_next_land_lands() {
+    let world = world(2);
+    let (a, head) = worker(&world, 1, "a");
+    let _runner = world.host_held();
+    let mut first = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let old = gate_pids(&world, "a");
+    first.kill().unwrap();
+    let _ = first.wait();
+    let worktree = candidate_of(&world, 1)["worktree"].as_str().unwrap().to_string();
+    std::fs::remove_file(format!("{worktree}.processes")).unwrap();
+    let next = start(&world, &a, &world.cache(), 1);
+    ended_all(&old);
+    until(|| chain(&world)["candidates"][0]["stopped"] == true);
+    release(&world, "a", false);
+    let landed = finish(next);
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(chain(&world)["candidates"][0]["cause"], "owner_died");
     assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
 }
 
@@ -1014,7 +1065,8 @@ fn runner_restart_keeps_running_candidate_ownership_and_capacity() {
         restored = world.afk(&["queue"]).json;
         restored["status"] == "available"
     });
-    assert_eq!(restored["worker"]["used"], 1, "{restored}");
+    assert_eq!(restored["running"].as_array().unwrap().len(), 1, "{restored}");
+    assert!(restored["room"]["reading"].is_object(), "{restored}");
     assert!(restored["running"].as_array().unwrap().iter().any(|r| r["issue"] == 1), "{restored}");
     let ordinary_marker = world.root.join("ordinary-started");
     let ordinary_script = format!("touch {}", quote(&ordinary_marker));
@@ -1460,8 +1512,17 @@ test ! -f "$root/fail-$part-$name"
     git(&world.clone, &["commit", "-q", "-am", "split the gate"]);
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
-    world.say_host_settings(json!({"gate_lanes": lanes}));
+    room_for(&world, lanes);
     world
+}
+
+/// The host's room, as `lanes` places once said it (docs/adr/0088): one, and
+/// the cores read past the share, so that a command starts only while
+/// nothing of the queue runs; more, and a tenth busy, so that each start
+/// counts a quarter of the host for the minute the reading takes to include
+/// it, and four start side by side.
+fn room_for(world: &World, lanes: u64) {
+    world.cores_busy(if lanes == 1 { 95 } else { 10 });
 }
 
 fn started(world: &World, part: &str, name: &str) -> bool {
@@ -1603,8 +1664,13 @@ fn a_red_root_is_fixed_on_the_spot_by_its_last_asked_pr_which_carries_the_round(
     assert_eq!(pr(10)["state"], "closed", "carried at once");
     assert!(pr(20)["body"].as_str().unwrap().contains("<!--carries change=10-->"));
     assert_eq!(world.state(1), "open", "the carried issue stays open until its carrier lands");
+    // Its worker rewrites its description, dropping what it carries
+    // (sunfmin/control#1248): landing writes it back before it lands.
+    world.describe_pr(20, "Closes #2\n");
     let_go(&world, "slow", "b", false);
     let fixed = finish(start(&world, &b, &world.cache(), 2));
+    let body = pr(20)["body"].as_str().unwrap().to_string();
+    assert!(body.contains("<!--carries change=10-->") && body.contains("Closes #1"), "{body}");
     assert_eq!(fixed["outcome"], "merged", "{fixed}");
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
     assert!(files.lines().any(|f| f == "a.txt") && files.lines().any(|f| f == "b.txt"));
@@ -1657,9 +1723,18 @@ fn a_pr_conflicting_with_every_partner_carries_the_earliest_and_lands_both() {
     for part in ["fast", "slow"] {
         let_go(&world, part, "b", false);
     }
+    // Its worker rewrote its description before the turn that carries #10
+    // (sunfmin/control#1248): that turn writes what it carries back in.
+    world.describe_pr(20, "Resolved.\n\nCloses #2\n");
     let landed = finish(start(&world, &b, &world.cache(), 2));
     assert_eq!(landed["outcome"], "merged", "{landed}");
     assert_eq!(landed["carried"], json!([10]), "{landed}");
+    let gh = world.gh();
+    let body = gh["prs"].as_array().unwrap().iter().find(|p| p["number"] == 20).unwrap()["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains("<!--carries change=10-->") && body.contains("Closes #1"), "{body}");
     assert_eq!(open(10), "closed");
     assert_eq!(world.remote(&["show", "refs/heads/main:x.txt"]), "ab");
     assert_eq!(world.state(2), "closed");
