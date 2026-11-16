@@ -1059,7 +1059,21 @@ impl<N: Clone> Chain<N> {
                 return;
             }
             up.append(&mut round.joining);
-            round.nodes = round.disjoint(up);
+            let up = round.disjoint(up);
+            // A level that sends up what it was given made no progress, and
+            // would pair the same nodes forever: it ends as a level no group
+            // took any of — its first node the root, the rest left for the
+            // next round (sunfmin/control#1266).
+            if up == round.nodes {
+                let mut nodes = up.into_iter();
+                round.root = nodes.next();
+                let rest: Vec<u64> = nodes.flat_map(|n| n.changes).collect();
+                for ask in round.asked.iter_mut().filter(|a| rest.contains(&a.asks.change)) {
+                    ask.left.get_or_insert(Left::Unpaired);
+                }
+                return;
+            }
+            round.nodes = up;
             round.level = round.level.saturating_add(1);
             round.paired = false;
         }
@@ -1237,7 +1251,11 @@ impl<N: Clone> Chain<N> {
             return;
         }
         round.asked.retain(|a| !leaving.contains(&a.asks.change));
-        round.out.extend(leaving.iter().copied());
+        for change in &leaving {
+            if !round.out.contains(change) {
+                round.out.push(*change);
+            }
+        }
         let id = round.id.clone();
         let closed = round.asked.is_empty();
         let mut ended: Vec<(String, &str)> = vec![];
@@ -1630,6 +1648,46 @@ mod tests {
     fn a_groups_message_names_each_pr_once() {
         assert_eq!(group_message("#", &[1, 2], &[3]), "Group #1, #2 with #3");
         assert_eq!(group_message("!", &[125, 125, 7], &[125, 7, 9]), "Group !125, !7 with !9");
+    }
+
+    /// A PR asked twice — two turns of it pending — is asked once in its
+    /// round, one node; the other turn waits (sunfmin/control#1266).
+    #[test]
+    fn a_pr_asked_twice_is_one_node_of_its_round() {
+        let mut chain = asking(2);
+        chain.pending.push(Barrier {
+            id: "t1-again".into(),
+            owner: owner(9),
+            since: Some(9),
+            asks: Some(Asks { change: 1, branch: "b1".into(), head: "h1-again".into() }),
+        });
+        chain.open_round("r");
+        let round = chain.round.as_ref().unwrap();
+        assert_eq!(round.asked.iter().map(|a| a.asks.change).collect::<Vec<_>>(), [1, 2]);
+        let nodes = chain.to_pair().unwrap().2;
+        assert_eq!(nodes.iter().map(|n| n.changes.clone()).collect::<Vec<_>>(), [[1], [2]]);
+        assert_eq!(chain.pending.len(), 1, "the other turn of 1 waits");
+        assert!(!chain.rejoin("t1-again"), "it carries nothing");
+        chain.leave_round(|a| a.asks.change == 1);
+        chain.leave_round(|a| a.asks.change == 1);
+        assert_eq!(chain.round.as_ref().unwrap().out, [1], "left once");
+    }
+
+    /// A level that sends up what it was given ends: its first node is the
+    /// root, the rest wait for the next round, and it is not paired again
+    /// (sunfmin/control#1266).
+    #[test]
+    fn a_level_that_makes_no_progress_ends_the_round() {
+        let mut chain = asking(3);
+        chain.open_round("r");
+        // The level is paired, yet no pair of it is on the chain.
+        chain.round.as_mut().unwrap().paired = true;
+        chain.advance_round();
+        assert_eq!(chain.to_pair(), None, "not paired again");
+        assert_eq!(root(&chain).unwrap().changes, [1]);
+        for t in ["t2", "t3"] {
+            assert_eq!(chain.round_next(t), Some(RoundNext::Left(Left::Unpaired)));
+        }
     }
 
     /// A PR no group takes goes up alone; a PR asking during a round waits
