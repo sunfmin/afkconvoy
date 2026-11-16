@@ -427,7 +427,7 @@ impl Settings {
 
 /// This host's logical cores.
 pub fn host_cores() -> u64 {
-    std::thread::available_parallelism().map_or(1, |n| n.get() as u64)
+    afkconvoy_host_reading::cores()
 }
 
 /// `--host-name` as said: a nonempty name, or `default`.

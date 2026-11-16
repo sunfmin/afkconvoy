@@ -569,32 +569,17 @@ impl Host<Note> for Hosted {
 }
 
 /// How busy this host is at `now`, as the queue starts a command by it
-/// (docs/adr/0088): its cores by the kernel's ticks over the last minute
-/// (`minute`), or the load average alone over its cores where those cannot
-/// be read; and its memory free, where it is under admission's floor.
-/// `None`: neither can be read.
+/// (docs/adr/0088): the host reading crate's (docs/adr/0089), its memory held
+/// to admission's floor in the host settings. `None`: neither its cores nor
+/// its load can be read.
 fn host_reading(
     minute: &Mutex<crate::cpu::Minute>,
     now: u64,
 ) -> Option<afkconvoy_core::exclusive::Reading> {
-    use afkconvoy_core::exclusive::{By, Reading, Short};
-    let ticks = minute.lock().unwrap_or_else(PoisonError::into_inner).read(now);
-    let (busy, by, since) = match ticks {
-        Some((busy, since)) => (busy, By::Ticks, since),
-        None => {
-            let load = crate::admission::load().ok()?;
-            let cores = crate::host_settings::host_cores().max(1);
-            let busy = (load / cores).min(100);
-            (busy, By::Load, now.saturating_sub(crate::cpu::WINDOW.as_secs()))
-        }
-    };
     let settings = crate::host_settings::of_host().unwrap_or_default();
     let floor = settings.admit_memory.unwrap_or(afkconvoy_core::admission::SHARES.memory);
-    let memory = crate::admission::memory_free()
-        .ok()
-        .filter(|free| *free < floor)
-        .map(|free| Short { free, floor });
-    Some(Reading { busy, by, since, taken: now, memory })
+    let mut minute = minute.lock().unwrap_or_else(PoisonError::into_inner);
+    afkconvoy_host_reading::reading(&mut minute, now, floor)
 }
 
 impl Queue {
