@@ -1738,11 +1738,23 @@ impl Worktree {
     /// tip and no worktree uses it (`Repo::delete_held_branch`): left, each
     /// one takes a name orca numbers, and it gives up past a hundred
     /// (sunfmin/control#1044).
+    ///
+    /// Before orca is asked, a worktree registered under this one — a gate
+    /// its worker ran, ended before it removed its own — is removed and
+    /// unregistered, and the directories under its `.afkconvoy-tmp` that
+    /// tests left read-only are opened (sunfmin/control#1276). A nested one
+    /// that cannot be removed fails the removal, naming it.
     pub fn remove(&self) -> Result<()> {
+        let shared = self.shared_git_dir();
+        // Before the worker's `TMPDIR` is turned away: a nested worktree is
+        // registered through it.
+        if let Some(shared) = &shared {
+            self.remove_nested(shared)?;
+        }
+        crate::copies::removable(&self.path.join(worker_tmp::TMP_DIR));
         // One that cannot be turned costs a server the worker started its
         // directory, and no worktree is kept for that.
         let _ = worker_tmp::retire(&self.path);
-        let shared = self.shared_git_dir();
         let aside = self.set_files_aside();
         if aside.is_none() {
             crate::copies::removable(&self.path);
@@ -1751,7 +1763,9 @@ impl Worktree {
             if let Some(entry) = &aside {
                 self.put_files_back(entry);
             }
-            return Err(error);
+            return Err(
+                error.context(format!("cannot remove the worktree {}", self.path.display()))
+            );
         }
         if let Some(entry) = &aside {
             crate::trash::delete_detached(entry);
@@ -1772,6 +1786,20 @@ impl Worktree {
             && !self.branch.is_empty()
         {
             let _ = Repo::new(shared).delete_held_branch(&self.branch);
+        }
+        Ok(())
+    }
+
+    /// Removes and unregisters every worktree of `shared` under this one.
+    /// A finished worker's `.git` pointer need not name a repo still there:
+    /// one whose worktrees cannot be listed has none registered to remove.
+    fn remove_nested(&self, shared: &Path) -> Result<()> {
+        let repo = Repo::new(shared.to_path_buf());
+        let Ok(nested) = repo.worktrees_under(&self.path) else { return Ok(()) };
+        for nested in nested {
+            repo.remove_worktree(&nested).with_context(|| {
+                format!("cannot remove the worktree nested in {}", self.path.display())
+            })?;
         }
         Ok(())
     }

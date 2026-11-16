@@ -69,17 +69,18 @@ pub fn certify(
     }
     let output =
         repo.common_dir()?.join(format!("convoy-base-tip-gate-{now}-{}.log", crate::unique()));
-    let (run, removal) = crate::gate::detached(repo, tip, "base-tip", |checkout| {
-        crate::gate::run_and_record(
-            checkout,
-            &command,
-            host,
-            now,
-            Duration::from_secs(config.gate_seconds()),
-            None,
-            Some(&output),
-        )
-    })?;
+    let (run, removal) =
+        crate::gate::detached(repo, tip, crate::gate::Detached::BaseTip, |checkout| {
+            crate::gate::run_and_record(
+                checkout,
+                &command,
+                host,
+                now,
+                Duration::from_secs(config.gate_seconds()),
+                None,
+                Some(&output),
+            )
+        })?;
     // A worktree that cannot be removed does not hide the verdict: why is
     // added to `unremoved`, beside it (sunfmin/control#610).
     if let Some(error) = removal {

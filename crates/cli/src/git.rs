@@ -308,6 +308,22 @@ impl Repo {
         Ok(())
     }
 
+    /// The worktrees registered here that are under `dir`, `dir` itself not
+    /// among them, as their real paths say: one registered through a link,
+    /// as a worker's `TMPDIR` is, is found under the directory the link
+    /// names. One no longer on disk is none: `git worktree prune` drops it.
+    pub fn worktrees_under(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        let dir = std::fs::canonicalize(dir)
+            .with_context(|| format!("cannot resolve {}", dir.display()))?;
+        let listed = self.git(&["worktree", "list", "--porcelain"])?;
+        Ok(listed
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .filter_map(|path| std::fs::canonicalize(path).ok())
+            .filter(|path| *path != dir && path.starts_with(&dir))
+            .collect())
+    }
+
     /// Deletes the local branch `name` where nothing is lost with it: no
     /// worktree has it checked out, and a tag or a remote branch holds its
     /// tip → whether it was deleted. Orca keeps a removed worktree's branch
