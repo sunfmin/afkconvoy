@@ -59,6 +59,10 @@ pub struct Settings {
     /// host's shared readings stay under, a whole percent, so that the workers'
     /// own `gh` calls keep the rest (sunfmin/control#1111).
     pub github_share: Option<u64>,
+    /// `--account-limit`: the share of a usage window, a whole percent, at
+    /// or past which an engine account takes no new worker until the
+    /// window resets (sunfmin/control#1220).
+    pub account_limit: Option<u64>,
     /// `--exclusive-seconds`: seconds a running command may hold others up.
     pub exclusive_seconds: Option<u64>,
     /// `--gate-lanes`: worker commands that may run across different repos.
@@ -127,6 +131,7 @@ pub struct Named {
     pub max_share_of_cores: Option<To<u64>>,
     pub max_share_of_memory: Option<To<u64>>,
     pub github_share: Option<To<u64>>,
+    pub account_limit: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
     pub gate_lanes: Option<To<u64>>,
     pub slow_gate_lanes: Option<To<u64>>,
@@ -283,6 +288,7 @@ impl Settings {
         lay(&mut self.max_share_of_cores, named.max_share_of_cores.as_ref());
         lay(&mut self.max_share_of_memory, named.max_share_of_memory.as_ref());
         lay(&mut self.github_share, named.github_share.as_ref());
+        lay(&mut self.account_limit, named.account_limit.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.gate_lanes, named.gate_lanes.as_ref());
         lay(&mut self.slow_gate_lanes, named.slow_gate_lanes.as_ref());
@@ -421,6 +427,7 @@ impl Settings {
             "max_share_of_cores": self.max_share_of_cores,
             "max_share_of_memory": self.max_share_of_memory,
             "github_share": self.github_share(),
+            "account_limit": self.account_limit.unwrap_or(afkconvoy_core::engine_account::LIMIT),
             "exclusive_seconds": self.exclusive_seconds(),
             "gate_lanes": self.gate_lanes(),
             "slow_gate_lanes": self.slow_gate_lanes(),
@@ -543,6 +550,7 @@ pub const ADMIT_INSPECT_AFTER_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
 pub const MAX_SHARE_OF_CORES_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_CORES";
 pub const MAX_SHARE_OF_MEMORY_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_MEMORY";
 pub const GITHUB_SHARE_ENV: &str = "AFKCONVOY_GITHUB_SHARE";
+pub const ACCOUNT_LIMIT_ENV: &str = "AFKCONVOY_ACCOUNT_LIMIT";
 pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
 pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";

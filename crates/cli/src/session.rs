@@ -1267,13 +1267,44 @@ pub(crate) fn windows(
     harness: Harness,
     since: u64,
 ) -> Result<Option<(u64, Vec<afkconvoy_core::harness::window::Window>)>> {
+    newest(cwd, harness, since, |value| {
+        let windows = harness.windows(value);
+        (!windows.is_empty()).then_some(windows)
+    })
+}
+
+/// The newest limit of its account's use the worker in `cwd`, on `harness`,
+/// recorded meeting (`Harness::limit_event`), with when that record was
+/// written: a throttle of the service is none of its account's. Files last
+/// written before `since` are not opened. `None`: it recorded none.
+pub(crate) fn limit(
+    cwd: &Path,
+    harness: Harness,
+    since: u64,
+) -> Result<Option<(u64, afkconvoy_core::harness::window::Limit)>> {
+    newest(cwd, harness, since, |value| {
+        harness
+            .limit_event(value)
+            .filter(|limit| limit.kind == afkconvoy_core::harness::window::Limited::Usage)
+    })
+}
+
+/// The newest record of the worker in `cwd`, on `harness`, of which `said`
+/// reads something, with when it was written. Files last written before
+/// `since` are not opened.
+fn newest<T>(
+    cwd: &Path,
+    harness: Harness,
+    since: u64,
+    said: impl Fn(&serde_json::Value) -> Option<T>,
+) -> Result<Option<(u64, T)>> {
     let cwd_text = cwd_str(cwd);
     let brief = brief(cwd);
     let layout = harness.session_place(&cwd_text).layout;
     // A tree of sessions holds every worktree's: a session there must record
     // this worktree's turn.
     let tree = matches!(layout, SessionLayout::Tree { .. });
-    let mut newest: Option<(u64, Vec<_>)> = None;
+    let mut newest: Option<(u64, T)> = None;
     for home in worker_homes(cwd, harness)? {
         let found = read_layout(
             &home,
@@ -1285,30 +1316,24 @@ pub(crate) fn windows(
                 if tree && !records_turn(harness, &cwd_text, path, text, None, brief.as_deref()) {
                     return None;
                 }
-                last_windows(harness, text)
+                last_said(text, &said)
             }),
         )?;
-        for (at, windows) in found {
+        for (at, it) in found {
             if newest.as_ref().is_none_or(|(newer, _)| at > *newer) {
-                newest = Some((at, windows));
+                newest = Some((at, it));
             }
         }
     }
     Ok(newest)
 }
 
-/// The last record of `text` that says windows, with when it was written.
-fn last_windows(
-    harness: Harness,
-    text: &str,
-) -> Option<(u64, Vec<afkconvoy_core::harness::window::Window>)> {
+/// The last record of `text` of which `said` reads something, with when it
+/// was written.
+fn last_said<T>(text: &str, said: &impl Fn(&serde_json::Value) -> Option<T>) -> Option<(u64, T)> {
     text.lines().rev().find_map(|line| {
         let value: serde_json::Value = serde_json::from_str(line).ok()?;
-        let windows = harness.windows(&value);
-        if windows.is_empty() {
-            return None;
-        }
-        Some((session_first_at(line).unwrap_or(0), windows))
+        Some((session_first_at(line).unwrap_or(0), said(&value)?))
     })
 }
 
