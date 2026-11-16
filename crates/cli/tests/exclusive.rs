@@ -367,6 +367,8 @@ fn an_unbound_worker_s_gate_names_its_issue_in_the_tick_log_and_the_host_s_queue
 #[test]
 fn two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_asked() {
     let (first, second) = (World::new(), World::new());
+    // Past the share: two repos' commands run one at a time, not by the room.
+    first.cores_busy(95);
     let _host_runner = first.host_held();
     let cache = first.cache();
     let order = cache.join("order");
