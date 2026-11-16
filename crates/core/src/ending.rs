@@ -25,11 +25,12 @@ pub enum Ending {
     WaitedPastBound,
     Blocked,
     Locked,
+    Held,
 }
 
 impl Ending {
     /// Every ending, in the order a reader is told them.
-    pub const ALL: [Ending; 17] = [
+    pub const ALL: [Ending; 18] = [
         Ending::Merged,
         Ending::Conflict,
         Ending::GateRed,
@@ -47,6 +48,7 @@ impl Ending {
         Ending::WaitedPastBound,
         Ending::Blocked,
         Ending::Locked,
+        Ending::Held,
     ];
 
     /// The word a turn's answer carries as `outcome`.
@@ -69,6 +71,7 @@ impl Ending {
             Ending::WaitedPastBound => "waited_past_bound",
             Ending::Blocked => "blocked",
             Ending::Locked => "locked",
+            Ending::Held => "held",
         }
     }
 
@@ -126,6 +129,9 @@ impl Ending {
             Ending::Locked => {
                 "a fleet lock stands, named by `locks`; nothing landed: ask for a turn again once no lock stands"
             }
+            Ending::Held => {
+                "an operator's landing hold stands on this host, named by `hold`; no turn started and nothing landed, your claim, worktree and branch are kept: ask for a turn again once the hold is lifted"
+            }
         }
     }
 
@@ -133,7 +139,8 @@ impl Ending {
     /// in the tree is to change, and the fleet asks for it itself. A
     /// speculative conflict leaves a merge in the worker's tree to resolve.
     /// A fleet lock is a wait too: a pass asks after no landing the lock keeps
-    /// it off, so it asks again only once the lock is gone.
+    /// it off, so it asks again only once the lock is gone. A landing hold
+    /// is one as well: the fleet asks again once it is lifted.
     pub fn waits(self) -> bool {
         !matches!(
             self,

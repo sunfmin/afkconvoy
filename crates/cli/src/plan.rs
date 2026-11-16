@@ -62,6 +62,9 @@ pub(crate) fn plan(
             json!(team.roles.iter().map(|role| fleet.role_selection(role)).collect::<Vec<_>>());
     }
     plan["worker_no_proxy"] = launches.proxy_json();
+    if let Some(hold) = crate::landing_hold::standing(repo) {
+        plan["landing_hold"] = serde_json::json!(hold);
+    }
     if let Some(pressure) = crate::resources::from_elsewhere(now, &readings) {
         plan["memory_pressure"] = pressure;
     }
@@ -90,7 +93,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 
 ## What it answers
 
-{"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "now", "locks", "harness", "tracker", "admission", "host_kit", "worker_no_proxy", "need_installs", "accounts"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch; and "memory_pressure" while the host's memory pressure stands and another account holds the most memory
+{"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "now", "locks", "harness", "tracker", "admission", "host_kit", "worker_no_proxy", "need_installs", "accounts"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some; and "slow_gate" while the gate is slow; and "cut" in a repo that turns cutting on, or while a cut is going or on the base branch; and "memory_pressure" while the host's memory pressure stands and another account holds the most memory; and "landing_hold" — {"at", "issue", "reason"} — while an operator's landing hold stands on this host (`afkconvoy hold --help`)
 
 `targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned. Invalid destinations report error per task without falling back to the configured base.
 

@@ -1996,6 +1996,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             invalidate(repo, config, &id, "fleet_lock")?;
             return Ok(crate::turn::locked(result, &locks));
         }
+        // A landing hold raised while this turn waits ends it as a lock does.
+        if let Some(hold) = issue.and_then(|n| crate::landing_hold::keeping_off(repo, n)) {
+            invalidate(repo, config, &id, "landing_hold")?;
+            return Ok(crate::landing_hold::held(result, &hold));
+        }
         if next == Next::Whole {
             if let Some(red) = whole(Round { turn: &turn, tracker })? {
                 for (key, value) in red.as_object().into_iter().flatten() {
@@ -2178,6 +2183,9 @@ fn in_round(
         let locks = crate::lock::waited_locks(gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
             return Ok(Rounded::Answer(crate::turn::locked(answer, &locks)));
+        }
+        if let Some(hold) = issue.and_then(|n| crate::landing_hold::keeping_off(repo, n)) {
+            return Ok(Rounded::Answer(crate::landing_hold::held(answer, &hold)));
         }
         let next = chain.round_next(id);
         match next {

@@ -510,6 +510,15 @@ fn carry_out(
     read: &Read,
     step: TickStep,
 ) -> Result<Outcome> {
+    // A landing hold on this host leaves a claim it keeps off alone, before
+    // anything: no turn is asked for, no stopped worker judged or nudged. Its
+    // worktree and worker wait as they are; the first tick after it is
+    // lifted takes them up where they stood (`afkconvoy hold --help`).
+    if let TickStep::Judge { issue, .. } | TickStep::Watch { issue, .. } = step
+        && crate::landing_hold::keeping_off(&fleet.repo, issue).is_some()
+    {
+        return Ok(Outcome::Nothing);
+    }
     // What a step on a claim of mine sees to first is the core's to say
     // (`tick::first`), by what is read of the claim now.
     if let TickStep::Judge { issue, .. }

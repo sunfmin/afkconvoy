@@ -343,6 +343,13 @@ pub fn land(
     host: &str,
     now: u64,
 ) -> Result<Value> {
+    // A landing hold keeps the turn from starting: nothing is read or merged.
+    if let Some(hold) = crate::landing_hold::keeping_off(repo, issue) {
+        let held = json!({"issue": issue});
+        return crate::turn_answer::noted(repo, Some(issue), now, || {
+            Ok(crate::landing_hold::held(held, &hold))
+        });
+    }
     let looked = crate::target::once(repo, config, &gh.tracker, issue)?;
     let mut answer = crate::turn_answer::noted(repo, Some(issue), now, || {
         land_task(repo, gh, issue, host, now, looked)
