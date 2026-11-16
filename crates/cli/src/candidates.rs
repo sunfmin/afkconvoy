@@ -2318,7 +2318,7 @@ fn carrying(
     result["carried"] = json!(carry_held(turn, &head)?);
     if red.is_some() {
         result["detail"] = json!(format!(
-            "the fast gate ran red on this PR's pair with {named}, whose merge is `pair.commit`: \
+            "the fast gate ran red on this PR's group with {named}, whose merge is `pair.commit`: \
              each is green alone, and the failing tests fail with them together. That merge is \
              now this PR's branch, pushed, and {named} are closed as carried by this PR, which \
              lands their change with its own: fix it so the fast gate passes, commit, push, and \
@@ -2339,7 +2339,7 @@ fn carried_answer(mut answer: Value, by: u64) -> Value {
     answer
 }
 
-/// The answer of a turn whose pair ran red on its fast gate: the pair's
+/// The answer of a turn whose group ran red on its fast gate: the group's
 /// run, which this PR's worker is given (docs/adr/0083).
 fn pair_red(answer: Value, p: &Candidate) -> Value {
     let mut result = match &p.result {
@@ -2353,35 +2353,38 @@ fn pair_red(answer: Value, p: &Candidate) -> Value {
     result["pair"] = json!({ "candidate": p.id, "commit": p.commit, "with": partners });
     let with: Vec<String> = partners.iter().map(|n| format!("#{n}")).collect();
     result["detail"] = json!(format!(
-        "the fast gate ran red on this PR's pair with {}, whose merge is `pair.commit`: each \
-         is green alone, and the failing tests fail with them together; fix this PR's change \
-         so that it passes with theirs, commit, and ask for a turn again",
+        "the fast gate ran red on this PR's group with {}, whose merge is `pair.commit`: \
+         each is green alone, and the failing tests fail with them together; fix this PR's \
+         change so that it passes with theirs, commit, and ask for a turn again",
         with.join(", ")
     ));
     result
 }
 
-/// Pairs the round's level as `chain` names it (`Chain::to_pair`): each
-/// pair its two nodes' merge, which `git merge-tree` finds clean, as a
-/// commit of its own, its fast gate the one its commit declares.
+/// Groups the round's level as `chain` names it (`Chain::to_pair`,
+/// `pairing::groups`): each group its nodes merged one after another, each
+/// onto the merge before, where `git merge-tree` finds it clean, as a commit
+/// of its own, its fast gate the one its commit declares.
 fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
     let InRound { repo, config, root, clock, .. } = *turn;
     let Some((round, level, nodes)) = chain.to_pair() else { return Ok(()) };
-    let mut merges: Vec<((usize, usize), String)> = vec![];
-    let made = pairing::pairs(nodes.len(), |a, b| {
-        let (Some(first), Some(second)) = (nodes.get(a), nodes.get(b)) else {
-            return Ok(false);
+    let named =
+        |changes: &[u64]| changes.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
+    let made = pairing::groups(nodes.len(), |held: Option<&String>, at: &[usize], node| {
+        let (Some(first), Some(next)) = (at.first().and_then(|&i| nodes.get(i)), nodes.get(node))
+        else {
+            return Ok(None);
         };
-        let named = |changes: &[u64]| {
-            changes.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ")
-        };
-        let message = format!("Pair {} with {}", named(&first.changes), named(&second.changes));
-        let merged =
-            crate::turn::merged_onto(repo, &first.commit, &second.commit, &message, clock())?;
-        Ok::<bool, anyhow::Error>(merged.map(|commit| merges.push(((a, b), commit))).is_some())
+        let mut changes: Vec<u64> = vec![];
+        for &i in at {
+            changes.extend(nodes.get(i).iter().flat_map(|n| &n.changes));
+        }
+        let message = format!("Group {} with {}", named(&changes), named(&next.changes));
+        let onto = held.unwrap_or(&first.commit);
+        crate::turn::merged_onto(repo, onto, &next.commit, &message, clock())
     })?;
     let mut built = vec![];
-    for (at, commit) in merges.into_iter().filter(|(at, _)| made.pairs.contains(at)) {
+    for (at, commit) in made.groups {
         let declared = crate::turn::tip_config(repo, &commit)?;
         let own = Declared {
             whole: declared.gate_command.clone(),
@@ -2390,14 +2393,7 @@ fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
         }
         .own();
         let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
-        built.push(Built {
-            first: at.0,
-            second: at.1,
-            commit,
-            tree,
-            command: own.command,
-            seconds: own.seconds,
-        });
+        built.push(Built { nodes: at, commit, tree, command: own.command, seconds: own.seconds });
     }
     let worktree = |id: &str| root.join(id).to_string_lossy().into_owned();
     let now = clock();
