@@ -4,7 +4,7 @@
 
 use crate::common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -710,10 +710,52 @@ fn an_orca_that_does_not_know_the_checkout_or_is_not_running_is_critical() {
     world.with_orca(|orca| orca["repos"] = json!([]));
     let unwell = doctor(&world, "1000");
     assert_eq!(unwell.code, 1);
-    let add = format!("orca repo add --path '{}'", world.clone.display());
+    let add =
+        format!("'{}' repo add --path '{}'", world.orca_program().display(), world.clone.display());
     let unknown = found(&unwell.json, "`orca` does not know this checkout");
     assert_eq!(unknown[0]["fix"], add.as_str(), "{}", unwell.json);
     assert_eq!(unwell.json["host"]["tools"][2]["state"], "knows_no_checkout");
+}
+
+#[test]
+fn another_orca_on_the_login_shells_path_that_lists_other_repos_is_named_with_both_paths() {
+    let world = World::new();
+    // A second orca, as the Orca app's own CLI is next to the one afkconvoy
+    // asks: a repo list of its own, which holds one checkout ours does not.
+    let other = world.root.join("app/bin/orca");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    let state = world.root.join("other-orca.json");
+    std::fs::write(&state, json!({"repos": [{"id": "r", "path": "/Users/kim/guild"}]}).to_string())
+        .unwrap();
+    let fake =
+        Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap().join("examples/fake_orca");
+    let script = format!(
+        "#!/bin/sh\nCONVOY_FAKE_ORCA='{}' exec '{}' \"$@\"\n",
+        state.display(),
+        fake.display()
+    );
+    std::fs::write(&other, script).unwrap();
+    std::fs::set_permissions(&other, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let ours = world.orca_program();
+    let orcas = format!("{}\n{}\n", ours.display(), other.display());
+    std::fs::write(world.root.join("shell-orcas"), &orcas).unwrap();
+
+    let answer = doctor(&world, "1000").json;
+    let disagree = found(&answer, "answer different repo lists");
+    assert_eq!(disagree.len(), 1, "{answer}");
+    let what = disagree[0]["what"].as_str().unwrap();
+    assert!(what.contains(&ours.display().to_string()), "{what}");
+    assert!(what.contains(&other.display().to_string()), "{what}");
+    let evidence = disagree[0]["evidence"].as_str().unwrap();
+    assert!(evidence.contains("/Users/kim/guild"), "{evidence}");
+    assert!(evidence.contains(&world.clone.display().to_string()), "{evidence}");
+    assert_eq!(disagree[0]["fix"], "which -a orca");
+
+    // The same list in both: nothing to say.
+    std::fs::write(&state, json!({"repos": [{"id": "r", "path": world.clone}]}).to_string())
+        .unwrap();
+    let answer = doctor(&world, "1001").json;
+    assert_eq!(found(&answer, "answer different repo lists"), [] as [&Value; 0], "{answer}");
 }
 
 #[test]
