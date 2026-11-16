@@ -4,11 +4,14 @@
 //! in, how many are ahead of a ticket, and since when a worktree has waited in
 //! it are decided here; holding it is the holder's.
 //!
-//! A worker's fast gate runs in a lane of its own (docs/adr/0049): no slow
-//! gate, turn or other command holds a place it needs, and fast gates of one
-//! repo run side by side, as many at once as the host says. A slow gate
-//! runs in a slow lane of its own (docs/adr/0048): a round's slow gate is
-//! counted apart from the worker lanes, where the round's turns wait.
+//! A queued command starts once the host has room for it (docs/adr/0087):
+//! its cores under a busy share by the kernel's CPU ticks over the last
+//! minute, counting each start the reading does not include yet, one start to
+//! a reading, and the first while nothing of the queue runs whatever the
+//! reading says. No lane has a count of places. A lane still says what a
+//! command is, and which it is held apart from: a worker's fast gate
+//! (docs/adr/0049) is not held apart from another of its repo, nor from a
+//! slow gate (docs/adr/0048) or a turn.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -152,14 +155,106 @@ pub enum Gate {
     Slow,
 }
 
-/// How many commands the host lets run at once: in the worker lanes, in
-/// the fast lane, which only fast gates take, and in the slow lanes, which
-/// only slow gates take.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Lanes {
-    pub worker: u64,
-    pub fast: u64,
-    pub slow: u64,
+/// The busy share of the host's cores a command starts under, in percent,
+/// where the host says none: the one admission holds at (docs/adr/0084).
+pub const BUSY_SHARE: u64 = 90;
+
+/// The CPU, in percent of the host's, a running command whose kind has no
+/// run kept is counted as until the reading includes it: a quarter of the
+/// host, what one of the four places the queue had by default took
+/// (docs/adr/0087).
+pub const UNMEASURED: u64 = 25;
+
+/// How busy the host is, as one reading says it (docs/adr/0087): what the
+/// queue starts its commands by, in place of a count of places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reading {
+    /// The share of all the cores' time busy over its span, in percent.
+    pub busy: u64,
+    /// What it was read of.
+    pub by: By,
+    /// When its span began, in epoch seconds: a minute before it was taken,
+    /// or less for a host that has read for less.
+    pub since: u64,
+    /// When it was taken, in epoch seconds.
+    pub taken: u64,
+    /// The host's memory free, where it is under admission's floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<Short>,
+}
+
+/// What a reading of how busy the cores are was read of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum By {
+    /// The kernel's CPU ticks.
+    Ticks,
+    /// The load average alone, over the cores: the ticks could not be read.
+    Load,
+}
+
+/// The host's memory free under its floor, both in percent of the host's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Short {
+    pub free: u64,
+    pub floor: u64,
+}
+
+/// What the queue starts commands by, at one observation (docs/adr/0087).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Room {
+    /// The host's reading; `None`: it could not be read, and a command
+    /// starts only while nothing of the queue runs.
+    pub reading: Option<Reading>,
+    /// The busy share a command starts under, in percent.
+    pub share: u64,
+    /// The CPU, in percent of the host's, of the queue's commands the reading
+    /// does not include yet (`lag`): it is counted beside it.
+    pub counted: u64,
+    /// A command already started on this reading: the next waits for the
+    /// next reading.
+    pub spent: bool,
+}
+
+impl Room {
+    /// A host that cannot be read: only a command with nothing of the queue
+    /// running starts.
+    pub fn unread(share: u64) -> Room {
+        Room { reading: None, share, counted: 0, spent: false }
+    }
+
+    /// How busy the cores count as: the reading, and what it does not
+    /// include yet. `None`: no reading.
+    pub fn busy(&self) -> Option<u64> {
+        self.reading.map(|reading| reading.busy.saturating_add(self.counted))
+    }
+}
+
+/// Whether `ticket` is started by the host's room: every command but a light
+/// gate's, which keeps its repo's own line.
+pub fn by_room<N>(ticket: &Ticket<N>) -> bool {
+    ticket.repo_lane.is_none()
+}
+
+/// The CPU, in percent of the host's, of `queue`'s running commands that
+/// `reading` does not include yet: each started after its span began counts
+/// whole, as its kind took in its recent runs, `takes`, or `UNMEASURED`
+/// where none is kept; one that ran over all its span is in it. A retained
+/// ticket runs nothing.
+pub fn lag<N>(
+    queue: &[Ticket<N>],
+    reading: &Reading,
+    takes: impl Fn(&Ticket<N>) -> Option<u64>,
+) -> u64 {
+    let mut counted: u64 = 0;
+    for ticket in queue {
+        let Some(ran) = ticket.ran else { continue };
+        if !by_room(ticket) || ticket.retained.is_some() || ran <= reading.since {
+            continue;
+        }
+        counted = counted.saturating_add(takes(ticket).unwrap_or(UNMEASURED));
+    }
+    counted
 }
 
 /// What a request is, as `queue`, doctor and the panel tell them apart.
@@ -239,9 +334,6 @@ pub fn same_repo<N>(a: &Ticket<N>, b: &Ticket<N>) -> bool {
     a.repo.as_deref().unwrap_or(&a.dir) == b.repo.as_deref().unwrap_or(&b.dir)
 }
 
-/// Whether this ticket can start with the host's lane counts. Earlier
-/// requests reserve available lanes in order, but a second request of a
-/// running repo waits without holding another repo back from a free lane.
 /// Whether the admitted ticket `held` keeps `asking`, of the same repo, from
 /// its lane: they share a lane, or both are turns, unless both are candidates
 /// or both fast gates; and either that holds its whole repo always does.
@@ -254,14 +346,15 @@ pub fn excludes<N>(held: &Ticket<N>, asking: &Ticket<N>) -> bool {
                 && !(is_fast(held) && is_fast(asking))))
 }
 
-pub fn ready<N>(queue: &[Ticket<N>], number: u64, lanes: Lanes) -> bool {
-    scheduling(queue, lanes, Halt::default())
+pub fn ready<N>(queue: &[Ticket<N>], number: u64, room: Room) -> bool {
+    scheduling(queue, room, Halt::default())
         .iter()
         .any(|request| request.number == number && matches!(request.state, State::Eligible))
 }
 
 /// The scheduler's decision for a request at this observation. Eligible
-/// requests reserve lanes in scheduler order; this is no future start order.
+/// requests reserve their start in scheduler order; this is no future start
+/// order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
@@ -298,6 +391,14 @@ pub struct Constraint {
     pub kind: ConstraintKind,
     pub requests: Vec<Holder>,
     pub capacity: Option<u64>,
+    /// How busy the cores count as, in percent, where the host's room holds
+    /// it: the reading and what it does not include yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub busy: Option<u64>,
+    /// The busy share it waits to be under, in percent, where the host's
+    /// room holds it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share: Option<u64>,
     pub explanation: String,
 }
 
@@ -305,9 +406,15 @@ pub struct Constraint {
 #[serde(rename_all = "snake_case")]
 pub enum ConstraintKind {
     SameRepo,
-    WorkerCapacity,
+    /// The host's cores are busy at or past the share, or could not be read
+    /// with a command of the queue running (docs/adr/0087).
+    HostBusy,
+    /// A command already started on this reading: the next starts on the
+    /// next, which counts that one.
+    NextReading,
+    /// The host's memory free is under admission's floor.
+    HostMemory,
     RepoCapacity,
-    FastCapacity,
     Paused,
     Disk,
 }
@@ -321,9 +428,9 @@ pub struct Low {
     pub floor: u64,
 }
 
-/// What holds every new grant back, whatever the lanes: a pause for a move
+/// What holds every new grant back, whatever the room: a pause for a move
 /// to another holder, or a disk under its floor. Running commands keep
-/// their lanes either way.
+/// running either way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Halt {
     pub paused: bool,
@@ -337,12 +444,17 @@ pub struct Scheduling {
     pub reasons: Vec<Constraint>,
 }
 
-/// Interpret every request with the very same reservations used to grant a
-/// lane, with cuts before ordinary waiters. A same-repo waiter reserves nothing. Turns exclude each other
-/// across worker and repo lanes too; fast gates of one repo do not exclude
-/// each other. Pausing prevents every new grant, and so does a disk under its
-/// floor (`Halt::disk`).
-pub fn scheduling<N>(queue: &[Ticket<N>], lanes: Lanes, halt: Halt) -> Vec<Scheduling> {
+/// Interpret every request with the very same reservations used to grant
+/// a start, with cuts before ordinary waiters (docs/adr/0087). A command
+/// starts while the host has room: its cores under the busy share, counting
+/// what the reading does not include yet, and its memory over admission's
+/// floor; one start to a reading. While nothing of the queue runs, the first
+/// that may start starts whatever the reading says. A same-repo waiter
+/// reserves nothing. Turns exclude each other across lanes too; fast gates
+/// of one repo do not exclude each other. A light gate keeps its repo's own
+/// line, one at a time, whatever the room. Pausing prevents every new grant,
+/// and so does a disk under its floor (`Halt::disk`).
+pub fn scheduling<N>(queue: &[Ticket<N>], room: Room, halt: Halt) -> Vec<Scheduling> {
     let mut ordered: Vec<&Ticket<N>> = queue.iter().collect();
     ordered.sort_by_key(|ticket| place(ticket));
     let mut admitted: Vec<&Ticket<N>> = ordered.iter().copied().filter(|t| t.running()).collect();
@@ -350,10 +462,14 @@ pub fn scheduling<N>(queue: &[Ticket<N>], lanes: Lanes, halt: Halt) -> Vec<Sched
         .iter()
         .map(|ticket| Scheduling { number: ticket.number, state: holding(ticket), reasons: vec![] })
         .collect();
+    let mut room = room;
     for ticket in ordered.iter().copied().filter(|t| !t.running()) {
-        let decision = reservation(ticket, &admitted, lanes, halt);
+        let decision = reservation(ticket, &admitted, room, halt);
         if matches!(decision.state, State::Eligible) {
             admitted.push(ticket);
+            if by_room(ticket) {
+                room.spent = true;
+            }
         }
         decisions.push(decision);
     }
@@ -364,78 +480,129 @@ pub fn scheduling<N>(queue: &[Ticket<N>], lanes: Lanes, halt: Halt) -> Vec<Sched
 fn reservation<N>(
     ticket: &Ticket<N>,
     admitted: &[&Ticket<N>],
-    lanes: Lanes,
+    room: Room,
     halt: Halt,
 ) -> Scheduling {
-    let limit = limit(ticket, lanes);
-    let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
     let own: Vec<_> = admitted.iter().copied().filter(|t| excludes(t, ticket)).collect();
     let mut reasons = vec![];
+    let reason = |kind, requests, explanation: String| Constraint {
+        kind,
+        requests,
+        capacity: None,
+        busy: None,
+        share: None,
+        explanation,
+    };
     if halt.paused {
-        reasons.push(Constraint {
-            kind: ConstraintKind::Paused,
-            requests: vec![],
-            capacity: None,
-            explanation: "the host runner has paused new grants while moving to another release"
-                .into(),
-        });
+        reasons.push(reason(
+            ConstraintKind::Paused,
+            vec![],
+            "the host runner has paused new grants while moving to another release".into(),
+        ));
     }
     if let Some(low) = halt.disk {
-        reasons.push(Constraint {
-            kind: ConstraintKind::Disk,
-            requests: vec![],
-            capacity: None,
-            explanation: format!(
+        reasons.push(reason(
+            ConstraintKind::Disk,
+            vec![],
+            format!(
                 "{} bytes are free on the disk the host builds on, under its floor of {} bytes: no new heavy command starts until space returns",
                 low.free, low.floor
             ),
-        });
+        ));
     }
     if !own.is_empty() {
-        reasons.push(Constraint {
-            kind: ConstraintKind::SameRepo,
-            requests: holders(&own),
-            capacity: None,
-            explanation: "this repo already holds or reserves this lane, or another turn of this repo holds or reserves a different lane".into(),
-        });
+        reasons.push(reason(
+            ConstraintKind::SameRepo,
+            holders(&own),
+            "this repo already holds or reserves this lane, or another turn of this repo holds or reserves a different lane".into(),
+        ));
     }
-    if occupied.len() as u64 >= limit {
-        reasons.push(Constraint {
-            kind: if is_fast(ticket) {
-                ConstraintKind::FastCapacity
-            } else if ticket.repo_lane.is_some() {
-                ConstraintKind::RepoCapacity
-            } else {
-                ConstraintKind::WorkerCapacity
-            },
-            requests: holders(&occupied),
-            capacity: Some(limit),
-            explanation: format!("all {limit} {} lane places are held by running requests or reserved by earlier eligible requests", lane(ticket)),
-        });
+    if by_room(ticket) {
+        // A retained ticket's command ended: it runs nothing.
+        let started: Vec<_> =
+            admitted.iter().copied().filter(|t| by_room(t) && t.retained.is_none()).collect();
+        if !started.is_empty() {
+            reasons.extend(room_reasons(room, &started));
+        }
+    } else {
+        let occupied: Vec<_> = admitted.iter().copied().filter(|t| same_lane(t, ticket)).collect();
+        if !occupied.is_empty() {
+            reasons.push(Constraint {
+                capacity: Some(1),
+                ..reason(
+                    ConstraintKind::RepoCapacity,
+                    holders(&occupied),
+                    format!("the {} line runs one light gate at a time", lane(ticket)),
+                )
+            });
+        }
     }
     let state = if reasons.is_empty() { State::Eligible } else { State::Waiting };
     Scheduling { number: ticket.number, state, reasons }
 }
 
-/// How many places the lane of `ticket` has.
-pub fn limit<N>(ticket: &Ticket<N>, lanes: Lanes) -> u64 {
-    if is_fast(ticket) {
-        lanes.fast
-    } else if ticket.repo_lane.is_some() {
-        1
-    } else if is_slow(ticket) {
-        lanes.slow
-    } else {
-        lanes.worker
+/// What of the host's `room` keeps a command from starting beside the
+/// queue's commands `started`, running or reserved before it.
+fn room_reasons<N>(room: Room, started: &[&Ticket<N>]) -> Vec<Constraint> {
+    let requests = holders(started);
+    let constraint = |kind, explanation: String| Constraint {
+        kind,
+        requests: requests.clone(),
+        capacity: None,
+        busy: room.busy(),
+        share: Some(room.share),
+        explanation,
+    };
+    let Some(reading) = room.reading else {
+        return vec![constraint(
+            ConstraintKind::HostBusy,
+            "how busy the host's cores are could not be read: a command starts only while nothing of the queue runs".into(),
+        )];
+    };
+    let mut reasons = vec![];
+    let busy = room.busy().unwrap_or(reading.busy);
+    if busy >= room.share {
+        let of = match reading.by {
+            By::Ticks => "the kernel's CPU ticks",
+            By::Load => "the load average alone",
+        };
+        reasons.push(constraint(
+            ConstraintKind::HostBusy,
+            format!(
+                "the host's cores count {busy}% busy — {}% over the last {}s by {of}, and {}% the queue's commands started since add — at or past the {}% share a command starts under",
+                reading.busy,
+                reading.taken.saturating_sub(reading.since),
+                room.counted,
+                room.share
+            ),
+        ));
+    } else if room.spent {
+        reasons.push(constraint(
+            ConstraintKind::NextReading,
+            format!(
+                "a command already started on this reading ({busy}% busy, under the {}% share): the next reading counts it before another starts",
+                room.share
+            ),
+        ));
     }
+    if let Some(short) = reading.memory {
+        reasons.push(constraint(
+            ConstraintKind::HostMemory,
+            format!(
+                "{}% of the host's memory is free, under admission's floor of {}%",
+                short.free, short.floor
+            ),
+        ));
+    }
+    reasons
 }
 
 fn holders<N>(tickets: &[&Ticket<N>]) -> Vec<Holder> {
     tickets.iter().map(|ticket| Holder { number: ticket.number, state: holding(ticket) }).collect()
 }
 
-/// Actual occupancy counts only running requests, never reservations. Free
-/// capacity does not imply that a request of an occupied repo can use it.
+/// A light gate's repo line, one place. Actual occupancy counts only running
+/// requests, never reservations.
 #[derive(Debug, Serialize)]
 pub struct Capacity {
     pub capacity: u64,
@@ -468,9 +635,10 @@ pub struct Snapshot<N = Plain> {
     /// The disk under its floor, where it is: no new grant until space
     /// returns.
     pub disk: Option<Low>,
-    pub worker: Capacity,
-    pub fast: Capacity,
-    pub slow: Capacity,
+    /// What a command starts by, in place of a count of places
+    /// (docs/adr/0087): the host's reading, the busy share, and what the
+    /// reading does not include yet.
+    pub room: Room,
     pub repos: Vec<RepoLane>,
     pub running: Vec<Observed<N>>,
     pub waiting: Vec<Observed<N>>,
@@ -675,11 +843,11 @@ const SETUP: [&str; 15] = [
 
 /// Common queue facts for operator output, doctor and the panel. Running
 /// and waiting arrays each put cuts first, then follow ask time and request number. Repo lanes
-/// are separate from worker capacity and sorted by their whole identity.
+/// are separate from the host's room and sorted by their whole identity.
 /// Each request's `command` is [`status_command`].
-pub fn snapshot<N: Clone>(queue: &[Ticket<N>], lanes: Lanes, halt: Halt, now: u64) -> Snapshot<N> {
+pub fn snapshot<N: Clone>(queue: &[Ticket<N>], room: Room, halt: Halt, now: u64) -> Snapshot<N> {
     let ordered = in_order(queue.to_vec());
-    let decisions = scheduling(&ordered, lanes, halt);
+    let decisions = scheduling(&ordered, room, halt);
     let mut repos: Vec<String> = ordered.iter().filter_map(|t| t.repo_lane.clone()).collect();
     repos.sort();
     repos.dedup();
@@ -690,9 +858,7 @@ pub fn snapshot<N: Clone>(queue: &[Ticket<N>], lanes: Lanes, halt: Halt, now: u6
     let mut result = Snapshot {
         paused: halt.paused,
         disk: halt.disk,
-        worker: occupancy(&ordered, "worker", lanes.worker),
-        fast: occupancy(&ordered, "fast", lanes.fast),
-        slow: occupancy(&ordered, "slow", lanes.slow),
+        room,
         repos,
         running: vec![],
         waiting: vec![],
@@ -716,7 +882,7 @@ pub fn snapshot<N: Clone>(queue: &[Ticket<N>], lanes: Lanes, halt: Halt, now: u6
     result
 }
 
-/// How many places of the lane [`lane`] names `named` are used.
+/// How many of the light gates' line [`lane`] names `named` run: one at most.
 fn occupancy<N>(queue: &[Ticket<N>], named: &str, capacity: u64) -> Capacity {
     let used = queue.iter().filter(|t| t.running() && lane(t) == named).count() as u64;
     Capacity { capacity, used, free: capacity.saturating_sub(used) }
@@ -844,30 +1010,110 @@ mod tests {
         }
     }
 
-    const ONE: Lanes = Lanes { worker: 1, fast: 1, slow: 1 };
+    /// The host's cores `busy` percent busy by its ticks, over the minute
+    /// up to the second 200, under the default share.
+    fn room(busy: u64) -> Room {
+        let reading = Reading { busy, by: By::Ticks, since: 140, taken: 200, memory: None };
+        Room { reading: Some(reading), share: BUSY_SHARE, counted: 0, spent: false }
+    }
 
-    fn lanes(worker: u64) -> Lanes {
-        Lanes { worker, fast: 1, slow: 1 }
+    /// Cores at their share: nothing more starts beside what runs.
+    fn full() -> Room {
+        room(BUSY_SHARE)
+    }
+
+    fn reasons_of(decision: &Scheduling) -> Vec<String> {
+        decision
+            .reasons
+            .iter()
+            .map(|reason| serde_json::to_value(&reason.kind).unwrap().as_str().unwrap().to_string())
+            .collect()
     }
 
     #[test]
-    fn a_slow_gate_runs_in_its_own_lanes_beside_the_worker_lanes() {
-        let lanes = Lanes { worker: 2, fast: 1, slow: 1 };
+    fn a_command_starts_beside_running_ones_while_the_cores_are_under_the_share() {
         let ticket = |number, slow: bool, ran: Option<u64>| Ticket {
             repo: Some(format!("r{number}")),
             gate: slow.then_some(Gate::Slow),
             ran,
             ..ticket(number, &format!("/r{number}"), 0)
         };
-        let busy = [ticket(1, false, Some(1)), ticket(2, false, Some(1))];
-        let mut queue = busy.to_vec();
-        queue.push(ticket(3, true, None));
-        assert!(ready(&queue, 3, lanes), "full worker lanes leave the slow lane free");
-        queue.push(ticket(4, true, None));
-        assert!(!ready(&queue, 4, lanes), "one slow lane runs one slow gate");
-        let seen = snapshot(&queue, lanes, Halt::default(), 5);
-        assert_eq!((seen.worker.used, seen.slow.capacity), (2, 1));
+        let queue = [ticket(1, false, Some(1)), ticket(2, false, Some(1)), ticket(3, true, None)];
+        assert!(ready(&queue, 3, room(40)), "two run, and the cores have room for a third");
+        assert!(!ready(&queue, 3, full()), "at the share, it waits");
+        let decisions = scheduling(&queue, room(95), Halt::default());
+        let held = &decisions[2].reasons[0];
+        assert!(matches!(held.kind, ConstraintKind::HostBusy), "{held:?}");
+        assert_eq!((held.busy, held.share, held.capacity), (Some(95), Some(90), None));
+        assert!(held.explanation.contains("95%") && held.explanation.contains("90%"), "{held:?}");
+        let seen = snapshot(&queue, room(95), Halt::default(), 5);
+        assert_eq!(seen.room, room(95));
         assert_eq!(lane(&queue[2]), "slow");
+    }
+
+    #[test]
+    fn with_nothing_of_the_queue_running_the_first_starts_at_any_reading() {
+        let queue = [ticket(1, "/a", 100), ticket(2, "/b", 101)];
+        for room in [room(100), Room::unread(BUSY_SHARE)] {
+            let decisions = scheduling(&queue, room, Halt::default());
+            assert_eq!(decisions[0].state, State::Eligible, "never starved: {room:?}");
+            assert_eq!(reasons_of(&decisions[1]), ["host_busy"], "{room:?}");
+        }
+        let mut light = ticket(3, "/c", 90);
+        light.repo_lane = Some("c".into());
+        light.ran = Some(95);
+        let queue = [light, ticket(1, "/a", 100)];
+        assert!(ready(&queue, 1, full()), "a light gate's line is not the queue's room");
+    }
+
+    #[test]
+    fn two_queued_with_room_for_one_start_one_and_the_other_waits_for_the_next_reading() {
+        let queue = [ticket(1, "/a", 100), ticket(2, "/b", 101)];
+        let decisions = scheduling(&queue, room(10), Halt::default());
+        assert_eq!(decisions[0].state, State::Eligible);
+        assert_eq!(reasons_of(&decisions[1]), ["next_reading"]);
+        // The next reading, taken as the first starts, counts it as its kind
+        // took in its recent runs.
+        let mut started = queue.to_vec();
+        started[0].ran = Some(200);
+        let reading = room(10).reading.unwrap();
+        let heavy = Room { counted: lag(&started, &reading, |_| Some(85)), ..room(10) };
+        assert_eq!(heavy.counted, 85);
+        assert_eq!(reasons_of(&scheduling(&started, heavy, Halt::default())[1]), ["host_busy"]);
+        let light = Room { counted: lag(&started, &reading, |_| Some(30)), ..room(10) };
+        assert!(ready(&started, 2, light), "40% counted: room for another");
+    }
+
+    #[test]
+    fn a_start_counts_until_the_reading_includes_it() {
+        let reading = Reading { busy: 20, by: By::Ticks, since: 140, taken: 200, memory: None };
+        let at = |ran| {
+            let mut ticket = ticket(1, "/a", 0);
+            ticket.ran = Some(ran);
+            lag(&[ticket], &reading, |_| Some(60))
+        };
+        assert_eq!(at(230), 60, "after the reading: whole");
+        assert_eq!(at(200), 60);
+        assert_eq!(at(141), 60, "part of the span before it started");
+        assert_eq!(at(140), 0, "over all of the span: the reading includes it");
+        assert_eq!(at(100), 0);
+        let mut unmeasured = ticket(1, "/a", 0);
+        unmeasured.ran = Some(200);
+        assert_eq!(lag(&[unmeasured.clone()], &reading, |_| None), UNMEASURED);
+        unmeasured.repo_lane = Some("a".into());
+        assert_eq!(lag(&[unmeasured], &reading, |_| None), 0, "a light gate is not counted");
+    }
+
+    #[test]
+    fn memory_under_admissions_floor_holds_a_second_start() {
+        let mut runs = ticket(1, "/a", 100);
+        runs.ran = Some(100);
+        let mut short = room(10);
+        short.reading = short
+            .reading
+            .map(|reading| Reading { memory: Some(Short { free: 5, floor: 10 }), ..reading });
+        let decisions = scheduling(&[runs, ticket(2, "/b", 101)], short, Halt::default());
+        assert_eq!(reasons_of(&decisions[1]), ["host_memory"]);
     }
 
     #[test]
@@ -909,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn two_lanes_admit_different_repos_and_skip_a_second_turn_of_a_running_repo() {
+    fn room_admits_another_repo_and_skips_a_second_turn_of_a_running_repo() {
         let mut a = ticket(1, "/a/one", 100);
         a.repo = Some("a".into());
         a.ran = Some(100);
@@ -918,9 +1164,9 @@ mod tests {
         let mut b = ticket(3, "/b/one", 102);
         b.repo = Some("b".into());
         let queue = [a, another_a, b];
-        assert!(!ready(&queue, 2, lanes(2)));
-        assert!(ready(&queue, 3, lanes(2)));
-        assert!(!ready(&queue, 3, ONE));
+        assert!(!ready(&queue, 2, room(10)));
+        assert!(ready(&queue, 3, room(10)));
+        assert!(!ready(&queue, 3, full()));
     }
 
     #[test]
@@ -934,13 +1180,13 @@ mod tests {
         b.repo = Some("a".into());
         b.is_turn = true;
         b.candidate = true;
-        assert!(ready(&[a.clone(), b.clone()], 2, lanes(2)));
-        assert!(!ready(&[a.clone(), b.clone()], 2, ONE));
+        assert!(ready(&[a.clone(), b.clone()], 2, room(10)));
+        assert!(!ready(&[a.clone(), b.clone()], 2, full()));
         b.candidate = false;
-        assert!(!ready(&[a.clone(), b.clone()], 2, lanes(2)), "ordinary work retains exclusion");
+        assert!(!ready(&[a.clone(), b.clone()], 2, room(10)), "ordinary work retains exclusion");
         a.candidate = false;
         b.candidate = true;
-        assert!(!ready(&[a, b], 2, lanes(2)), "a barrier excludes speculative validation");
+        assert!(!ready(&[a, b], 2, room(10)), "a barrier excludes speculative validation");
     }
 
     fn gate(number: u64, dir: &str, part: Gate, asked: u64) -> Ticket {
@@ -959,21 +1205,26 @@ mod tests {
         turn.is_turn = true;
         let queued_slow = gate(3, "/a/three", Gate::Slow, 102);
         let fast = gate(4, "/a/four", Gate::Fast, 103);
-        let queue = [slow, turn, queued_slow, fast];
-        assert!(ready(&queue, 4, ONE), "a slow gate holds no place a fast gate needs");
+        let queue = [slow.clone(), turn, queued_slow, fast.clone()];
+        let decisions = scheduling(&queue, room(10), Halt::default());
+        assert_eq!(reasons_of(&decisions[3]), ["next_reading"], "the turn started on this reading");
         assert_eq!(ahead(&queue, 4), Some(0));
-        assert!(!ready(&queue, 3, ONE), "the slow gate keeps the worker lane's rules");
+        assert_eq!(
+            reasons_of(&decisions[2])[0],
+            "same_repo",
+            "the slow gate keeps its repo's rules"
+        );
+        assert!(ready(&[slow, fast], 4, room(10)), "a slow gate holds no place a fast gate needs");
     }
 
     #[test]
-    fn fast_gates_of_one_repo_run_side_by_side_within_the_host_s_bound() {
+    fn fast_gates_of_one_repo_run_side_by_side_while_the_host_has_room() {
         let mut first = gate(1, "/a/one", Gate::Fast, 100);
         first.ran = Some(100);
         let second = gate(2, "/a/two", Gate::Fast, 101);
         let third = gate(3, "/a/three", Gate::Fast, 102);
         let queue = [first, second, third];
-        let two = Lanes { worker: 1, fast: 2, slow: 1 };
-        let decisions = scheduling(&queue, two, Halt::default());
+        let decisions = scheduling(&queue, room(10), Halt::default());
         assert!(matches!(decisions[1].state, State::Eligible));
         assert!(matches!(decisions[2].state, State::Waiting));
         for decision in &decisions {
@@ -982,21 +1233,23 @@ mod tests {
                 "{decision:?}"
             );
         }
-        assert!(matches!(decisions[2].reasons[0].kind, ConstraintKind::FastCapacity));
-        assert_eq!(decisions[2].reasons[0].capacity, Some(2));
-        let three = Lanes { worker: 1, fast: 3, slow: 1 };
-        assert!(ready(&queue, 3, three));
+        assert_eq!(reasons_of(&decisions[2]), ["next_reading"]);
+        let mut both = queue.to_vec();
+        both[1].ran = Some(101);
+        assert!(ready(&both, 3, room(10)), "the next reading has room for a third");
+        assert!(!ready(&both, 3, full()));
     }
 
     #[test]
-    fn a_snapshot_tells_fast_and_slow_gates_apart_and_counts_the_fast_lane_alone() {
+    fn a_snapshot_tells_fast_and_slow_gates_apart_and_says_the_room() {
         let mut fast = gate(1, "/a/one", Gate::Fast, 100);
         fast.ran = Some(100);
         let mut slow = gate(2, "/a/two", Gate::Slow, 100);
         slow.ran = Some(101);
         let mut turn = ticket(3, "/a/three", 102);
         turn.is_turn = true;
-        let seen = snapshot(&[fast, slow, turn, ticket(4, "/b", 103)], ONE, Halt::default(), 150);
+        let seen =
+            snapshot(&[fast, slow, turn, ticket(4, "/b", 103)], full(), Halt::default(), 150);
         let kinds: Vec<(Kind, &str)> = seen
             .running
             .iter()
@@ -1012,9 +1265,11 @@ mod tests {
                 (Kind::Command, "worker")
             ]
         );
-        assert_eq!((seen.fast.used, seen.fast.free), (1, 0));
-        assert_eq!((seen.worker.used, seen.worker.free), (0, 1), "the slow gate's lane is its own");
-        assert_eq!((seen.slow.used, seen.slow.free), (1, 0));
+        let wire = serde_json::to_value(&seen).unwrap();
+        assert!(wire.get("worker").is_none() && wire.get("fast").is_none(), "{wire}");
+        assert_eq!(wire["room"]["reading"]["busy"], 90);
+        assert_eq!(wire["room"]["share"], 90);
+        assert_eq!(reasons_of(&seen.waiting[0].scheduling), ["host_busy"]);
         let wire = serde_json::to_value(&seen.running[0]).unwrap();
         assert_eq!(wire["gate"], "fast");
         assert_eq!(wire["kind"], "fast_gate");
@@ -1122,7 +1377,7 @@ mod tests {
         runs.command = "afkconvoy exclusive -- ./gate.sh".into();
         let mut waits = ticket(2, "/a", 110);
         waits.command = "sh -c export DATABASE_URL=postgres://secret\ncargo nextest run\n".into();
-        let seen = snapshot(&[runs, waits], ONE, Halt::default(), 150);
+        let seen = snapshot(&[runs, waits], room(10), Halt::default(), 150);
         assert_eq!(seen.running[0].ticket.command, "afkconvoy exclusive -- ./gate.sh");
         assert_eq!(seen.waiting[0].ticket.command, "cargo nextest run");
         assert_eq!(seen.waiting[0].scheduling.state, State::Waiting);
@@ -1137,16 +1392,15 @@ mod tests {
         let waits = ticket(2, "/b", 110);
         let low = Low { free: 2 << 30, floor: 40 << 30 };
         let halt = Halt { paused: false, disk: Some(low) };
-        let lanes = Lanes { worker: 4, fast: 4, slow: 1 };
-        let seen = snapshot(&[runs, waits], lanes, halt, 150);
+        let seen = snapshot(&[runs, waits], room(10), halt, 150);
         assert_eq!(seen.disk, Some(low));
         assert_eq!(seen.running.len(), 1, "a running command keeps its lane");
         let waiting = &seen.waiting[0].scheduling;
-        assert_eq!(waiting.state, State::Waiting, "a free lane, and still it waits");
+        assert_eq!(waiting.state, State::Waiting, "room, and still it waits");
         assert!(matches!(waiting.reasons[..], [Constraint { kind: ConstraintKind::Disk, .. }]));
         let json = serde_json::to_value(&waiting.reasons[0]).unwrap();
         assert_eq!(json["kind"], "disk");
-        let freed = scheduling(&seen_queue(), lanes, Halt::default());
+        let freed = scheduling(&seen_queue(), room(10), Halt::default());
         assert_eq!(freed[1].state, State::Eligible, "space returned: granted again");
     }
 

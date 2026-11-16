@@ -670,10 +670,10 @@ fn a_turn_lands_while_a_cut_s_gate_hangs() {
     )
     .unwrap();
     let gate = format!("afkconvoy exclusive -- sh '{}'", script.display());
-    // A lane for the cut's gate and one for the turn: capacity is the
-    // host's, and what this shows is that the cut holds no barrier and
-    // shares its repo as a candidate does.
-    world.say_host_settings(json!({"gate_lanes": 2}));
+    // Room for the cut's gate and the turn: room is the host's, and what
+    // this shows is that the cut holds no barrier and shares its repo as a
+    // candidate does.
+    world.cores_busy(10);
     tag(&world, "v0.1.0");
     commit_config(
         &world,

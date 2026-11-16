@@ -452,6 +452,7 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
 #[test]
 fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     let world = World::new();
+    world.cores_busy(95);
     let _host_runner = world.host_held();
     let ran = world.root.join("ran");
     let exclusive = |now: &str, issue: Option<&str>, script: &str| {
@@ -481,7 +482,10 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     let dir = std::fs::canonicalize(&world.clone).unwrap().display().to_string();
     assert_eq!(exclusive["status"], "available", "{exclusive}");
     assert_eq!(exclusive["observed_at"], 1000, "{exclusive}");
-    assert_eq!(exclusive["worker"], json!({"capacity": 1, "used": 1, "free": 0}), "{exclusive}");
+    assert_eq!(exclusive["room"]["reading"]["busy"], 95, "{exclusive}");
+    assert_eq!(exclusive["room"]["reading"]["by"], "ticks", "{exclusive}");
+    assert_eq!(exclusive["room"]["share"], 90, "{exclusive}");
+    assert!(exclusive.get("worker").is_none(), "no count of places: {exclusive}");
     let [first] = exclusive["running"].as_array().unwrap().as_slice() else {
         panic!("one runs: {exclusive}");
     };
@@ -507,7 +511,7 @@ fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
     assert_eq!(next["scheduling"]["state"], "waiting");
     let kinds: Vec<_> =
         next["scheduling"]["reasons"].as_array().unwrap().iter().map(|r| &r["kind"]).collect();
-    assert_eq!(kinds, [&json!("same_repo"), &json!("worker_capacity")], "{exclusive}");
+    assert_eq!(kinds, [&json!("same_repo"), &json!("host_busy")], "{exclusive}");
     common::fixture_lease_observed();
     drop(running);
     drop(waiting);

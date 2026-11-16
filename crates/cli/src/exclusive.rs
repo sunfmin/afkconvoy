@@ -81,9 +81,9 @@ pub const SHARE_ENV: &str = "AFKCONVOY_GATE_SHARE";
 const SHARED: [&str; 1] = ["NEXTEST_TEST_THREADS"];
 
 /// Gives a gate's tests, run as `command` in the lane of the process `own`,
-/// their share of the host — the cores over every lane a gate may run in at
-/// once — as `NEXTEST_TEST_THREADS`, unless the environment already says it,
-/// and only while another command runs in a worker, fast or slow lane. Tests
+/// their share of the host — its cores over the commands of the queue running
+/// with it — as `NEXTEST_TEST_THREADS`, unless the environment already says
+/// it, and only while another command of the queue runs (docs/adr/0087). Tests
 /// run side by side would otherwise each take every core, and a test far
 /// under the fast gate's line would cross its end on load alone
 /// (sunfmin/control#245). A gate alone in the queue keeps every core: held to
@@ -94,11 +94,12 @@ const SHARED: [&str; 1] = ["NEXTEST_TEST_THREADS"];
 /// its tests began (2026-10-29), as ADR-0019 says of a cap on build jobs.
 pub(crate) fn share(command: &mut Command, own: u32) {
     command.env_remove(SHARE_ENV);
-    if !beside_another(own) {
+    let others = beside(own);
+    if others == 0 {
         return;
     }
     let Ok(settings) = crate::host_settings::of_host() else { return };
-    let share = settings.gate_share().to_string();
+    let share = settings.gate_share(others.saturating_add(1)).to_string();
     for name in SHARED {
         if std::env::var_os(name).is_none() {
             command.env(name, &share);
@@ -146,12 +147,13 @@ pub(crate) fn one_front_end_thread(command: &mut Command) {
     }
 }
 
-/// Whether a command other than the one of the process `own` runs in this
-/// host's worker, fast or slow lanes; a light gate's repo lane is none of
-/// them. A queue that cannot be read is taken as one beside it.
-fn beside_another(own: u32) -> bool {
-    standing().map_or(true, |tickets| {
-        tickets.iter().any(|t| t.running() && t.repo_lane.is_none() && t.pid != own)
+/// How many commands of the queue other than the one of the process `own`
+/// run on this host; a light gate's, in its repo's line, is none of them. A
+/// queue that cannot be read is taken as one beside it.
+fn beside(own: u32) -> u64 {
+    standing().map_or(1, |tickets| {
+        tickets.iter().filter(|t| t.running() && t.repo_lane.is_none() && t.pid != own).count()
+            as u64
     })
 }
 
@@ -369,8 +371,8 @@ impl Drop for Permit {
 }
 
 /// The host's exclusive queue, as its host runner holds it: the gate
-/// crate's holder (`afkconvoy_gate::holder`), told this host's lanes and
-/// bound by its settings, the leases a gate's descendants inherit, and the
+/// crate's holder (`afkconvoy_gate::holder`), told how busy this host is
+/// (docs/adr/0087), the share and bound its settings say, the leases a gate's descendants inherit, and the
 /// cleanup a candidate's lane waits on. A clone is the same.
 #[derive(Clone)]
 pub struct Queue {
@@ -397,10 +399,41 @@ struct Hosted {
     /// What the host runner last saw of the disk its checkouts build on
     /// (`disk::Keeper`): under its floor, it grants nothing new.
     disk: Mutex<Option<crate::disk::Seen>>,
+    /// How busy the host is, as the queue reads it (`Cpu`).
+    cpu: Cpu,
+    /// The reading last taken, said again within its second.
+    read: Mutex<Option<afkconvoy_core::exclusive::Reading>>,
+    /// What each running ticket took of the host's CPU, sampled (`sample`),
+    /// and what each kind of command took in its last `RAN_KEPT` runs.
+    took: Mutex<Took>,
 }
 
-/// How many runs of one command the queue keeps the seconds of.
+/// Where the queue's reading of the host comes from.
+enum Cpu {
+    /// The kernel's ticks over the last minute, else the load alone; and the
+    /// memory free against admission's floor.
+    Host(Mutex<crate::cpu::Minute>),
+    /// A test queue's stand-in: the cores this busy, in percent.
+    StandIn(std::sync::atomic::AtomicU64),
+}
+
+/// The CPU the queue's commands took, in percent of the host's.
+#[derive(Debug, Default)]
+struct Took {
+    /// The samples of each running ticket, by its number: their sum, and how
+    /// many.
+    running: BTreeMap<u64, (u64, u64)>,
+    /// The mean of each of the last `RAN_KEPT` runs, oldest first, by what
+    /// the command is called (`Ran::key`).
+    kind: BTreeMap<String, Vec<u64>>,
+}
+
+/// How many runs of one command the queue keeps the seconds of, and the CPU.
 pub const RAN_KEPT: usize = 5;
+
+/// How busy a test queue's stand-in cores are, until a test says otherwise:
+/// past the share, so that one command runs at a time.
+const STAND_IN_BUSY: u64 = 95;
 
 /// How long the commands the queue ran took, in seconds, the last
 /// `RAN_KEPT` runs of each, oldest first, by what each is called
@@ -438,8 +471,38 @@ impl Host<Note> for Hosted {
         crate::clock()
     }
 
-    fn lanes(&self) -> afkconvoy_core::exclusive::Lanes {
-        crate::host_settings::of_host().unwrap_or_default().lanes()
+    fn reading(&self) -> Option<afkconvoy_core::exclusive::Reading> {
+        let now = crate::clock();
+        let mut read = self.read.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(reading) = *read
+            && reading.taken == now
+        {
+            return Some(reading);
+        }
+        let reading = match &self.cpu {
+            Cpu::StandIn(busy) => afkconvoy_core::exclusive::Reading {
+                busy: busy.load(Ordering::SeqCst),
+                by: afkconvoy_core::exclusive::By::Ticks,
+                since: now.saturating_sub(crate::cpu::WINDOW.as_secs()),
+                taken: now,
+                memory: None,
+            },
+            Cpu::Host(minute) => host_reading(minute, now)?,
+        };
+        *read = Some(reading);
+        Some(reading)
+    }
+
+    // A changed host setting applies to the next grant.
+    fn share(&self) -> u64 {
+        crate::host_settings::of_host().unwrap_or_default().busy_share()
+    }
+
+    fn takes(&self, ticket: &Ticket) -> Option<u64> {
+        let took = self.took.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut runs = took.kind.get(&Ran::key(ticket))?.clone();
+        runs.sort_unstable();
+        runs.get(runs.len() / 2).copied()
     }
 
     // A changed host setting applies to the command already running. An
@@ -505,15 +568,98 @@ impl Host<Note> for Hosted {
     }
 }
 
+/// How busy this host is at `now`, as the queue starts a command by it
+/// (docs/adr/0087): its cores by the kernel's ticks over the last minute
+/// (`minute`), or the load average alone over its cores where those cannot
+/// be read; and its memory free, where it is under admission's floor.
+/// `None`: neither can be read.
+fn host_reading(
+    minute: &Mutex<crate::cpu::Minute>,
+    now: u64,
+) -> Option<afkconvoy_core::exclusive::Reading> {
+    use afkconvoy_core::exclusive::{By, Reading, Short};
+    let ticks = minute.lock().unwrap_or_else(PoisonError::into_inner).read(now);
+    let (busy, by, since) = match ticks {
+        Some((busy, since)) => (busy, By::Ticks, since),
+        None => {
+            let load = crate::admission::load().ok()?;
+            let cores = crate::host_settings::host_cores().max(1);
+            let busy = (load / cores).min(100);
+            (busy, By::Load, now.saturating_sub(crate::cpu::WINDOW.as_secs()))
+        }
+    };
+    let settings = crate::host_settings::of_host().unwrap_or_default();
+    let floor = settings.admit_memory.unwrap_or(afkconvoy_core::admission::SHARES.memory);
+    let memory = crate::admission::memory_free()
+        .ok()
+        .filter(|free| *free < floor)
+        .map(|free| Short { free, floor });
+    Some(Reading { busy, by, since, taken: now, memory })
+}
+
 impl Queue {
     pub(crate) fn with_leases(leases: bool) -> Self {
+        let cpu = if leases {
+            Cpu::Host(Mutex::default())
+        } else {
+            Cpu::StandIn(std::sync::atomic::AtomicU64::new(STAND_IN_BUSY))
+        };
         let hosted = Hosted {
             leases,
             validations: Mutex::default(),
             ran: Mutex::default(),
             disk: Mutex::default(),
+            cpu,
+            read: Mutex::default(),
+            took: Mutex::default(),
         };
         Self { holder: Holder::new(hosted) }
+    }
+
+    /// Has a test queue's stand-in cores be `busy` percent busy.
+    #[cfg(test)]
+    pub(crate) fn cores_busy(&self, busy: u64) {
+        if let Cpu::StandIn(standing) = &self.holder.host().cpu {
+            standing.store(busy, Ordering::SeqCst);
+        }
+        *self.holder.host().read.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// What the queue starts commands by now (docs/adr/0087).
+    pub fn room(&self) -> afkconvoy_core::exclusive::Room {
+        self.holder.room_now()
+    }
+
+    /// Notes what each of the queue's own running commands takes of the
+    /// host's CPU now, by the process table: its process and every one under
+    /// it. A table that cannot be read notes nothing.
+    pub fn sample(&self) {
+        let Ok((tickets, _)) = self.observation() else { return };
+        // Those beside the queue are numbered from the top (`slots::standing`)
+        // and never leave it here: they are not sampled.
+        let running: Vec<&Ticket> = tickets
+            .iter()
+            .filter(|ticket| {
+                ticket.running() && ticket.retained.is_none() && ticket.number < u64::MAX / 2
+            })
+            .collect();
+        if running.is_empty() {
+            return;
+        }
+        let Ok(procs) = crate::hot::cpu_table() else { return };
+        let table: Vec<(u32, u32)> = procs.iter().map(|proc| (proc.pid, proc.ppid)).collect();
+        let host = crate::host_settings::host_cores().max(1).saturating_mul(100);
+        let mut took = self.holder.host().took.lock().unwrap_or_else(PoisonError::into_inner);
+        for ticket in running {
+            let work = afkconvoy_core::exclusive::under(&[ticket.pid], &table);
+            let share: u64 = procs
+                .iter()
+                .filter(|proc| work.contains(&proc.pid))
+                .map(|proc| proc.cpu_share)
+                .sum();
+            let entry = took.running.entry(ticket.number).or_default();
+            *entry = (entry.0.saturating_add((share / host).min(100)), entry.1.saturating_add(1));
+        }
     }
 
     /// Display copies never authorize a grant, invalidation or publication.
@@ -574,6 +720,16 @@ impl Queue {
         let seconds = crate::clock().saturating_sub(ran);
         let mut kept = self.holder.host().ran.lock().unwrap_or_else(PoisonError::into_inner);
         kept.ran(Ran::key(ticket), seconds);
+        let mut took = self.holder.host().took.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((sum, samples)) = took.running.remove(&number)
+            && let Some(mean) = sum.checked_div(samples)
+        {
+            let runs = took.kind.entry(Ran::key(ticket)).or_default();
+            runs.push(mean);
+            if runs.len() > RAN_KEPT {
+                runs.remove(0);
+            }
+        }
     }
 
     /// Tickets and whether new grants are paused, under the same lock.
@@ -1097,15 +1253,15 @@ A worker, in its own worktree. Anyone else on the host may too: the queue is the
 
 ## What it reads and writes
 
-Commands use worker lanes, {const:GATE_LANES} by default. `run --gate-lanes N` sets the count live across the host, and `default` restores it. N must be above zero. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds use these lanes in FIFO order; a light gate takes its repo's own lane. A candidate holds its worker lane while it builds and gates; a round's slow gate takes one of the host's slow lanes, 1 by default, which `run --slow-gate-lanes N` sets live. A gate alone in the queue keeps every core; one that starts while another command runs in a worker, fast or slow lane is given its share of the host's cores — its cores over those lanes together, at least 1 — as `NEXTEST_TEST_THREADS`, unless its environment already sets it, and its build every core (sunfmin/control#245, sunfmin/control#318). Each rustc a command of the queue starts, and each a gate starts, runs one front-end thread, as `CARGO_RUSTC_THREADS=1`, unless its environment already sets it: huacnlee/cargo gives each eight on a nightly toolchain (sunfmin/control#1127). Inherited kernel leases keep a dead owner's still-running descendants from being replaced. A server shared by the host that inherited one is no such descendant: one handed to pid 1 that works outside the worktree, as sccache's server, which a gate's build starts, works in `/` for every worktree of the host, or one under it. A lease that only such servers hold once its owner ended is free, also across a host runner restarted (sunfmin/control#822); so is a repo lease, which keeps an ordinary command of a repo from another of it, once every command that took it ended (sunfmin/control#829).
+A queued command starts once the host has room for it (docs/adr/0087): no lane has a count of places. Room is read as admission reads it: the share of the host's cores busy by the kernel's CPU ticks over the last minute, or the load average over its cores where those cannot be read. A command starts while that share is under the busy share, {const:BUSY_SHARE}% by default, which `run --busy-share PERCENT` sets live across the host, and while the host's memory free is over admission's floor (`--admit-memory`). Starts are made one reading at a time, and each counts at once as the CPU its kind of command took in its recent runs — a quarter of the host where none is kept — until the reading includes it. While nothing of the queue runs, the first that may start starts whatever the reading says. Independent candidate worktrees of one repo may validate together; ordinary heavy commands retain same-repo exclusion. Heavy gates, tests, benchmarks and builds wait in FIFO order; a light gate takes its repo's own line, one at a time. A gate alone in the queue keeps every core; one that starts while another command of the queue runs is given its share of the host's cores — its cores over the commands running, itself among them, at least 1 — as `NEXTEST_TEST_THREADS`, unless its environment already sets it, and its build every core (sunfmin/control#245, sunfmin/control#318). Each rustc a command of the queue starts, and each a gate starts, runs one front-end thread, as `CARGO_RUSTC_THREADS=1`, unless its environment already sets it: huacnlee/cargo gives each eight on a nightly toolchain (sunfmin/control#1127). Inherited kernel leases keep a dead owner's still-running descendants from being replaced. A server shared by the host that inherited one is no such descendant: one handed to pid 1 that works outside the worktree, as sccache's server, which a gate's build starts, works in `/` for every worktree of the host, or one under it. A lease that only such servers hold once its owner ended is free, also across a host runner restarted (sunfmin/control#822); so is a repo lease, which keeps an ordinary command of a repo from another of it, once every command that took it ended (sunfmin/control#829).
 
-A worker's fast gate, run by `afkconvoy gate --fast`, takes the fast lane instead: `gate --fast` tells its command's `exclusive` that it runs the fast gate, through `AFKCONVOY_GATE`, which `exclusive` does not pass on to its command. Fast gates contend only with each other, up to the host setting `fast_lanes`, {const:FAST_LANES} by default (`run --fast-lanes N`); no slow gate, turn or other command holds a place they need, and fast gates of one repo run side by side, each in its own worktree. A slow gate run alone, `gate --slow`, keeps the worker lanes.
+A worker's fast gate, run by `afkconvoy gate --fast`, is a fast gate in the queue: `gate --fast` tells its command's `exclusive` that it runs the fast gate, through `AFKCONVOY_GATE`, which `exclusive` does not pass on to its command. No slow gate, turn or other command of its repo holds it apart, and fast gates of one repo run side by side, each in its own worktree; like every command, it starts while the host has room. A round's slow gate and `gate --slow` are slow gates in the queue.
 
-A cut's gate and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or adds a lane. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
+A cut's gate and exclusive commands go ahead of waiting worker commands, known by the cut's own worktree. Cuts keep request order among themselves, and ordinary commands keep theirs. Priority never interrupts a running command or makes room. A worker may therefore wait behind a cut's gate or publish step. Its runs line says "runs as a cut, ahead of waiting worker commands".
 
 The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
 
-It writes a line to the tick log of this host for this repo as it starts to wait, when another command is ahead of it; as its command runs — in its turn, or at once in no queue, with why; as it waits again, in the next host runner's queue; and as it ends, with its exit status. Its lines name the worker or repo lane. `doctor` and the panel show each lane's running and waiting commands, with the counts in force. A turn logs the commit it merged, whether its gate was green and its landing.
+It writes a line to the tick log of this host for this repo as it starts to wait, when another command is ahead of it; as its command runs — in its turn, or at once in no queue, with why; as it waits again, in the next host runner's queue; and as it ends, with its exit status. Its lines name the lane: `worker`, `fast`, `slow` or the repo's. `doctor` and the panel show the running and waiting commands, with the host's reading and the busy share in force. A turn logs the commit it merged, whether its gate was green and its landing.
 
 While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. Waiting for a turn or a lane uses none of a gate's limit (`gate_seconds`, or the `seconds` of the fast or slow gate `gate --fast` or `--slow` runs): the limit times the gate command once its turn or lane is held. A worker with confirmed live background work remains waiting even past the observation interval; silence alone does not authorize escalation or continuation.
 
@@ -1243,9 +1399,12 @@ mod tests {
     }
 
     #[test]
-    fn fast_gates_of_one_repo_run_beside_a_slow_gate_and_each_other_up_to_the_fast_lanes() {
+    fn fast_gates_of_one_repo_run_beside_a_slow_gate_and_each_other_while_the_host_has_room() {
         let dir = tempfile::tempdir().unwrap();
         let queue = Queue::with_leases(false);
+        // A tenth busy: each start counts a quarter of the host until the
+        // reading includes it, so four fit under the share and a fifth not.
+        queue.cores_busy(10);
         served(dir.path(), &queue);
         let of_a = |command: &str, asked: u64, gate: Option<Gate>| Ticket {
             repo: Some("/a/.git".into()),
@@ -1255,8 +1414,8 @@ mod tests {
         let (mut slow, _) = Asker::joins(dir.path(), of_a("slow", 100, Some(Gate::Slow)));
         assert!(slow.next().unwrap()["runs"].is_u64());
         let (mut other, said) = Asker::joins(dir.path(), of_a("cargo test", 101, None));
-        assert_eq!(said["ahead"], 0, "a slow gate in its own lane holds no worker lane");
-        assert!(other.next().unwrap()["runs"].is_u64());
+        assert_eq!(said["ahead"], 0, "a slow gate holds no ordinary command of its repo apart");
+        assert!(other.next().unwrap()["runs"].is_u64(), "on the next reading");
         let (mut first, said) = Asker::joins(dir.path(), of_a("fast 1", 102, Some(Gate::Fast)));
         assert_eq!(said["ahead"], 0, "nothing in the worker lane is ahead of a fast gate");
         assert!(first.next().unwrap()["runs"].is_u64(), "it runs beside the slow gate");
@@ -1264,9 +1423,11 @@ mod tests {
         assert!(second.next().unwrap()["runs"].is_u64(), "and beside a fast gate of its repo");
         let (mut third, said) = Asker::joins(dir.path(), of_a("fast 3", 104, Some(Gate::Fast)));
         assert_eq!(said["ahead"], 2);
-        assert_eq!(third.next_within(Duration::from_secs(1)), None, "the fast lanes are full");
+        assert_eq!(third.next_within(Duration::from_secs(1)), None, "the host has no room");
+        let room = queue.room();
+        assert!(room.busy().unwrap() >= room.share, "{room:?}");
         drop(first);
-        assert!(third.next().unwrap()["runs"].is_u64(), "a fast lane's place is free");
+        assert!(third.next().unwrap()["runs"].is_u64(), "room, once one left");
         drop((slow, other));
     }
 

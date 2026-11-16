@@ -1,31 +1,47 @@
 //! The gate crate as another program uses it (docs/adr/0059): from outside,
 //! through its public API alone, with no fleet beside it. A host process
-//! embeds a queue holder, runs a repo's fast gate in the fast lane on a
-//! scratch repo, and reads back the recorded gate run; heavy commands wait
-//! their turn in the order they asked.
+//! embeds a queue holder, runs a repo's fast gate on a scratch repo, and
+//! reads back the recorded gate run; heavy commands wait their turn in the
+//! order they asked while the host has no room for another.
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use afkconvoy_gate::declared;
-use afkconvoy_gate::exclusive::{Gate, Lanes, Plain, Ticket};
+use afkconvoy_gate::exclusive::{By, Gate, Plain, Reading, Ticket};
 use afkconvoy_gate::gate::{GateCommand, Judged, TestTime};
 use afkconvoy_gate::holder::{Holder, Host, Turn};
 use afkconvoy_gate::layout::Layout;
 use afkconvoy_gate::run::{self, Git, Settled};
 
-/// A host with one place in each lane, and a bound no test reaches.
-struct OneEach;
+/// A host whose cores are as busy as `busy` says, in percent, read anew
+/// each second, and a bound no test reaches.
+struct OneEach {
+    busy: AtomicU64,
+}
+
+impl OneEach {
+    fn new() -> Self {
+        OneEach { busy: AtomicU64::new(95) }
+    }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
 
 impl Host<Plain> for OneEach {
     fn now(&self) -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+        now()
     }
 
-    fn lanes(&self) -> Lanes {
-        Lanes { worker: 1, fast: 1, slow: 1 }
+    fn reading(&self) -> Option<Reading> {
+        let taken = now();
+        let busy = self.busy.load(Ordering::SeqCst);
+        Some(Reading { busy, by: By::Ticks, since: taken - 60, taken, memory: None })
     }
 
     fn bound(&self) -> u64 {
@@ -88,15 +104,15 @@ fn scratch(root: &Path) -> Git {
 }
 
 #[test]
-fn a_repos_fast_gate_runs_in_the_fast_lane_and_its_run_reads_back_from_the_record() {
+fn a_repos_fast_gate_runs_in_the_queue_and_its_run_reads_back_from_the_record() {
     let root = tempfile::tempdir().unwrap();
     let repo = scratch(root.path());
     let declared = std::fs::read_to_string(repo.worktree.join("gate.md")).unwrap();
     let gates = declared::gates(&declared, 180, None).unwrap().expect("a fast and a slow gate");
     let fast = GateCommand::new(&gates.fast.command);
-    let holder = Holder::new(OneEach);
+    let holder = Holder::new(OneEach::new());
     let dir = repo.worktree.to_str().unwrap().to_string();
-    let now = OneEach.now();
+    let now = now();
     let limit = Duration::from_secs(gates.fast.seconds);
     let ran = holder
         .alone(ticket(fast.text(), &dir, now, Some(Gate::Fast)), |_| {
@@ -140,7 +156,7 @@ fn a_run_whose_output_times_no_test_reads_back_as_the_same_run_with_none() {
     let root = tempfile::tempdir().unwrap();
     let repo = scratch(root.path());
     let slow = GateCommand::new("./gate.sh slow");
-    let now = OneEach.now();
+    let now = now();
     let on = ("scratch-host", "a-kind");
     let ran = run::gate(&repo, &slow, on, now, afkconvoy_patience::PATIENCE, &[]).unwrap();
     assert_eq!(ran.judged, Judged::Green, "{:?}", ran.output);
@@ -171,7 +187,7 @@ fn a_green_run_on_record_answers_for_the_same_tree_declaration_and_kind_of_machi
     let counted = root.path().join("counted");
     counting(&repo, &counted);
     let fast = GateCommand::new("./gate.sh fast");
-    let now = OneEach.now();
+    let now = now();
     let limit = afkconvoy_patience::PATIENCE;
     let gate = |command: &GateCommand, machine: &str| {
         run::gate(&repo, command, ("scratch-host", machine), now, limit, &[]).unwrap()
@@ -225,7 +241,7 @@ fn a_green_run_on_record_answers_for_the_same_tree_declaration_and_kind_of_machi
 
 #[test]
 fn a_heavy_command_waits_its_turn_behind_those_that_asked_before_it() {
-    let holder = Holder::new(OneEach);
+    let holder = Holder::new(OneEach::new());
     let (first, ahead) = holder.join(ticket("cargo build", "/w/a", 100, None));
     assert_eq!(ahead, 0);
     assert!(matches!(holder.turn(first), Turn::Runs(_)), "nothing is ahead of it");
@@ -233,12 +249,6 @@ fn a_heavy_command_waits_its_turn_behind_those_that_asked_before_it() {
     assert_eq!(ahead, 1);
     let (third, ahead) = holder.join(ticket("cargo doc", "/w/c", 102, None));
     assert_eq!(ahead, 2);
-    // A fast gate takes the fast lane: no heavy command of the worker lane
-    // holds it up.
-    let (fast, ahead) = holder.join(ticket("./gate.sh fast", "/w/d", 103, Some(Gate::Fast)));
-    assert_eq!(ahead, 0);
-    assert!(matches!(holder.turn(fast), Turn::Runs(_)));
-    holder.leave(fast);
 
     let (ran, order) = mpsc::channel();
     for number in [third, second] {
@@ -251,11 +261,30 @@ fn a_heavy_command_waits_its_turn_behind_those_that_asked_before_it() {
             }
         });
     }
-    assert!(order.recv_timeout(Duration::from_millis(300)).is_err(), "both wait while one runs");
+    assert!(
+        order.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the host is busy: both wait while one runs"
+    );
     holder.leave(first);
     let wait = afkconvoy_patience::PATIENCE;
     assert_eq!(order.recv_timeout(wait).unwrap(), second, "the one that asked first runs first");
     assert_eq!(order.recv_timeout(wait).unwrap(), third);
+}
+
+/// With room on the host, a command starts beside one running; one start to
+/// a reading (docs/adr/0087).
+#[test]
+fn with_room_a_command_starts_beside_one_running() {
+    let holder = Holder::new(OneEach::new());
+    holder.host().busy.store(10, Ordering::SeqCst);
+    let (first, _) = holder.join(ticket("cargo build", "/w/a", 100, None));
+    assert!(matches!(holder.turn(first), Turn::Runs(_)));
+    let (fast, _) = holder.join(ticket("./gate.sh fast", "/w/d", 103, Some(Gate::Fast)));
+    assert!(matches!(holder.turn(fast), Turn::Runs(_)), "on the next reading");
+    let room = holder.room_now();
+    assert!(room.spent && room.counted > 0, "{room:?}");
+    holder.leave(fast);
+    holder.leave(first);
 }
 
 /// What the crate depends on: Flux's attributes, serde and YAML — never
@@ -317,8 +346,8 @@ fn its_public_api_names_no_fleet_concept() {
 /// ticket of another repo runs beside it (sunfmin/control#1101).
 #[test]
 fn a_ticket_holding_its_whole_repo_runs_only_while_nothing_else_of_it_does() {
-    let holder = Holder::new(OneEach);
-    let now = OneEach.now();
+    let holder = Holder::new(OneEach::new());
+    let now = now();
     let whole = || {
         let mut whole = ticket("git gc --auto", "/w/a", now, None);
         whole.repo_lane = whole.repo.clone();

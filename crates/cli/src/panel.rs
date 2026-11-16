@@ -267,9 +267,9 @@ pub struct Host {
     pub admission: Result<Admission, String>,
     /// What its host runner says of the exclusive queue; why it cannot.
     pub exclusive: Result<crate::queue::Said, String>,
-    /// How many commands may run at once in its worker lanes, fast lane and
-    /// slow lanes.
-    pub lanes: afkconvoy_core::exclusive::Lanes,
+    /// The busy share its exclusive queue starts a command under, in
+    /// percent, where its host runner says none (docs/adr/0087).
+    pub share: u64,
     /// Its host kit, every harness in it; why it cannot be read.
     pub kit: Result<Kit, String>,
     /// Worker health; why it cannot be read.
@@ -294,14 +294,7 @@ impl Host {
     ) -> Host {
         let settings = host_settings::of_host().unwrap_or_default();
         let (exclusive, watch) = match shared {
-            Ok(Some(shared)) => (
-                Ok(Some((
-                    shared.exclusive,
-                    shared.exclusive_paused,
-                    shared.disk.and_then(|seen| seen.low()),
-                ))),
-                shared.watch,
-            ),
+            Ok(Some(shared)) => (Ok(crate::queue::said_of(&shared)), shared.watch),
             Ok(None) => (Ok(None), None),
             Err(error) => (Err(error), None),
         };
@@ -312,7 +305,7 @@ impl Host {
                 .map(|read| read.with_landing(dir, now))
                 .map_err(|error| format!("{error:#}")),
             exclusive,
-            lanes: settings.lanes(),
+            share: settings.busy_share(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             worker_health: crate::health::show(),
             watch: crate::host_watch::json(watch.as_ref(), false),
@@ -1199,6 +1192,32 @@ fn admission(out: &mut String, host: &Host) {
     };
 }
 
+/// What the exclusive queue starts a command by, as the panel says it: the
+/// host's reading and the busy share, in place of a count of places
+/// (docs/adr/0087).
+fn room_line(room: &afkconvoy_core::exclusive::Room) -> String {
+    let Some(reading) = room.reading else {
+        return format!(
+            "<p>How busy the host's cores are cannot be read: a command starts only while nothing of the queue runs · starts under {}% busy</p>",
+            room.share
+        );
+    };
+    let by = match reading.by {
+        afkconvoy_core::exclusive::By::Ticks => "CPU ticks",
+        afkconvoy_core::exclusive::By::Load => "load alone",
+    };
+    let memory = reading.memory.map_or(String::new(), |short| {
+        format!(" · memory {}% free, under its {}% floor", short.free, short.floor)
+    });
+    format!(
+        "<p>Cores {}% busy over {}s by {by} · {}% counted for starts since · starts under {}% busy{memory}</p>",
+        reading.busy,
+        reading.taken.saturating_sub(reading.since),
+        room.counted,
+        room.share
+    )
+}
+
 /// The command lanes: the observation `afkconvoy queue` answers, each of its
 /// lanes with the requests it lists there, running before waiting.
 fn exclusive(out: &mut String, host: &Host) {
@@ -1214,24 +1233,17 @@ fn exclusive(out: &mut String, host: &Host) {
             return;
         }
     };
-    let observation = crate::queue::snapshot_of(said, host.lanes, host.now);
-    let _ = write!(
-        out,
-        "<p>{} worker lanes · {} used · {} free</p><p>{} fast gate lanes · {} used · {} free</p>",
-        observation.worker.capacity,
-        observation.worker.used,
-        observation.worker.free,
-        observation.fast.capacity,
-        observation.fast.used,
-        observation.fast.free
-    );
+    let observation = crate::queue::snapshot_of(said, host.share, host.now);
+    out.push_str(&room_line(&observation.room));
     match said {
         None => out.push_str("<p>No host runner holds the queue.</p>"),
-        Some((_, None, _)) => {
+        Some((_, None, _, _)) => {
             out.push_str("<p>The host runner does not say whether it paused new grants.</p>")
         }
-        Some((_, Some(true), _)) => out.push_str("<p>The host runner has paused new grants.</p>"),
-        Some((_, Some(false), _)) => {}
+        Some((_, Some(true), _, _)) => {
+            out.push_str("<p>The host runner has paused new grants.</p>")
+        }
+        Some((_, Some(false), _, _)) => {}
     }
     if let Some(low) = observation.disk {
         let _ = write!(
@@ -1848,8 +1860,8 @@ mod tests {
                 memory: None,
                 landing: None,
             }),
-            exclusive: Ok(Some((vec![], Some(false), None))),
-            lanes: afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
+            exclusive: Ok(Some((vec![], Some(false), None, None))),
+            share: afkconvoy_core::exclusive::BUSY_SHARE,
             kit: Ok(Kit::default()),
             worker_health: Ok(crate::health::Health::default()),
             watch: serde_json::json!({}),
@@ -2003,14 +2015,29 @@ mod tests {
             ],
             None,
             None,
+            Some(afkconvoy_core::exclusive::Room {
+                reading: Some(afkconvoy_core::exclusive::Reading {
+                    busy: 42,
+                    by: afkconvoy_core::exclusive::By::Ticks,
+                    since: 940,
+                    taken: 1000,
+                    memory: None,
+                }),
+                share: 90,
+                counted: 7,
+                spent: false,
+            }),
         ));
         let mut host = host_of(1000);
         host.exclusive = Ok(said.clone());
         let html = render(&page_of(host, vec![]));
-        let observation = crate::queue::observation(
-            said,
-            afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 },
-            1000,
+        let observation =
+            crate::queue::observation(said, afkconvoy_core::exclusive::BUSY_SHARE, 1000);
+        assert!(
+            html.contains(
+                "Cores 42% busy over 60s by CPU ticks · 7% counted for starts since · starts under 90% busy"
+            ),
+            "{html}"
         );
         let section = html.split("<h2>Command lanes</h2>").nth(1).unwrap();
         let section = section.split("</section>").next().unwrap();

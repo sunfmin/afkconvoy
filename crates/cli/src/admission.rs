@@ -74,7 +74,7 @@ impl Readings {
         share: Option<u64>,
     ) -> Readings {
         let settings = host_settings::of_host().unwrap_or_default();
-        let drain = drain_of(queue, ran, settings.lanes(), crate::clock());
+        let drain = drain_of(queue, ran, crate::clock());
         let cap = settings.cap();
         let own = (cap != Cap::default()).then(|| own_use(queue).ok()).flatten();
         Self::read(|load| queue_load(load, queue, share).ok(), Some(drain), own)
@@ -536,15 +536,12 @@ fn share_of(load: u64, procs: &[crate::hot::Proc], of: &BTreeSet<u32>) -> u64 {
 }
 
 /// How long the queue `queue` takes to drain, in seconds, by the recent run
-/// times `ran` keeps of its commands, in the lanes `lanes` give it
-/// (`admission::drain`): what is left of each running command, the whole of
-/// each waiting one. A command no run of which is kept counts for nothing.
-fn drain_of(
-    queue: &[Ticket],
-    ran: &crate::exclusive::Ran,
-    lanes: afkconvoy_core::exclusive::Lanes,
-    now: u64,
-) -> u64 {
+/// times `ran` keeps of its commands, each lane's as many at once as run in
+/// it now, at least one (`admission::drain`): the queue starts by the host's
+/// room, not a count of places (docs/adr/0087). What is left of each running
+/// command counts, and the whole of each waiting one. A command no run of
+/// which is kept counts for nothing.
+fn drain_of(queue: &[Ticket], ran: &crate::exclusive::Ran, now: u64) -> u64 {
     let commands: Vec<(String, u64, u64)> = queue
         .iter()
         .filter_map(|ticket| {
@@ -554,12 +551,11 @@ fn drain_of(
                 None => takes,
             };
             let lane = afkconvoy_core::exclusive::lane(ticket);
-            let places = match lane.as_str() {
-                "worker" => lanes.worker,
-                "fast" => lanes.fast,
-                "slow" => lanes.slow,
-                _ => 1,
-            };
+            let places = queue
+                .iter()
+                .filter(|other| other.running() && afkconvoy_core::exclusive::lane(other) == lane)
+                .count()
+                .max(1) as u64;
             Some((lane, places, left))
         })
         .collect();
@@ -606,7 +602,7 @@ fn hundredths(hundredths: u64) -> String {
 
 /// The 1-minute load average, in hundredths: what `sysctl vm.loadavg` says
 /// first, `{ 2.34 2.10 1.98 }`, or `/proc/loadavg` where there is one.
-fn load() -> Result<u64> {
+pub(crate) fn load() -> Result<u64> {
     let said = match std::fs::read_to_string("/proc/loadavg") {
         Ok(said) => said,
         Err(_) => output("sysctl", &["-n", "vm.loadavg"])?,
@@ -623,7 +619,7 @@ fn first_load(said: &str) -> Option<u64> {
 /// The share of memory free, in percent: the kernel's own count of what is
 /// available — `sysctl kern.memorystatus_level`, or `MemAvailable` of
 /// `MemTotal` in `/proc/meminfo` where there is one.
-fn memory_free() -> Result<u64> {
+pub(crate) fn memory_free() -> Result<u64> {
     if let Ok(said) = std::fs::read_to_string("/proc/meminfo") {
         return meminfo(&said).context("/proc/meminfo says no MemAvailable and MemTotal");
     }
@@ -880,15 +876,18 @@ mod readings_tests {
             ran.ran(crate::exclusive::Ran::key(&gate), seconds);
         }
         assert_eq!(ran.takes(&gate), Some(600));
-        let lanes = afkconvoy_core::exclusive::Lanes { worker: 1, fast: 1, slow: 1 };
         // one running 100s of its 600, two waiting: 500 + 600 + 600
         let queue = [
             ticket(1, "./gate.sh", Some(900)),
             ticket(2, "./gate.sh", None),
             ticket(3, "./gate.sh", None),
         ];
-        assert_eq!(drain_of(&queue, &ran, lanes, 1000), 1700);
-        assert_eq!(drain_of(&[ticket(4, "make", None)], &ran, lanes, 1000), 0, "never ran");
+        assert_eq!(drain_of(&queue, &ran, 1000), 1700);
+        assert_eq!(drain_of(&[ticket(4, "make", None)], &ran, 1000), 0, "never ran");
+        // two running side by side drain the lane two at a time
+        let mut beside = queue.to_vec();
+        beside[1].ran = Some(900);
+        assert_eq!(drain_of(&beside, &ran, 1000), 800, "(500 + 500 + 600) / 2");
         let held = Admission { queue_drain: Some(1700), ..at_ease() };
         let holds = held.holds();
         assert_eq!(

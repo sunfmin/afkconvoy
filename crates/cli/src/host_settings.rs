@@ -61,18 +61,21 @@ pub struct Settings {
     pub github_share: Option<u64>,
     /// `--exclusive-seconds`: seconds a running command may hold others up.
     pub exclusive_seconds: Option<u64>,
-    /// `--gate-lanes`: worker commands that may run across different repos.
-    pub gate_lanes: Option<u64>,
-    /// `--slow-gate-lanes`: rounds' slow gates that may run at once, beside
-    /// the worker lanes.
-    pub slow_gate_lanes: Option<u64>,
-    /// `--fast-lanes`: fast gates that may run at once on the host, whatever
-    /// their repo, beside the worker lanes (docs/adr/0049).
-    pub fast_lanes: Option<u64>,
-    /// An old checkout list may still name `train_lanes`. It is not a setting:
-    /// a known field so `rest` does not keep it, and left out of every write.
+    /// `--busy-share`: the share of the host's cores, a whole percent, under
+    /// which the exclusive queue starts a command (docs/adr/0087).
+    pub busy_share: Option<u64>,
+    /// An old checkout list may still name `train_lanes`, `gate_lanes`,
+    /// `slow_gate_lanes` and `fast_lanes`: the queue's counts of places,
+    /// which the host's room replaced (docs/adr/0087). None is a setting:
+    /// known fields so `rest` does not keep them, and left out of every write.
     #[serde(default, skip_serializing)]
     train_lanes: Option<u64>,
+    #[serde(default, skip_serializing)]
+    gate_lanes: Option<u64>,
+    #[serde(default, skip_serializing)]
+    slow_gate_lanes: Option<u64>,
+    #[serde(default, skip_serializing)]
+    fast_lanes: Option<u64>,
     /// `--panel`: the port the host runner serves the panel on; `PANEL_PORT`
     /// where the host says none.
     pub panel: Option<u16>,
@@ -109,10 +112,6 @@ pub struct Settings {
 pub const PANEL_PORT: u16 = 7070;
 /// How often the host runner looks at its host where it says no interval.
 pub const WATCH_EVERY: u64 = 300;
-/// The default number of worker lanes on a host.
-pub const GATE_LANES: u64 = 1;
-/// The default number of fast gates that run at once on a host.
-pub const FAST_LANES: u64 = 2;
 
 /// What a `run` named of the host settings; each it left unnamed is `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -128,9 +127,7 @@ pub struct Named {
     pub max_share_of_memory: Option<To<u64>>,
     pub github_share: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
-    pub gate_lanes: Option<To<u64>>,
-    pub slow_gate_lanes: Option<To<u64>>,
-    pub fast_lanes: Option<To<u64>>,
+    pub busy_share: Option<To<u64>>,
     pub panel: Option<To<u16>>,
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
@@ -284,9 +281,7 @@ impl Settings {
         lay(&mut self.max_share_of_memory, named.max_share_of_memory.as_ref());
         lay(&mut self.github_share, named.github_share.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
-        lay(&mut self.gate_lanes, named.gate_lanes.as_ref());
-        lay(&mut self.slow_gate_lanes, named.slow_gate_lanes.as_ref());
-        lay(&mut self.fast_lanes, named.fast_lanes.as_ref());
+        lay(&mut self.busy_share, named.busy_share.as_ref());
         lay(&mut self.panel, named.panel.as_ref());
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
@@ -335,37 +330,20 @@ impl Settings {
         self.exclusive_seconds.unwrap_or(crate::exclusive::SECONDS)
     }
 
-    pub fn gate_lanes(&self) -> u64 {
-        self.gate_lanes.unwrap_or(GATE_LANES).max(1)
+    /// The busy share of the host's cores the exclusive queue starts a
+    /// command under, in percent: admission's where the host says none
+    /// (docs/adr/0087).
+    pub fn busy_share(&self) -> u64 {
+        self.busy_share.unwrap_or(afkconvoy_core::exclusive::BUSY_SHARE)
     }
 
-    /// The slow lanes, one where the host says none.
-    pub fn slow_gate_lanes(&self) -> u64 {
-        self.slow_gate_lanes.unwrap_or(1).max(1)
-    }
-
-    pub fn fast_lanes(&self) -> u64 {
-        self.fast_lanes.unwrap_or(FAST_LANES).max(1)
-    }
-
-    /// The worker lanes, the fast lane and the slow lanes, as the queue is
-    /// scheduled by them.
-    pub fn lanes(&self) -> afkconvoy_core::exclusive::Lanes {
-        afkconvoy_core::exclusive::Lanes {
-            worker: self.gate_lanes(),
-            fast: self.fast_lanes(),
-            slow: self.slow_gate_lanes(),
-        }
-    }
-
-    /// The share of this host's cores one gate's tests are given: its cores
-    /// divided by every lane a gate may run in at once, at least one
-    /// (sunfmin/control#245), and no more than afkconvoy may use
-    /// (`capped_cores`).
-    pub fn gate_share(&self) -> u64 {
+    /// The share of this host's cores one gate's tests are given, where
+    /// `running` commands of the queue run, itself among them: its cores
+    /// divided by them, at least one (sunfmin/control#245), and no more
+    /// than afkconvoy may use (`capped_cores`).
+    pub fn gate_share(&self, running: u64) -> u64 {
         let cores = host_cores();
-        let lanes = self.gate_lanes() + self.fast_lanes() + self.slow_gate_lanes();
-        let share = (cores / lanes).max(1);
+        let share = (cores / running.max(1)).max(1);
         self.capped_cores(cores).map_or(share, |capped| share.min(capped))
     }
 
@@ -422,9 +400,7 @@ impl Settings {
             "max_share_of_memory": self.max_share_of_memory,
             "github_share": self.github_share(),
             "exclusive_seconds": self.exclusive_seconds(),
-            "gate_lanes": self.gate_lanes(),
-            "slow_gate_lanes": self.slow_gate_lanes(),
-            "fast_lanes": self.fast_lanes(),
+            "busy_share": self.busy_share(),
             "panel": self.panel_port(),
             "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),
@@ -544,6 +520,7 @@ pub const MAX_SHARE_OF_CORES_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_CORES";
 pub const MAX_SHARE_OF_MEMORY_ENV: &str = "AFKCONVOY_MAX_SHARE_OF_MEMORY";
 pub const GITHUB_SHARE_ENV: &str = "AFKCONVOY_GITHUB_SHARE";
 pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
+pub const BUSY_SHARE_ENV: &str = "AFKCONVOY_BUSY_SHARE";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
 pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";
 pub const JEV_KEY_COMMAND_ENV: &str = "AFKCONVOY_JEV_KEY_COMMAND";
@@ -726,37 +703,42 @@ mod tests {
         assert_eq!(capped.capped_cores(14), Some(7));
         assert_eq!(capped.capped_cores(1), Some(1), "one core at the least");
         assert_eq!(Settings::default().capped_cores(14), None);
-        assert!(capped.gate_share() <= capped.capped_cores(host_cores()).unwrap());
+        assert!(capped.gate_share(2) <= capped.capped_cores(host_cores()).unwrap());
+        assert_eq!(Settings::default().gate_share(1), host_cores(), "alone: every core");
         let cap = Settings { max_share_of_memory: Some(40), ..capped }.cap();
         assert_eq!((cap.cores, cap.memory), (Some(50), Some(40)));
     }
 
     #[test]
-    fn an_old_train_lanes_key_loads_and_the_next_write_drops_it() {
+    fn old_lane_keys_load_and_the_next_write_drops_them() {
         let dir = tempfile::tempdir().unwrap();
         let list = List::at(dir.path().join("checkouts.json"));
-        assert_eq!(
-            Settings::default().lanes(),
-            afkconvoy_core::exclusive::Lanes { worker: GATE_LANES, fast: FAST_LANES, slow: 1 }
-        );
-        let kept = r#"{"settings": {"train_lanes": 0, "gate_lanes": 2, "fast_lanes": 3, "said_by_another": 1}}"#;
+        assert_eq!(Settings::default().busy_share(), 90);
+        let kept = r#"{"settings": {"train_lanes": 0, "gate_lanes": 2, "fast_lanes": 3, "slow_gate_lanes": 1, "said_by_another": 1}}"#;
         std::fs::write(list.file(), kept).unwrap();
         let read = list.read().unwrap();
-        assert_eq!(read.settings.gate_lanes, Some(2));
-        assert_eq!(read.settings.train_lanes, Some(0), "an old file still loads");
+        assert_eq!(read.settings.gate_lanes, Some(2), "an old file still loads");
+        assert_eq!(read.settings.train_lanes, Some(0));
         let readings = crate::admission::Readings::new();
         let answered = json(&list, dir.path(), &readings);
-        assert!(answered["said"].get("train_lanes").is_none(), "{answered}");
-        assert!(answered["in_force"].get("train_lanes").is_none(), "{answered}");
+        for key in ["train_lanes", "gate_lanes", "fast_lanes", "slow_gate_lanes"] {
+            assert!(answered["said"].get(key).is_none(), "{key}: {answered}");
+            assert!(answered["in_force"].get(key).is_none(), "{key}: {answered}");
+        }
         assert!(answered["in_force"].get("ignored").is_none(), "{answered}");
-        assert_eq!(answered["in_force"]["gate_lanes"], 2);
-        assert_eq!(answered["in_force"]["fast_lanes"], 3);
-        let named = Named { admit_load: Some(To::Value(400)), ..Named::default() };
+        assert_eq!(answered["in_force"]["busy_share"], 90);
+        let named = Named {
+            admit_load: Some(To::Value(400)),
+            busy_share: Some(To::Value(70)),
+            ..Named::default()
+        };
         change(&list, &named).unwrap();
         let text: Value =
             serde_json::from_str(&std::fs::read_to_string(list.file()).unwrap()).unwrap();
-        assert!(text["settings"].get("train_lanes").is_none(), "{text}");
-        assert_eq!(text["settings"]["gate_lanes"], 2);
+        for key in ["train_lanes", "gate_lanes", "fast_lanes", "slow_gate_lanes"] {
+            assert!(text["settings"].get(key).is_none(), "{key}: {text}");
+        }
+        assert_eq!(text["settings"]["busy_share"], 70);
         assert_eq!(text["settings"]["admit_load"], 400);
         assert_eq!(text["settings"]["said_by_another"], 1);
     }

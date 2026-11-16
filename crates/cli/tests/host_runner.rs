@@ -726,8 +726,8 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
         "0",
         "--exclusive-seconds",
         "1500",
-        "--gate-lanes",
-        "2",
+        "--busy-share",
+        "80",
     ];
     let first = world.afk(&[&RUN[..], &named[..]].concat()).ok();
     let changed = &first["settings"];
@@ -735,7 +735,7 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(changed["hot_memory"], json!({"from": null, "to": 8.0}), "{first}");
     assert_eq!(changed["admit_disk"], json!({"from": null, "to": 0}), "{first}");
     assert_eq!(changed["exclusive_seconds"], json!({"from": null, "to": 1500}), "{first}");
-    assert_eq!(changed["gate_lanes"], json!({"from": null, "to": 2}));
+    assert_eq!(changed["busy_share"], json!({"from": null, "to": 80}));
     assert!(changed.get("train_lanes").is_none(), "{changed}");
     world.kill_host_runner("KILL");
 
@@ -752,7 +752,7 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(in_force["hot_memory"], 8.0);
     assert_eq!(said["exclusive_seconds"], 1500);
     assert_eq!(in_force["exclusive_seconds"], 1500);
-    assert_eq!(in_force["gate_lanes"], 2);
+    assert_eq!(in_force["busy_share"], 80);
     assert!(said.get("train_lanes").is_none(), "{settings}");
     assert!(
         in_force.get("train_lanes").is_none() && in_force.get("ignored").is_none(),
@@ -766,13 +766,32 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
         "{refused}"
     );
     assert_eq!(world.checkout_list(), unchanged);
+    // The queue's counts of places are gone (docs/adr/0087): a flag that
+    // names one is refused with what to say instead, and a variable that
+    // still sets one is said to be ignored.
+    for flag in ["--gate-lanes", "--fast-lanes", "--slow-gate-lanes"] {
+        let refused = world.afk(&["run", flag, "2"]).error();
+        assert!(
+            refused.contains(flag)
+                && refused.contains("is removed")
+                && refused.contains("--busy-share"),
+            "{refused}"
+        );
+        assert_eq!(world.checkout_list(), unchanged);
+    }
     let with_variable = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .env("AFKCONVOY_TRAIN_LANES", "9")
-        .args(["run", "--gate-lanes", "4"])
+        .env("AFKCONVOY_GATE_LANES", "4")
+        .args(["run", "--busy-share", "85"])
         .output()
         .unwrap();
     assert!(with_variable.status.success(), "{}", String::from_utf8_lossy(&with_variable.stderr));
+    let stderr = String::from_utf8_lossy(&with_variable.stderr);
+    assert!(
+        stderr.contains("`AFKCONVOY_GATE_LANES` is ignored") && stderr.contains("--busy-share"),
+        "{stderr}"
+    );
     let with_variable: Value = serde_json::from_slice(&with_variable.stdout).unwrap();
     assert!(with_variable["settings"].get("train_lanes").is_none(), "{with_variable}");
     assert!(world.checkout_list()["settings"].get("train_lanes").is_none());

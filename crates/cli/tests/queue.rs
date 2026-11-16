@@ -50,10 +50,13 @@ impl Local {
         self.short.path().join("cache/host-runner.sock")
     }
 
-    fn settings(&self, lanes: u64) {
+    /// Host settings that say the busy share `share`, beside an old count
+    /// of worker lanes, which reads and counts for nothing (docs/adr/0087).
+    fn settings(&self, share: u64) {
         std::fs::write(
             self.cache().join("checkouts.json"),
-            json!({"settings": {"gate_lanes": lanes}, "checkouts": []}).to_string(),
+            json!({"settings": {"busy_share": share, "gate_lanes": 3}, "checkouts": []})
+                .to_string(),
         )
         .unwrap();
     }
@@ -124,7 +127,13 @@ fn files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 fn response(tickets: Vec<Value>) -> Value {
-    json!({"exclusive": tickets, "exclusive_paused": false, "host_runner": {"pid": 4242, "version": "test", "log": "/cache/host-runner.log", "panel": null}})
+    json!({"exclusive": tickets, "exclusive_paused": false, "exclusive_room": room(10), "host_runner": {"pid": 4242, "version": "test", "log": "/cache/host-runner.log", "panel": null}})
+}
+
+/// The runner's room: its cores `busy` percent busy by its ticks over the
+/// minute up to the second 990, under the default share.
+fn room(busy: u64) -> Value {
+    json!({"reading": {"busy": busy, "by": "ticks", "since": 930, "taken": 990}, "share": 90, "counted": 0, "spent": false})
 }
 
 fn ticket(number: u64, repo: &str, asked: u64, ran: Option<u64>, repo_lane: bool) -> Value {
@@ -142,9 +151,9 @@ fn request(answer: &Value, number: u64) -> &Value {
 }
 
 #[test]
-fn one_local_observation_explains_free_capacity_reservations_repo_lanes_and_elapsed_time() {
+fn one_local_observation_explains_the_room_reservations_repo_lanes_and_elapsed_time() {
     let local = Local::new();
-    local.settings(3);
+    local.settings(90);
     let mut a = ticket(1, "/repos/a/.git", 700, Some(800), false);
     a["issue"] = json!(128);
     let received = local.answer(response(vec![
@@ -165,7 +174,10 @@ fn one_local_observation_explains_free_capacity_reservations_repo_lanes_and_elap
     assert_eq!(answer["status"], "available");
     assert_eq!(answer["observed_at"], 1000);
     assert_eq!(answer["host_runner"]["pid"], 4242);
-    assert_eq!(answer["worker"], json!({"capacity": 3, "used": 1, "free": 2}));
+    assert_eq!(answer["room"], room(10), "the runner's reading and share");
+    for gone in ["worker", "fast", "slow"] {
+        assert!(answer.get(gone).is_none(), "no count of places: {answer}");
+    }
     assert_eq!(
         answer["running"]
             .as_array()
@@ -199,17 +211,21 @@ fn one_local_observation_explains_free_capacity_reservations_repo_lanes_and_elap
     let reason = &request(&answer, 2)["scheduling"]["reasons"][0];
     assert_eq!(reason["kind"], "same_repo");
     assert_eq!(reason["requests"], json!([{"number": 1, "state": "running"}]));
-    for eligible in [3, 4, 9] {
+    for eligible in [3, 9] {
         assert_eq!(request(&answer, eligible)["scheduling"]["state"], "eligible");
         assert_eq!(request(&answer, eligible)["scheduling"]["reasons"], json!([]));
     }
-    let capacity = &request(&answer, 5)["scheduling"]["reasons"][0];
-    assert_eq!(capacity["kind"], "worker_capacity");
-    assert_eq!(capacity["capacity"], 3);
-    assert_eq!(
-        capacity["requests"],
-        json!([{"number": 1, "state": "running"}, {"number": 3, "state": "eligible"}, {"number": 4, "state": "eligible"}])
-    );
+    // Room for more, but one start to a reading: 3 starts on this one.
+    for next in [4, 5] {
+        let reason = &request(&answer, next)["scheduling"]["reasons"][0];
+        assert_eq!(reason["kind"], "next_reading", "{answer}");
+        assert_eq!((reason["busy"].clone(), reason["share"].clone()), (json!(10), json!(90)));
+        assert_eq!(reason["capacity"], Value::Null);
+        assert_eq!(
+            reason["requests"],
+            json!([{"number": 1, "state": "running"}, {"number": 3, "state": "eligible"}])
+        );
+    }
     assert_eq!(
         request(&answer, 6)["scheduling"]["reasons"][0]["requests"],
         json!([{"number": 3, "state": "eligible"}])
@@ -240,9 +256,8 @@ fn one_local_observation_explains_free_capacity_reservations_repo_lanes_and_elap
 }
 
 #[test]
-fn cuts_reserve_capacity_ahead_of_older_waiters_without_interrupting_running_requests() {
+fn cuts_reserve_their_start_ahead_of_older_waiters_without_interrupting_running_requests() {
     let local = Local::new();
-    local.settings(1);
     let mut cut = ticket(3, "/repos/cut/.git", 900, None, false);
     cut["cut"] = json!(true);
     let received = local.answer(response(vec![
@@ -274,12 +289,9 @@ fn empty_queue_missing_runner_and_stale_socket_are_distinct_successful_observati
     assert_eq!(absent["status"], "no_runner");
     assert_eq!(absent["host_runner"], Value::Null);
     assert_eq!(
-        absent["worker"],
-        json!({"capacity": afkconvoy::host_settings::GATE_LANES, "used": 0, "free": afkconvoy::host_settings::GATE_LANES})
-    );
-    assert_eq!(
-        absent["fast"],
-        json!({"capacity": afkconvoy::host_settings::FAST_LANES, "used": 0, "free": afkconvoy::host_settings::FAST_LANES})
+        absent["room"],
+        json!({"reading": null, "share": 90, "counted": 0, "spent": false}),
+        "no runner, no reading"
     );
     let received = local.answer(response(vec![]));
     let (code, empty) = local.query();
@@ -299,7 +311,6 @@ fn empty_queue_missing_runner_and_stale_socket_are_distinct_successful_observati
 #[test]
 fn paused_and_old_ticket_metadata_are_reported_without_guessing_and_clock_skew_clamps() {
     let local = Local::new();
-    local.settings(3);
     let old = json!({"number": 1, "pid": 4, "command": "cargo test", "dir": "/outside", "issue": null, "asked": 1100, "ran": null});
     let mut paused = response(vec![old]);
     paused["exclusive_paused"] = json!(true);
@@ -322,56 +333,71 @@ fn paused_and_old_ticket_metadata_are_reported_without_guessing_and_clock_skew_c
 }
 
 #[test]
-fn fast_gates_take_the_fast_lane_beside_a_slow_gate_and_name_their_kind() {
+fn fast_gates_start_by_the_room_beside_a_slow_gate_and_name_their_kind() {
     let local = Local::new();
-    local.settings(1);
     let gate = |number: u64, part: &str, ran: Option<u64>| {
         let mut gate = ticket(number, "/repos/a/.git", 900 + number, ran, false);
         gate["is_turn"] = json!(false);
         gate["gate"] = json!(part);
         gate
     };
-    let received = local.answer(response(vec![
+    let tickets = vec![
         gate(1, "slow", Some(950)),
         ticket(2, "/repos/a/.git", 902, None, false),
         gate(3, "fast", Some(960)),
         gate(4, "fast", None),
         gate(5, "fast", None),
-    ]));
+    ];
+    let received = local.answer(response(tickets.clone()));
     let (code, answer) = local.query();
     assert_eq!(code, 0, "{answer}");
     received.recv().unwrap();
-    // The slow gate runs in its slow lane, leaving the worker lane free.
-    assert_eq!(answer["worker"], json!({"capacity": 1, "used": 0, "free": 1}));
-    assert_eq!(answer["slow"], json!({"capacity": 1, "used": 1, "free": 0}));
-    let fast = afkconvoy::host_settings::FAST_LANES;
-    assert_eq!(answer["fast"], json!({"capacity": fast, "used": 1, "free": fast - 1}));
-    let seen = |number| {
-        let request = request(&answer, number);
+    let seen = |answer: &Value, number| {
+        let request = request(answer, number);
         (request["kind"].clone(), request["lane"].clone(), request["scheduling"]["state"].clone())
     };
-    assert_eq!(seen(1), (json!("slow_gate"), json!("slow"), json!("running")));
-    assert_eq!(seen(2), (json!("turn"), json!("worker"), json!("eligible")));
-    assert_eq!(seen(3), (json!("fast_gate"), json!("fast"), json!("running")));
-    assert_eq!(seen(4), (json!("fast_gate"), json!("fast"), json!("eligible")), "{answer}");
+    assert_eq!(seen(&answer, 1), (json!("slow_gate"), json!("slow"), json!("running")));
+    assert_eq!(seen(&answer, 2), (json!("turn"), json!("worker"), json!("eligible")));
+    assert_eq!(seen(&answer, 3), (json!("fast_gate"), json!("fast"), json!("running")));
+    assert_eq!(seen(&answer, 4), (json!("fast_gate"), json!("fast"), json!("waiting")));
     let fifth = request(&answer, 5);
-    assert_eq!(fifth["scheduling"]["reasons"][0]["kind"], "fast_capacity", "{answer}");
+    assert_eq!(fifth["scheduling"]["reasons"][0]["kind"], "next_reading", "{answer}");
     assert_eq!(fifth["scheduling"]["reasons"].as_array().unwrap().len(), 1, "never same_repo");
+    // Cores at 95%, past the share: nothing more starts, and each says why.
+    let local = Local::new();
+    let mut busy = response(tickets);
+    busy["exclusive_room"] = room(95);
+    let received = local.answer(busy);
+    let (code, answer) = local.query();
+    assert_eq!(code, 0, "{answer}");
+    received.recv().unwrap();
+    for number in [2, 4, 5] {
+        let reason = &request(&answer, number)["scheduling"]["reasons"][0];
+        assert_eq!(reason["kind"], "host_busy", "{answer}");
+        assert_eq!((reason["busy"].clone(), reason["share"].clone()), (json!(95), json!(90)));
+        let said = reason["explanation"].as_str().unwrap();
+        assert!(said.contains("95%") && said.contains("90%"), "{said}");
+    }
 }
 
 #[test]
 fn an_older_runner_that_omits_its_pause_still_reads_with_the_pause_unknown() {
     let local = Local::new();
-    local.settings(2);
+    local.settings(70);
     let mut older = response(vec![ticket(1, "/a/.git", 900, Some(950), false)]);
     older.as_object_mut().unwrap().remove("exclusive_paused");
+    older.as_object_mut().unwrap().remove("exclusive_room");
     let received = local.answer(older);
     let (code, answer) = local.query();
     assert_eq!(code, 0, "{answer}");
     received.recv().unwrap();
     assert_eq!(answer["status"], "available");
     assert_eq!(answer["paused"], Value::Null, "an unsaid pause is not invented: {answer}");
-    assert_eq!(answer["worker"], json!({"capacity": 2, "used": 1, "free": 1}));
+    assert_eq!(
+        answer["room"],
+        json!({"reading": null, "share": 70, "counted": 0, "spent": false}),
+        "an unsaid reading is not invented"
+    );
     assert_eq!(answer["running"][0]["lane"], "worker");
     assert_eq!(answer["repos"], json!([]));
 }
@@ -429,9 +455,9 @@ fn a_partial_response_is_bounded_even_when_the_runner_keeps_sending_bytes() {
 }
 
 #[test]
-fn the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_two_free_lanes() {
+fn the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_room() {
     let world = World::new();
-    world.say_host_settings(json!({"gate_lanes": 3}));
+    world.cores_busy(10);
     let _runner = world.host_held();
     let short = tempfile::tempdir_in("/tmp").unwrap();
     std::os::unix::fs::symlink(world.cache().join("afkconvoy"), short.path().join("cache"))
@@ -455,18 +481,23 @@ fn the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_two_free_
     running(&mut a);
     let _same = joins(ticket(0, "/actual/a/.git", 101, None, false));
     let before = world.afk_in(&world.root, &["queue"]).ok();
-    assert_eq!(before["worker"], json!({"capacity": 3, "used": 1, "free": 2}));
+    assert_eq!(before["room"]["reading"]["busy"], 10, "{before}");
+    assert_eq!(before["room"]["share"], 90, "{before}");
     assert_eq!(before["waiting"][0]["scheduling"]["reasons"][0]["kind"], "same_repo");
     let mut b = joins(ticket(0, "/actual/b/.git", 102, None, false));
     running(&mut b);
     let after = world.afk_in(&world.root, &["--now", "200", "queue"]).ok();
-    assert_eq!(after["worker"], json!({"capacity": 3, "used": 2, "free": 1}));
+    assert_eq!(after["running"].as_array().unwrap().len(), 2, "{after}");
     assert_eq!(after["waiting"].as_array().unwrap().len(), 1);
     let doctor = world.afk(&["--now", "200", "doctor"]).json;
     let common = &doctor["host"]["exclusive"];
-    for field in ["status", "worker", "repos", "paused", "running", "waiting"] {
+    for field in ["status", "repos", "paused", "running"] {
         assert_eq!(common[field], after[field], "doctor and queue disagree on {field}: {doctor}");
     }
+    // A reading is of its second: the waiting request's reasons beside its
+    // repo's may differ between two looks.
+    assert_eq!(common["waiting"][0]["number"], after["waiting"][0]["number"]);
+    assert_eq!(common["room"]["share"], after["room"]["share"]);
     for gone in ["lanes", "observation"] {
         assert!(common.get(gone).is_none(), "doctor keeps a second shape: {doctor}");
     }
@@ -488,11 +519,12 @@ fn queue_is_discoverable_in_operator_help_and_its_contract_is_complete() {
     for required in [
         "observed_at",
         "host_runner",
-        "capacity",
-        "used",
-        "free",
+        "room",
+        "busy",
+        "share",
         "same_repo",
-        "worker_capacity",
+        "host_busy",
+        "next_reading",
         "repo_capacity",
         "eligible",
         "no_runner",
@@ -519,11 +551,15 @@ fn queue_is_discoverable_in_operator_help_and_its_contract_is_complete() {
 #[test]
 fn a_retained_ticket_shows_retained_with_its_cleanup_error_not_running() {
     let local = Local::new();
-    local.settings(1);
     let mut kept = ticket(1, "/repos/a/.git", 700, Some(800), false);
     kept["retained"] = json!({"since": 900, "error": "git commit-tree: No space left on device"});
-    let _received =
-        local.answer(response(vec![kept, ticket(2, "/repos/b/.git", 850, None, false)]));
+    let mut busy = response(vec![
+        kept,
+        ticket(2, "/repos/b/.git", 850, None, false),
+        ticket(3, "/repos/a/.git", 860, None, false),
+    ]);
+    busy["exclusive_room"] = room(95);
+    let _received = local.answer(busy);
     let (code, answer) = local.query();
     assert_eq!(code, 0, "{answer}");
     let kept = request(&answer, 1);
@@ -532,15 +568,15 @@ fn a_retained_ticket_shows_retained_with_its_cleanup_error_not_running() {
         kept["retained"],
         json!({"since": 900, "error": "git commit-tree: No space left on device"})
     );
-    assert_eq!(
-        answer["worker"],
-        json!({"capacity": 1, "used": 1, "free": 0}),
-        "it keeps its place"
-    );
+    // Its command ended: it runs nothing, so another repo's first waiter
+    // starts at any reading, as with nothing of the queue running.
     let waiter = request(&answer, 2);
-    assert_eq!(
-        waiter["scheduling"]["reasons"][0]["requests"],
-        json!([{"number": 1, "state": "retained"}])
-    );
+    assert_eq!(waiter["scheduling"]["state"], "eligible", "{answer}");
     assert_eq!(waiter["retained"], Value::Null);
+    let same = request(&answer, 3);
+    assert_eq!(
+        same["scheduling"]["reasons"][0],
+        json!({"kind": "same_repo", "requests": [{"number": 1, "state": "retained"}], "capacity": null, "explanation": same["scheduling"]["reasons"][0]["explanation"]}),
+        "it keeps its repo's exclusion"
+    );
 }

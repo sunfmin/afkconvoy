@@ -1,11 +1,13 @@
 //! The holder of a host's exclusive queue (docs/adr/0019, docs/adr/0023): the
 //! one process of a host that keeps every ticket waiting or running, grants
 //! each its lane in the order `exclusive` decides, and ends the hold of a
-//! command that held others up past the host's bound (docs/adr/0031).
+//! command that held others up past the host's bound (docs/adr/0031). A
+//! command starts once the host has room for it (docs/adr/0087).
 //!
 //! A host process embeds it — afkconvoy's host runner, or another program's
-//! daemon — and says through `Host` what only it knows: the time, the host's
-//! lanes and bound, the tickets it holds outside this queue, and what must
+//! daemon — and says through `Host` what only it knows: the time, how busy
+//! the host is and the share a start stays under, what each kind of command
+//! takes of it, the bound, the tickets it holds outside this queue, and what must
 //! be done before a ticket leaves. How an asker reaches the holder, and is
 //! told its turn, is the embedder's: each asker's thread `join`s, waits for
 //! its `turn`, and `leave`s once its command ended or its line closed.
@@ -17,7 +19,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::exclusive::{
-    Lanes, Low, Retained, Ticket, ahead, excludes, in_order, limit, ready, same_lane, same_repo,
+    BUSY_SHARE, ConstraintKind, Halt, Low, Reading, Retained, Room, State, Ticket, ahead, in_order,
+    lag, ready, same_repo, scheduling,
 };
 
 /// How often a waiting turn looks again, besides being woken by a change.
@@ -28,16 +31,35 @@ pub trait Host<N>: Send + Sync {
     /// The time, in epoch seconds: when a ticket's command begins to run.
     fn now(&self) -> u64;
 
-    /// How many commands the host lets run at once in each lane, now: a
-    /// changed setting applies to the next grant.
-    fn lanes(&self) -> Lanes;
+    /// How busy the host is now, over the last minute (docs/adr/0087): its
+    /// cores by the kernel's CPU ticks, or by the load alone where those
+    /// cannot be read, and its memory where it is under its floor. `None`: it
+    /// cannot be read, and a command starts only while nothing of the queue
+    /// runs. A host may say the same reading again until it takes the next.
+    fn reading(&self) -> Option<Reading> {
+        None
+    }
+
+    /// The busy share of the cores a command starts under, in percent, now:
+    /// a changed setting applies to the next grant.
+    fn share(&self) -> u64 {
+        BUSY_SHARE
+    }
+
+    /// The CPU, in percent of the host's, the kind of command `ticket` runs
+    /// took in its recent runs: what its start counts as until the reading
+    /// includes it. `None`: no run of it is kept (`exclusive::UNMEASURED`).
+    fn takes(&self, ticket: &Ticket<N>) -> Option<u64> {
+        let _ = ticket;
+        None
+    }
 
     /// How long, in seconds, a running command may hold others up before its
     /// asker is told to end it, now: a changed setting applies to the command
     /// already running.
     fn bound(&self) -> u64;
 
-    /// Tickets running outside this queue that hold lanes of the same host
+    /// Tickets running outside this queue on the same host
     /// — a lease a command's descendants inherit, say — to be counted
     /// beside its own. One of them that this queue already runs is not
     /// counted twice. Errors: they cannot be read.
@@ -45,8 +67,8 @@ pub trait Host<N>: Send + Sync {
         Ok(vec![])
     }
 
-    /// Whether a waiting `ticket` may be granted a lane at all, beside what
-    /// the lanes allow: its repo is free to be worked in, say.
+    /// Whether a waiting `ticket` may be granted at all, beside what the
+    /// host's room allows: its repo is free to be worked in, say.
     fn grantable(&self, ticket: &Ticket<N>) -> bool {
         let _ = ticket;
         true
@@ -103,7 +125,7 @@ pub struct Bound {
 }
 
 /// A host's exclusive queue, as one process holds it: commands run in the
-/// lanes the host says, at most one of each repo in each lane. Requests keep
+/// room the host has (docs/adr/0087), held apart by repo. Requests keep
 /// their order, and each leaves as its asker leaves. A clone is the same.
 pub struct Holder<N, H> {
     held: Arc<(Mutex<Joined<N>>, Condvar)>,
@@ -130,6 +152,8 @@ struct Joined<N> {
     /// When each retained ticket's leaving was last tried.
     tried: BTreeMap<u64, Instant>,
     counted_at: Instant,
+    /// The reading the last command started on: the next starts on another.
+    started_on: Option<Reading>,
 }
 
 impl<N> Joined<N> {
@@ -142,49 +166,40 @@ impl<N> Joined<N> {
             waited: BTreeMap::new(),
             tried: BTreeMap::new(),
             counted_at: Instant::now(),
+            started_on: None,
         }
     }
 
-    /// The waiters the running command `number` actually holds up: a free
-    /// lane means another repo need not wait, and a repo's second turn waits
-    /// only for its own first turn.
-    fn waiting_for(&self, number: u64, lanes: Lanes) -> usize {
-        let mut found = None;
-        for ticket in &self.tickets {
-            if ticket.number == number && ticket.running() {
-                found = Some(ticket);
-            }
-        }
-        let Some(running) = found else {
+    /// The waiters the running command `number` actually holds up, as
+    /// `room` schedules them: a repo's second turn waits only for its own
+    /// first turn, and one held by the host's room is held by every command
+    /// of the queue the room counts. Room enough means none need wait.
+    fn waiting_for(&self, number: u64, room: Room) -> usize {
+        if !self.tickets.iter().any(|ticket| ticket.number == number && ticket.running()) {
             return 0;
-        };
-        let limit = limit(running, lanes);
-        let mut occupied: u64 = 0;
-        for ticket in &self.tickets {
-            if ticket.running() && same_lane(ticket, running) {
-                occupied = occupied.saturating_add(1);
-            }
         }
         let mut held: usize = 0;
-        for waiting in &self.tickets {
-            if waiting.running()
-                || !(same_lane(running, waiting)
-                    || ((running.is_turn && waiting.is_turn || running.whole_repo)
-                        && same_repo(running, waiting)))
-            {
+        for decision in scheduling(&self.tickets, room, Halt::default()) {
+            if decision.state != State::Waiting {
                 continue;
             }
-            let mut owner = None;
-            for ticket in &self.tickets {
-                if owner.is_none() && ticket.running() && excludes(ticket, waiting) {
-                    owner = Some(ticket.number);
-                }
-            }
-            let holds = match owner {
-                Some(owner) => owner == number,
-                None => occupied >= limit,
+            let by = |kinds: &dyn Fn(&ConstraintKind) -> bool| {
+                decision
+                    .reasons
+                    .iter()
+                    .filter(|reason| kinds(&reason.kind))
+                    .flat_map(|reason| &reason.requests)
+                    .filter(|holder| holder.state != State::Eligible)
+                    .map(|holder| holder.number)
+                    .collect::<Vec<u64>>()
             };
-            if holds {
+            let owners = by(&|kind| matches!(kind, ConstraintKind::SameRepo));
+            let holders = if owners.is_empty() {
+                by(&|kind| !matches!(kind, ConstraintKind::Paused | ConstraintKind::Disk))
+            } else {
+                owners
+            };
+            if holders.contains(&number) {
                 held = held.saturating_add(1);
             }
         }
@@ -193,11 +208,11 @@ impl<N> Joined<N> {
 
     /// Accounts for the interval before any queue change, so short waits,
     /// gaps without waiters and a changing set of waiters count correctly.
-    fn count(&mut self, now: Instant, lanes: Lanes) {
+    fn count(&mut self, now: Instant, room: Room) {
         let since = now.saturating_duration_since(self.counted_at);
         let mut holding: Vec<u64> = vec![];
         for ticket in &self.tickets {
-            if ticket.running() && self.waiting_for(ticket.number, lanes) > 0 {
+            if ticket.running() && self.waiting_for(ticket.number, room) > 0 {
                 holding.push(ticket.number);
             }
         }
@@ -223,10 +238,10 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
     /// Joins `ticket` to the queue → the number it is known by there, and how
     /// many are ahead of it in its lane.
     pub fn join(&self, ticket: Ticket<N>) -> (u64, usize) {
-        let lanes = self.host.lanes();
         let joined = {
             let mut joined = self.joined();
-            joined.count(Instant::now(), lanes);
+            let room = self.own_room(&joined);
+            joined.count(Instant::now(), room);
             joined.next = joined.next.saturating_add(1);
             let number = joined.next;
             let mut ticket = ticket;
@@ -239,14 +254,14 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
         joined
     }
 
-    /// Waits for the turn of the ticket `number`: until no ticket ahead of it
-    /// holds or reserves a place it needs, while grants are not paused, and
-    /// its host lets it be granted. Its command runs from then, until it
-    /// leaves.
+    /// Waits for the turn of the ticket `number`: until the host has room
+    /// for it and no ticket ahead of it holds or reserves what it needs,
+    /// while grants are not paused, and its host lets it be granted. Its
+    /// command runs from then, until it leaves.
     pub fn turn(&self, number: u64) -> Turn {
         let (_, turned) = &*self.held;
         let mut joined = self.joined();
-        loop {
+        let started_on = loop {
             if joined.closed {
                 return Turn::Closed;
             }
@@ -266,15 +281,18 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
                     .into_iter()
                     .filter(|t| t.running() || self.host.grantable(t))
                     .collect();
-                if ready(&eligible, number, self.host.lanes()) {
-                    break;
+                let room = self.room(&joined, &eligible);
+                if ready(&eligible, number, room) {
+                    break room.reading;
                 }
             }
             joined =
                 turned.wait_timeout(joined, CHECK_EVERY).unwrap_or_else(PoisonError::into_inner).0;
-        }
+        };
         let ran = self.host.now();
-        joined.count(Instant::now(), self.host.lanes());
+        let room = self.own_room(&joined);
+        joined.count(Instant::now(), room);
+        joined.started_on = started_on;
         joined.waited.insert(number, Duration::ZERO);
         joined.counted_at = Instant::now();
         for ticket in joined.tickets.iter_mut().filter(|ticket| ticket.number == number) {
@@ -295,10 +313,10 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
             if !joined.tickets.iter().any(|ticket| ticket.number == number) {
                 return None;
             }
-            let lanes = self.host.lanes();
-            joined.count(Instant::now(), lanes);
+            let room = self.own_room(&joined);
+            joined.count(Instant::now(), room);
             let bound = self.host.bound();
-            let waiting = joined.waiting_for(number, lanes);
+            let waiting = joined.waiting_for(number, room);
             if waiting > 0
                 && joined.waited.get(&number).copied().unwrap_or_default()
                     >= Duration::from_secs(bound)
@@ -328,9 +346,9 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
             }
             return;
         }
-        let lanes = self.host.lanes();
         let mut joined = self.joined();
-        joined.count(Instant::now(), lanes);
+        let room = self.own_room(&joined);
+        joined.count(Instant::now(), room);
         joined.tickets.retain(|ticket| ticket.number != number);
         joined.waited.remove(&number);
         joined.tried.remove(&number);
@@ -393,7 +411,6 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
     /// What holds its whole repo (`Ticket::whole_repo`) is asked so, at a
     /// moment nothing of its repo runs, and never waits for one.
     pub fn at_once(&self, ticket: Ticket<N>) -> Option<u64> {
-        let lanes = self.host.lanes();
         let mut joined = self.joined();
         if joined.paused || joined.closed || !self.host.grantable(&ticket) {
             return None;
@@ -407,10 +424,13 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
         ticket.ran = None;
         let mut asking = standing;
         asking.push(ticket.clone());
-        if !ready(&asking, ticket.number, lanes) {
+        let room = self.room(&joined, &asking);
+        if !ready(&asking, ticket.number, room) {
             return None;
         }
-        joined.count(Instant::now(), lanes);
+        let own = self.own_room(&joined);
+        joined.count(Instant::now(), own);
+        joined.started_on = room.reading;
         joined.next = ticket.number;
         ticket.ran = Some(self.host.now());
         joined.waited.insert(ticket.number, Duration::ZERO);
@@ -458,6 +478,33 @@ impl<N: Clone, H: Host<N>> Holder<N, H> {
         Ok((in_order(self.besides(tickets)?), joined.paused || joined.closed))
     }
 
+    /// What the queue starts commands by now, beside the queue too
+    /// (docs/adr/0087): the host's reading, the share, what the reading does
+    /// not include yet, and whether a command already started on it. Those
+    /// beside it that cannot be read are left out.
+    pub fn room_now(&self) -> Room {
+        let joined = self.joined();
+        let tickets = self.with_beside(&joined).unwrap_or_else(|_| joined.tickets.clone());
+        self.room(&joined, &tickets)
+    }
+
+    /// The room `tickets`, the queue's as `joined` holds it, leave.
+    fn room(&self, joined: &Joined<N>, tickets: &[Ticket<N>]) -> Room {
+        let share = self.host.share();
+        let Some(reading) = self.host.reading() else { return Room::unread(share) };
+        Room {
+            reading: Some(reading),
+            share,
+            counted: lag(tickets, &reading, |ticket| self.host.takes(ticket)),
+            spent: joined.started_on == Some(reading),
+        }
+    }
+
+    /// The room of the queue's own tickets: what the bound counts by.
+    fn own_room(&self, joined: &Joined<N>) -> Room {
+        self.room(joined, &joined.tickets)
+    }
+
     /// The queue's own tickets and those `Host::beside` it.
     fn with_beside(&self, joined: &Joined<N>) -> Result<Vec<Ticket<N>>, String> {
         self.besides(joined.tickets.clone())
@@ -503,8 +550,9 @@ mod tests {
         }
     }
 
-    /// A host of one worker lane whose cleanup fails as often as `fails`
-    /// says, then passes; it counts each leaving it is asked.
+    /// A host that cannot be read, so one command runs at a time, whose
+    /// cleanup fails as often as `fails` says, then passes; it counts each
+    /// leaving it is asked.
     struct Failing {
         fails: Mutex<u32>,
         asked: Mutex<u32>,
@@ -513,9 +561,6 @@ mod tests {
     impl Host<Plain> for Failing {
         fn now(&self) -> u64 {
             1_000
-        }
-        fn lanes(&self) -> Lanes {
-            Lanes { worker: 1, fast: 1, slow: 1 }
         }
         fn bound(&self) -> u64 {
             3_600
@@ -578,7 +623,17 @@ mod tests {
         assert_eq!(*holder.host().asked.lock().unwrap(), 3);
     }
 
-    const TWO: Lanes = Lanes { worker: 2, fast: 1, slow: 1 };
+    /// The host's cores a tenth busy: room for more.
+    fn roomy() -> Room {
+        let reading = crate::exclusive::Reading {
+            busy: 10,
+            by: crate::exclusive::By::Ticks,
+            since: 0,
+            taken: 60,
+            memory: None,
+        };
+        Room { reading: Some(reading), share: BUSY_SHARE, counted: 0, spent: false }
+    }
 
     #[test]
     fn contention_pauses_without_waiters_and_changing_waiters_does_not_reset_it() {
@@ -586,7 +641,7 @@ mod tests {
         let mut running = ticket("running", 0);
         running.ran = Some(0);
         let mut joined = Joined { tickets: vec![running], counted_at: start, ..Joined::new() };
-        let one = Lanes { worker: 1, fast: 1, slow: 1 };
+        let one = Room::unread(BUSY_SHARE);
         joined.count(start + Duration::from_secs(20), one);
         assert_eq!(
             joined.waited.get(&0).copied().unwrap_or_default(),
@@ -613,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn a_free_lane_is_no_contention_and_a_repos_second_turn_waits_only_for_its_own() {
+    fn room_is_no_contention_and_a_repos_second_turn_waits_only_for_its_own() {
         let mut a = ticket("a", 100);
         a.number = 1;
         a.repo = Some("a".into());
@@ -622,14 +677,18 @@ mod tests {
         b.number = 2;
         b.repo = Some("b".into());
         let mut joined = Joined { tickets: vec![a.clone(), b.clone()], ..Joined::new() };
-        assert_eq!(joined.waiting_for(1, TWO), 0, "b has a free lane, even at a zero bound");
+        assert_eq!(
+            joined.waiting_for(1, roomy()),
+            0,
+            "the host has room for b, even at a zero bound"
+        );
         b.ran = Some(101);
         let mut another_a = a;
         another_a.number = 3;
         another_a.ran = None;
         joined.tickets = vec![joined.tickets[0].clone(), b, another_a];
-        assert_eq!(joined.waiting_for(1, TWO), 1);
-        assert_eq!(joined.waiting_for(2, TWO), 0, "b does not hold a's second turn up");
+        assert_eq!(joined.waiting_for(1, roomy()), 1);
+        assert_eq!(joined.waiting_for(2, roomy()), 0, "b does not hold a's second turn up");
     }
 }
 
@@ -648,9 +707,6 @@ mod disk_tests {
     impl Host<Plain> for Filling {
         fn now(&self) -> u64 {
             100
-        }
-        fn lanes(&self) -> Lanes {
-            Lanes { worker: 4, fast: 4, slow: 1 }
         }
         fn bound(&self) -> u64 {
             3600
@@ -681,7 +737,7 @@ mod disk_tests {
             note: Plain::default(),
         };
         let (number, ahead) = holder.join(ticket);
-        assert_eq!(ahead, 0, "nothing is ahead of it, and every lane is free");
+        assert_eq!(ahead, 0, "nothing is ahead of it");
         let waiting = holder.clone();
         let turn = std::thread::spawn(move || waiting.turn(number));
         std::thread::sleep(CHECK_EVERY * 3);

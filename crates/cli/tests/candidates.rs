@@ -92,7 +92,7 @@ test ! -f "$root/fail-$name"
         .own();
     world.set_gate(&command);
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
-    world.say_host_settings(json!({"gate_lanes": lanes}));
+    room_for(&world, lanes);
     Fleet(world)
 }
 
@@ -1435,8 +1435,17 @@ test ! -f "$root/fail-$part-$name"
     git(&world.clone, &["commit", "-q", "-am", "split the gate"]);
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
-    world.say_host_settings(json!({"gate_lanes": lanes}));
+    room_for(&world, lanes);
     world
+}
+
+/// The host's room, as `lanes` places once said it (docs/adr/0087): one, and
+/// the cores read past the share, so that a command starts only while
+/// nothing of the queue runs; more, and a tenth busy, so that each start
+/// counts a quarter of the host for the minute the reading takes to include
+/// it, and four start side by side.
+fn room_for(world: &World, lanes: u64) {
+    world.cores_busy(if lanes == 1 { 95 } else { 10 });
 }
 
 fn started(world: &World, part: &str, name: &str) -> bool {
