@@ -958,10 +958,10 @@ impl Cutting<'_> {
     }
 
     /// Gates the version's commit, the whole gate — the fast gate and the
-    /// slow gate — in this checkout, in a worker lane as any heavy command
-    /// is (`gate::gated`): a run on record for its tree answers. It takes no
+    /// slow gate — in this checkout (`gate_once`): a run on record for its
+    /// tree answers. It takes no
     /// landing turn, is no candidate on any chain and reserves no barrier,
-    /// and its lane shares the repo as a candidate's does
+    /// and its lanes share the repo as a candidate's does
     /// (`Permit::cut_gate`): turns land on the base branch while it runs,
     /// whether it passes, fails or hangs. A run made now writes its whole
     /// output to a file of its own in the checkout's git dir, which no later
@@ -983,33 +983,12 @@ impl Cutting<'_> {
         if self.repo.git(&["rev-parse", "HEAD"])? != commit {
             self.repo.git(&["checkout", "--quiet", "--detach", &commit])?;
         }
-        let command = GateCommand::new(&self.config.gate_command);
         let gate_seconds = self.config.gate_seconds();
-        let limit = Duration::from_secs(gate_seconds);
-        let heavy = crate::config::heavy_gate(command.text());
         let pause = retry_seconds();
         let mut retried = 0;
         loop {
             let now = clock();
-            let output = self.gate_output(now)?;
-            let gated = {
-                let lane = crate::exclusive::Permit::cut_gate(self.repo, command.text(), heavy)?;
-                let gated = crate::gate::gated(
-                    self.repo,
-                    &command,
-                    self.host,
-                    now,
-                    limit,
-                    None,
-                    Some(&output),
-                );
-                // An older host runner may still end a cut's gate at the
-                // exclusive bound: the step says so (sunfmin/control#1263).
-                if let Some(line) = lane.ended() {
-                    bail!("the gate on {commit} {line}; its output is in {}", output.display());
-                }
-                gated?
-            };
+            let (gated, output) = self.gate_once(&commit, clock)?;
             let shown = output.display().to_string();
             let time = cut::time_limit(gate_seconds);
             let (red, overloaded) = match gated {
@@ -1047,6 +1026,79 @@ impl Cutting<'_> {
                 Some(RedGate { tests: red.tests, panics, quote: red.quote, output: shown.clone() });
             bail!("{why}; its output is in {shown}")
         }
+    }
+
+    /// One run of the gate on the version's commit, checked out here → what
+    /// it came to, and the file the output of its last part run is in.
+    ///
+    /// Where the repo declares `gates`, the gate is run as a round's whole
+    /// gate is (docs/adr/0083): the whole gate's green run on record for the
+    /// tree answers; otherwise the fast gate runs in a worker lane and, green,
+    /// the slow gate in the host's slow lanes, each to its own limit and
+    /// output file, and the two green runs put the whole gate on record. So
+    /// the slow tests get a slow lane's share of the host, not a worker's
+    /// (sunfmin/control#1264). Without `gates` the whole command runs in a
+    /// worker lane, to the gate limit.
+    fn gate_once(&self, commit: &str, clock: &impl Fn() -> u64) -> Result<(Gated, PathBuf)> {
+        use crate::exclusive::Permit;
+        let whole = GateCommand::new(&self.config.gate_command);
+        let Some(gates) = &self.config.gates else {
+            let seconds = self.config.gate_seconds();
+            return self.gate_part(commit, &whole, seconds, Permit::cut_gate, clock());
+        };
+        let tree = crate::gate::head_tree(self.repo)?;
+        let now = clock();
+        if let Some(run) = crate::gate::recorded(self.repo, &tree, &whole, now)? {
+            return Ok((Gated::Green { run, source: "recorded" }, self.gate_output(now)?));
+        }
+        let fast = GateCommand::new(&gates.fast.command);
+        let ran = self.gate_part(commit, &fast, gates.fast.seconds, Permit::cut_gate, now)?;
+        if !matches!(ran.0, Gated::Green { .. }) {
+            return Ok(ran);
+        }
+        let slow = GateCommand::new(&gates.slow.command);
+        let ran =
+            self.gate_part(commit, &slow, gates.slow.seconds, Permit::cut_slow_gate, clock())?;
+        if matches!(ran.0, Gated::Green { .. })
+            && let Some(why) = crate::gate::record_whole(
+                self.repo,
+                &tree,
+                commit,
+                (&whole, &fast, &slow),
+                None,
+                clock(),
+            )?
+        {
+            eprintln!(
+                "[afkconvoy] cut: the whole gate on {commit} passed and is not on record: {why}"
+            );
+        }
+        Ok(ran)
+    }
+
+    /// Runs `command`, the gate or one of its parts, on `commit` from `now`,
+    /// to `seconds`, in the lane `lane` takes → what it came to, and the file
+    /// of its own its output is in (`gate::gated`).
+    fn gate_part(
+        &self,
+        commit: &str,
+        command: &GateCommand,
+        seconds: u64,
+        lane: fn(&Repo, &str, bool) -> Result<crate::exclusive::Permit>,
+        now: u64,
+    ) -> Result<(Gated, PathBuf)> {
+        let output = self.gate_output(now)?;
+        let heavy = crate::config::heavy_gate(command.text());
+        let permit = lane(self.repo, command.text(), heavy)?;
+        let limit = Duration::from_secs(seconds);
+        let gated =
+            crate::gate::gated(self.repo, command, self.host, now, limit, None, Some(&output));
+        // An older host runner may still end a cut's gate at the exclusive
+        // bound: the step says so (sunfmin/control#1263).
+        if let Some(line) = permit.ended() {
+            bail!("the gate on {commit} {line}; its output is in {}", output.display());
+        }
+        Ok((gated?, output))
     }
 
     /// A file of its own for the output of the gate run started at `now`:

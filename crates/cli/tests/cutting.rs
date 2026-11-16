@@ -1902,3 +1902,64 @@ fn a_cut_whose_time_holds_no_other_gate_run_fails_on_an_overloaded_timeout() {
     let why = failed["why"].as_str().unwrap();
     assert!(why.contains("cannot classify on an overloaded host, gated again 0 times"), "{why}");
 }
+
+/// A repo that splits its gate cuts as a round lands (sunfmin/control#1264):
+/// the cut gates its commit's fast part in a worker lane and its slow part
+/// in the host's slow lanes, never the whole command, and the two green
+/// runs put the whole gate on record for its tree.
+#[test]
+fn a_cut_of_a_repo_that_splits_its_gate_runs_its_slow_part_in_a_slow_lane() {
+    let world = World::new();
+    tag(&world, "v0.1.0");
+    let parts = world.root.join("parts");
+    // The whole command fails: a cut that ran it would not tag. Short
+    // commands, which the tick log says whole with the lane each runs in.
+    let script = format!("echo \"$1\" >> '{}'\ntest \"$1\" != whole\n", parts.display());
+    common::commit(&world.clone, "gate-part.sh", &script);
+    let part = |name: &str| format!("afkconvoy exclusive -- sh ./gate-part.sh {name}");
+    let config = format!(
+        "```yaml\nbase_branch: main\ngate_command: \"{whole}\"\ngate_seconds: 600\n```\n\n\
+         ```yaml gates\nfast:\n  command: \"{fast}\"\n  seconds: 300\n  budget_seconds: 200\n\
+         slow:\n  command: \"{slow}\"\n  seconds: 300\n  budget_seconds: 200\n```\n",
+        whole = part("whole"),
+        fast = part("fast"),
+        slow = part("slow"),
+    );
+    world.cores_busy(10);
+    let _host_runner = world.host_held();
+    commit_config(
+        &world,
+        &format!("{config}\n{}", cut_block(&says_published(&world))),
+        "Turn cutting on (#7)",
+    );
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    let answer = finish(&world, &checkout);
+    assert_eq!(answer["tag"], "v0.1.1", "{answer}");
+    let ran = std::fs::read_to_string(&parts).unwrap();
+    assert_eq!(ran, "fast\nslow\n", "the fast part, then the slow, and never the whole");
+
+    let said = logged(&world);
+    let ran_in = |name: &str, lane: &str| {
+        let runs = format!("runs `{}` in the {lane} lane", part(name));
+        said.iter().any(|line| line.contains(&runs))
+    };
+    assert!(ran_in("fast", "worker"), "{said:#?}");
+    assert!(ran_in("slow", "slow"), "{said:#?}");
+
+    // The whole gate is on record for the version's tree.
+    let commit = answer["commit"].as_str().unwrap();
+    let tree = world.remote(&["rev-parse", &format!("{commit}^{{tree}}")]);
+    let refs = world.remote(&[
+        "for-each-ref",
+        "--format=%(refname)",
+        &format!("refs/convoy/gate/{tree}-*"),
+    ]);
+    use afkconvoy_core::gate::{GateCommand, GreenRun, Tree};
+    let whole = GateCommand::new(&part("whole"));
+    let recorded = refs.lines().any(|name| {
+        let message = world.remote(&["log", "-1", "--format=%B", name]);
+        GreenRun::recorded(&message, &Tree::named(&tree), &whole).is_some()
+    });
+    assert!(recorded, "{refs}");
+}
