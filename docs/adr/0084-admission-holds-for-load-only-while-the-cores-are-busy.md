@@ -22,7 +22,9 @@ its cores are — the share of all their time not idle, from the kernel's CPU
 ticks (`host_statistics`' `HOST_CPU_LOAD_INFO` on macOS, `/proc/stat`
 elsewhere) between two readings. A process says it over the time since its
 own last reading, up to a minute, the load average's span; one with no
-reading that recent reads twice, a quarter of a second apart.
+reading that recent reads twice, a quarter of a second apart or longer: macOS
+moves its ticks on in steps, at times a second apart, and the second
+reading waits for one, up to three seconds.
 
 The load holds only while both are past their thresholds: the load past its
 share of the cores (`--admit-load`, 200% by default), and the cores more

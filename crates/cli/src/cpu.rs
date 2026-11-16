@@ -9,7 +9,7 @@
 //! A process keeps its last reading: the next is said over the time since,
 //! up to `WINDOW`, so the host runner and a fleet reading every tick wait for
 //! nothing. A process with no reading that recent reads twice, `SHORTEST`
-//! apart.
+//! apart, or longer until a tick has passed.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -19,6 +19,9 @@ pub const WINDOW: Duration = Duration::from_secs(60);
 
 /// The shortest: a reading sooner than this after the last says the last's.
 pub const SHORTEST: Duration = Duration::from_millis(250);
+
+/// The longest a process with no recent reading waits for the ticks to move.
+pub const LONGEST: Duration = Duration::from_secs(3);
 
 /// A test world's stand-in: the file it names says the cores' busy share in
 /// percent, or holds nothing, and they are not read.
@@ -43,6 +46,7 @@ impl Ticks {
 }
 
 /// The last reading this process took, and what it said.
+#[derive(Clone, Copy)]
 struct Last {
     at: Instant,
     ticks: Ticks,
@@ -53,12 +57,15 @@ static LAST: Mutex<Option<Last>> = Mutex::new(None);
 
 /// The share of the host's cores' time busy, in percent, over the time since
 /// this process last read it, up to `WINDOW`; `None`: it cannot be read.
+/// macOS moves its ticks on in steps, at times a second apart: a reading
+/// that finds none passed since a recent one says that one's, and one with
+/// none recent waits for them, up to `LONGEST`.
 pub fn busy() -> Option<u64> {
     if let Some(fake) = std::env::var_os(FAKE) {
         return std::fs::read_to_string(fake).ok()?.trim().parse().ok();
     }
     let mut last = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let recent = last.as_ref().filter(|last| last.at.elapsed() <= WINDOW);
+    let recent = (*last).filter(|last| last.at.elapsed() <= WINDOW);
     if let Some(recent) = recent
         && recent.at.elapsed() < SHORTEST
     {
@@ -66,16 +73,25 @@ pub fn busy() -> Option<u64> {
     }
     let earlier = match recent {
         Some(recent) => recent.ticks,
-        None => {
-            let earlier = ticks()?;
-            std::thread::sleep(SHORTEST);
-            earlier
-        }
+        None => ticks()?,
     };
-    let now = ticks()?;
-    let said = now.busy_since(earlier);
-    *last = Some(Last { at: Instant::now(), ticks: now, said });
-    said
+    let waited = Instant::now();
+    loop {
+        if recent.is_none() {
+            std::thread::sleep(SHORTEST);
+        }
+        let now = ticks()?;
+        if let Some(said) = now.busy_since(earlier) {
+            *last = Some(Last { at: Instant::now(), ticks: now, said: Some(said) });
+            return Some(said);
+        }
+        if let Some(recent) = recent {
+            return recent.said;
+        }
+        if waited.elapsed() >= LONGEST {
+            return None;
+        }
+    }
 }
 
 /// The kernel's CPU ticks now.
