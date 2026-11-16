@@ -674,13 +674,13 @@ enum Command {
         busy_share: Option<Box<To<u64>>>,
         /// Removed: the exclusive queue has no count of places (docs/adr/0087)
         #[arg(long, hide = true, value_parser = removed_lanes)]
-        gate_lanes: Option<String>,
+        gate_lanes: Option<()>,
         /// Removed: the exclusive queue has no count of places (docs/adr/0087)
         #[arg(long, hide = true, value_parser = removed_lanes)]
-        slow_gate_lanes: Option<String>,
+        slow_gate_lanes: Option<()>,
         /// Removed: the exclusive queue has no count of places (docs/adr/0087)
         #[arg(long, hide = true, value_parser = removed_lanes)]
-        fast_lanes: Option<String>,
+        fast_lanes: Option<()>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -1884,7 +1884,7 @@ const REMOVED_LANES: &str = "is removed: the exclusive queue has no count of pla
      `--busy-share PERCENT` sets the share of its cores it starts under";
 
 /// `--gate-lanes`, `--slow-gate-lanes` and `--fast-lanes`, still given.
-fn removed_lanes(_: &str) -> Result<String, String> {
+fn removed_lanes(_: &str) -> Result<(), String> {
     Err(format!("the flag {REMOVED_LANES}"))
 }
 
