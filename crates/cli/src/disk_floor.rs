@@ -8,11 +8,12 @@
 use afkconvoy_core::admission::Hold;
 use afkconvoy_core::worker::WorkerState;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::fleet::Fleet;
 use crate::measure::said;
-use crate::orca::Worktree;
+use crate::orca::Handed;
 
 /// The note, in a worktree's git dir, that its worker was told to stop
 /// writing: when, in epoch seconds.
@@ -61,9 +62,43 @@ pub(crate) fn below(held: &[Hold]) -> Option<(u64, u64)> {
     })
 }
 
+/// The line typed at a worker and not yet given to its model, in its
+/// worktree's git dir: a `Pending`, kept until its session holds the mark.
+const PENDING: &str = "convoy-disk-floor-line";
+
+/// The terminal that took the pending line (`Worktree::hand_update`): while
+/// it holds, the line is not typed again.
+const RECEIPT: &str = "convoy-disk-floor-receipt";
+
+/// A line typed at a worker, or about to be, that its harness has not given
+/// its model yet. It carries its `mark`, which its session shows once the
+/// model has it; until then each tick looks once and goes on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Pending {
+    /// Whether it tells the worker to stop: once taken, it is told.
+    stop: bool,
+    line: String,
+    mark: String,
+    /// When it was first typed, epoch seconds.
+    at: u64,
+}
+
+impl Pending {
+    fn new(say: &Say, now: u64) -> Self {
+        let mark = format!("convoy-disk-floor-{now}");
+        // The mark is in the line: the session holds the line as the user's.
+        let line = format!("{} [disk floor: {mark}]", line(say));
+        Pending { stop: matches!(say, Say::Stop { .. }), line, mark, at: now }
+    }
+}
+
 /// Tells each worker of `issues`, this fleet's on `host`, what the disk under
 /// the checkout calls for (`due`). Each telling is a tick step; one that
-/// fails costs only itself and is tried again at the next tick.
+/// fails costs only itself and is tried again at the next tick. A line is
+/// typed once and never waited on: the tick looks once whether the harness
+/// gave it to its model, and a line still queued is looked at again at the
+/// next tick (sunfmin/control#1230). One queued past the note bound is typed
+/// again, under the same mark.
 pub(crate) fn reconcile(fleet: &Fleet, host: &str, issues: &[u64], held: &[Hold]) -> Vec<Value> {
     let below = below(held);
     let mut steps = vec![];
@@ -72,18 +107,56 @@ pub(crate) fn reconcile(fleet: &Fleet, host: &str, issues: &[u64], held: &[Hold]
             let Ok((worktree, terminal)) = crate::tell::worker(fleet, host, issue)? else {
                 return Ok(None);
             };
-            let note = worktree.note(TOLD)?;
-            let told = note.exists();
-            // Reading a worker's state asks orca: only where it matters.
-            let busy = !told && below.is_some() && worktree.state(fleet.now)? == WorkerState::Busy;
-            let say = due(told, busy, below);
-            let Some(say) = say else { return Ok(None) };
-            tell(&worktree, &terminal, &say, fleet.now)?;
-            match say {
-                Say::Stop { .. } => std::fs::write(&note, format!("{}\n", fleet.now))?,
-                Say::GoOn => std::fs::remove_file(&note)?,
+            let told = worktree.note(TOLD)?;
+            let pending_file = worktree.note(PENDING)?;
+            let receipt = worktree.note(RECEIPT)?;
+            // A line typed and not taken yet is handed before any other:
+            // whichever it says, the next tick's `due` sets right what it did.
+            let pending = std::fs::read_to_string(&pending_file)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Pending>(&text).ok());
+            let pending = match pending {
+                Some(pending) => pending,
+                None => {
+                    let is_told = told.exists();
+                    // Reading a worker's state asks orca: only where it matters.
+                    let busy = !is_told
+                        && below.is_some()
+                        && worktree.state(fleet.now)? == WorkerState::Busy;
+                    let Some(say) = due(is_told, busy, below) else { return Ok(None) };
+                    let pending = Pending::new(&say, fleet.now);
+                    std::fs::write(&pending_file, serde_json::to_string(&pending)?)?;
+                    pending
+                }
+            };
+            let did = if pending.stop { "stop" } else { "go on" };
+            let since = worktree.handed(None)?.unwrap_or(0);
+            let handed =
+                worktree.hand_update(&terminal, &pending.line, &pending.mark, since, &receipt)?;
+            if handed == Handed::Queued {
+                let bound = crate::orca::note_wait_seconds();
+                let mut step = json!({"do": "disk_floor", "issue": issue, "outcome": "queued",
+                    "since": pending.at, "comment": format!("the disk floor, {did}")});
+                if fleet.now.saturating_sub(pending.at) >= bound {
+                    // Not taken within the bound: typed again at the next
+                    // tick, under the same mark, rather than waited on.
+                    let _ = std::fs::remove_file(&receipt);
+                    step["outcome"] = json!("failed");
+                    step["error"] = json!(format!(
+                        "the harness did not give its model the line queued since {} within \
+                         {bound}s: it is typed again at the next tick",
+                        pending.at
+                    ));
+                }
+                return Ok(Some(step));
             }
-            let did = if matches!(say, Say::Stop { .. }) { "stop" } else { "go on" };
+            if pending.stop {
+                std::fs::write(&told, format!("{}\n", fleet.now))?;
+            } else if told.exists() {
+                std::fs::remove_file(&told)?;
+            }
+            let _ = std::fs::remove_file(&receipt);
+            std::fs::remove_file(&pending_file)?;
             Ok(Some(json!({"do": "disk_floor", "issue": issue, "outcome": "done",
                 "comment": format!("the disk floor, {did}")})))
         })();
@@ -94,13 +167,6 @@ pub(crate) fn reconcile(fleet: &Fleet, host: &str, issues: &[u64], held: &[Hold]
         }
     }
     steps
-}
-
-fn tell(worktree: &Worktree, terminal: &str, say: &Say, now: u64) -> Result<()> {
-    let mark = format!("convoy-disk-floor-{now}");
-    let since = worktree.handed(None)?.unwrap_or(0);
-    worktree.hand_note(terminal, &line(say), &mark, since)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -129,6 +195,29 @@ mod tests {
             line(&due(false, true, below).unwrap())
                 .contains("1.0 GiB free, under its floor of 4.0 GiB")
         );
+    }
+
+    /// sunfmin/control#1230: the line was typed with a mark it did not hold,
+    /// so no session ever showed it taken and each wait ran out its bound.
+    /// The line carries its mark: once Claude Code gives it to its model as
+    /// the user's, the session shows it taken.
+    #[test]
+    fn the_line_carries_the_mark_its_session_is_read_for() {
+        let harness = afkconvoy_core::harness::Harness::ClaudeCode;
+        let shows = |line: &str, mark: &str| {
+            harness
+                .note_files("/w", line, true, 1090)
+                .iter()
+                .any(|f| harness.holds_note(&f.body, mark))
+        };
+        for say in [Say::GoOn, Say::Stop { free: GIB, floor: 4 * GIB }] {
+            let pending = Pending::new(&say, 1090);
+            assert_eq!(pending.mark, "convoy-disk-floor-1090");
+            assert!(shows(&pending.line, &pending.mark), "{pending:?}");
+            assert!(!shows(&line(&say), &pending.mark), "the bare line is never seen taken");
+            let queued = harness.note_files("/w", &pending.line, false, 1090);
+            assert!(!queued.iter().any(|f| harness.holds_note(&f.body, &pending.mark)));
+        }
     }
 
     fn below_of(held: &[Hold]) -> Option<(u64, u64)> {
