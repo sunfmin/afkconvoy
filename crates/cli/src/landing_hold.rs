@@ -98,18 +98,6 @@ pub fn hold(
     Ok(json!({"hold": hold, "lifted": false}))
 }
 
-/// The answer of a `land` turn the hold keeps off.
-pub fn held(mut answer: Value, hold: &Hold) -> Value {
-    answer["outcome"] = json!(afkconvoy_core::ending::Ending::Held);
-    answer["hold"] = json!(hold);
-    answer["detail"] = json!(format!(
-        "{}: no turn starts; nothing in your tree is to change; the fleet asks for this turn \
-         again once it is lifted",
-        hold.line()
-    ));
-    answer
-}
-
 /// What `afkconvoy hold --help` says after its one line, which lib.rs's
 /// `Command` holds.
 pub(crate) const HELP: &str = r#"## When to run it
@@ -178,14 +166,5 @@ mod tests {
         assert!(line.contains("#311"), "{line}");
         assert!(line.contains("batch"), "{line}");
         assert!(line.contains("afkconvoy hold --lift"), "{line}");
-    }
-
-    #[test]
-    fn a_held_turn_answers_held_with_the_hold() {
-        let hold = Hold { at: 9, issue: None, reason: None };
-        let answer = held(json!({"issue": 7}), &hold);
-        assert_eq!(answer["outcome"], "held");
-        assert_eq!(answer["hold"]["at"], 9);
-        assert!(answer["detail"].as_str().unwrap().contains("landing hold"));
     }
 }
