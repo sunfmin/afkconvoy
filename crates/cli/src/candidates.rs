@@ -27,6 +27,7 @@ use crate::forge::{Pulls, Refusal};
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::orca::Unremoved;
+use crate::orca_name::{Label, Shown, State};
 use crate::remote::{Fresh, Push};
 
 /// What a turn says when the issue's pinned target moved off the branch it
@@ -1898,6 +1899,8 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         (candidate.result.clone().expect("a fast-green candidate has its gate result"), None)
     } else {
         add_candidate_worktree(repo, &path, &candidate.commit)?;
+        let name = Shown::Landing { of, title: &pr.title }.name(forge.tracker);
+        let label = Label::show(&path, name.clone(), Some(State::Gating));
         let checkout = Repo::new(path.clone());
         let command = GateCommand::new(&candidate.command);
         let hook = Gate { repo, config, id: &id, slow: false, clock: &clock };
@@ -1911,7 +1914,10 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             &hook,
         );
         match result {
-            Ok((evidence, judged)) => (evidence, Some(judged)),
+            Ok((evidence, judged)) => {
+                label.end(name, State::of(evidence.green()));
+                (evidence, Some(judged))
+            }
             Err(error) => {
                 invalidate(repo, config, &id, "gate_interrupted")?;
                 return Err(error);
@@ -2471,6 +2477,8 @@ fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
     })?;
     let Some(p) = started else { return Ok(()) };
     add_candidate_worktree(repo, &path, &p.commit)?;
+    let name = paired(turn, &p).name(turn.forge.tracker);
+    let label = Label::show(&path, name.clone(), Some(State::Gating));
     let checkout = Repo::new(path.clone());
     let command = GateCommand::new(&p.command);
     let hook = Gate { repo, config, id: pair, slow: false, clock };
@@ -2497,6 +2505,7 @@ fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
             return Err(error);
         }
     };
+    label.end(name, State::of(evidence.green()));
     let chain = change(repo, config, |chain| chain.finish(pair, evidence.clone()))?;
     cleanup(repo, config, &chain)?;
     stop_candidate(repo, config, pair)?;
@@ -2648,6 +2657,8 @@ fn whole(round: Round<'_>) -> Result<Option<Value>> {
             }
             None => {
                 add_candidate_worktree(repo, &path, &tip.commit)?;
+                let named = |gate| rounded(&members, gate).name(round.tracker);
+                let label = Label::show(&path, named("fast"), Some(State::Gating));
                 let checkout = Repo::new(path.clone());
                 let fast = GateCommand::new(&tip.command);
                 let ran = {
@@ -2673,6 +2684,7 @@ fn whole(round: Round<'_>) -> Result<Option<Value>> {
                 };
                 match &tip.slow {
                     Some(slow) if fast_evidence.green() => {
+                        label.set(named("slow"), Some(State::Gating));
                         // The fast gate's processes are confirmed gone before the
                         // slow gate's are owned through a scope of their own.
                         let scope = crate::process_scope::path(&tip.worktree);
@@ -2718,9 +2730,13 @@ fn whole(round: Round<'_>) -> Result<Option<Value>> {
                                 evidence.not_recorded = Some(why);
                             }
                         }
+                        label.end(named("slow"), State::of(evidence.green()));
                         (evidence, judged, "slow")
                     }
-                    _ => (fast_evidence, fast_judged, "fast"),
+                    _ => {
+                        label.end(named("fast"), State::of(fast_evidence.green()));
+                        (fast_evidence, fast_judged, "fast")
+                    }
                 }
             }
         };
@@ -2746,6 +2762,48 @@ fn whole(round: Round<'_>) -> Result<Option<Value>> {
     };
     let ran = Ran { gate, red: &red, members: &members, tip: &tip, at };
     Ok(Some(red_round(&round, &ran, result)?))
+}
+
+/// A round's tip, as Orca names its worktree: the issues of `members`,
+/// the round's candidates, and which of its gates runs there.
+fn rounded<'a>(members: &[Candidate], gate: &'a str) -> Shown<'a> {
+    let mut issues: Vec<u64> = vec![];
+    for issue in members.iter().filter_map(|m| m.note.issue) {
+        if !issues.contains(&issue) {
+            issues.push(issue);
+        }
+    }
+    Shown::Round { issues, gate }
+}
+
+/// A pair of a round's pairing tree, `pair`, as Orca names its worktree:
+/// the issues its two nodes' PRs close. This turn's PR's is its own issue;
+/// another's is read from its description, and one that cannot be read is
+/// left out — the name is no reason to stop a gate.
+fn paired(turn: &InRound<'_>, pair: &Candidate) -> Shown<'static> {
+    let Some(paired) = &pair.pair else {
+        return Shown::Pair { first: vec![], second: turn.issue.into_iter().collect() };
+    };
+    let of = |prs: &[u64]| {
+        let mut issues: Vec<u64> = vec![];
+        for &pr in prs {
+            let closes = if pr == turn.asked.number {
+                turn.issue.into_iter().collect()
+            } else {
+                turn.gh
+                    .pr_body(pr)
+                    .map(|body| turn.forge.tracker.closed_by(&body, &[], None))
+                    .unwrap_or_default()
+            };
+            for issue in closes {
+                if !issues.contains(&issue) {
+                    issues.push(issue);
+                }
+            }
+        }
+        issues
+    };
+    Shown::Pair { first: of(&paired.first), second: of(&paired.second) }
 }
 
 /// What a round's red gate ran on: which gate, what it said, the round's
@@ -2835,6 +2893,8 @@ fn round(round: Round<'_>) -> Result<Option<Value>> {
     // gets one of its own, at the same place, and it goes when it ends.
     let path = PathBuf::from(&tip.worktree);
     add_candidate_worktree(repo, &path, &tip.commit)?;
+    let name = rounded(&members, "slow").name(round.tracker);
+    let label = Label::show(&path, name.clone(), Some(State::Gating));
     let checkout = Repo::new(path.clone());
     // The fast gate's scope was confirmed free when it stopped; the slow
     // gate's processes are owned through a scope of their own.
@@ -2861,6 +2921,7 @@ fn round(round: Round<'_>) -> Result<Option<Value>> {
             return Err(error);
         }
     };
+    label.end(name, State::of(evidence.green()));
     if evidence.green() {
         let tree = Tree::named(&tip.tree);
         let parts = (&GateCommand::new(&slow.whole), &GateCommand::new(&tip.command), &command);

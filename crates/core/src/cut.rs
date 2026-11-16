@@ -10,6 +10,7 @@
 //! what is left of it are decided here; running its steps, and starting and
 //! ending it, are the effect layer's.
 
+use afkconvoy_gate::gate::Panic;
 use serde::{Deserialize, Serialize};
 
 use crate::claims::{Holder, InstanceId, RunClaim};
@@ -648,13 +649,17 @@ impl Failure {
 }
 
 /// What a cut's gate that ran red named: the tests its output names as
-/// failing (`gate::failing_tests`), what it printed from the first of them
-/// on (`gate::quoted`), and the file its whole output is kept in — a file
-/// of that run's own, which no later run of the gate writes.
+/// failing (`gate::failing_tests`), what each of them panicked with
+/// (`gate::panics`), what it printed from the first of them on
+/// (`gate::quoted`), and the file its whole output is kept in — a file of
+/// that run's own in the host's cache, which no later run of the gate and no
+/// later cut writes or removes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedGate {
     #[serde(default)]
     pub tests: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panics: Vec<Panic>,
     #[serde(default)]
     pub quote: Vec<String>,
     pub output: String,
@@ -1017,23 +1022,32 @@ pub fn published_said(version: &str) -> String {
 }
 
 /// What the report of a cut whose gate ran red says of that run: the tests
-/// that failed, what it printed from the first of them on, and where its
-/// whole output is kept.
+/// that failed, what each of them panicked with, what it printed from the
+/// first of them on, and where its whole output is kept.
 fn red_gate(red: &RedGate) -> String {
     let mut said = match red.tests.as_slice() {
-        [] => "Its gate's output names no failing test. It ended:\n\n".to_string(),
+        [] => "Its gate's output names no failing test.\n\n".to_string(),
         tests => {
             let named: Vec<String> = tests.iter().map(|test| format!("`{test}`")).collect();
-            format!(
-                "The tests its gate failed on: {}. Its output from the first of them on:\n\n",
-                named.join(", ")
-            )
+            format!("The tests its gate failed on: {}.\n\n", named.join(", "))
         }
     };
+    for panic in &red.panics {
+        said.push_str(&format!(
+            "`{}` panicked:\n\n````\n{}\n````\n\n",
+            panic.test,
+            panic.said.join("\n")
+        ));
+    }
+    said.push_str(match red.tests.as_slice() {
+        [] => "It ended:\n\n",
+        _ => "Its output from the first of them on:\n\n",
+    });
     said.push_str(&format!("````\n{}\n````\n\n", red.quote.join("\n")));
     said.push_str(&format!(
-        "That run's whole output is kept in `{}`, a file of its own: a later \
-         `afkconvoy cut --from gate` writes its run to another, and leaves this one.\n\n",
+        "That run's whole output is kept in `{}`, a file of its own on that host: a \
+         later `afkconvoy cut --from gate` writes its run to another, and the next cut leaves \
+         this one where it is.\n\n",
         red.output
     ));
     said
@@ -1618,6 +1632,10 @@ mod tests {
         // says where the whole of it is kept.
         let red = RedGate {
             tests: vec!["afkconvoy cutting::a".into(), "afkconvoy cutting::b".into()],
+            panics: vec![Panic {
+                test: "afkconvoy cutting::a".into(),
+                said: vec!["thread 'cutting::a' panicked at a.rs:1:1:".into(), "boom".into()],
+            }],
             quote: vec!["  FAIL [ 0.1s] afkconvoy cutting::a".into(), "  boom".into()],
             output: "/w/.git/convoy-cut-gate-1.log".into(),
         };
@@ -1629,8 +1647,20 @@ mod tests {
         );
         assert!(said.contains("````\n  FAIL [ 0.1s] afkconvoy cutting::a\n  boom\n````"), "{said}");
         assert!(said.contains("kept in `/w/.git/convoy-cut-gate-1.log`"), "{said}");
+        assert!(
+            said.contains(
+                "`afkconvoy cutting::a` panicked:\n\n````\nthread 'cutting::a' panicked at a.rs:1:1:\nboom\n````"
+            ),
+            "{said}"
+        );
+        assert!(!said.contains("`afkconvoy cutting::b` panicked"), "{said}");
         let failure = Failure {
-            red: Some(RedGate { tests: vec![], quote: vec!["x".into()], output: "o".into() }),
+            red: Some(RedGate {
+                tests: vec![],
+                panics: vec![],
+                quote: vec!["x".into()],
+                output: "o".into(),
+            }),
             ..Failure::at(Step::Gate, "red")
         };
         let said = failure_report(&record(), &failure, "h1", Some("/w/cut"), "x");
@@ -1697,6 +1727,7 @@ mod tests {
         let red = |tests: &[&str]| Failure {
             red: Some(RedGate {
                 tests: tests.iter().map(|t| t.to_string()).collect(),
+                panics: vec![],
                 quote: vec![],
                 output: "o".into(),
             }),
