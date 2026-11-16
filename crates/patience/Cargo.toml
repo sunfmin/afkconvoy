@@ -1,0 +1,8 @@
+[package]
+name = "afkconvoy-patience"
+description = "How long a test waits for an event: one generous bound, shared by every test crate of this workspace, that only catches a hang (sunfmin/control#1183)"
+version.workspace = true
+edition.workspace = true
+publish = false
+# Built again at every commit the gate names (sunfmin/control#1114).
+build = "../commit.rs"

@@ -11,6 +11,7 @@ dependencies = [
  "afkconvoy-gate",
  "afkconvoy-host-kit",
  "afkconvoy-landing",
+ "afkconvoy-patience",
  "agent-help",
  "anyhow",
  "clap",
@@ -58,6 +59,7 @@ dependencies = [
 name = "afkconvoy-gate"
 version = "0.5.64"
 dependencies = [
+ "afkconvoy-patience",
  "flux-alloc",
  "flux-core",
  "flux-rs",
@@ -98,6 +100,7 @@ name = "afkconvoy-landing"
 version = "0.5.64"
 dependencies = [
  "afkconvoy-gate",
+ "afkconvoy-patience",
  "flux-alloc",
  "flux-core",
  "flux-rs",
@@ -105,6 +108,10 @@ dependencies = [
  "serde_json",
  "tempfile",
 ]
+
+[[package]]
+name = "afkconvoy-patience"
+version = "0.5.64"
 
 [[package]]
 name = "agent-help"

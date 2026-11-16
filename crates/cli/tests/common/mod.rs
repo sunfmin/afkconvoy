@@ -15,14 +15,9 @@ use tempfile::TempDir;
 pub const BASE: &str = "main";
 
 /// How long a test waits for what a host runner, or a fleet instance it holds,
-/// is to do: a log line, a tick, a socket, a page. It is waited on, never
-/// slept for, and a test is held only as long as it takes; the bound is for
-/// what never comes, and is generous: a cut's gate runs beside other gates on
-/// its host, and a wait of 30 seconds lost to their load
-/// (sunfmin/control#833); at a load of 200 on 14 cores one tick that leaves
-/// three issues took over 90. Within the limit for one test, 240 seconds
-/// (.config/nextest.toml).
-pub const PATIENCE: Duration = Duration::from_secs(180);
+/// is to do: the one bound on a wait for an event, shared by every test crate
+/// (sunfmin/control#1183).
+pub use afkconvoy_patience::PATIENCE;
 
 /// Opt-in fixture timings, captured by nextest with `--success-output final`.
 /// The environment belongs to the test driver, never to a world's host.
