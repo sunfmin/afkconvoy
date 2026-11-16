@@ -102,6 +102,7 @@ pub mod machine;
 pub mod measure;
 pub mod named_harness;
 pub mod orca;
+mod orca_name;
 pub mod own_cpu;
 pub mod panel;
 pub mod park;
@@ -1708,7 +1709,8 @@ pub fn manual() -> agent_help::Help {
         .constant("DOCTOR_EVENTS_SHOWN", run_log::EVENTS_SHOWN)
         .constant("CUT_MINOR_LABEL", afkconvoy_core::cut::MINOR_LABEL)
         .constant("CUT_BUSY_AFTER_SECONDS", afkconvoy_core::cut::BUSY_AFTER_SECONDS)
-        .constant("CUT_REPEATS", afkconvoy_core::cut::REPEATS);
+        .constant("CUT_REPEATS", afkconvoy_core::cut::REPEATS)
+        .constant("CUT_KEPT_RED", cut::KEPT_RED);
     for (name, group) in [
         ("OPERATOR", OPERATOR),
         ("DESIGNER", DESIGNER),
