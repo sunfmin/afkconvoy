@@ -269,6 +269,27 @@ pub struct Grouping<M> {
     pub carry: Option<(usize, usize)>,
 }
 
+/// The message of a group's merge of the node holding `next` onto the
+/// merge of the nodes holding `held`: "Group … with …", each PR named once,
+/// by `mark` before its number, so its length stays bounded by the PRs it
+/// joins (sunfmin/control#1266).
+pub fn group_message(mark: &str, held: &[u64], next: &[u64]) -> String {
+    let mut seen: Vec<u64> = vec![];
+    let mut named = |changes: &[u64]| {
+        let mut names = vec![];
+        for &change in changes {
+            if !seen.contains(&change) {
+                seen.push(change);
+                names.push(format!("{mark}{change}"));
+            }
+        }
+        names.join(", ")
+    };
+    let held = named(held);
+    let next = named(next);
+    format!("Group {held} with {next}")
+}
+
 /// The groups of a level of `n` nodes, in asking order (sunfmin/control#1239):
 /// the first node not yet taken starts a group, and every later node not yet
 /// taken that `merge` merges cleanly with what the group holds so far is
@@ -1604,6 +1625,12 @@ mod tests {
             [(vec![1, 2], "(h1+h2)".to_string()), (vec![3], "h3".to_string())],
             "each PR in one node, the current one"
         );
+    }
+
+    #[test]
+    fn a_groups_message_names_each_pr_once() {
+        assert_eq!(group_message("#", &[1, 2], &[3]), "Group #1, #2 with #3");
+        assert_eq!(group_message("!", &[125, 125, 7], &[125, 7, 9]), "Group !125, !7 with !9");
     }
 
     /// A PR no group takes goes up alone; a PR asking during a round waits

@@ -265,6 +265,23 @@ impl Repo {
         run(&self.dir, args, env)
     }
 
+    /// One git call under extra environment, `input` on its stdin, whose
+    /// failure the caller reads: for text no argument may carry, past the
+    /// OS's `ARG_MAX`.
+    pub fn try_git_given(&self, args: &[&str], env: &[(&str, &str)], input: &str) -> Result<Ran> {
+        local(args)?;
+        let out = crate::process::output_with_input(
+            Command::new("git")
+                .current_dir(&self.dir)
+                .args(args)
+                .env("LC_ALL", "C")
+                .envs(env.iter().copied()),
+            input.as_bytes(),
+        )
+        .with_context(|| could_not_run(args, &self.dir))?;
+        Ok(ran(out))
+    }
+
     /// Removes the linked worktree at `path`, its directory and its
     /// registration, including when a directory in it is not writable by its
     /// owner, as a cancelled test leaves one (sunfmin/control#610).

@@ -168,6 +168,21 @@ fn contains(dir: &Path, head: &str, other: &str) -> Result<bool, String> {
     }
 }
 
+/// Commits `tree` in `dir` with `parents`, each once, and `message` →
+/// its sha. The message goes to git on stdin, as no argument may carry
+/// one past the OS's `ARG_MAX` (sunfmin/control#1266).
+fn commit_tree(dir: &Path, tree: &str, parents: &[&str], message: &str) -> Result<String, String> {
+    let mut args = vec!["commit-tree", tree, "-F", "-"];
+    let mut given: Vec<&str> = vec![];
+    for &parent in parents {
+        if !given.contains(&parent) {
+            given.push(parent);
+            args.extend(["-p", parent]);
+        }
+    }
+    git_in(dir, &args, Some(message))
+}
+
 /// One git call in `dir`, given `input`, that must succeed → its stdout,
 /// trimmed.
 fn git_in(dir: &Path, args: &[&str], input: Option<&str>) -> Result<String, String> {
@@ -391,10 +406,7 @@ where
                 .unwrap_or_default()
                 .to_string();
             let message = self.forge.message(&change);
-            let commit = git(
-                self.dir(),
-                &["commit-tree", &tree, "-p", &predecessor, "-p", &original, "-m", &message],
-            )?;
+            let commit = commit_tree(self.dir(), &tree, &[&predecessor, &original], &message)?;
             let own = (self.declared)(self.dir(), &commit)?.own();
             let id = read.chain.unused_id(format!(
                 "{}-{}-{}",
@@ -997,9 +1009,6 @@ where
         target: &str,
         (round, level, nodes): (String, u32, Vec<pairing::Node>),
     ) -> Result<(), String> {
-        let named = |changes: &[u64]| {
-            changes.iter().map(|n| format!("!{n}")).collect::<Vec<_>>().join(", ")
-        };
         let made = pairing::groups(nodes.len(), |held: Option<&String>, at: &[usize], node| {
             let (Some(first), Some(next)) =
                 (at.first().and_then(|&i| nodes.get(i)), nodes.get(node))
@@ -1012,11 +1021,8 @@ where
             for &i in at {
                 changes.extend(nodes.get(i).iter().flat_map(|n| &n.changes));
             }
-            let message = format!("Group {} with {}", named(&changes), named(&next.changes));
-            let commit = git(
-                self.dir(),
-                &["commit-tree", &tree, "-p", onto, "-p", &next.commit, "-m", &message],
-            )?;
+            let message = pairing::group_message("!", &changes, &next.changes);
+            let commit = commit_tree(self.dir(), &tree, &[onto, &next.commit], &message)?;
             Ok::<_, String>(Some(commit))
         })?;
         let mut built = vec![];
@@ -1060,10 +1066,7 @@ where
             let Some((at, _)) = merged.take() else { break };
             let Some(tree) = merged_tree(self.dir(), &at, &head.head)? else { break };
             let message = format!("Stack !{} onto {}", head.change, on.get(..12).unwrap_or(&on));
-            let commit = git(
-                self.dir(),
-                &["commit-tree", &tree, "-p", &at, "-p", &head.head, "-m", &message],
-            )?;
+            let commit = commit_tree(self.dir(), &tree, &[&at, &head.head], &message)?;
             merged = Some((commit, tree));
         }
         let made = match merged {

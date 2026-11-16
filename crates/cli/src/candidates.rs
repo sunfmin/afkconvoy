@@ -2381,8 +2381,6 @@ fn pair_red(answer: Value, p: &Candidate) -> Value {
 fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
     let InRound { repo, config, root, clock, .. } = *turn;
     let Some((round, level, nodes)) = chain.to_pair() else { return Ok(()) };
-    let named =
-        |changes: &[u64]| changes.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
     let made = pairing::groups(nodes.len(), |held: Option<&String>, at: &[usize], node| {
         let (Some(first), Some(next)) = (at.first().and_then(|&i| nodes.get(i)), nodes.get(node))
         else {
@@ -2392,7 +2390,7 @@ fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
         for &i in at {
             changes.extend(nodes.get(i).iter().flat_map(|n| &n.changes));
         }
-        let message = format!("Group {} with {}", named(&changes), named(&next.changes));
+        let message = pairing::group_message("#", &changes, &next.changes);
         let onto = held.unwrap_or(&first.commit);
         crate::turn::merged_onto(repo, onto, &next.commit, &message, clock())
     })?;
