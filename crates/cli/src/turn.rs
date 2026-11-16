@@ -254,15 +254,7 @@ fn merged_tree(repo: &Repo, base: &str, head: &str) -> Result<Option<String>> {
 fn commit_at(repo: &Repo, tree: &str, parents: &[&str], message: &str, now: u64) -> Result<String> {
     let at = format!("@{now} +0000");
     let dated = [("GIT_AUTHOR_DATE", at.as_str()), ("GIT_COMMITTER_DATE", at.as_str())];
-    let mut args = vec!["commit-tree".to_string(), tree.to_string()];
-    for parent in parents {
-        args.push("-p".to_string());
-        args.push((*parent).to_string());
-    }
-    args.push("-m".to_string());
-    args.push(message.to_string());
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let made = repo.try_git_with(&refs, &dated)?;
+    let made = repo.commit_tree(tree, parents, message, &dated)?;
     if !made.ok {
         bail!("could not commit {tree}: {}", made.stderr.trim());
     }
