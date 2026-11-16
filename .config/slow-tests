@@ -12,6 +12,7 @@
 # Measured 7.64s: three queued deliveries and doctor's recovery observation.
 # Measured 9.5s and 8.3s: ticks of a `run` that each poll a queued line for 1s.
 # Resident asking scenarios start host processes and wait for watch looks and delivery.
+afkconvoy exclusive::tests::fast_gates_of_one_repo_run_beside_a_slow_gate_and_each_other_while_the_host_has_room
 afkconvoy exclusive::tests::one_runs_at_a_time_in_the_order_asked_and_each_leaves_as_its_line_closes
 afkconvoy launch::tests::a_grandchild_holding_stdout_does_not_keep_the_login_question_waiting
 afkconvoy process::tests::a_grandchild_holding_stdout_does_not_keep_output_waiting
