@@ -183,22 +183,26 @@ impl<N> Joined<N> {
             if decision.state != State::Waiting {
                 continue;
             }
-            let by = |kinds: &dyn Fn(&ConstraintKind) -> bool| {
-                decision
-                    .reasons
-                    .iter()
-                    .filter(|reason| kinds(&reason.kind))
-                    .flat_map(|reason| &reason.requests)
-                    .filter(|holder| holder.state != State::Eligible)
-                    .map(|holder| holder.number)
-                    .collect::<Vec<u64>>()
-            };
-            let owners = by(&|kind| matches!(kind, ConstraintKind::SameRepo));
-            let holders = if owners.is_empty() {
-                by(&|kind| !matches!(kind, ConstraintKind::Paused | ConstraintKind::Disk))
-            } else {
-                owners
-            };
+            // Its own repo's holders, where one holds it; else every one of
+            // the reasons beside a pause or the disk.
+            let mut owners: Vec<u64> = vec![];
+            let mut others: Vec<u64> = vec![];
+            for reason in &decision.reasons {
+                let same = matches!(reason.kind, ConstraintKind::SameRepo);
+                if !same && matches!(reason.kind, ConstraintKind::Paused | ConstraintKind::Disk) {
+                    continue;
+                }
+                for holder in &reason.requests {
+                    if holder.state == State::Eligible {
+                        continue;
+                    }
+                    if same {
+                        owners.push(holder.number);
+                    }
+                    others.push(holder.number);
+                }
+            }
+            let holders = if owners.is_empty() { others } else { owners };
             if holders.contains(&number) {
                 held = held.saturating_add(1);
             }
