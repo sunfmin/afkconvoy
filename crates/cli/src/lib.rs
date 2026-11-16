@@ -636,8 +636,8 @@ enum Command {
         /// another account of its harness, the one with the most left, and with none left its
         /// workers wait. Workers running on it are not stopped. A host setting; `default`
         /// changes it back [default: 90%]
-        #[arg(long, env = ACCOUNT_LIMIT_ENV, value_name = "PERCENT", value_parser = percent_or_default)]
-        account_limit: Option<To<u64>>,
+        #[arg(long, env = ACCOUNT_LIMIT_ENV, value_name = "PERCENT", value_parser = boxed_percent)]
+        account_limit: Option<Box<To<u64>>>,
         /// Seconds a running exclusive command may hold others up, counting only while
         /// another waits: a host setting; `default` changes it back
         /// [default: {const:EXCLUSIVE_SECONDS}]
@@ -1887,6 +1887,11 @@ fn boxed_lanes(said: &str) -> Result<Box<To<u64>>, String> {
     host_settings::watch_every_or_default(said).map(Box::new)
 }
 
+/// `--account-limit`, boxed: `Run` is the largest command, and clippy bounds it.
+fn boxed_percent(said: &str) -> Result<Box<To<u64>>, String> {
+    percent_or_default(said).map(Box::new)
+}
+
 /// `--agent-instructions`, `--agent-skills` and `--agent-guards`, boxed: `Run` is the largest
 /// command, and clippy bounds it.
 fn boxed_file(said: &str) -> Result<Box<To<PathBuf>>, String> {
@@ -2025,7 +2030,7 @@ fn start_of(
         max_share_of_cores,
         max_share_of_memory,
         github_share,
-        account_limit,
+        account_limit: account_limit.map(|limit| *limit),
         exclusive_seconds,
         gate_lanes,
         slow_gate_lanes: slow_gate_lanes.map(|lanes| *lanes),
