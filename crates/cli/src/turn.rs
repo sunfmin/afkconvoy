@@ -605,7 +605,7 @@ An unrecorded base tip is gated alone in a separate checkout using its own gate 
 
 {const:LAND_ENDINGS}
 
-Errors are {"error": …} with non-zero exit: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
+Errors are {"error": …} with non-zero exit: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix. Once the turn holds its place on the candidate chain, an error of any kind is not one: the turn answers `turn_failed`, naming it, and frees its place.
 
 ## What trips you up
 

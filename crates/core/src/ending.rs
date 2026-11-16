@@ -25,11 +25,12 @@ pub enum Ending {
     WaitedPastBound,
     Blocked,
     Locked,
+    TurnFailed,
 }
 
 impl Ending {
     /// Every ending, in the order a reader is told them.
-    pub const ALL: [Ending; 17] = [
+    pub const ALL: [Ending; 18] = [
         Ending::Merged,
         Ending::Conflict,
         Ending::GateRed,
@@ -47,6 +48,7 @@ impl Ending {
         Ending::WaitedPastBound,
         Ending::Blocked,
         Ending::Locked,
+        Ending::TurnFailed,
     ];
 
     /// The word a turn's answer carries as `outcome`.
@@ -69,6 +71,7 @@ impl Ending {
             Ending::WaitedPastBound => "waited_past_bound",
             Ending::Blocked => "blocked",
             Ending::Locked => "locked",
+            Ending::TurnFailed => "turn_failed",
         }
     }
 
@@ -125,6 +128,9 @@ impl Ending {
             }
             Ending::Locked => {
                 "a fleet lock stands, named by `locks`; nothing landed: ask for a turn again once no lock stands"
+            }
+            Ending::TurnFailed => {
+                "the turn stopped on an error of afkconvoy's own after it took its place on the candidate chain, which `detail` names; nothing landed, its place is freed, and nothing of this PR is recorded red: that says nothing of your change: ask for a turn again"
             }
         }
     }

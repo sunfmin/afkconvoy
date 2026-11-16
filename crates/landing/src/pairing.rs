@@ -1571,8 +1571,7 @@ mod tests {
         let mut chain = asking(4);
         chain.open_round("r");
         pair(&mut chain, |a, b| each(a, b, |x, y| (x, y) == (1, 2)));
-        let carry =
-            Carry { pair: None, merge: vec!["h4".into(), "h3".into()], carried: vec![3] };
+        let carry = Carry { pair: None, merge: vec!["h4".into(), "h3".into()], carried: vec![3] };
         assert_eq!(chain.round_next("t4"), Some(RoundNext::Left(Left::Carrying(carry))));
         let level0 = gating(&chain);
         assert_eq!(level0.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [2]);

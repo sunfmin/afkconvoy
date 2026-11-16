@@ -1529,7 +1529,37 @@ impl Drop for Reap<'_> {
 
 /// The source head has been pushed and the base certified by the caller.
 /// Assignment happens only after capacity is granted, by one atomic record.
-pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
+/// Takes `request`'s turn (`turn`). An error once the turn holds its place
+/// on the chain is afkconvoy's own, not one its worker mends: it answers
+/// `turn_failed`, naming the error, and the fleet asks for the turn again
+/// (sunfmin/control#1266). One before that — no PR head, a lock unread, a
+/// closed or retargeted PR — is the command's error, as `land --help` says.
+pub(crate) fn run(request: Request<'_>, answer: Value) -> Result<Value> {
+    let placed = std::cell::Cell::new(false);
+    match turn(request, answer.clone(), &placed) {
+        Err(error) if placed.get() => Ok(turn_failed(answer, &error)),
+        ran => ran,
+    }
+}
+
+/// The longest `detail` a failed turn gives of its error: one that quotes a
+/// commit message or a git argument may run to megabytes.
+const FAILED_DETAIL: usize = 4000;
+
+/// `answer` as a turn that failed on `error` says it (`run`).
+fn turn_failed(mut answer: Value, error: &anyhow::Error) -> Value {
+    let said = format!("{error:#}");
+    let cut = said.char_indices().nth(FAILED_DETAIL).map_or(said.len(), |(at, _)| at);
+    let more = if cut < said.len() { " …" } else { "" };
+    answer["outcome"] = json!(Ending::TurnFailed);
+    answer["detail"] = json!(format!(
+        "this turn failed on an error of afkconvoy's own and freed its place; nothing landed: {}{more}",
+        &said[..cut]
+    ));
+    answer
+}
+
+fn turn(request: Request<'_>, mut answer: Value, placed: &std::cell::Cell<bool>) -> Result<Value> {
     let Request { repo, config, tracker, pr, of, host, now } = request;
     let _reap = Reap(repo);
     let began = std::time::Instant::now();
@@ -1626,6 +1656,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     };
     change(repo, config, reserve)?;
     let _reservation = Reservation { repo, config, id: id.clone() };
+    placed.set(true);
     // A fast-green candidate's gate is confirmed gone, so a later turn of its
     // PR can own its immutable evidence without cancelling its successors.
     let existing = read(repo, config, Read::Known)?
@@ -3002,6 +3033,21 @@ fn publish(
 
 #[cfg(test)]
 mod tests {
+    /// An error once the turn holds its place is a documented outcome the
+    /// fleet asks again on, its detail bounded however long the error
+    /// (sunfmin/control#1266).
+    #[test]
+    fn an_error_of_a_placed_turn_answers_turn_failed_with_a_bounded_detail() {
+        let error = anyhow::anyhow!("git commit-tree -m {}", "Group #125, ".repeat(100_000));
+        let answer = super::turn_failed(serde_json::json!({"issue": 481, "pr": 130}), &error);
+        assert_eq!(answer["outcome"], "turn_failed");
+        assert_eq!(answer["pr"], 130);
+        let detail = answer["detail"].as_str().unwrap();
+        assert!(detail.contains("git commit-tree -m Group #125"), "{detail}");
+        assert!(detail.len() < 2 * super::FAILED_DETAIL, "{}", detail.len());
+        assert!(afkconvoy_core::ending::Ending::TurnFailed.waits(), "the fleet asks again");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn an_unreadable_pid_is_not_the_candidate_owner() {

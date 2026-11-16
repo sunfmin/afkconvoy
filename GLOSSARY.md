@@ -490,7 +490,7 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Turn**:
-One command's construction, validation and ordered landing of an open PR's candidate. Red, a conflict, invalidation or a rejected push ends it with nothing landed. Its waits on the candidate chain are bounded: a turn that holds a pending place and no candidate frees it past a fixed bound, and one whose green candidate waits for the candidates ahead or its round past its gate limit leaves that candidate stopped for the next turn of its PR; either ends `waited_past_bound`, and the fleet asks for the turn again.
+One command's construction, validation and ordered landing of an open PR's candidate. Red, a conflict, invalidation or a rejected push ends it with nothing landed. Its waits on the candidate chain are bounded: a turn that holds a pending place and no candidate frees it past a fixed bound, and one whose green candidate waits for the candidates ahead or its round past its gate limit leaves that candidate stopped for the next turn of its PR; either ends `waited_past_bound`, and the fleet asks for the turn again. An error of afkconvoy's own once a turn holds its place ends it `turn_failed`, its place freed and nothing recorded red, and the fleet asks for the turn again.
 _Avoid_: landing slot, merge queue
 
 **Candidate**:
