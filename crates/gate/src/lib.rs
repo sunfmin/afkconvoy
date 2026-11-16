@@ -10,6 +10,7 @@
 extern crate flux_alloc;
 extern crate flux_core;
 
+pub mod builds;
 pub mod declared;
 pub mod exclusive;
 pub mod gate;

@@ -2,6 +2,7 @@
 //! reaches it, is the harness crate's (`afkconvoy_harness::line`): every
 //! harness's start is one.
 
+pub use afkconvoy_gate::builds::SERIAL_BUILDS;
 pub use afkconvoy_harness::line::{Line, quoted};
 
 /// How much lower a worker runs than what started it: enough that it gives
@@ -11,12 +12,19 @@ pub const NICENESS: u64 = 10;
 
 /// The line a worker's terminal runs: `line`, which starts the worker launch
 /// command — in its role, or as it was given — run under `nice` with `tmp`
-/// for its `TMPDIR`. The shell lowers itself, so whatever it reads the
-/// command as — an alias, a function — and all it starts run lower too.
+/// for its `TMPDIR`, and every build it starts serial on its build
+/// directory (`SERIAL_BUILDS`, docs/adr/0088). The shell lowers itself, so
+/// whatever it reads the command as — an alias, a function — and all it
+/// starts run lower too.
 pub fn niced(tmp: &str, line: &str) -> String {
+    let (serial, on) = SERIAL_BUILDS;
     Line::new()
         .fixed("export TMPDIR=")
         .word(tmp)
+        .fixed(" ")
+        .fixed(serial)
+        .fixed("=")
+        .word(on)
         .fixed(" && renice -n ")
         .number(NICENESS)
         .fixed(" -p $$ >/dev/null && ")
@@ -29,14 +37,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_niced_line_runs_lower_with_its_own_tmpdir() {
+    fn a_niced_line_runs_lower_with_its_own_tmpdir_and_serial_builds() {
         let tmp = "/it's a tmp";
-        let line = niced(tmp, "printf '%s\\n' \"$TMPDIR\" && ps -o nice= -p $$");
+        let line = niced(
+            tmp,
+            "printf '%s\\n' \"$TMPDIR\" \"$__CARGO_TEMPORARY_FINE_GRAIN_LOCKING_OPT_OUT\" && ps -o nice= -p $$",
+        );
         let read = std::process::Command::new("/bin/sh").arg("-c").arg(&line).output().unwrap();
         assert!(read.status.success(), "{line:?}: {read:?}");
         let read = String::from_utf8(read.stdout).unwrap();
-        let (given, nice) = read.split_once('\n').unwrap();
+        let [given, serial, nice] = read.lines().collect::<Vec<_>>()[..] else {
+            panic!("{read:?}: {line}")
+        };
         assert_eq!(given, tmp, "{line}");
+        assert_eq!(serial, SERIAL_BUILDS.1, "every build it starts is serial: {line}");
         assert!(nice.trim().parse::<i64>().unwrap() >= NICENESS as i64, "{read:?}: {line}");
     }
 }
