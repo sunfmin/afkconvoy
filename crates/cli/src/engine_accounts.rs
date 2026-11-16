@@ -633,7 +633,12 @@ mod tests {
     fn a_window_said_without_its_reset_is_left_out() {
         use afkconvoy_core::harness::window::Window as Said;
         let said = [
-            Said { name: "five_hour".into(), used_percent: 91.6, minutes: None, resets_at: Some(9) },
+            Said {
+                name: "five_hour".into(),
+                used_percent: 91.6,
+                minutes: None,
+                resets_at: Some(9),
+            },
             Said { name: "seven_day".into(), used_percent: 40.0, minutes: None, resets_at: None },
         ];
         assert_eq!(

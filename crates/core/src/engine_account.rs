@@ -136,7 +136,8 @@ impl Standing {
                 resets_at: window.resets_at,
             });
         }
-        if let Some(sessions) = self.sessions.filter(|sessions| self.running >= *sessions as usize) {
+        if let Some(sessions) = self.sessions.filter(|sessions| self.running >= *sessions as usize)
+        {
             return Some(Refused::Full { running: self.running, sessions });
         }
         None
@@ -160,9 +161,7 @@ pub fn choose(standings: &[Standing], limit: u64, now: u64) -> Option<&Standing>
         .iter()
         .enumerate()
         .filter(|(_, standing)| standing.refused(limit, now).is_none())
-        .min_by_key(|(at, standing)| {
-            (std::cmp::Reverse(standing.left(now)), standing.running, *at)
-        })
+        .min_by_key(|(at, standing)| (std::cmp::Reverse(standing.left(now)), standing.running, *at))
         .map(|(_, standing)| standing)
 }
 

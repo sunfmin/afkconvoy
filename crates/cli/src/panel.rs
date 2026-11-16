@@ -1927,6 +1927,28 @@ mod tests {
     }
 
     #[test]
+    fn each_account_shows_its_harness_its_windows_and_whether_it_takes_work() {
+        let mut host = host_of(1000);
+        assert!(!render(&page_of(host.clone(), vec![])).contains("data-accounts"), "none held");
+        host.accounts = serde_json::json!({"limit_percent": 90, "accounts": [
+            {"name": "busy", "harness": "claude-code", "running": 2, "takes_work": false,
+             "why": "its `five_hour` window is 92% used, at or past 90%, and resets in 40 min",
+             "windows": [{"window": "five_hour", "used": 92, "resets_in": 2400}]},
+            {"name": "idle", "harness": "claude-code", "running": 0, "takes_work": true,
+             "why": null, "windows": []}
+        ]});
+        let html = render(&page_of(host, vec![]));
+        assert!(html.contains("<h2>Accounts</h2>"), "{html}");
+        assert!(html.contains("none past 90% of a window"), "{html}");
+        assert!(html.contains("<li data-account=\"busy\"><b>busy</b> claude-code · <code>five_hour</code> 92% used, resets in"), "{html}");
+        assert!(html.contains("takes no work: its `five_hour` window is 92% used"), "{html}");
+        assert!(
+            html.contains("<b>idle</b> claude-code · no window heard · 0 on it · takes work"),
+            "{html}"
+        );
+    }
+
+    #[test]
     fn the_page_is_the_host_once_then_what_waits_for_a_human_then_each_repo() {
         let mut acme = part_of("acme", 1000);
         acme.to_human = vec![Card::new(4, "Pick a name").noted("escalated")];

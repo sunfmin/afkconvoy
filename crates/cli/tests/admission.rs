@@ -150,6 +150,63 @@ fn a_load_past_its_share_holds_only_while_the_cores_are_busy() {
     assert!(reading["load"].as_f64().unwrap() > reading["cores"].as_f64().unwrap() * 2.0);
 }
 
+/// Far enough ahead that no test's clock passes it.
+const NEVER: u64 = 4_000_000_000;
+
+/// With every account of its harness at 90% of a window, a tick starts no
+/// worker of it and says why; `plan` lists each account and its windows,
+/// and `doctor` says it once, of the host (sunfmin/control#1220).
+#[test]
+fn with_no_account_left_no_worker_starts_and_plan_and_doctor_say_each_account() {
+    let world = backlog(&[3]);
+    world.claude_accounts(&["busy", "idle"]);
+    world.account_book(&[("busy", 92, NEVER), ("idle", 90, NEVER)]);
+    let held = tick(&world, "1000");
+    assert!(dispatched(&held).is_empty(), "{held}");
+    let by: Vec<&str> =
+        held["held_back_by"].as_array().unwrap().iter().flat_map(Value::as_str).collect();
+    assert!(
+        by.iter().any(|by| by.starts_with(
+            "no claude-code account takes a new worker: `busy`: \
+             its `five_hour` window is 92% used, at or past 90%"
+        )),
+        "{held}"
+    );
+
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1000"]).ok();
+    let accounts = &plan["accounts"];
+    assert_eq!(accounts["limit_percent"], 90, "{plan}");
+    let names: Vec<&str> =
+        accounts["accounts"].as_array().unwrap().iter().flat_map(|a| a["name"].as_str()).collect();
+    assert_eq!(names, ["busy", "idle"], "{plan}");
+    let busy = &accounts["accounts"][0];
+    assert_eq!(busy["harness"], "claude-code");
+    assert_eq!(busy["takes_work"], false);
+    assert_eq!(busy["windows"][0]["window"], "five_hour");
+    assert_eq!(busy["windows"][0]["used"], 92);
+    assert_eq!(busy["windows"][0]["resets_at"], NEVER);
+
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    let said: Vec<&str> = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|finding| finding["what"].as_str())
+        .filter(|what| what.contains("account takes a new worker"))
+        .collect();
+    assert_eq!(said, ["no claude-code account takes a new worker: its workers wait"], "{doctor}");
+
+    // `idle` back under the limit: the next worker starts on it.
+    world.account_book(&[("busy", 92, NEVER), ("idle", 40, NEVER)]);
+    let admitted = tick(&world, "1090");
+    assert_eq!(dispatched(&admitted), [3], "{admitted}");
+    assert_eq!(
+        world.afk(&["plan", "--instance", "alpha", "--now", "1090"]).ok()["admission"]["usage"]["starts_on"],
+        "idle",
+        "the next one too: `busy` is still past its limit"
+    );
+}
+
 #[test]
 fn the_tick_log_line_says_which_threshold_held_it_back() {
     let world = backlog(&[3]);

@@ -271,6 +271,8 @@ impl World {
         }
         // The machine is this account's alone, and its `afkconvoy` this build.
         write_script(&bin.join("ps"), PS);
+        // The engine accounts a fleet reads: none of the host's keychain.
+        write_script(&bin.join("mytokens"), MYTOKENS);
         std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), bin.join("afkconvoy")).unwrap();
         let world = World {
             repository_templates: std::sync::atomic::AtomicBool::new(false),
@@ -515,6 +517,53 @@ impl World {
     /// of a team and its roles are under it.
     pub fn cache(&self) -> PathBuf {
         self.root.join("cache")
+    }
+
+    /// Puts a Claude Code account of each of `names` in the world's
+    /// mytokens, each holding the token `sk-ant-<name>`.
+    pub fn claude_accounts(&self, names: &[&str]) {
+        for name in names {
+            let token = format!("sk-ant-{name}");
+            self.mytokens_account(
+                name,
+                &[("HARNESS", "claude-code"), ("CLAUDE_CODE_OAUTH_TOKEN", &token)],
+            );
+        }
+    }
+
+    /// Writes the host's account book as a worker on each account of
+    /// `accounts` last recorded its `five_hour` window: `used` percent,
+    /// resetting at `resets_at`.
+    pub fn account_book(&self, accounts: &[(&str, u64, u64)]) {
+        let dir = self.cache().join("afkconvoy/accounts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut book = serde_json::Map::new();
+        for (name, used, resets_at) in accounts {
+            book.insert(
+                name.to_string(),
+                json!({"windows_at": 900, "windows": [{"name": "five_hour", "used": used,
+                    "resets_at": resets_at}]}),
+            );
+        }
+        std::fs::write(dir.join("book.json"), json!({"accounts": book}).to_string()).unwrap();
+    }
+
+    /// Puts the engine account `name` in the world's mytokens, holding
+    /// `fields` (GLOSSARY: Account).
+    pub fn mytokens_account(&self, name: &str, fields: &[(&str, &str)]) {
+        let dir = self.root.join("mytokens");
+        std::fs::create_dir_all(&dir).unwrap();
+        let service = format!("agent-account-{name}");
+        let map: serde_json::Map<String, Value> =
+            fields.iter().map(|(key, value)| (key.to_string(), json!(value))).collect();
+        std::fs::write(
+            dir.join(format!("{service}.json")),
+            json!({"fields": map, "level": "server"}).to_string(),
+        )
+        .unwrap();
+        for (key, value) in fields {
+            std::fs::write(dir.join(format!("{service}.{key}")), value).unwrap();
+        }
     }
 
     /// This world's worker link for `worktree`, with the production key but
@@ -2128,6 +2177,27 @@ echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 /// core, the share of a core each process takes is the one it says, and
 /// none for every other; a pid it says that no process has is listed too,
 /// running the program its fourth word names, or `stand-in`.
+/// mytokens, as far as a fleet asks it: `list`, and `get <service>` with
+/// `--json` or `--field <name>`, of the secrets `World::mytokens_account` put.
+const MYTOKENS: &str = r#"#!/bin/sh
+dir=${0%/*}/../mytokens
+case "$1" in
+list)
+    for f in "$dir"/*.json; do
+        [ -f "$f" ] || continue
+        name=${f##*/}
+        printf '%s/default\tprofile\tserver\n' "${name%.json}"
+    done ;;
+get)
+    case "$3" in
+    --json) cat "$dir/$2.json" ;;
+    --field) cat "$dir/$2.$4" ;;
+    *) exit 2 ;;
+    esac ;;
+*) exit 2 ;;
+esac
+"#;
+
 const PS: &str = r#"#!/bin/sh
 table=${0%/*}/../admission-processes
 case "$*" in
