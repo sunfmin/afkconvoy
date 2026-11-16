@@ -58,7 +58,10 @@ fn its_public_api_names_no_fleet_concept() {
             let lower = line.to_lowercase();
             for word in lower.split(|c: char| !c.is_ascii_alphanumeric()) {
                 for concept in FLEET {
-                    assert!(!word.starts_with(concept), "`{line}` names a fleet concept: {concept}");
+                    assert!(
+                        !word.starts_with(concept),
+                        "`{line}` names a fleet concept: {concept}"
+                    );
                 }
             }
         }
