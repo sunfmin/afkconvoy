@@ -291,9 +291,10 @@ impl Account {
         }
     }
 
-    /// Its own home under the user's home `user_home`: its harness's user
-    /// configuration, pointed at by that harness's variable
-    /// (`Harness::config_dir`).
+    /// Its own home under the user's home `user_home`: a refreshing login's
+    /// harness's user configuration, pointed at by that harness's variable
+    /// (`Harness::config_dir`). A Claude Code account's session is given
+    /// none (docs/adr/0087).
     pub fn home(&self, user_home: &Path) -> PathBuf {
         user_home.join(HOMES).join(&self.name)
     }
@@ -331,14 +332,16 @@ impl Account {
 
     /// What a session on it can start with on the machine `here`, the user's
     /// home being `user_home`: a Claude Code token goes in its environment
-    /// beside a configuration directory of the account's own; a login, on
-    /// its machine, is its home, found logged in by its login file there.
+    /// alone, and the session keeps the configuration directory it would
+    /// have — where its sessions, status line, rules and skills are, which
+    /// whoever started it reads (docs/adr/0087); a login, on its machine, is
+    /// its home, found logged in by its login file there.
     pub fn session(&self, here: &str, user_home: &Path) -> Session {
         let home = self.home(user_home);
         let dir = (self.harness.config_dir().variable, Value::plain(home_text(&home)));
         match &self.credential {
             Credential::Token(token) => {
-                Session::Ready(Environment { vars: vec![(CLAUDE_TOKEN, token.clone()), dir] })
+                Session::Ready(Environment { vars: vec![(CLAUDE_TOKEN, token.clone())] })
             }
             Credential::Login { machine } if !self.is_here(here) => {
                 Session::Elsewhere { machine: machine.clone() }

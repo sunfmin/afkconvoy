@@ -99,16 +99,17 @@ fn two_claude_code_accounts_give_two_environments_and_no_value_is_written_or_pri
     for (found, token) in claude.iter().zip([TOKEN_A, TOKEN_B]) {
         assert!(matches!(found.credential, Credential::Token(_)));
         assert_eq!(found.machine(), None);
-        // A token is used on any machine, beside a configuration of its own.
+        // A token is used on any machine, and is the whole of its
+        // environment: the session keeps its configuration (docs/adr/0087).
         let Session::Ready(env) = found.session("anywhere", &home) else {
             panic!("{found:?} is not ready")
         };
         let given = env.get("CLAUDE_CODE_OAUTH_TOKEN").unwrap();
         assert!(given.is_secret());
         assert_eq!(given.expose(), token);
-        let config = env.get("CLAUDE_CONFIG_DIR").unwrap().expose().to_string();
-        assert_eq!(config, home.join(".agent-accounts").join(&found.name).to_string_lossy());
-        seen.push(config);
+        assert_eq!(env.get("CLAUDE_CONFIG_DIR"), None);
+        assert_eq!(env.vars.len(), 1);
+        seen.push(given.expose().to_string());
         assert_eq!(found.login(&home), None);
     }
     assert_ne!(seen[0], seen[1]);

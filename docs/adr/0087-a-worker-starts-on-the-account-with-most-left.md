@@ -51,7 +51,8 @@ CLAUDE_CODE_OAUTH_TOKEN)"` — so the line holds where the token is, never the
 token, and nothing starts where mytokens gives none.
 
 The worker is given no `CLAUDE_CONFIG_DIR` of the account's, which ADR-0086
-puts beside the token: the configuration directory is where Claude Code
+first put beside the token, and which it and the harness crate no longer do
+(Felix, 2026-11-16): the configuration directory is where Claude Code
 keeps its sessions, its status line and the user's rules and skills, and the
 fleet reads a worker's turns and windows there. Pointed at the account's
 empty home, a worker would have none of them, and the fleet could not see it
