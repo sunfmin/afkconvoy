@@ -121,11 +121,12 @@ and `orca` it runs. Two gates side by side already reach the
 load at which admission holds new workers back, twice the host's cores (#426).
 So the gate runs through the host's exclusive queue (ADR-0019), in every
 checkout — a worker's standalone gate or landing turn, and a gate in a
-temporary checkout that certifies the base branch: by default one command
-at a time across its fleets. The host's `gate_lanes` setting may allow more. The workers keep editing while their gates
-wait. A worker's fast gate, `afkconvoy gate --fast`, waits on none of these: it
-takes the host's fast lane, beside the other fast gates up to the host's
-`fast_lanes` setting, whatever their repo (ADR-0049).
+temporary checkout that certifies the base branch: each starts once the host
+has room for it, its cores under the busy share by their CPU reading, and one
+at a time while the host is busy (ADR-0088). The workers keep editing while
+their gates wait. A worker's fast gate, `afkconvoy gate --fast`, is held apart
+from none of these: it runs beside the other fast gates, whatever their repo,
+as the host's room allows (ADR-0049).
 
 - Run `afkconvoy gate` as it is. Never wrap it in another `afkconvoy exclusive`:
   its own would wait behind it, on itself, until the gate limit.

@@ -1,7 +1,9 @@
-//! Kernel-held worker capacity survives owner and host-runner death. A gate
-//! inherits its descriptor, so no replacement can consume that slot until
+//! Kernel-held places survive owner and host-runner death: each running
+//! command of the exclusive queue holds a place of its own, which says it
+//! runs — the queue has no count of places (docs/adr/0088). A gate inherits
+//! its descriptor, so a replaced host runner still counts it running until
 //! every gate descendant exits. The JSON is recovery input only; flock is
-//! the authority on whether the capacity is still occupied — but for a lock
+//! the authority on whether the place is still held — but for a lock
 //! its owner left behind (`left_behind`): one that only a server shared by
 //! the host still holds, as sccache's server, started by a gate's build,
 //! inherits the descriptor and serves every worktree long after the gate
@@ -86,6 +88,7 @@ pub(crate) fn recover() -> Result<()> {
         let file = OpenOptions::new().read(true).write(true).open(entry.path())?;
         // SAFETY: inspect this slot without waiting or assuming owner death.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            remove_free(&entry.path(), &file)?;
             continue;
         }
         ensure!(
@@ -102,6 +105,27 @@ pub(crate) fn recover() -> Result<()> {
         free_left_behind(&entry.path(), &file)?;
     }
     Ok(())
+}
+
+/// Takes the lane's place at `path`, which `file` holds locked and so nothing
+/// else holds, off its path: each command takes a place of its own, and one
+/// whose command ended is not taken again (docs/adr/0088). A repo lease is
+/// kept, as is one another made at the path meanwhile.
+fn remove_free(path: &Path, file: &File) -> Result<()> {
+    if path_named_repo(path) {
+        return Ok(());
+    }
+    let _dir = lock_dir(path.parent().unwrap_or(path))?;
+    let open = file.metadata()?;
+    match std::fs::metadata(path) {
+        Ok(named) if (named.dev(), named.ino()) == (open.dev(), open.ino()) => {
+            std::fs::remove_file(path)?;
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Whether the process that took the slot `owner` names, on this host, ended.
@@ -409,47 +433,32 @@ impl Slot {
         };
         let repo = take_repo(ticket, &owner)?;
         let owner_bytes = serde_json::to_vec(&owner)?;
+        // A place of its own, which says it runs: the queue has no count of
+        // places (docs/adr/0088). One of its pid that an earlier process of
+        // that pid left held, by what it started, is passed over.
+        let _dir = lock_dir(&cache)?;
+        let mut n: u32 = 0;
         loop {
-            let count =
-                afkconvoy_core::exclusive::limit(ticket, crate::host_settings::of_host()?.lanes());
-            let mut n = 0;
-            'places: while n < count {
-                let path = cache.join(format!("{lane:016x}-{n}"));
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .truncate(false)
-                    .read(true)
-                    .write(true)
-                    .open(&path)?;
-                // SAFETY: a live descriptor; a nonblocking kernel lease.
-                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                    file.seek(SeekFrom::Start(0))?;
-                    file.write_all(&owner_bytes)?;
-                    file.set_len(owner_bytes.len() as u64)?;
-                    file.flush()?;
-                    return Ok(Self(file, repo));
-                }
-                ensure!(
-                    std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock,
-                    "cannot inspect kernel worker slot"
-                );
-                // A dead owner cannot silently free an inherited lease. Ask
-                // its repo to invalidate and confirm the recorded gate's exit.
-                if let Ok(bytes) = read(&file)
-                    && let Ok(owner) = serde_json::from_slice::<Owner>(&bytes)
-                    && owner.candidate
-                    && dead(&owner)?
-                {
-                    crate::candidates::abandoned(&owner.dir)?;
-                }
-                // One its owner left behind is free: the path is taken
-                // again at once, as a new file.
-                if free_left_behind(&path, &file)? {
-                    continue 'places;
-                }
-                n += 1;
+            let path = cache.join(format!("{lane:016x}-p{}-{n}", std::process::id()));
+            let mut file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)?;
+            // SAFETY: a live descriptor; a nonblocking kernel lease.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                file.seek(SeekFrom::Start(0))?;
+                file.write_all(&owner_bytes)?;
+                file.set_len(owner_bytes.len() as u64)?;
+                file.flush()?;
+                return Ok(Self(file, repo));
             }
-            std::thread::sleep(Duration::from_millis(50));
+            ensure!(
+                std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock,
+                "cannot inspect kernel worker slot"
+            );
+            n = n.saturating_add(1);
         }
     }
 

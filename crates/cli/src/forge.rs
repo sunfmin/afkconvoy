@@ -10,9 +10,10 @@ use afkconvoy_core::candidate::Note;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::landing::{Of, merge_message};
 use afkconvoy_core::plan::PullRequest;
-use afkconvoy_core::worker::carried_comment;
+use afkconvoy_core::worker::{carried, carried_comment};
 use afkconvoy_landing::forge::{Change, Forge};
 use anyhow::Result;
+use std::collections::BTreeMap;
 
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
@@ -52,6 +53,34 @@ pub(crate) fn change(pr: &PullRequest) -> Change {
 }
 
 impl Pulls<'_> {
+    /// The open issues of the fleet's tracker whose latest record says PR
+    /// `by` carries their PR (`carried_comment`), each with that PR. Where
+    /// the open issues cannot be read — GitHub's GraphQL is down, say — none
+    /// is told, with a warning: a landing never waits on them, its
+    /// description still names what it carried, and doctor names a carried
+    /// issue left open once its carrier landed (`carried_landed`).
+    fn told_carried(&self, by: u64) -> Result<BTreeMap<u64, u64>> {
+        let open = match self.gh.open_issues() {
+            Ok(open) => open,
+            Err(error) => {
+                eprintln!(
+                    "[afkconvoy] land: the issues PR #{by} was told it carries cannot be read, so its description alone says them: {error:#}"
+                );
+                return Ok(BTreeMap::new());
+            }
+        };
+        let mut told = BTreeMap::new();
+        for issue in &open.rows {
+            let bodies = open.comments(issue.number).iter().map(|c| c.body.as_str());
+            if let Some((pr, carrier)) = carried(bodies)
+                && carrier == by
+            {
+                told.insert(issue.number, pr);
+            }
+        }
+        Ok(told)
+    }
+
     /// The issue of the fleet's tracker the PR closes, where it is a worker's.
     pub fn issue(&self) -> Option<u64> {
         match self.of {
@@ -93,23 +122,45 @@ impl Forge for Pulls<'_> {
         Ok(Ok(()))
     }
 
-    /// Its issue closes, and so does each issue of a PR it carried, which
-    /// its description closes as well (docs/adr/0083).
+    /// Its issue closes, and so does each issue of a PR it carried: each its
+    /// description closes as well (docs/adr/0083), and each the fleet told
+    /// it carries, whatever its description says now (sunfmin/control#1248).
     fn landed(&self, change: &Change, _commit: &str) -> Result<()> {
         let Some(n) = self.issue() else { return Ok(()) };
         self.gh.close_issue(n)?;
         crate::account::leave(self.repo, self.gh, n, End::Landed, (self.clock)())?;
         let body = self.gh.pr_body(change.number)?;
-        if afkconvoy_landing::forge::carried_in(&body).is_empty() {
-            return Ok(());
+        let mut carried: Vec<u64> = self.told_carried(change.number)?.into_keys().collect();
+        if !afkconvoy_landing::forge::carried_in(&body).is_empty() {
+            carried.extend(self.tracker.closed_by(&body, &[], None));
         }
-        for carried in self.tracker.closed_by(&body, &[], None).into_iter().filter(|&c| c != n) {
+        carried.sort_unstable();
+        carried.dedup();
+        for carried in carried.into_iter().filter(|&c| c != n) {
             if !self.gh.issue(carried)?.is_closed() {
                 self.gh.close_issue(carried)?;
                 crate::account::leave(self.repo, self.gh, carried, End::Landed, (self.clock)())?;
             }
         }
         Ok(())
+    }
+
+    /// Each PR whose issue the fleet told is carried by `change`
+    /// (`carried_comment`), as `carry` was handed it.
+    fn carries(&self, change: &Change) -> Result<Vec<Change>> {
+        let mut prs: Vec<u64> = self.told_carried(change.number)?.into_values().collect();
+        prs.sort_unstable();
+        prs.dedup();
+        let mut carries = vec![];
+        for pr in prs {
+            carries.push(Change {
+                number: pr,
+                source: String::new(),
+                target: change.target.clone(),
+                title: self.gh.pr_title(pr)?,
+            });
+        }
+        Ok(carries)
     }
 
     fn description(&self, change: &Change) -> Result<String> {

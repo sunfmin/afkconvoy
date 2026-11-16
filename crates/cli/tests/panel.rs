@@ -552,7 +552,11 @@ fn the_exclusive_queue_its_host_runner_holds_is_on_the_page_printed_and_the_page
         assert!(command.wait_with_output().unwrap().status.success());
     }
     let page = printed(&world, &world.clone, &[]);
-    assert!(page.html.contains("1 worker lanes"), "the idle page keeps the counts: {}", page.html);
+    assert!(
+        page.html.contains("starts under 90% busy"),
+        "the idle page keeps the room: {}",
+        page.html
+    );
 }
 
 /// Has the remote lose the base branch the config names: a start of the
