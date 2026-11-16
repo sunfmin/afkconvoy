@@ -658,26 +658,6 @@ fn in_group(group: u32) -> Result<Vec<u32>> {
         .collect())
 }
 
-/// Whether `candidate`'s processes are owned through its scope at `scope`:
-/// they are where it is there. A gate recorded without it is one whose scope
-/// went once nothing held it — a round's fast gate, whose scope goes before
-/// its slow gate takes one of its own — and, gone, its lane is reclaimed
-/// from what is recorded of it and its marker (sunfmin/control#1246). Only a
-/// gate still running without one is refused: nothing then says what it owns.
-fn owned_through(candidate: &Candidate, scope: &Path) -> Result<bool> {
-    if scope.exists() {
-        return Ok(true);
-    }
-    if let Some(gate) = &candidate.gate {
-        ensure!(
-            !alive(gate)?,
-            "gate process ownership is missing while its gate (pid {}) runs; its lane remains occupied",
-            gate.pid
-        );
-    }
-    Ok(false)
-}
-
 /// Freeze and durably identify the whole owned tree BEFORE killing any of it.
 /// Another process may finish this cancellation from the saved identities.
 /// Whatever it froze is killed before it returns, recorded or not: a failed
@@ -685,9 +665,15 @@ fn owned_through(candidate: &Candidate, scope: &Path) -> Result<bool> {
 /// process is stopped on its own, never its group at once: a process this
 /// user cannot kill is never stopped, as nothing could end it then; it is
 /// left to run and is waited for (`Signalled::unkillable`).
+///
+/// A recorded gate whose scope is gone — its turn died after the scope went
+/// with the run that held it, as between a round's fast and slow gate — is
+/// still stopped: its gate by its identity, what it started by its recorded
+/// descendants, their parents and its mark. Refusing it would hold its lane
+/// for good, with no turn left to free it (sunfmin/control#1247).
 fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Signalled> {
     let scope = crate::process_scope::path(&candidate.worktree);
-    let has_scope = owned_through(candidate, &scope)?;
+    let has_scope = scope.exists();
     let owned: Vec<Process> = candidate
         .descendants
         .iter()
@@ -702,10 +688,12 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Signall
     if let Some(gate) = &candidate.gate
         && gate.host == crate::this_host()
     {
+        // Its kernel start time is its identity: the same process, which leads
+        // its own group while it runs. Where its scope is there, it must also
+        // hold it.
         let current = identity(gate.pid)?;
         if current.as_ref() == Some(gate)
-            && has_scope
-            && crate::process_scope::owns(gate.pid, &scope)?
+            && (!has_scope || crate::process_scope::owns(gate.pid, &scope)?)
         {
             // Its group is killed at the end, never stopped as one.
             frozen.group = Some(gate.pid);
@@ -3344,38 +3332,5 @@ mod tests {
         confirmed.unwrap();
         assert!(began.elapsed() >= Duration::from_millis(1400), "{:?}", began.elapsed());
         assert!(ended.success(), "it ended on its own, never signalled: {ended:?}");
-    }
-
-    /// A gate lane whose gate is gone and whose process scope went with it —
-    /// a round's fast gate, its scope dropped before its slow gate began —
-    /// is reclaimed without it; one whose gate still runs without its scope
-    /// is refused, never taken for free (sunfmin/control#1246).
-    #[test]
-    fn a_lane_whose_gate_is_gone_without_its_scope_is_reclaimed() {
-        let dir = tempfile::tempdir().unwrap();
-        let worktree = dir.path().join("round-c0");
-        let scope = crate::process_scope::path(&worktree.to_string_lossy());
-        let candidate = |gate: &super::Process| -> super::Candidate {
-            serde_json::from_value(serde_json::json!({
-                "id": "c0", "pr": 1, "issue": 1, "branch": "b", "original_head": "h",
-                "predecessor": "base", "commit": "m", "tree": "t", "command": "fast",
-                "seconds": 60, "phase": "slow", "owner": gate, "gate": gate,
-                "descendants": [], "worktree": worktree, "barrier": false,
-                "cancelled_by": "c0", "cause": "gate_interrupted", "stopped": false,
-                "result": null,
-            }))
-            .unwrap()
-        };
-        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-        let running = super::identity(child.id()).unwrap().unwrap();
-        let refused = super::owned_through(&candidate(&running), &scope);
-        let _ = child.kill();
-        let _ = child.wait();
-        let gone = super::owned_through(&candidate(&running), &scope).unwrap();
-        std::fs::write(&scope, "").unwrap();
-        let held = super::owned_through(&candidate(&running), &scope).unwrap();
-        assert!(refused.is_err(), "a running gate without its scope is refused");
-        assert!(!gone, "a gone gate's lane is reclaimed without its scope");
-        assert!(held, "a scope there owns the lane's processes");
     }
 }

@@ -92,7 +92,7 @@ test ! -f "$root/fail-$name"
         .own();
     world.set_gate(&command);
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
-    world.say_host_settings(json!({"gate_lanes": lanes}));
+    room_for(&world, lanes);
     Fleet(world)
 }
 
@@ -825,6 +825,33 @@ fn dead_owner_is_cancelled_before_replacement_and_duplicate_requests_never_start
     assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
 }
 
+/// A turn that dies holding a gating candidate whose process scope is gone
+/// — as between a round's fast and slow gate — leaves no lane held for good:
+/// the next `land` stops its gate and what it started, frees the lane, and
+/// lands (sunfmin/control#1247). It once answered only
+/// `{"error":"gate process ownership is missing; its lane remains occupied"}`.
+#[test]
+fn a_dead_turns_gate_without_its_scope_is_stopped_and_the_next_land_lands() {
+    let world = world(2);
+    let (a, head) = worker(&world, 1, "a");
+    let _runner = world.host_held();
+    let mut first = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
+    let old = gate_pids(&world, "a");
+    first.kill().unwrap();
+    let _ = first.wait();
+    let worktree = candidate_of(&world, 1)["worktree"].as_str().unwrap().to_string();
+    std::fs::remove_file(format!("{worktree}.processes")).unwrap();
+    let next = start(&world, &a, &world.cache(), 1);
+    ended_all(&old);
+    until(|| chain(&world)["candidates"][0]["stopped"] == true);
+    release(&world, "a", false);
+    let landed = finish(next);
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(chain(&world)["candidates"][0]["cause"], "owner_died");
+    assert_eq!(git(&a, &["rev-parse", "HEAD"]), head);
+}
+
 /// The PRs that asked to land are taken into a round as it starts, its root
 /// one chain of candidates; a PR asking during the round waits for the next
 /// (docs/adr/0083). Its three clean PRs are one group (sunfmin/control#1239).
@@ -1460,8 +1487,17 @@ test ! -f "$root/fail-$part-$name"
     git(&world.clone, &["commit", "-q", "-am", "split the gate"]);
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
     assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
-    world.say_host_settings(json!({"gate_lanes": lanes}));
+    room_for(&world, lanes);
     world
+}
+
+/// The host's room, as `lanes` places once said it (docs/adr/0088): one, and
+/// the cores read past the share, so that a command starts only while
+/// nothing of the queue runs; more, and a tenth busy, so that each start
+/// counts a quarter of the host for the minute the reading takes to include
+/// it, and four start side by side.
+fn room_for(world: &World, lanes: u64) {
+    world.cores_busy(if lanes == 1 { 95 } else { 10 });
 }
 
 fn started(world: &World, part: &str, name: &str) -> bool {

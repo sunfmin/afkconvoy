@@ -179,11 +179,11 @@ fn heavy(world: &World) {
 }
 
 #[test]
-fn two_worker_lanes_bound_candidates_and_leave_capacity_available_across_repos() {
+fn a_busy_host_bounds_candidates_and_room_lets_another_repo_start() {
     let (a, b) = (World::new(), World::new());
     heavy(&a);
     heavy(&b);
-    a.say_host_settings(json!({"gate_lanes": 2}));
+    a.cores_busy(10);
     let one = a.worker(1, "held.txt", "one");
     let another = a.worker(2, "second.txt", "second");
     let other_repo = b.worker(3, "held.txt", "other repo");
@@ -192,12 +192,28 @@ fn two_worker_lanes_bound_candidates_and_leave_capacity_available_across_repos()
     until(|| a.root.join("started").exists());
     let third = start(&b, &other_repo, &a.cache(), 3);
     until(|| b.root.join("started").exists());
+    // Past the share now: nothing more starts beside the two.
+    a.cores_busy(95);
     let second = start(&a, &another, &a.cache(), 2);
     until(|| pending(&a) == 1);
     assert!(!another.join("held.txt").exists(), "the second turn has not merged yet");
-    let doctor = a.afk(&["doctor"]).json;
-    assert_eq!(doctor["host"]["settings"]["in_force"]["gate_lanes"], 2);
-    assert!(doctor["host"]["settings"]["in_force"].get("ignored").is_none());
+    // The second turn waits on the host's room, saying the reading.
+    let busy = || {
+        let queue = a.afk_in(&a.root, &["queue"]).ok();
+        queue["waiting"].as_array().unwrap().iter().any(|request| {
+            request["scheduling"]["reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                // 95% read, and what the two started since add.
+                .any(|reason| {
+                    reason["kind"] == "host_busy" && reason["busy"].as_u64().unwrap() >= 95
+                })
+        })
+    };
+    until(busy);
+    // Room again: it starts once the next reading counts the two.
+    a.cores_busy(10);
     std::fs::write(a.root.join("release"), "").unwrap();
     std::fs::write(b.root.join("release"), "").unwrap();
     assert_eq!(finish(first)["outcome"], "merged");
@@ -464,7 +480,7 @@ fn a_rejected_push_ends_the_turn_and_another_turn_gates_the_new_base() {
 }
 
 #[test]
-fn an_old_stored_train_lanes_key_loads_and_a_run_drops_it() {
+fn old_stored_lane_keys_load_and_a_run_drops_them() {
     let world = World::new();
     world.say_host_settings(json!({"train_lanes": 0, "gate_lanes": 2, "kept": 1}));
     {
@@ -472,7 +488,8 @@ fn an_old_stored_train_lanes_key_loads_and_a_run_drops_it() {
         let _runner = world.host_held();
         let doctor = world.afk(&["doctor"]).json;
         let settings = &doctor["host"]["settings"];
-        assert_eq!(settings["in_force"]["gate_lanes"], 2);
+        assert!(settings["in_force"].get("gate_lanes").is_none(), "{settings}");
+        assert!(settings["said"].get("gate_lanes").is_none(), "{settings}");
         assert!(settings["said"].get("train_lanes").is_none(), "{settings}");
         assert!(settings["in_force"].get("train_lanes").is_none(), "{settings}");
         assert!(settings["in_force"].get("ignored").is_none(), "{settings}");
@@ -483,7 +500,7 @@ fn an_old_stored_train_lanes_key_loads_and_a_run_drops_it() {
     assert!(wrote["settings"].get("train_lanes").is_none(), "{wrote}");
     let file = world.checkout_list();
     assert!(file["settings"].get("train_lanes").is_none(), "{file}");
-    assert_eq!(file["settings"]["gate_lanes"], 2);
+    assert!(file["settings"].get("gate_lanes").is_none(), "{file}");
     assert_eq!(file["settings"]["kept"], 1);
     assert_eq!(file["settings"]["admit_load"], 400);
 }

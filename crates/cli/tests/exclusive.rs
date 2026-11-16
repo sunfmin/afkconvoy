@@ -132,11 +132,6 @@ fn a_gate_s_tests_are_held_to_their_share_of_the_cores_only_beside_another_comma
     let _host_runner = world.host_held();
     let said = || std::fs::read_to_string(world.root.join("share.txt")).unwrap();
 
-    world.say_host_settings(json!({"gate_lanes": 1}));
-    assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
-    assert_eq!(said().trim(), "jobs= tests=", "one worker lane: every core");
-
-    world.say_host_settings(json!({"gate_lanes": 2, "fast_lanes": 1, "slow_gate_lanes": 1}));
     assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
     assert_eq!(said().trim(), "jobs= tests=", "alone in the queue: every core");
 
@@ -155,8 +150,8 @@ fn a_gate_s_tests_are_held_to_their_share_of_the_cores_only_beside_another_comma
     std::fs::write(cache.join("release"), "").unwrap();
     assert!(held.wait_with_output().unwrap().status.success());
     let cores = std::thread::available_parallelism().unwrap().get() as u64;
-    let share = (cores / 4).max(1);
-    assert_eq!(said().trim(), format!("jobs= tests={share}"), "beside a held lane: its share");
+    let share = (cores / 2).max(1);
+    assert_eq!(said().trim(), format!("jobs= tests={share}"), "beside one command: half");
 }
 
 /// A gate's rustc keeps to one front-end thread, through `exclusive` or not:
@@ -606,7 +601,8 @@ fn a_fast_gate_that_ended_frees_its_lane_though_a_server_it_started_holds_its_sl
     // inherits the slot's descriptor, works in `/` for the whole host and
     // outlives the gate. Its lock alone does not hold the lane.
     let world = World::new();
-    world.say_host_settings(json!({"fast_lanes": 1}));
+    // Past the share: one starts only while nothing of the queue runs.
+    world.cores_busy(95);
     let _host_runner = world.host_held();
     let cache = world.cache();
     let server = cache.join("server");
@@ -654,10 +650,11 @@ fn a_fast_gate_s_wait_for_its_lane_uses_none_of_its_limit() {
     );
     std::fs::write(world.clone.join("docs/agents/afkconvoy.md"), config).unwrap();
     common::git(&world.clone, &["commit", "-q", "-am", "split the gate"]);
-    world.say_host_settings(json!({"fast_lanes": 1}));
+    // Past the share: nothing starts beside a command of the queue.
+    world.cores_busy(95);
     let _host_runner = world.host_held();
     let cache = world.cache();
-    // Another worker's fast gate holds the one fast lane past the limit.
+    // Another worker's fast gate keeps the host's room past the limit.
     let held = fast_gate(
         &world,
         &cache,
