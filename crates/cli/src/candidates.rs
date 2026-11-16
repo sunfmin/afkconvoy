@@ -665,13 +665,15 @@ fn in_group(group: u32) -> Result<Vec<u32>> {
 /// process is stopped on its own, never its group at once: a process this
 /// user cannot kill is never stopped, as nothing could end it then; it is
 /// left to run and is waited for (`Signalled::unkillable`).
+///
+/// A recorded gate whose scope is gone — its turn died after the scope went
+/// with the run that held it, as between a round's fast and slow gate — is
+/// still stopped: its gate by its identity, what it started by its recorded
+/// descendants, their parents and its mark. Refusing it would hold its lane
+/// for good, with no turn left to free it (sunfmin/control#1247).
 fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Signalled> {
     let scope = crate::process_scope::path(&candidate.worktree);
     let has_scope = scope.exists();
-    ensure!(
-        candidate.gate.is_none() || has_scope,
-        "gate process ownership is missing; its lane remains occupied"
-    );
     let owned: Vec<Process> = candidate
         .descendants
         .iter()
@@ -686,10 +688,12 @@ fn signal(repo: &Repo, config: &Config, candidate: &Candidate) -> Result<Signall
     if let Some(gate) = &candidate.gate
         && gate.host == crate::this_host()
     {
+        // Its kernel start time is its identity: the same process, which leads
+        // its own group while it runs. Where its scope is there, it must also
+        // hold it.
         let current = identity(gate.pid)?;
         if current.as_ref() == Some(gate)
-            && has_scope
-            && crate::process_scope::owns(gate.pid, &scope)?
+            && (!has_scope || crate::process_scope::owns(gate.pid, &scope)?)
         {
             // Its group is killed at the end, never stopped as one.
             frozen.group = Some(gate.pid);
