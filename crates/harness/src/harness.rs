@@ -593,6 +593,20 @@ impl Harness {
         }
     }
 
+    /// The line a person runs to log it in with a device code — a link and a
+    /// code opened on any other device — where its login refreshes and is
+    /// bound to one machine: what logs in an account's home there
+    /// (`account::Account::login`). `None`: an account of it is no such
+    /// login.
+    pub const fn device_login(self) -> Option<&'static str> {
+        match self {
+            Harness::Codex => codex::DEVICE_LOGIN,
+            Harness::Grok => grok::DEVICE_LOGIN,
+            Harness::Kimi => kimi::DEVICE_LOGIN,
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh => None,
+        }
+    }
+
     /// The directory it reads its user configuration from, and the variable
     /// that points it at another. A start in a role points each harness at
     /// the directory kept for it (`Start::kept`) by this variable: Claude

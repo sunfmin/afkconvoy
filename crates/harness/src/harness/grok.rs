@@ -30,6 +30,9 @@ pub(super) const PROGRAM: &str = "grok";
 pub(super) const INSTALL: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
 /// A session of it outside a role gets a home of its own.
 pub(super) const OWN_HOME_OUTSIDE_ROLE: bool = true;
+/// The line that logs it in with a device code, opened on any other device:
+/// what logs in an account's home on its machine (github.com/xai-org/grok-build user guide 02-authentication, 2026-11-16).
+pub(super) const DEVICE_LOGIN: Option<&str> = Some("grok login --device-auth");
 /// How it is asked whether it is logged in, and logged in.
 pub(super) const LOGIN: Option<super::Login> = Some(super::Login {
     question: "grok models",
