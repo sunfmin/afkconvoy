@@ -1,6 +1,7 @@
 //! The tick's effect half: carries out the steps the core's pass hands it, and
 //! the loop that runs one tick after another.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,7 +35,7 @@ use crate::host_runner::Shared;
 use crate::hot::{self, Hot};
 use crate::judge::judge;
 use crate::log::{self, Cause, Log};
-use crate::orca::Worktree;
+use crate::orca::{Unremoved, Worktree};
 use crate::panel::{self, Panel};
 use crate::patrol;
 use crate::settle::settle;
@@ -54,11 +55,58 @@ enum Failed {
     Read(u64),
     StopTaken(u64),
     Delivery,
+    /// A cleanup of the worktrees nothing claims, on the worktree of the
+    /// issue where it knows one (sunfmin/control#1204).
+    Cleanup(Cleanup, Option<u64>),
+}
+
+/// A cleanup each tick makes of the worktrees nothing claims, before its
+/// pass: what the answer's `errors` names one that failed with.
+#[derive(Clone, Copy)]
+enum Cleanup {
+    /// The worktrees of stopped candidates (`candidates::remove_listed`).
+    Candidates,
+    /// The removals orca answered success for that left the directory
+    /// (`orca::finish_failed_removals`).
+    FailedRemovals,
+    /// The worktrees a settle kept (`settle::remove_kept`).
+    Kept,
+    /// The watch's checkouts a watch left (`watch_checkout::remove_left`).
+    WatchLeft,
+}
+
+impl Cleanup {
+    /// The word the answer's `errors` says it with.
+    fn word(self) -> &'static str {
+        match self {
+            Cleanup::Candidates => "remove_candidates",
+            Cleanup::FailedRemovals => "finish_removals",
+            Cleanup::Kept => "remove_kept",
+            Cleanup::WatchLeft => "remove_watch_left",
+        }
+    }
+
+    /// What it failed with, the whole cleanup or each worktree it could not
+    /// remove → one failure each, with the worktree where there is one.
+    fn failures(self, made: Result<Vec<Unremoved>>) -> Vec<Failure> {
+        match made {
+            Ok(unremoved) => unremoved
+                .into_iter()
+                .map(|Unremoved { path, issue, error }| {
+                    let failure = Failure::of(Failed::Cleanup(self, issue), &error);
+                    Failure { worktree: Some(path), ..failure }
+                })
+                .collect(),
+            Err(error) => vec![Failure::of(Failed::Cleanup(self, None), &error)],
+        }
+    }
 }
 
 /// One step that failed, and why.
 struct Failure {
     step: Failed,
+    /// The worktree it failed on, where it failed on one.
+    worktree: Option<PathBuf>,
     error: String,
     /// The topic that explains it, where one does.
     see: Option<See>,
@@ -198,32 +246,25 @@ pub fn tick(
     // Removal answers from that listing. The chain already holds the gate's
     // evidence. A failure leaves the directory for the next tick; the pass
     // itself still runs.
+    // Each cleanup's failures are the tick log's, each with its worktree
+    // (sunfmin/control#1204); a later tick tries each again.
     let candidates = repo.layout().under("candidates/");
-    if let Err(error) =
-        crate::candidates::remove_listed(repo, &fleet.records_at_open(&format!("{candidates}*")))
-    {
-        eprintln!(
-            "warning: a stopped candidate worktree will be removed on a later tick: {error:#}"
-        );
-    }
+    let records = fleet.records_at_open(&format!("{candidates}*"));
+    let mut cleanup_failures =
+        Cleanup::Candidates.failures(crate::candidates::remove_listed(repo, &records));
     // A removal orca already answered success for, while the directory remains.
     // No claim is required: the settle that met it has already released its own.
-    if let Err(error) = crate::orca::finish_failed_removals(&fleet.repo, &fleet.config.base_branch)
-    {
-        eprintln!("warning: a worktree a removal left will be removed on a later tick: {error:#}");
-    }
+    let base = &fleet.config.base_branch;
+    cleanup_failures.extend(
+        Cleanup::FailedRemovals.failures(crate::orca::finish_failed_removals(&fleet.repo, base)),
+    );
     // A worktree a settle kept goes once nothing in it is held only there,
     // its carrier or its batch landed (sunfmin/control#1161).
-    if let Err(error) = crate::settle::remove_kept(&fleet) {
-        eprintln!("warning: a worktree a settle kept will be looked at on a later tick: {error:#}");
-    }
+    cleanup_failures.extend(Cleanup::Kept.failures(crate::settle::remove_kept(&fleet)));
     // A watch's checkout a watch left, everything in it pushed, goes past its
     // grace (sunfmin/control#1063).
-    if let Err(error) =
-        crate::watch_checkout::remove_left(&fleet.repo, &fleet.config.base_branch, fleet.now)
-    {
-        eprintln!("warning: a watch's checkout left will be removed on a later tick: {error:#}");
-    }
+    let left = crate::watch_checkout::remove_left(&fleet.repo, base, fleet.now);
+    cleanup_failures.extend(Cleanup::WatchLeft.failures(left));
     // Cover interruption after an internal task landed but before final review.
     // A bad delivery does not prevent unrelated task reconciliation.
     let delivery_failure = crate::delivery::reconcile(&fleet).err();
@@ -332,6 +373,7 @@ pub fn tick(
         failures.push(Failure::of(Failed::Delivery, &error));
     }
     failures.extend(taken_failures);
+    failures.extend(cleanup_failures);
     let read = Read { set: &set, flows: &flows, issues: &open.issues };
     // Each start after the first is admitted by a reading of its own, which
     // counts the workers this pass started on the account.
@@ -446,7 +488,7 @@ impl Failure {
     fn of(step: Failed, error: &anyhow::Error) -> Failure {
         let unreached = unreached(error).is_some();
         let see = topic::explains(error);
-        Failure { step, error: format!("{error:#}"), see, unreached }
+        Failure { step, worktree: None, error: format!("{error:#}"), see, unreached }
     }
 }
 
@@ -514,7 +556,7 @@ fn carry_out(
         }
     }
     match step {
-        TickStep::Settle { issue } => Ok(match settle(fleet, me, issue)? {
+        TickStep::Settle { issue } => Ok(match settle(fleet, found, me, issue)? {
             Some(since) => Outcome::Waiting(since),
             None => Outcome::Done,
         }),
@@ -742,6 +784,15 @@ impl Ticked {
         after_locks.iter().find(|(number, _)| *number == issue).map(|(_, by)| by.as_slice())
     }
 
+    /// The worktree a settle of `issue` kept, and why, where it kept one.
+    fn kept_at_settle(
+        &self,
+        issue: u64,
+    ) -> Option<(&std::path::Path, &afkconvoy_core::left::Kept)> {
+        let kept = self.found.kept.iter().rfind(|(number, ..)| *number == issue);
+        kept.map(|(_, worktree, kept)| (worktree.as_path(), kept))
+    }
+
     /// The open blockers a dispatch of `issue` read just before its claim,
     /// when it skipped the issue for them.
     fn blocked_by(&self, issue: u64) -> Option<&[u64]> {
@@ -791,6 +842,7 @@ impl Ticked {
             Failed::Read(issue) => json!({"do": "read", "issue": issue}),
             Failed::StopTaken(issue) => json!({"do": "stop_taken", "issue": issue}),
             Failed::Delivery => json!({"do": "delivery"}),
+            Failed::Cleanup(cleanup, issue) => json!({"do": cleanup.word(), "issue": issue}),
         }
     }
 
@@ -801,6 +853,10 @@ impl Ticked {
             Failed::Read(issue) => return format!("read #{issue}"),
             Failed::StopTaken(issue) => return format!("stop taken worker #{issue}"),
             Failed::Delivery => return "reconcile deliveries".to_string(),
+            Failed::Cleanup(cleanup, issue) => {
+                let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
+                return format!("{}{issue}", cleanup.word());
+            }
         };
         let (word, issue) = words(step);
         let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
@@ -1010,6 +1066,12 @@ impl Ticked {
                 {
                     did["blocked_by"] = json!(blockers);
                 }
+                if let TickStep::Settle { issue } = step
+                    && let Some((worktree, kept)) = self.kept_at_settle(*issue)
+                {
+                    did["kept"] = json!({"worktree": worktree,
+                        "kept_because": kept.because.key(), "unpushed": kept.unpushed});
+                }
                 did
             })
             .collect();
@@ -1018,6 +1080,9 @@ impl Ticked {
             .iter()
             .map(|failure| {
                 let mut failed = self.failed_named(failure.step);
+                if let Some(worktree) = &failure.worktree {
+                    failed["worktree"] = json!(worktree);
+                }
                 failed["error"] = json!(failure.error);
                 if let Some(see) = failure.see {
                     failed["see"] = json!(see);
@@ -1688,8 +1753,8 @@ Settling a claim removes that worker's worktree. Directories the gate left under
 
 {"did", "errors", "held", "frontier_remaining", "idle", "locks"} — and "held_back_by" when admission held back a worker it would have started
 
-- `did`: each step taken: {do, issue, outcome}. do is settle, forget, judge, watch, advance, escalate, end_patrol, patrol, end_cut, unlock, reclaim, dispatch, slow_gate, cut, board, stage_label or heartbeat; outcome is done, nudged, waiting, continued, restarted, nothing, lost, blocked, gone or failed. A step whose worker waits on its own background work says since when it was first seen to (epoch seconds): {do, issue, outcome, waiting_since}. A step on a patrol has a null issue and names it: {do, issue, patrol, outcome}. An `advance` that read a verdict and left the issue at a stage names it: {do, issue, outcome, stage} — `land` once the last stage passed to a landing turn. A step that escalated its issue says why, in a few words: {do, issue, outcome, escalated}. A `slow_gate` step also has `evidence`, naming the warning threshold, termination limit, host and recorded run durations; the tick log retains it and prints the same evidence when opening the issue. A `dispatch` that found an open blocker says which: {do, issue, outcome: "blocked", blocked_by}
-- `errors`: each step that failed: {do, issue, error}, with `patrol` as in `did` — and `see`, where a help topic explains what refused it: the command that prints the topic. A claimed issue the rebuild could not read is {do: "read", issue, error}: the rest of the tick is made, with it taken for open
+- `did`: each step taken: {do, issue, outcome}. do is settle, forget, judge, watch, advance, escalate, end_patrol, patrol, end_cut, unlock, reclaim, dispatch, slow_gate, cut, board, stage_label or heartbeat; outcome is done, nudged, waiting, continued, restarted, nothing, lost, blocked, gone or failed. A step whose worker waits on its own background work says since when it was first seen to (epoch seconds): {do, issue, outcome, waiting_since}. A step on a patrol has a null issue and names it: {do, issue, patrol, outcome}. An `advance` that read a verdict and left the issue at a stage names it: {do, issue, outcome, stage} — `land` once the last stage passed to a landing turn. A step that escalated its issue says why, in a few words: {do, issue, outcome, escalated}. A `slow_gate` step also has `evidence`, naming the warning threshold, termination limit, host and recorded run durations; the tick log retains it and prints the same evidence when opening the issue. A `dispatch` that found an open blocker says which: {do, issue, outcome: "blocked", blocked_by}. A `settle` that kept its worktree says which and why, so the reason outlives the worktree: {do, issue, outcome, kept: {worktree, kept_because, unpushed}}, `kept_because` being `dirty`, `unpushed` or `unread`
+- `errors`: each step that failed: {do, issue, error}, with `patrol` as in `did` — and `see`, where a help topic explains what refused it: the command that prints the topic. A claimed issue the rebuild could not read is {do: "read", issue, error}: the rest of the tick is made, with it taken for open. Each tick first cleans up the worktrees nothing claims; a cleanup that failed is {do, issue, worktree, error}, do being `remove_candidates` (a stopped candidate's worktree), `finish_removals` (a removal orca answered success for that left the directory), `remove_kept` (a worktree a settle kept) or `remove_watch_left` (a watch's checkout a watch left), `worktree` the one it failed on and `issue` its issue, where it knows them. One worktree that fails does not stop the cleanup from the others, and the next tick tries it again
 - `held`: the claims the instance holds after the pass, a patrol's run still going among them
 - `frontier_remaining`: the frontier issues it left undispatched
 - `idle`: whether the fleet instance is idle after the pass: it holds nothing, nothing of its is on the base branch, its frontier is empty, and no cut it started is going. `afkconvoy checkouts` answers it of each checkout's last tick

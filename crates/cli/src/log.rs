@@ -437,21 +437,36 @@ pub struct Failed {
     pub issue: Option<u64>,
     pub patrol: Option<String>,
     pub comment: Option<String>,
+    /// The worktree a cleanup failed on, where it failed on one.
+    pub worktree: Option<String>,
     pub error: String,
 }
+
+/// The cleanups every tick makes before its pass (sunfmin/control#1204):
+/// each tick tries them again, so one that no longer fails is recovered.
+const CLEANUPS: [&str; 4] =
+    ["remove_candidates", "finish_removals", "remove_kept", "remove_watch_left"];
 
 impl Failed {
     /// Whether `other` is the same step on the same thing, whatever it said.
     pub fn same_step(&self, other: &Failed) -> bool {
-        (&self.step, self.issue, &self.patrol, &self.comment)
-            == (&other.step, other.issue, &other.patrol, &other.comment)
+        (&self.step, self.issue, &self.patrol, &self.comment, &self.worktree)
+            == (&other.step, other.issue, &other.patrol, &other.comment, &other.worktree)
     }
 
-    /// The step as a human names it: `dispatch #3`, `patrol triage`, `tick`.
+    /// Whether it is a cleanup every tick that runs makes again: one that
+    /// ran, and did not fail it, recovered it.
+    pub fn each_tick(&self) -> bool {
+        CLEANUPS.contains(&self.step.as_str())
+    }
+
+    /// The step as a human names it: `dispatch #3`, `patrol triage`, `tick`,
+    /// `remove_kept #3 at /path`.
     pub fn named(&self) -> String {
         let issue = self.issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
         let patrol = self.patrol.as_ref().map(|patrol| format!(" {patrol}")).unwrap_or_default();
-        format!("{}{issue}{patrol}", self.step)
+        let at = self.worktree.as_ref().map(|at| format!(" at {at}")).unwrap_or_default();
+        format!("{}{issue}{patrol}{at}", self.step)
     }
 }
 
@@ -503,6 +518,7 @@ impl Tick {
                 issue: None,
                 patrol: None,
                 comment: None,
+                worktree: None,
                 error: error.clone(),
             }];
         }
@@ -512,6 +528,7 @@ impl Tick {
             issue: row["issue"].as_u64(),
             patrol: row["patrol"].as_str().map(str::to_string),
             comment: row["comment"].as_str().map(str::to_string),
+            worktree: row["worktree"].as_str().map(str::to_string),
             error: row["error"].as_str().unwrap_or_default().to_string(),
         };
         errors.into_iter().flatten().map(failed).collect()

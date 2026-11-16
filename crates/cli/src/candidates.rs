@@ -26,6 +26,7 @@ use crate::exclusive::Permit;
 use crate::forge::{Pulls, Refusal};
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
+use crate::orca::Unremoved;
 use crate::remote::{Fresh, Push};
 
 /// What a turn says when the issue's pinned target moved off the branch it
@@ -1340,7 +1341,7 @@ pub(crate) struct Request<'a> {
 /// A turn that has just written a chain calls this. That write is past the
 /// look's moment, so the listing the look holds is not this chain
 /// (docs/adr/0043).
-pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<()> {
+pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<Vec<Unremoved>> {
     let prefix = repo.layout().under("candidates/");
     let records = repo.remote().records(&[&format!("{prefix}*")], Fresh::Process)?;
     remove_listed(repo, &records)
@@ -1396,10 +1397,14 @@ fn prepare_worktree_root(repo: &Repo) -> Result<PathBuf> {
 ///
 /// A process listing that fails removes nothing: it is no evidence the
 /// directory is free.
-pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]) -> Result<()> {
+pub(crate) fn remove_listed(
+    repo: &Repo,
+    records: &[crate::remote::RemoteRecord],
+) -> Result<Vec<Unremoved>> {
     let prefix = repo.layout().under("candidates/");
     let roots = [worktree_root(repo)?, repo.common_dir()?.join("convoy-candidates")];
     let mut pending = vec![];
+    let mut unremoved = vec![];
     for record in records {
         if !record.name.starts_with(&prefix) {
             continue;
@@ -1416,27 +1421,35 @@ pub(crate) fn remove_listed(repo: &Repo, records: &[crate::remote::RemoteRecord]
             if !roots.iter().any(|root| candidate_directory(root, &path, &candidate.id)) {
                 continue;
             }
-            if (path.exists() || crate::process_scope::path(&candidate.worktree).exists())
-                && !another_turn_runs(&candidate.owner)?
-            {
-                pending.push((path, candidate.worktree.clone()));
+            if !(path.exists() || crate::process_scope::path(&candidate.worktree).exists()) {
+                continue;
+            }
+            // One whose turn cannot be read is that candidate's alone.
+            match another_turn_runs(&candidate.owner) {
+                Ok(false) => pending.push((path, candidate.worktree.clone())),
+                Ok(true) => {}
+                Err(error) => {
+                    unremoved.push(Unremoved { path, issue: candidate.note.issue, error })
+                }
             }
         }
     }
     if pending.is_empty() {
-        return Ok(());
+        return Ok(unremoved);
     }
     let busy = crate::hot::working_directories()?;
     for (path, recorded) in pending {
         if crate::hot::occupies(&busy, &path) {
             continue;
         }
-        remove_candidate_worktree(repo, &path, &recorded);
+        if let Err(error) = remove_candidate_worktree(repo, &path, &recorded) {
+            unremoved.push(Unremoved { path, issue: None, error });
+        }
     }
     // A removal that deleted the directory and left the registration, or the
     // reverse, converges here. A worktree that is still on disk stays listed.
     let _ = repo.try_git(&["worktree", "prune"]);
-    Ok(())
+    Ok(unremoved)
 }
 
 /// Whether `owner`, a candidate's turn, is a process other than this one
@@ -1479,8 +1492,9 @@ fn add_candidate_worktree(repo: &Repo, path: &Path, commit: &str) -> Result<()> 
 /// next call of `remove_listed` does, once that process is gone.
 fn remove_ended_run(repo: &Repo, path: &Path, recorded: &str) {
     match crate::hot::working_directories() {
+        // One left is the next `remove_listed`'s, which records why.
         Ok(busy) if !crate::hot::occupies(&busy, path) => {
-            remove_candidate_worktree(repo, path, recorded)
+            let _ = remove_candidate_worktree(repo, path, recorded);
         }
         _ => {}
     }
@@ -1488,15 +1502,14 @@ fn remove_ended_run(repo: &Repo, path: &Path, recorded: &str) {
 
 /// Drops `path` (`Repo::remove_worktree`) and, once the directory is gone,
 /// its process-scope file.
-fn remove_candidate_worktree(repo: &Repo, path: &Path, recorded: &str) {
-    if repo.remove_worktree(path).is_err() && path.exists() {
-        eprintln!(
-            "warning: candidate worktree {} is still there and will be removed on a later tick",
-            path.display()
-        );
-        return;
+fn remove_candidate_worktree(repo: &Repo, path: &Path, recorded: &str) -> Result<()> {
+    if let Err(error) = repo.remove_worktree(path)
+        && path.exists()
+    {
+        return Err(error);
     }
     let _ = std::fs::remove_file(crate::process_scope::path(recorded));
+    Ok(())
 }
 
 /// Removes stopped candidate worktrees when the turn ends, including when it

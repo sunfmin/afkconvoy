@@ -1520,3 +1520,102 @@ fn a_settled_worktree_with_a_commit_no_remote_ref_holds_stays_on_every_later_tic
     assert_eq!(kept[0]["unpushed"], 1);
     assert_eq!(kept[0]["since"], 1090);
 }
+
+/// Every worker worktree orca lists, each with its issue.
+fn worker_worktrees(world: &World) -> Vec<(u64, PathBuf)> {
+    let orca = world.orca();
+    let rows = orca["worktrees"].as_array().unwrap().iter();
+    rows.filter(|row| row["isMainWorktree"] != true)
+        .filter_map(|row| {
+            let issue = row["linkedIssue"].as_u64()?;
+            Some((issue, PathBuf::from(row["path"].as_str().unwrap())))
+        })
+        .collect()
+}
+
+/// The tick log's entries of `world`'s checkout.
+fn tick_log(world: &World) -> Vec<Value> {
+    std::fs::read_dir(world.cache().join("afkconvoy/runs"))
+        .unwrap()
+        .flatten()
+        .filter(|file| file.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .flat_map(|file| {
+            let text = std::fs::read_to_string(file.path()).unwrap();
+            text.lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn one_unreadable_kept_worktree_does_not_stop_the_others_from_going_and_its_error_is_logged() {
+    let world = backlog(&[3, 4]);
+    tick(&world, "1000");
+    let worktrees = worker_worktrees(&world);
+    assert_eq!(worktrees.len(), 2, "{worktrees:?}");
+    let of = |issue: u64| worktrees.iter().find(|(n, _)| *n == issue).unwrap().1.clone();
+    let (three, four) = (of(3), of(4));
+    common::commit(&three, "three.txt", "3\n");
+    common::commit(&four, "four.txt", "4\n");
+    world.close_issue(3);
+    world.close_issue(4);
+
+    // Each settle that keeps its worktree says which and why in its step.
+    let ticked = tick(&world, "1090");
+    let settles: Vec<&Value> =
+        ticked["did"].as_array().unwrap().iter().filter(|step| step["do"] == "settle").collect();
+    assert_eq!(settles.len(), 2, "{ticked}");
+    for step in settles {
+        let worktree = of(step["issue"].as_u64().unwrap());
+        assert_eq!(
+            step["kept"],
+            json!({"worktree": worktree, "kept_because": "unpushed", "unpushed": 1}),
+            "{ticked}"
+        );
+    }
+    assert!(three.is_dir() && four.is_dir());
+
+    // #3's commit reaches the remote; doctor reads nothing held where the
+    // settle kept it, and says the two disagree.
+    let branch = git(&three, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    git(&three, &["push", "-q", "origin", &format!("HEAD:refs/heads/{}", branch.trim())]);
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1100"]).json;
+    let findings = doctor["findings"].as_array().unwrap();
+    let kept_three = findings
+        .iter()
+        .find(|f| f["what"].as_str().unwrap().contains("the worktree of #3 is kept with no claim"))
+        .unwrap_or_else(|| panic!("{doctor}"));
+    let evidence = kept_three["evidence"].as_str().unwrap();
+    assert!(evidence.contains("a settle kept it at"), "{evidence}");
+    assert!(evidence.contains("as unpushed, 1 unpushed"), "{evidence}");
+    assert!(evidence.contains("doctor now reads nothing held"), "{evidence}");
+    let kept_four = findings
+        .iter()
+        .find(|f| f["what"].as_str().unwrap().contains("the worktree of #4 is kept with no claim"))
+        .unwrap_or_else(|| panic!("{doctor}"));
+    let evidence = kept_four["evidence"].as_str().unwrap();
+    assert!(evidence.contains("as unpushed, 1 unpushed"), "{evidence}");
+    assert!(!evidence.contains("doctor now reads"), "the two agree on #4: {evidence}");
+
+    // #4's index is corrupt: git can no longer say what it holds.
+    let index =
+        PathBuf::from(git(&four, &["rev-parse", "--absolute-git-dir"]).trim()).join("index");
+    std::fs::write(&index, "not an index").unwrap();
+
+    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1", "--second-ms", "0"];
+    world.afk_lines(&[&args[..], &["--ticks", "1", "--now", "1180"]].concat());
+    assert!(!three.exists(), "the readable worktree goes");
+    assert!(four.is_dir(), "the unreadable one stays");
+    let logged = tick_log(&world);
+    let errors: Vec<&Value> = logged
+        .iter()
+        .filter_map(|entry| entry["tick"]["answer"]["errors"].as_array())
+        .flatten()
+        .collect();
+    assert_eq!(errors.len(), 1, "{logged:?}");
+    assert_eq!(errors[0]["do"], "remove_kept", "{errors:?}");
+    assert_eq!(errors[0]["issue"], 4, "{errors:?}");
+    assert_eq!(errors[0]["worktree"], json!(four), "{errors:?}");
+    assert!(errors[0]["error"].as_str().unwrap().contains("index"), "{errors:?}");
+}
