@@ -1184,6 +1184,11 @@ impl Gate<'_> {
         self.repo.dir.join("target")
     }
 
+    /// Where the candidate's gate writes its whole output (`gate_output`).
+    pub fn output(&self) -> Result<PathBuf> {
+        gate_output(self.repo, self.id, self.slow)
+    }
+
     pub fn scope(&self) -> Result<std::path::PathBuf> {
         let chain = read(self.repo, self.config, Read::Known)?.chain;
         let candidate = chain
@@ -1262,6 +1267,84 @@ fn answered(evidence: &Evidence, answer: &Value) -> Value {
         result[key] = value.clone();
     }
     result
+}
+
+/// How many of a checkout's candidate gate outputs are kept: the newest.
+const GATE_OUTPUTS_KEPT: usize = 40;
+
+/// Where a candidate's gate, fast or `slow`, writes its whole output: a file
+/// of its own in the checkout's shared git dir, named for the candidate, so
+/// it outlasts the candidate's worktree and the worker's, and whichever turn
+/// answers red for it names it (`red_told`).
+pub(crate) fn gate_output(repo: &Repo, id: &str, slow: bool) -> Result<PathBuf> {
+    let id: String =
+        id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    let gate = if slow { "slow" } else { "fast" };
+    Ok(repo.common_dir()?.join(format!("convoy-gate-{id}-{gate}.log")))
+}
+
+/// Makes room for the gate output `file` is to be: an earlier one of the same
+/// name is removed, and only the newest of the others are kept
+/// (`GATE_OUTPUTS_KEPT`). Soft: what cannot be removed stays.
+pub(crate) fn room_for_output(file: &Path) {
+    let _ = std::fs::remove_file(file);
+    let Some(dir) = file.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut kept: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("convoy-gate-") && name.ends_with(".log")
+        })
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    kept.sort();
+    let over = kept.len().saturating_sub(GATE_OUTPUTS_KEPT - 1);
+    for (_, old) in kept.into_iter().take(over) {
+        let _ = std::fs::remove_file(old);
+    }
+}
+
+/// A turn's `answer` with what a red one says of its gate besides: the tests
+/// its output names as failing (nextest's `FAIL`, `TIMEOUT` and signal
+/// lines), as `failing`, and the file that keeps the whole output, as
+/// `gate_output` — its candidate's, or its group's (`pair`), where this
+/// host kept one; the newest, a round's slow gate's before its fast one's.
+/// Where none is kept, the tests are read from its excerpt. Any other answer
+/// is as it was.
+pub(crate) fn red_told(repo: &Repo, mut answer: Value) -> Value {
+    if answer["outcome"] != json!(Ending::GateRed) {
+        return answer;
+    }
+    let ids = [&answer["pair"]["candidate"], &answer["candidate"]];
+    let output = ids
+        .iter()
+        .filter_map(|id| id.as_str())
+        .flat_map(|id| [true, false].map(|slow| gate_output(repo, id, slow).ok()))
+        .flatten()
+        .filter_map(|file| Some((std::fs::metadata(&file).ok()?.modified().ok()?, file)))
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, file)| file);
+    let excerpt = || -> Vec<String> {
+        let lines = answer["excerpt"].as_array().into_iter().flatten();
+        lines.filter_map(Value::as_str).map(str::to_string).collect()
+    };
+    let mut failing = output
+        .as_ref()
+        .and_then(|file| std::fs::read_to_string(file).ok())
+        .map(|text| {
+            afkconvoy_gate::gate::failing_tests(
+                &text.lines().map(str::to_string).collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default();
+    if failing.is_empty() {
+        failing = afkconvoy_gate::gate::failing_tests(&excerpt());
+    }
+    answer["failing"] = json!(failing);
+    answer["gate_output"] = json!(output);
+    answer
 }
 
 /// Says in `answer` the ending the chain decided for `c`

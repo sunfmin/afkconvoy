@@ -254,15 +254,7 @@ fn merged_tree(repo: &Repo, base: &str, head: &str) -> Result<Option<String>> {
 fn commit_at(repo: &Repo, tree: &str, parents: &[&str], message: &str, now: u64) -> Result<String> {
     let at = format!("@{now} +0000");
     let dated = [("GIT_AUTHOR_DATE", at.as_str()), ("GIT_COMMITTER_DATE", at.as_str())];
-    let mut args = vec!["commit-tree".to_string(), tree.to_string()];
-    for parent in parents {
-        args.push("-p".to_string());
-        args.push((*parent).to_string());
-    }
-    args.push("-m".to_string());
-    args.push(message.to_string());
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let made = repo.try_git_with(&refs, &dated)?;
+    let made = repo.commit_tree(tree, parents, message, &dated)?;
     if !made.ok {
         bail!("could not commit {tree}: {}", made.stderr.trim());
     }
@@ -345,6 +337,13 @@ pub fn held(mut answer: Value, hold: &crate::landing_hold::Hold) -> Value {
         hold.line()
     ));
     answer
+}
+
+/// `printed`, the `{"error": …}` of a turn that could not finish, with its
+/// ending (`Ending::Error`): a worker reads it as any other outcome, never a
+/// bare error its brief does not cover (sunfmin/control#1267).
+pub(crate) fn unfinished(printed: &mut Value) {
+    printed["outcome"] = json!(Ending::Error);
 }
 
 pub fn land(
@@ -541,10 +540,11 @@ fn run(
     }
     let head = repo.git(&["rev-parse", "HEAD"])?;
     repo.remote().push(&Push::set(&head, &format!("refs/heads/{}", pr.head_branch)))?;
-    crate::candidates::run(
+    let answer = crate::candidates::run(
         crate::candidates::Request { repo, config, tracker, pr, of, host, now },
         answer,
-    )
+    )?;
+    Ok(crate::candidates::red_told(repo, answer))
 }
 
 /// Why a turn of `issue`, closed, lands nothing.
@@ -620,7 +620,7 @@ An unrecorded base tip is gated alone in a separate checkout using its own gate 
 
 {const:LAND_ENDINGS}
 
-Errors are {"error": …} with non-zero exit: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
+Errors are {"error": …} with non-zero exit, and its outcome is error, as its ending above says: no open PR, unreadable config or remote, uncommitted tracked changes, an invalid watch checkout or a green base record that could not be written. detail names what to fix.
 
 ## What trips you up
 

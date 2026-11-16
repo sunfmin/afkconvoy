@@ -26,11 +26,12 @@ pub enum Ending {
     Blocked,
     Locked,
     Held,
+    Error,
 }
 
 impl Ending {
     /// Every ending, in the order a reader is told them.
-    pub const ALL: [Ending; 18] = [
+    pub const ALL: [Ending; 19] = [
         Ending::Merged,
         Ending::Conflict,
         Ending::GateRed,
@@ -49,6 +50,7 @@ impl Ending {
         Ending::Blocked,
         Ending::Locked,
         Ending::Held,
+        Ending::Error,
     ];
 
     /// The word a turn's answer carries as `outcome`.
@@ -72,6 +74,7 @@ impl Ending {
             Ending::Blocked => "blocked",
             Ending::Locked => "locked",
             Ending::Held => "held",
+            Ending::Error => "error",
         }
     }
 
@@ -131,6 +134,9 @@ impl Ending {
             }
             Ending::Held => {
                 "an operator's landing hold stands on this host, named by `hold`; no turn started and nothing landed, your claim, worktree and branch are kept: ask for a turn again once the hold is lifted"
+            }
+            Ending::Error => {
+                "the turn could not finish, and `error` says why; nothing landed and nothing is recorded red. Where `error` names something of your branch to fix — no open PR, uncommitted tracked changes — fix it, commit and run this again; otherwise it is afkconvoy's own failure, not your change's: ask for a turn again"
             }
         }
     }

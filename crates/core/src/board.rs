@@ -88,6 +88,9 @@ pub struct Board<'a> {
     /// The worktree an escalated or parked claim left on its host, when it
     /// holds what the remote does not: the board says so.
     pub kept: Option<Kept>,
+    /// Where its PR was handed to a new worker in a new worktree after its
+    /// landing turns went red twice in a row: the line that says so.
+    pub handed_on: Option<&'a str>,
 }
 
 /// The steps of the board's task list, in order.
@@ -198,6 +201,10 @@ pub fn render(board: &Board) -> String {
     lines.push(step_line(1, done, board.pr));
     lines.push(step_line(2, done, board.pr));
     lines.push(step_line(3, done, board.pr));
+    if let Some(handed) = board.handed_on {
+        lines.push(String::new());
+        lines.push(format!("**Handed to a new worker** — afkconvoy {handed}."));
+    }
     if let Some(ended) = off_ramp(board) {
         lines.push(String::new());
         lines.push(ended);
@@ -250,6 +257,7 @@ mod tests {
             waits_at: None,
             answer: None,
             kept: None,
+            handed_on: None,
         }
     }
 

@@ -78,6 +78,7 @@ pub fn last_word(
             waits_at: None,
             answer: None,
             kept: None,
+            handed_on: None,
         },
     )?;
     Ok(())
@@ -102,6 +103,7 @@ pub fn parked(fleet: &Fleet, claim: &Claim, parkable: &Parkable, kept: Option<Ke
             waits_at: None,
             answer,
             kept,
+            handed_on: None,
         },
     )?;
     Ok(())
@@ -130,6 +132,7 @@ pub fn declared(
             waits_at,
             answer: None,
             kept: None,
+            handed_on: None,
         },
     )?;
     Ok(())
@@ -161,6 +164,7 @@ pub fn escalated(
             waits_at: None,
             answer,
             kept,
+            handed_on: None,
         },
     )?;
     Ok(())
@@ -178,6 +182,7 @@ pub fn show(fleet: &Fleet, me: &Me, issue: u64, stage: Stage, pr: Option<u64>) -
         return Ok(Outcome::Nothing);
     };
     let instance = me.instance.as_str();
+    let handed_on = crate::fresh_look::board_line(fleet, issue, &claim.sha);
     let board = Board {
         instance,
         version: VERSION,
@@ -188,6 +193,7 @@ pub fn show(fleet: &Fleet, me: &Me, issue: u64, stage: Stage, pr: Option<u64>) -
         waits_at: None,
         answer: None,
         kept: None,
+        handed_on: handed_on.as_deref(),
     };
     Ok(if post(fleet, &claim, &board)? { Outcome::Done } else { Outcome::Nothing })
 }

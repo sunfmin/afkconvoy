@@ -233,6 +233,41 @@ fn git_raw(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, St
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// One git call in `dir` with `env`, given `input` on stdin, that must
+/// succeed → its stdout, trimmed: for text too long for an argument.
+fn git_given(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    input: &str,
+) -> Result<String, String> {
+    use std::io::Write;
+    let mut child = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("LC_ALL", "C")
+        .envs(env.iter().copied())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            format!("git {} could not run in {}: {error}", args.join(" "), dir.display())
+        })?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input.as_bytes()).map_err(|error| error.to_string())?;
+    }
+    let out = child.wait_with_output().map_err(|error| error.to_string())?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 /// The commit the worktree `dir` is at, and the tree it holds.
 pub fn head(dir: &Path) -> Result<(String, Tree), String> {
     let head = git(dir, &["rev-parse", "HEAD"], &[])?;
@@ -304,7 +339,8 @@ impl Records for Git {
     }
 
     fn commit(&self, tree: &str, parent: &str, message: &str) -> Result<String, String> {
-        git(&self.worktree, &["commit-tree", tree, "-p", parent, "-m", message], &RECORD_IDENTITY)
+        let args = ["commit-tree", tree, "-p", parent, "-F", "-"];
+        git_given(&self.worktree, &args, &RECORD_IDENTITY, &format!("{message}\n"))
     }
 
     fn put(&self, sha: &str, refname: &str) -> Result<Option<String>, String> {

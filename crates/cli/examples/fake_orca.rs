@@ -19,7 +19,7 @@
 //! Knobs: `stopped` (it is not running: it says so, and every other call
 //! fails), `create_fails` [issue…], `rm_fails`, `never_ready`, `send_refused`,
 //! `stale_base` (a ref worktrees are cut at instead of the one asked for),
-//! `ps_truncated`, `ps_fails`, `set_fails`, `close_fails` [worktree paths…],
+//! `refuse_add`, `ps_truncated`, `ps_fails`, `set_fails`, `close_fails` [worktree paths…],
 //! `close_keeps_terminal` (acknowledges close without ending its terminal),
 //! `timeout_on_waits` (the numbered waits of each terminal that time out),
 //! `start_screen`, `send_screen`, `prompt_stages` (a receipt without a turn
@@ -130,9 +130,21 @@ fn knows_worktree(st: &State, path: &str) -> bool {
 }
 
 /// As orca's folder projects: a non-git directory can hold terminals too.
+/// As Orca 1.4.254, a directory that is not itself a git repository is
+/// refused unless it is added `--kind folder`, with its message and next step.
+/// `refuse_add` refuses every add that way.
 fn repo_add(st: &mut State) -> ! {
     let path = st.opt("--path").expect("--path").to_string();
     assert!(Path::new(&path).is_dir(), "no directory at {path}");
+    let folder = st.opt("--kind") == Some("folder");
+    if st.doc["refuse_add"] == true || (!folder && !Path::new(&path).join(".git").exists()) {
+        let error = json!({"code": "runtime_error",
+            "message": format!("Not a valid git repository: {path}"),
+            "data": {"nextSteps": ["This directory is not itself a Git repository (for example, \
+                a parent folder of separate Git repositories). To open it as a folder workspace \
+                without Git worktrees or source control, rerun this command with --kind folder."]}});
+        st.finish(&json!({"id": "x", "ok": false, "error": error}).to_string(), 1, "")
+    }
     let id = format!("repo-{}", st.list("repos").len() + 1);
     let repo = json!({"id": id, "path": path});
     st.list("repos").push(repo.clone());

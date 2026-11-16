@@ -38,6 +38,10 @@ pub struct Found {
     /// settle's step in the tick log says, so the reason outlives the
     /// worktree (sunfmin/control#1204).
     pub kept: Vec<(u64, PathBuf, Kept)>,
+    /// The PRs it handed to a new worker in a new worktree after their
+    /// landing turns went red twice in a row, each by its issue, with the
+    /// line that says so (`fresh_look::said`).
+    pub handed_on: Vec<(u64, String)>,
 }
 
 impl Found {
@@ -50,6 +54,7 @@ impl Found {
         self.blocked.extend(later.blocked);
         self.cut_said.extend(later.cut_said);
         self.kept.extend(later.kept);
+        self.handed_on.extend(later.handed_on);
         if later.cut_needs.is_some() {
             self.cut_needs = later.cut_needs;
         }

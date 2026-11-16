@@ -1137,3 +1137,187 @@ fn a_landing_hold_keeps_a_workers_turn_and_gate_off_until_it_is_lifted() {
     assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
     assert!(notes.join("convoy-turn.log").exists(), "the held turn was not asked again");
 }
+
+/// Every line of this world's tick log, as `run` would print it.
+fn logged(world: &World) -> Vec<String> {
+    let runs = world.cache().join("afkconvoy/runs");
+    let Ok(files) = std::fs::read_dir(&runs) else { return vec![] };
+    let files = files.map(|entry| entry.unwrap().path());
+    let mut files: Vec<_> = files.filter(|file| file.extension().unwrap() == "jsonl").collect();
+    let Some(file) = files.pop() else { return vec![] };
+    let text = std::fs::read_to_string(file).unwrap();
+    let entry = |line: &str| serde_json::from_str::<afkconvoy::log::Entry>(line).unwrap().said();
+    text.lines().map(entry).collect()
+}
+
+/// A world whose candidate gate fails, naming as nextest does the test its
+/// worktree's `red.txt` names, and whose worker on issue 7 opened PR #70.
+fn going_red() -> World {
+    let world = World::new();
+    world.set_gate(
+        "if test -f seven.txt; then echo \"        FAIL [   0.1s] afkconvoy $(cat red.txt 2>/dev/null || echo turns::first)\"; exit 1; fi",
+    );
+    joining_in(world)
+}
+
+/// The worker on issue 7 asks for a turn in `dir`, which answers red.
+fn red_turn(world: &World, dir: &Path) -> Value {
+    let answer = world.afk_in(dir, &["land", "--issue", "7"]).ok();
+    assert_eq!(answer["outcome"], "gate_red", "{answer}");
+    answer
+}
+
+fn reds(dir: &Path) -> Vec<Value> {
+    let notes = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::read(notes.join("convoy-turn-reds.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_red_turn_names_its_failing_tests_and_its_gate_output_in_its_answer_and_its_log_line() {
+    let world = going_red();
+    let dir = worktree(&world);
+    let answer = red_turn(&world, &dir);
+    assert_eq!(answer["failing"], json!(["afkconvoy turns::first"]), "{answer}");
+    let output = answer["gate_output"].as_str().expect("the gate output is kept");
+    let kept = std::fs::read_to_string(output).unwrap();
+    assert!(kept.contains("FAIL [   0.1s] afkconvoy turns::first"), "{kept}");
+    let line =
+        format!("land #7 (worker): gate_red: gate output {output}; failing afkconvoy turns::first");
+    // A line is cut at its length; the gate runs these tests in a directory
+    // deep enough to cut this one.
+    let logged = logged(&world);
+    let said = logged.iter().find(|said| said.starts_with("land #7 (worker): gate_red: "));
+    let said = said.unwrap_or_else(|| panic!("{line} in {logged:#?}"));
+    let kept = said.strip_suffix('…').unwrap_or(said);
+    assert!(line.starts_with(kept), "{line} as {said}");
+    assert!(kept.chars().count() >= line.chars().count().min(300), "{said}");
+    assert_eq!(reds(&dir).len(), 1);
+}
+
+#[test]
+fn two_red_turns_in_a_row_hand_the_pr_to_a_new_worker_in_a_new_worktree() {
+    let world = going_red();
+    world.list_checkout(&world.clone);
+    let dir = worktree(&world);
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    let first = red_turn(&world, &dir);
+    commit(&dir, "red.txt", "turns::second\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    let second = red_turn(&world, &dir);
+    assert_eq!(second["failing"], json!(["afkconvoy turns::second"]), "{second}");
+    assert_eq!(reds(&dir).len(), 2);
+    // What the worker had not pushed is saved, not lost.
+    std::fs::write(dir.join("scratch.txt"), "half a fix\n").unwrap();
+    let old: Vec<String> = open_terminals(&world, &dir);
+    assert_eq!(old.len(), 1, "{old:?}");
+    let claims = world.claims();
+
+    let (lines, _) = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--second-ms",
+        "0",
+        "--ticks",
+        "1",
+        "--now",
+        "1500",
+    ]);
+    let said = "handed #7's PR #70 to a new worker in a new worktree";
+    assert!(lines[0].contains(said), "the tick's line names the hand-on: {lines:?}");
+    assert!(lines[0].contains("after 2 red turns in a row"), "{lines:?}");
+    assert!(
+        lines[0].contains("failing afkconvoy turns::first; failing afkconvoy turns::second"),
+        "{lines:?}"
+    );
+    assert!(!lines[0].contains("FAILED"), "{lines:?}");
+
+    let new = worktree(&world);
+    assert!(lines[0].contains(new.to_str().unwrap()), "{lines:?}");
+    assert!(!new.join("scratch.txt").exists(), "a new worktree, without the old one's files");
+    assert!(reds(&new).is_empty(), "a new worker's row starts empty");
+    assert_eq!(git(&new, &["symbolic-ref", "--short", "HEAD"]), branch, "the PR's branch");
+    assert!(new.join("red.txt").exists(), "on the PR's branch as the remote has it");
+    assert!(
+        world.orca()["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| old.contains(&t["handle"].as_str().unwrap().to_string()))
+            .all(|t| t["open"] == false),
+        "the old worker was ended"
+    );
+    assert_eq!(world.claims(), claims, "the claim stays");
+    assert!(pr_is_open(&world), "the PR stays");
+
+    let common = world.clone.join(".git");
+    let patches: Vec<PathBuf> = std::fs::read_dir(common.join("convoy-salvage"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(patches.len(), 1, "{patches:?}");
+    let patch = std::fs::read_to_string(&patches[0]).unwrap();
+    assert!(patch.contains("scratch.txt") && patch.contains("half a fix"), "{patch}");
+
+    let prompt = brief(&new);
+    for expected in [
+        "PR #70 gated red in 2 landing turns in a row",
+        "You may change the approach",
+        "failing `afkconvoy turns::first`",
+        "failing `afkconvoy turns::second`",
+        first["gate_output"].as_str().unwrap(),
+        second["gate_output"].as_str().unwrap(),
+        "**Its last verdict:** it declared none.",
+        patches[0].to_str().unwrap(),
+    ] {
+        assert!(prompt.contains(expected), "missing {expected}: {prompt}");
+    }
+    assert!(logged(&world).iter().any(|line| line.contains(said)), "in the tick log");
+    let board = tick(&world, 1501);
+    assert_eq!(board["errors"], json!([]), "{board}");
+    let boards = world.boards(7);
+    assert_eq!(boards.len(), 1, "{boards:?}");
+    let status = &boards[0];
+    assert!(status.contains("**Handed to a new worker**") && status.contains(said), "{status}");
+    assert!(!did(&board).contains(&"watch 7 continued".to_string()), "once: {board}");
+}
+
+#[test]
+fn one_red_turn_is_handed_back_to_the_same_worker_in_the_same_worktree() {
+    let world = going_red();
+    let dir = worktree(&world);
+    red_turn(&world, &dir);
+    let terminals = open_terminals(&world, &dir);
+    let ticked = tick(&world, 1500);
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert!(!did(&ticked).contains(&"watch 7 continued".to_string()), "{ticked}");
+    assert_eq!(worktree(&world), dir);
+    assert_eq!(open_terminals(&world, &dir), terminals);
+    let common = world.clone.join(".git");
+    assert!(!common.join("convoy-salvage").exists());
+}
+
+#[test]
+fn a_worker_that_cannot_be_confirmed_stopped_gets_no_successor_and_this_is_reported() {
+    let world = going_red();
+    let dir = worktree(&world);
+    red_turn(&world, &dir);
+    red_turn(&world, &dir);
+    world.control_termination_time();
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+    let ticked = tick(&world, 1500);
+    let errors = ticked["errors"].to_string();
+    assert!(errors.contains("could not be confirmed stopped"), "{ticked}");
+    assert!(errors.contains("no new worker was started"), "{ticked}");
+    assert!(dir.is_dir(), "its worktree is kept");
+    assert_eq!(reds(&dir).len(), 2, "a later tick tries again");
+    assert_eq!(worktree(&world), dir);
+    let common = world.clone.join(".git");
+    assert!(!common.join("convoy-salvage").exists(), "nothing written before it stopped");
+}
