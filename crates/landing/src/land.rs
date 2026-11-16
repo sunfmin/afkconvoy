@@ -983,40 +983,45 @@ where
         }))
     }
 
-    /// Pairs the level `level` of the round, as `Chain::to_pair` names it:
-    /// each pair its two nodes' merge, which `git merge-tree` finds clean,
-    /// as a commit of its own that its fast gate runs on.
+    /// Groups the level `level` of the round, as `Chain::to_pair` names it
+    /// (`pairing::groups`): each group its nodes merged one after another,
+    /// each onto the merge before, where `git merge-tree` finds it clean, as
+    /// a commit of its own that its fast gate runs on.
     fn pair(
         &self,
         target: &str,
         (round, level, nodes): (String, u32, Vec<pairing::Node>),
     ) -> Result<(), String> {
-        let mut trees: Vec<((usize, usize), String)> = vec![];
-        let made = pairing::pairs(nodes.len(), |a, b| {
-            let (Some(first), Some(second)) = (nodes.get(a), nodes.get(b)) else {
-                return Ok(false);
+        let named = |changes: &[u64]| {
+            changes.iter().map(|n| format!("!{n}")).collect::<Vec<_>>().join(", ")
+        };
+        let made = pairing::groups(nodes.len(), |held: Option<&String>, at: &[usize], node| {
+            let (Some(first), Some(next)) =
+                (at.first().and_then(|&i| nodes.get(i)), nodes.get(node))
+            else {
+                return Ok(None);
             };
-            let tree = merged_tree(self.dir(), &first.commit, &second.commit)?;
-            Ok::<bool, String>(tree.map(|tree| trees.push(((a, b), tree))).is_some())
-        })?;
-        let mut built = vec![];
-        for (a, b) in made.pairs {
-            let (Some(first), Some(second)) = (nodes.get(a), nodes.get(b)) else { continue };
-            let Some((_, tree)) = trees.iter().find(|(at, _)| *at == (a, b)) else { continue };
-            let named = |changes: &[u64]| {
-                changes.iter().map(|n| format!("!{n}")).collect::<Vec<_>>().join(", ")
-            };
-            let message = format!("Pair {} with {}", named(&first.changes), named(&second.changes));
+            let onto = held.unwrap_or(&first.commit);
+            let Some(tree) = merged_tree(self.dir(), onto, &next.commit)? else { return Ok(None) };
+            let mut changes: Vec<u64> = vec![];
+            for &i in at {
+                changes.extend(nodes.get(i).iter().flat_map(|n| &n.changes));
+            }
+            let message = format!("Group {} with {}", named(&changes), named(&next.changes));
             let commit = git(
                 self.dir(),
-                &["commit-tree", tree, "-p", &first.commit, "-p", &second.commit, "-m", &message],
+                &["commit-tree", &tree, "-p", onto, "-p", &next.commit, "-m", &message],
             )?;
+            Ok::<_, String>(Some(commit))
+        })?;
+        let mut built = vec![];
+        for (at, commit) in made.groups {
+            let tree = git(self.dir(), &["rev-parse", &format!("{commit}^{{tree}}")])?;
             let own = (self.declared)(self.dir(), &commit)?.own();
             built.push(Built {
-                first: a,
-                second: b,
+                nodes: at,
                 commit,
-                tree: tree.clone(),
+                tree,
                 command: own.command,
                 seconds: own.seconds,
             });

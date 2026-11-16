@@ -1,16 +1,18 @@
-//! A round's pairing tree (docs/adr/0083): the PRs that asked to land are
-//! taken into a round as it starts; in the order they asked, each pairs with
-//! the first later one it merges with cleanly, and each pair's merge is
-//! fast-gated alone. Pairs pair the same way, level by level, fast gate
-//! only; a node left without a partner at a level goes up unpaired. The
+//! A round's pairing tree (docs/adr/0083, its groups sunfmin/control#1239):
+//! the PRs that asked to land are taken into a round as it starts; in the
+//! order they asked, the first node not yet taken starts a group, and every
+//! later node that merges cleanly with what the group holds so far is merged
+//! into it, the earlier-asked first. Each group's merge is fast-gated alone.
+//! Groups group the same way, level by level, fast gate only; a node no
+//! later one merges with goes up alone. The
 //! tree's root is merged onto the target tip, one candidate of the chain per
 //! PR in the order they asked (`Chain::assign`), and the last of them runs
 //! the whole gate once (`Chain::whole_tip`); green, every PR of the round
 //! lands in one fast-forward.
 //!
-//! A pair red on its fast gate stops no other pair: its later-asked PR
+//! A group red on its fast gate stops no other group: its last-asked PR
 //! leaves the round carrying every other PR of it, handed that run and the
-//! pair's merge, and they leave carried by it. The last-asked node that
+//! group's merge, and they leave carried by it. The last-asked node that
 //! conflicts with every other of its level carries the earliest-asked of
 //! them, one a level. A carrying PR asked again rejoins the round while no
 //! PR of its root has a candidate (`Chain::rejoin`). A PR whose pair said
@@ -121,9 +123,11 @@ impl Node {
     }
 }
 
-/// What a pair of the tree joins: the two nodes, in asking order, the first
-/// its candidate's `predecessor`, its first parent; `partner` the second's
-/// commit, its second parent.
+/// What a group of the tree joins (a pair, as ADR-0083 made it, before
+/// sunfmin/control#1239): its nodes, in asking order, the first its
+/// candidate's `predecessor`; `partner` the second's commit, merged onto the
+/// first, and each of `later` merged onto the merge before. A record of a
+/// pair has no `later`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Paired {
     /// The round it is of (`Round::id`).
@@ -133,6 +137,9 @@ pub struct Paired {
     pub first: Vec<u64>,
     pub second: Vec<u64>,
     pub partner: String,
+    /// The nodes merged after the second, in asking order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub later: Vec<Node>,
     /// It is a stacked round's stacked merge, not a pair of its tree: the
     /// root's PRs merged one after another, in the order they asked, onto
     /// the commit the round stands on (`On::commit`), its `predecessor`;
@@ -144,7 +151,12 @@ pub struct Paired {
 impl Paired {
     /// The PRs it joins.
     pub fn joins(&self) -> impl Iterator<Item = &u64> {
-        self.first.iter().chain(&self.second)
+        self.first.iter().chain(&self.second).chain(self.later.iter().flat_map(|n| &n.changes))
+    }
+
+    /// Whether `changes` are one of its nodes after the first.
+    fn merges(&self, changes: &[u64]) -> bool {
+        self.second == changes || self.later.iter().any(|n| n.changes == changes)
     }
 }
 
@@ -218,13 +230,12 @@ pub enum RoundNext {
     Left(Left),
 }
 
-/// A pair the runner made of one level (`Chain::pair_level`): the indexes
-/// of its two nodes in the level, its merge, and what its commit declares of
-/// its fast gate.
+/// A group the runner made of one level (`Chain::pair_level`): the indexes
+/// of its nodes in the level, in asking order, two or more; its merge; and
+/// what its commit declares of its fast gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Built {
-    pub first: usize,
-    pub second: usize,
+    pub nodes: Vec<usize>,
     pub commit: String,
     pub tree: String,
     pub command: String,
@@ -246,63 +257,111 @@ pub struct Merged {
 /// the order they asked, each merged onto the merge before.
 pub type ToStack = (String, String, Vec<Asks>);
 
-/// How a level of a pairing tree pairs (`pairs`).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Pairing {
-    /// Its pairs, by the indexes of their two nodes, in asking order.
-    pub pairs: Vec<(usize, usize)>,
+/// How a level of a pairing tree groups (`groups`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grouping<M> {
+    /// Its groups, in asking order: the indexes of their nodes, in asking
+    /// order, two or more, and their merge.
+    pub groups: Vec<(Vec<usize>, M)>,
     /// The last-asked node that conflicts with every other node of the
-    /// level, and the earliest-asked one no pair took: the first carries the
-    /// second
-    /// (docs/adr/0083). One a level.
+    /// level, and the earliest-asked one no group took: the first carries
+    /// the second (docs/adr/0083). One a level.
     pub carry: Option<(usize, usize)>,
 }
 
-/// The pairs of a level of `n` nodes, in asking order: each node not yet
-/// paired pairs with the first later one, not yet paired, that `clean` says
-/// it merges with cleanly; one left without a partner goes up unpaired. The
-/// last-asked node `clean` says conflicts with every other carries the
-/// earliest-asked of them no pair took, where there is one: the later-asked
-/// carries, as of a red pair. `clean` is asked
-/// of each two nodes once.
-pub fn pairs<E>(
+/// The groups of a level of `n` nodes, in asking order (sunfmin/control#1239):
+/// the first node not yet taken starts a group, and every later node not yet
+/// taken that `merge` merges cleanly with what the group holds so far is
+/// merged into it, the earlier-asked first; one no later node merges with
+/// goes up alone. `merge(held, nodes, node)` merges the node `node` onto
+/// `held`, the merge of `nodes` so far — `None` where `nodes` is one node,
+/// whose own commit it is — → that merge, `None` where the two conflict.
+/// The last-asked node that conflicts with every other node, each asked
+/// alone, carries the earliest-asked of them no group took, where there is
+/// one: the later-asked carries, as of a red group. Each two nodes are asked
+/// alone at most once.
+pub fn groups<M, E>(
     n: usize,
-    mut clean: impl FnMut(usize, usize) -> Result<bool, E>,
-) -> Result<Pairing, E> {
+    mut merge: impl FnMut(Option<&M>, &[usize], usize) -> Result<Option<M>, E>,
+) -> Result<Grouping<M>, E> {
     let mut known: Vec<((usize, usize), bool)> = vec![];
-    let mut merges = |a: usize, b: usize| -> Result<bool, E> {
-        let key = (a.min(b), a.max(b));
-        if let Some((_, said)) = known.iter().find(|(k, _)| *k == key) {
-            return Ok(*said);
-        }
-        let said = clean(key.0, key.1)?;
-        known.push((key, said));
-        Ok(said)
-    };
     let mut taken: Vec<usize> = vec![];
-    let mut pairs = vec![];
+    let mut groups = vec![];
     for first in 0..n {
-        if taken.contains(&first) {
-            continue;
-        }
-        for second in first..n {
-            if second == first || taken.contains(&second) {
-                continue;
-            }
-            if merges(first, second)? {
-                taken.push(first);
-                taken.push(second);
-                pairs.push((first, second));
-                break;
+        if !taken.contains(&first) {
+            let (held, merged) = group(first, n, &taken, &mut known, &mut merge)?;
+            if let Some(m) = merged {
+                taken.extend(&held);
+                groups.push((held, m));
             }
         }
     }
-    let mut carry = None;
-    for alone in (0..n).rev().filter(|x| !taken.contains(x)) {
+    let carry = carry(n, &taken, &mut known, &mut merge)?;
+    Ok(Grouping { groups, carry })
+}
+
+/// The group `first` starts among `n` nodes, the nodes `taken` set aside:
+/// its nodes, and their merge, `None` where no later node merges with it.
+/// What `merge` says of `first` and one other node alone goes in `known`.
+fn group<M, E>(
+    first: usize,
+    n: usize,
+    taken: &[usize],
+    known: &mut Vec<((usize, usize), bool)>,
+    merge: &mut impl FnMut(Option<&M>, &[usize], usize) -> Result<Option<M>, E>,
+) -> Result<(Vec<usize>, Option<M>), E> {
+    let mut held = vec![first];
+    let mut merged: Option<M> = None;
+    for later in first..n {
+        if later == first || taken.contains(&later) {
+            continue;
+        }
+        let made = merge(merged.as_ref(), &held, later)?;
+        if merged.is_none() {
+            known.push(((first, later), made.is_some()));
+        }
+        if let Some(m) = made {
+            merged = Some(m);
+            held.push(later);
+        }
+    }
+    Ok((held, merged))
+}
+
+/// Whether nodes `a` and `b`, `a` the earlier, merge cleanly alone, asked of
+/// `merge` once.
+fn clean<M, E>(
+    (a, b): (usize, usize),
+    known: &mut Vec<((usize, usize), bool)>,
+    merge: &mut impl FnMut(Option<&M>, &[usize], usize) -> Result<Option<M>, E>,
+) -> Result<bool, E> {
+    if let Some((_, said)) = known.iter().find(|(k, _)| *k == (a, b)) {
+        return Ok(*said);
+    }
+    let said = merge(None, &[a], b)?.is_some();
+    known.push(((a, b), said));
+    Ok(said)
+}
+
+/// The last-asked of `n` nodes no group took that conflicts with every
+/// other node, each alone, and the earliest-asked of those no group took.
+fn carry<M, E>(
+    n: usize,
+    taken: &[usize],
+    known: &mut Vec<((usize, usize), bool)>,
+    merge: &mut impl FnMut(Option<&M>, &[usize], usize) -> Result<Option<M>, E>,
+) -> Result<Option<(usize, usize)>, E> {
+    for alone in (0..n).rev() {
+        if taken.contains(&alone) {
+            continue;
+        }
         let mut with = None;
         let mut conflicts = true;
-        for other in (0..n).filter(|&y| y != alone) {
-            if merges(alone, other)? {
+        for other in 0..n {
+            if other == alone {
+                continue;
+            }
+            if clean((alone.min(other), alone.max(other)), known, merge)? {
                 conflicts = false;
                 break;
             }
@@ -310,12 +369,11 @@ pub fn pairs<E>(
                 with = Some(other);
             }
         }
-        if let Some(other) = with.filter(|_| conflicts) {
-            carry = Some((alone, other));
-            break;
+        if let (true, Some(other)) = (conflicts, with) {
+            return Ok(Some((alone, other)));
         }
     }
-    Ok(Pairing { pairs, carry })
+    Ok(None)
 }
 
 impl Round {
@@ -675,18 +733,18 @@ impl<N: Clone> Chain<N> {
 
     /// The level a round pairs next, where one has a level to pair — the
     /// open round's first, then the stacked one's: the round's id, the
-    /// level, and its nodes, two or more. A runner merges them (`pairs`) and
-    /// gives the pairs it made to `pair_level`.
+    /// level, and its nodes, two or more. A runner merges them (`groups`) and
+    /// gives the groups it made to `pair_level`.
     pub fn to_pair(&self) -> Option<(String, u32, Vec<Node>)> {
         let round = self.rounds().find(|r| r.pairing())?;
         Some((round.id.clone(), round.level, round.nodes.clone()))
     }
 
-    /// The pairs `built` of the round `round`'s level `level`, as its
+    /// The groups `built` of the round `round`'s level `level`, as its
     /// runner made them: each a candidate beside the chain, of its
-    /// later-asked PR, whose turn gates it, its note `note` and its worktree
+    /// last-asked PR, whose turn gates it, its note `note` and its worktree
     /// at `worktree`, by its id. `carry`, the indexes of a node that
-    /// conflicts with every other and the node it carries (`Pairing::carry`):
+    /// conflicts with every other and the node it carries (`Grouping::carry`):
     /// the first node's last-asked PR leaves the round carrying every other
     /// PR of the two (`Left::Carrying`), each of which leaves carried by it
     /// (`Left::Carried`). None made and none carried, and two nodes or more:
@@ -738,11 +796,13 @@ impl<N: Clone> Chain<N> {
         }
         let r = r.clone();
         for b in built {
-            let (Some(first), Some(second)) = (r.nodes.get(b.first), r.nodes.get(b.second)) else {
+            let held: Vec<&Node> = b.nodes.iter().filter_map(|&i| r.nodes.get(i)).collect();
+            let (Some(first), Some(second)) = (held.first(), held.get(1)) else { continue };
+            if held.len() != b.nodes.len() {
                 continue;
-            };
-            let mut joins: Vec<u64> =
-                first.changes.iter().chain(&second.changes).copied().collect();
+            }
+            let later: Vec<Node> = held.iter().skip(2).map(|&n| n.clone()).collect();
+            let mut joins: Vec<u64> = held.iter().flat_map(|n| &n.changes).copied().collect();
             joins.sort_by_key(|&change| r.place(change));
             // The later-asked PR still in the round: one whose turn ended has no
             // place, and sorts last.
@@ -768,6 +828,7 @@ impl<N: Clone> Chain<N> {
                     first: first.changes.clone(),
                     second: second.changes.clone(),
                     partner: second.commit.clone(),
+                    later,
                     stacked: false,
                 },
             }
@@ -825,6 +886,7 @@ impl<N: Clone> Chain<N> {
                 first: vec![],
                 second: root.changes.clone(),
                 partner: root.commit.clone(),
+                later: vec![],
                 stacked: true,
             },
         }
@@ -907,9 +969,8 @@ impl<N: Clone> Chain<N> {
             for node in &round.nodes {
                 let first =
                     pairs.iter().find(|p| p.pair.as_ref().is_some_and(|q| q.first == node.changes));
-                let second = pairs
-                    .iter()
-                    .find(|p| p.pair.as_ref().is_some_and(|q| q.second == node.changes));
+                let second =
+                    pairs.iter().find(|p| p.pair.as_ref().is_some_and(|q| q.merges(&node.changes)));
                 match (first, second) {
                     (Some(p), _) | (None, Some(p)) => {
                         let Some(q) = p.pair.as_ref() else { continue };
@@ -1188,18 +1249,24 @@ mod tests {
         evidence
     }
 
-    /// Pairs the round's level by `clean`, each pair's merge named for the
-    /// commits it joins.
-    fn pair(chain: &mut Chain, clean: impl Fn(&Node, &Node) -> bool) {
+    /// Groups the round's level by `clean`, which says whether a node's PRs
+    /// merge cleanly onto the PRs a group holds so far; each merge named for
+    /// the commits it joins, one after another.
+    fn pair(chain: &mut Chain, clean: impl Fn(&[u64], &[u64]) -> bool) {
         let (round, level, nodes) = chain.to_pair().expect("a level to pair");
-        let made = pairs(nodes.len(), |a, b| Ok::<_, ()>(clean(&nodes[a], &nodes[b]))).unwrap();
+        let made = groups(nodes.len(), |held: Option<&String>, at: &[usize], node| {
+            let changes: Vec<u64> = at.iter().flat_map(|&i| nodes[i].changes.clone()).collect();
+            let onto = held.cloned().unwrap_or_else(|| nodes[at[0]].commit.clone());
+            let next = &nodes[node];
+            Ok::<_, ()>(clean(&changes, &next.changes).then(|| format!("({onto}+{})", next.commit)))
+        })
+        .unwrap();
         let built = made
-            .pairs
+            .groups
             .into_iter()
-            .map(|(first, second)| Built {
-                first,
-                second,
-                commit: format!("({}+{})", nodes[first].commit, nodes[second].commit),
+            .map(|(nodes, commit)| Built {
+                nodes,
+                commit,
                 tree: String::new(),
                 command: "fast".into(),
                 seconds: 1,
@@ -1213,6 +1280,25 @@ mod tests {
             |id| format!("w/{id}"),
             0,
         );
+    }
+
+    /// Whether every PR of `a` merges cleanly with every PR of `b`, by
+    /// `clean` of two PRs.
+    fn each(a: &[u64], b: &[u64], clean: impl Fn(u64, u64) -> bool) -> bool {
+        a.iter().all(|&x| b.iter().all(|&y| clean(x.min(y), x.max(y))))
+    }
+
+    /// The groups and carry of a level of `n` nodes, each a PR, by `clean`
+    /// of two PRs' indexes.
+    fn level(n: usize, clean: impl Fn(usize, usize) -> bool) -> Grouping<()> {
+        groups(n, |_: Option<&()>, at: &[usize], node| {
+            Ok::<_, ()>(at.iter().all(|&a| clean(a.min(node), a.max(node))).then_some(()))
+        })
+        .unwrap()
+    }
+
+    fn held(grouping: &Grouping<()>) -> Vec<Vec<usize>> {
+        grouping.groups.iter().map(|(nodes, _)| nodes.clone()).collect()
     }
 
     /// Gates the pair `id` of the round green or red.
@@ -1238,18 +1324,25 @@ mod tests {
     }
 
     #[test]
-    fn each_node_pairs_with_the_first_later_one_it_merges_with_cleanly() {
-        let clean = |a: usize, b: usize| Ok::<_, ()>(!(a == 0 && b == 1));
-        assert_eq!(pairs(4, clean).unwrap().pairs, [(0, 2), (1, 3)]);
-        assert_eq!(pairs(5, |_, _| Ok::<_, ()>(true)).unwrap().pairs, [(0, 1), (2, 3)]);
-        assert_eq!(pairs(3, |_, _| Ok::<_, ()>(false)).unwrap().pairs, []);
-        assert_eq!(pairs(1, |_, _| Ok::<_, ()>(true)).unwrap().pairs, []);
+    fn the_first_node_not_taken_takes_every_later_one_that_merges_cleanly_with_what_it_holds() {
+        assert_eq!(held(&level(4, |a, b| !(a == 0 && b == 1))), [vec![0, 2, 3]]);
+        assert_eq!(held(&level(5, |_, _| true)), [vec![0, 1, 2, 3, 4]]);
+        assert_eq!(held(&level(3, |_, _| false)), Vec::<Vec<usize>>::new());
+        assert_eq!(held(&level(1, |_, _| true)), Vec::<Vec<usize>>::new());
+        // 2 conflicts with 0 alone: 0 and 1 merge, and 2 goes up alone, clean
+        // with 1.
+        let grouping = level(3, |a, b| !(a == 0 && b == 2));
+        assert_eq!((held(&grouping), grouping.carry), (vec![vec![0, 1]], None));
+        // 3 merges onto 0's group, then 1 and 2, conflicting with it, start
+        // one of their own.
+        let halves = level(4, |a, b| (a < 1 || a == 3) == (b < 1 || b == 3));
+        assert_eq!(held(&halves), [vec![0, 3], vec![1, 2]]);
     }
 
-    /// Four ready, mutually clean PRs: two pairs, gated by their later-asked
-    /// PRs' turns at once, then their pair, then the root.
+    /// Four ready, mutually clean PRs: one group, its one fast gate run by
+    /// the last-asked PR's turn, and it is the root.
     #[test]
-    fn four_clean_prs_pair_twice_and_their_pairs_once() {
+    fn four_clean_prs_are_one_group_with_one_fast_gate() {
         let mut chain = asking(4);
         assert!(chain.open_round("r"));
         assert!(chain.pending.is_empty());
@@ -1257,18 +1350,15 @@ mod tests {
         assert_eq!(chain.round_next("t1"), Some(RoundNext::Pair));
         pair(&mut chain, |_, _| true);
         let level0 = gating(&chain);
-        assert_eq!(level0.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [2, 4]);
+        assert_eq!(level0.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [4]);
+        let gates = chain.candidates.iter().filter(|c| c.is_pair()).count();
+        assert_eq!(gates, 1, "one fast gate, not three");
         assert_eq!(chain.round_next("t1"), Some(RoundNext::Wait));
         gate(&mut chain, &level0[0].1, true);
-        assert_eq!(chain.to_pair(), None, "the level waits for its other pair");
-        gate(&mut chain, &level0[1].1, true);
-        pair(&mut chain, |_, _| true);
-        let level1 = gating(&chain);
-        assert_eq!(level1.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [4]);
-        gate(&mut chain, &level1[0].1, true);
+        assert_eq!(chain.to_pair(), None, "nothing is left to group");
         let root = root(&chain).expect("the root");
         assert_eq!(root.changes, [1, 2, 3, 4]);
-        assert_eq!(root.commit, "((h1+h2)+(h3+h4))");
+        assert_eq!(root.commit, "(((h1+h2)+h3)+h4)");
         // The root is assigned in asking order.
         assert_eq!(chain.round_next("t1"), Some(RoundNext::Assign));
         assert_eq!(chain.round_next("t2"), Some(RoundNext::Wait));
@@ -1277,15 +1367,51 @@ mod tests {
         assert_eq!(chain.round_next("t2"), Some(RoundNext::Assign));
     }
 
-    /// A red pair stops no other: its later-asked PR leaves carrying its
-    /// partner, handed the pair's merge, its partner leaves carried by it,
+    /// Of A, B and C, C conflicts with A only: the level is {A, B} and {C},
+    /// and the next level, where C conflicts with {A, B}, has C carry them.
+    #[test]
+    fn a_pr_conflicting_with_one_of_a_group_goes_up_alone_and_carries_it_next() {
+        let clean = |a: &[u64], b: &[u64]| each(a, b, |x, y| (x, y) != (1, 3));
+        let mut chain = asking(3);
+        chain.open_round("r");
+        pair(&mut chain, clean);
+        let level0 = gating(&chain);
+        assert_eq!(level0.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [2]);
+        assert_eq!(chain.round_next("t3"), Some(RoundNext::Wait), "C goes up alone");
+        gate(&mut chain, &level0[0].1, true);
+        let nodes = chain.to_pair().expect("the next level").2;
+        let changes: Vec<Vec<u64>> = nodes.iter().map(|n| n.changes.clone()).collect();
+        assert_eq!(changes, [vec![1, 2], vec![3]]);
+        pair(&mut chain, clean);
+        let carry =
+            Carry { pair: None, merge: vec!["h3".into(), "(h1+h2)".into()], carried: vec![1, 2] };
+        assert_eq!(chain.round_next("t3"), Some(RoundNext::Left(Left::Carrying(carry))));
+        assert_eq!(chain.round_next("t1"), Some(RoundNext::Left(Left::Carried(3))));
+        assert_eq!(chain.round_next("t2"), Some(RoundNext::Left(Left::Carried(3))));
+
+        // Where C merges cleanly with {A, B} at the next level, they group.
+        let mut chain = asking(3);
+        chain.open_round("r");
+        pair(&mut chain, clean);
+        let first = gating(&chain)[0].1.clone();
+        gate(&mut chain, &first, true);
+        pair(&mut chain, |_, _| true);
+        let level1 = gating(&chain);
+        assert_eq!(level1.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [3]);
+        gate(&mut chain, &level1[0].1, true);
+        assert_eq!(root(&chain).unwrap().changes, [1, 2, 3]);
+    }
+
+    /// A red group stops no other: its last-asked PR leaves carrying every
+    /// other PR of it, handed the group's merge, they leave carried by it,
     /// and the rest of the round goes on.
     #[test]
-    fn a_red_pair_has_its_later_pr_carry_its_partner_and_the_rest_goes_on() {
+    fn a_red_group_has_its_last_pr_carry_the_others_and_the_rest_goes_on() {
         let mut chain = asking(4);
         chain.open_round("r");
-        pair(&mut chain, |_, _| true);
+        pair(&mut chain, |a, b| each(a, b, |x, y| (x <= 2) == (y <= 2)));
         let level0 = gating(&chain);
+        assert_eq!(level0.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [2, 4]);
         gate(&mut chain, &level0[0].1, false);
         let carry = Carry {
             pair: Some(level0[0].1.clone()),
@@ -1296,30 +1422,28 @@ mod tests {
         assert_eq!(chain.round_next("t1"), Some(RoundNext::Left(Left::Carried(2))));
         assert_eq!(chain.round_next("t4"), Some(RoundNext::Gate(level0[1].1.clone())));
         gate(&mut chain, &level0[1].1, true);
-        assert_eq!(chain.to_pair(), None, "neither side of the red pair goes up");
+        assert_eq!(chain.to_pair(), None, "no side of the red group goes up");
         assert_eq!(root(&chain).unwrap().changes, [3, 4]);
         assert_eq!(chain.round.as_ref().unwrap().carrying, [2]);
     }
 
-    /// A red pair of pairs: its later-asked PR carries every other PR of it.
+    /// A red group of three PRs: it leaves the round, its last-asked PR
+    /// carrying the other two.
     #[test]
-    fn a_red_pair_of_pairs_has_its_last_asked_pr_carry_the_other_three() {
-        let mut chain = asking(4);
+    fn a_red_group_of_three_has_its_last_asked_pr_carry_the_other_two() {
+        let mut chain = asking(3);
         chain.open_round("r");
         pair(&mut chain, |_, _| true);
-        for (_, id) in gating(&chain) {
-            gate(&mut chain, &id, true);
-        }
-        pair(&mut chain, |_, _| true);
-        let level1 = gating(&chain);
-        gate(&mut chain, &level1[0].1, false);
-        let Some(RoundNext::Left(Left::Carrying(carry))) = chain.round_next("t4") else {
-            panic!("{:?}", chain.round_next("t4"))
+        let level0 = gating(&chain);
+        assert_eq!(level0.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [3]);
+        gate(&mut chain, &level0[0].1, false);
+        let Some(RoundNext::Left(Left::Carrying(carry))) = chain.round_next("t3") else {
+            panic!("{:?}", chain.round_next("t3"))
         };
-        assert_eq!(carry.carried, [1, 2, 3]);
-        assert_eq!(carry.merge, ["((h1+h2)+(h3+h4))"]);
-        for t in ["t1", "t2", "t3"] {
-            assert_eq!(chain.round_next(t), Some(RoundNext::Left(Left::Carried(4))));
+        assert_eq!(carry.carried, [1, 2]);
+        assert_eq!(carry.merge, ["((h1+h2)+h3)"]);
+        for t in ["t1", "t2"] {
+            assert_eq!(chain.round_next(t), Some(RoundNext::Left(Left::Carried(3))));
         }
         assert_eq!(root(&chain), None, "nothing is left to land");
     }
@@ -1328,17 +1452,15 @@ mod tests {
     /// one no pair took: one at a time, the later-asked carrying the earlier.
     #[test]
     fn a_pr_conflicting_with_every_partner_carries_the_earliest_asked_one() {
-        // 0 conflicts with all; 1 and 2 pair; 3 is clean with 1 alone.
-        let clean = |a: usize, b: usize| Ok::<_, ()>(matches!((a, b), (1, 2) | (1, 3)));
-        assert_eq!(pairs(4, clean).unwrap(), Pairing { pairs: vec![(1, 2)], carry: Some((0, 3)) });
-        let none = |_: usize, _: usize| Ok::<_, ()>(false);
-        assert_eq!(pairs(3, none).unwrap(), Pairing { pairs: vec![], carry: Some((2, 0)) });
-        let all = |_: usize, _: usize| Ok::<_, ()>(true);
-        assert_eq!(pairs(3, all).unwrap().carry, None, "an odd node clean with one goes up");
+        // 0 conflicts with all; 1 and 2 group; 3 is clean with 1 alone.
+        let clean = level(4, |a, b| matches!((a, b), (1, 2) | (1, 3)));
+        assert_eq!((held(&clean), clean.carry), (vec![vec![1, 2]], Some((0, 3))));
+        assert_eq!(level(3, |_, _| false).carry, Some((2, 0)));
+        assert_eq!(level(3, |_, _| true).carry, None, "a node clean with the rest groups");
         let mut asked = 0;
-        let counted = pairs(4, |_, _| {
+        let counted = groups(4, |_: Option<&()>, _: &[usize], _| {
             asked += 1;
-            Ok::<_, ()>(false)
+            Ok::<_, ()>(None)
         });
         assert_eq!(counted.unwrap().carry, Some((3, 0)));
         assert_eq!(asked, 6, "each two nodes asked once");
@@ -1389,16 +1511,17 @@ mod tests {
         assert!(chain.round.as_ref().unwrap().carrying.is_empty());
     }
 
-    /// An odd PR goes up unpaired; a PR asking during a round waits for the
-    /// next.
+    /// A PR no group takes goes up alone; a PR asking during a round waits
+    /// for the next.
     #[test]
-    fn an_odd_pr_goes_up_unpaired_and_one_asking_during_a_round_waits_for_the_next() {
+    fn a_pr_no_group_takes_goes_up_alone_and_one_asking_during_a_round_waits_for_the_next() {
         let mut chain = asking(3);
         chain.open_round("r");
-        pair(&mut chain, |_, _| true);
+        // 3 merges cleanly with 1 and with 2, but not onto both.
+        pair(&mut chain, |held, _| held.len() < 2);
         let level0 = gating(&chain);
         assert_eq!(level0.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [2]);
-        assert_eq!(chain.round_next("t3"), Some(RoundNext::Wait), "unpaired, it waits");
+        assert_eq!(chain.round_next("t3"), Some(RoundNext::Wait), "alone, it waits");
         chain.pending.push(Barrier {
             id: "t5".into(),
             owner: owner(5),
@@ -1416,7 +1539,7 @@ mod tests {
         // Its turns leave; the round closes, and the next one takes 5.
         chain.leave_round(|_| true);
         assert_eq!(chain.round, None);
-        assert!(chain.candidates.iter().all(|c| !c.valid()), "its pairs end with it");
+        assert!(chain.candidates.iter().all(|c| !c.valid()), "its groups end with it");
         assert!(chain.open_round("r2"));
         assert_eq!(root(&chain).unwrap().changes, [5], "a round of one is its own root");
     }
@@ -1436,10 +1559,10 @@ mod tests {
     }
 
     #[test]
-    fn a_pair_whose_earlier_pr_left_after_its_gate_still_pairs_at_the_next_level() {
+    fn a_group_whose_earlier_pr_left_after_its_gate_still_groups_at_the_next_level() {
         let mut chain = asking(4);
         chain.open_round("r");
-        pair(&mut chain, |_, _| true);
+        pair(&mut chain, |a, b| each(a, b, |x, y| (x <= 2) == (y <= 2)));
         for (_, id) in gating(&chain) {
             gate(&mut chain, &id, true);
         }
@@ -1483,6 +1606,7 @@ mod tests {
                 first: vec![],
                 second: vec![],
                 partner: String::new(),
+                later: vec![],
                 stacked: false,
             },
         }
@@ -1621,6 +1745,22 @@ mod tests {
         let m = chain.candidates.iter().find(|c| c.id == gating).unwrap();
         assert!(m.valid() && m.phase == Phase::Validating, "{m:?}");
         assert_eq!(chain.round_next("t4"), Some(RoundNext::Pair));
+    }
+
+    /// A pair recorded before groups (sunfmin/control#1239) reads as a group
+    /// of two, and a group of more says its later nodes.
+    #[test]
+    fn a_pair_recorded_before_groups_reads_as_a_group_of_two() {
+        let old = r#"{"round":"r","level":0,"first":[1],"second":[2],"partner":"h2"}"#;
+        let pair: Paired = serde_json::from_str(old).unwrap();
+        assert_eq!(pair.joins().copied().collect::<Vec<_>>(), [1, 2]);
+        assert!(pair.later.is_empty() && !pair.stacked);
+        assert_eq!(serde_json::to_string(&pair).unwrap(), old, "a group of two writes as before");
+        let mut group = pair;
+        group.later.push(Node { changes: vec![3], commit: "h3".into() });
+        let read: Paired = serde_json::from_str(&serde_json::to_string(&group).unwrap()).unwrap();
+        assert_eq!(read.joins().copied().collect::<Vec<_>>(), [1, 2, 3]);
+        assert!(read.merges(&[3]) && read.merges(&[2]) && !read.merges(&[1]));
     }
 
     /// Makes the stacked round's stacked merge, not gated yet → its id.
