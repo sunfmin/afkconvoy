@@ -218,6 +218,7 @@ afkconvoy::cli continuation::recovery_shows_the_tier_and_changes_nothing
 afkconvoy::cli continuation::start_fresh_is_the_one_way_to_discard_an_attempt
 afkconvoy::cli continuation::with_no_worktree_here_the_pushed_branch_is_recreated_at_its_tip
 afkconvoy::cli continuation::with_nothing_survived_the_start_is_fresh_from_the_base_branch
+afkconvoy::cli cutting::a_cut_of_a_repo_that_splits_its_gate_runs_its_slow_part_in_a_slow_lane
 afkconvoy::cli cutting::a_busy_fleet_cuts_at_the_age_bound_with_claims_held
 afkconvoy::cli cutting::a_cut_interrupted_after_tagging_goes_on_from_the_tag_and_pushes_no_second_branch
 afkconvoy::cli cutting::a_cut_keeps_its_claim_checkout_and_terminal_when_the_host_runner_moves
@@ -1041,3 +1042,11 @@ afkconvoy::cli joining::a_worker_that_cannot_be_confirmed_stopped_gets_no_succes
 afkconvoy::cli stage::a_pr_handed_to_a_new_worker_after_two_red_turns_keeps_the_issue_s_rework_counts
 # Still TIMEOUT at 2s alone on a quiet host (load 12.95, 18 CPUs), in the pair of #948 and #944: it runs the real scheduler for two repos.
 afkconvoy::cli queue::the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_room
+afkconvoy::cli admission::a_load_past_its_share_holds_only_while_the_cores_are_busy
+afkconvoy::cli admission::with_no_account_left_no_worker_starts_and_plan_and_doctor_say_each_account
+afkconvoy::cli board::with_rest_spent_a_board_is_edited_through_graphql
+afkconvoy::cli codex::a_codex_worker_its_harness_continues_with_no_verdict_is_left_at_its_goal
+afkconvoy::cli cutting::a_cut_need_installs_before_the_cut_is_claimed
+afkconvoy::cli cutting::an_end_of_a_cut_that_fails_after_it_said_the_cut_ended_still_says_so
+afkconvoy::cli gate::a_gate_runs_two_tests_to_each_core_it_is_given
+afkconvoy::cli joining::a_landing_stopped_at_a_fleet_lock_is_asked_again_by_the_tick_once_the_lock_closes

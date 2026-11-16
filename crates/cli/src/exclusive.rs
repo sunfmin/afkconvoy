@@ -253,6 +253,13 @@ impl Permit {
         Self::acquire(repo, command, heavy, false, true, None)
     }
 
+    /// The slow part of a cut's gate of its own commit, where its repo
+    /// splits the gate: in the host's slow lanes, as a round's slow gate is,
+    /// and otherwise as `cut_gate` (sunfmin/control#1264).
+    pub(crate) fn cut_slow_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, false, true, heavy.then_some(Gate::Slow))
+    }
+
     /// A round's slow gate, in the host's slow lanes, not its worker lanes.
     pub(crate) fn slow_gate(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
         Self::acquire(repo, command, heavy, true, true, heavy.then_some(Gate::Slow))
