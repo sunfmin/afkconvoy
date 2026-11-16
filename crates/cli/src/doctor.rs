@@ -4017,6 +4017,28 @@ mod tests {
     }
 
     #[test]
+    fn a_cleanup_that_failed_on_a_worktree_recovers_at_the_first_tick_that_does_not_fail_it() {
+        let on = |count, at: &str| {
+            let error =
+                json!({"do": "remove_kept", "issue": 4, "worktree": at, "error": "bad index"});
+            tick(count, json!([error]))
+        };
+        let ticks = vec![on(4, "/w/4"), on(5, "/w/4")];
+        let found = log_findings(&run(ticks.clone()));
+        let what: Vec<_> = found.iter().map(|finding| finding.what.as_str()).collect();
+        assert_eq!(what, ["`remove_kept #4 at /w/4` failed in tick 5 and has not recovered"]);
+        // A tick that failed only on another worktree did not fail this one.
+        let mut other = ticks.clone();
+        other.push(on(6, "/w/9"));
+        let found = log_findings(&run(other));
+        let what: Vec<_> = found.iter().map(|finding| finding.what.as_str()).collect();
+        assert_eq!(what, ["`remove_kept #4 at /w/9` failed in tick 6 and has not recovered"]);
+        let mut ticks = ticks;
+        ticks.push(tick(6, json!([])));
+        assert_eq!(log_findings(&run(ticks)), []);
+    }
+
+    #[test]
     fn an_advance_with_nothing_to_do_recovers_an_earlier_dispatch_failure() {
         let failed = tick(
             4,
