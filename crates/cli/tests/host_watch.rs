@@ -704,8 +704,16 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     assert_eq!(doctor["host"]["watch"]["last"]["did"], json!(left));
     assert_eq!(doctor["host"]["watch"]["last"]["stock"], true);
     assert_eq!(starts(&world).len(), 1, "one stock watch per episode");
-    let adds = world.orca_called_with().into_iter().filter(|(call, _)| asked(call) == "repo add");
-    assert_eq!(adds.count(), 1, "the stock directory is registered by the fleet");
+    let adds: Vec<Vec<String>> = world
+        .orca_called_with()
+        .into_iter()
+        .map(|(call, _)| call)
+        .filter(|call| asked(call) == "repo add")
+        .collect();
+    assert_eq!(adds.len(), 1, "the stock directory is registered by the fleet");
+    // Orca refuses a directory that is not a git repository unless it is a
+    // folder (sunfmin/control#1255): the stand-in refuses it so too.
+    assert!(adds[0].windows(2).any(|pair| pair == ["--kind", "folder"]), "{adds:?}");
     let help = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(["run", "--help"])
@@ -714,6 +722,64 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("stock watch"), "{help}");
     assert!(help.contains("stock-watch"), "{help}");
+}
+
+/// A stock watch directory that is itself a git repository is registered as
+/// one, as before: with no `--kind folder` (sunfmin/control#1255).
+#[test]
+fn a_git_watch_directory_is_registered_as_a_git_repository() {
+    let world = World::new();
+    let dir = world.cache().join("afkconvoy/stock-watch");
+    std::fs::create_dir_all(&dir).unwrap();
+    let init = world.command("git", &dir).args(["init", "-q"]).output().unwrap();
+    assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
+    world.issue(7, &["ready-for-human"]);
+    world.comment(7, "<!--convoy:escalation claim=old-->\nChoose the schema.");
+    paused(&world, "pi", "it refused every prompt");
+    world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
+    let watch = until(&world, "the stock watch", || running(&world));
+    assert_eq!(watch["directory"], json!(dir));
+    let adds: Vec<Vec<String>> = world
+        .orca_called_with()
+        .into_iter()
+        .map(|(call, _)| call)
+        .filter(|call| asked(call) == "repo add")
+        .collect();
+    assert_eq!(adds.len(), 1, "{adds:?}");
+    assert!(!adds[0].contains(&"--kind".to_string()), "{adds:?}");
+    world.afk(&["stop", "--all"]).ok();
+}
+
+/// A registration orca refuses says what orca said — its message and next
+/// step — in the watch's `unavailable` and doctor's finding, not its error
+/// code alone (sunfmin/control#1255).
+#[test]
+fn a_refused_registration_says_orcas_error() {
+    let world = World::new();
+    world.with_orca(|orca| orca["refuse_add"] = json!(true));
+    world.issue(7, &["ready-for-human"]);
+    world.comment(7, "<!--convoy:escalation claim=old-->\nChoose the schema.");
+    paused(&world, "pi", "it refused every prompt");
+    world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
+    let why = until(&world, "the refused registration", || {
+        state(&world)["unavailable"].as_str().map(str::to_string)
+    });
+    for said in
+        ["orca repo add failed: runtime_error", "Not a valid git repository", "--kind folder"]
+    {
+        assert!(why.contains(said), "unavailable lacks {said:?}: {why}");
+    }
+    assert!(running(&world).is_none());
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    let finding = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["what"] == "no harness can start this host's watch")
+        .unwrap_or_else(|| panic!("no watch_unavailable finding: {doctor}"))
+        .to_string();
+    assert!(finding.contains("Not a valid git repository"), "{finding}");
+    world.afk(&["stop", "--all"]).ok();
 }
 
 /// Only money is a human's (docs/adr/0073): a watch given a decision that
