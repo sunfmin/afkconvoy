@@ -331,7 +331,9 @@ impl Waiting {
             .iter()
             .rev()
             .find_map(|source| self.waits.reason(source.body).map(|reason| (source, reason)));
-        if let Some((source, reason)) = source {
+        // The newest source that bears on the wait may say no reason for it:
+        // one that handed the issue on supersedes what came before it.
+        if let Some((source, Some(reason))) = source {
             let reason = first_sentence(&reason);
             if !reason.is_empty() {
                 self.why = format!("{}: {reason}", self.waits.why());
@@ -359,43 +361,59 @@ pub struct Said<'a> {
 
 impl Waits {
     /// The reason this source gives for this kind of wait, without the
-    /// fleet's marker or heading. Unrelated comments give none.
-    fn reason(&self, body: &str) -> Option<String> {
+    /// fleet's marker or heading: `Some(None)` where it bears on the wait
+    /// and gives no reason for it. Unrelated comments give none.
+    fn reason(&self, body: &str) -> Option<Option<String>> {
         let after_marker = || body.split_once('\n').map(|(_, text)| text.trim());
         match self {
             Waits::Escalated(_) => {
                 // A position may call for a human before the tick writes
                 // its escalation. A newer stage record then supersedes an
-                // old escalation from before the issue was handed back.
+                // old escalation from before the issue was handed back; one
+                // that handed the issue on, such as a `pass`, is no reason
+                // for a human.
                 if crate::transition::escalated_at([body]).is_none() {
-                    return StageRecord::read(body).map(|record| record.text);
+                    let record = StageRecord::read(body)?;
+                    return Some((!hands_on(record.stated)).then_some(record.text));
                 }
                 let text = after_marker()?;
-                Some(
+                Some(Some(
                     text.strip_prefix("**afkconvoy: escalated to a human.**")
                         .unwrap_or(text)
                         .trim()
                         .into(),
-                )
+                ))
             }
             Waits::Parked { stage } => {
                 let record = StageRecord::read(body)?;
                 (record.stage == *stage && record.stated == Stated::Declared(Declared::Park))
-                    .then_some(record.text)
+                    .then_some(Some(record.text))
             }
             Waits::PatrolFailed { patrol } => {
                 let (_, fields) = crate::record::latest_marker(crate::patrol::FAILED, [body])?;
                 (fields.get("patrol") == Some(patrol))
-                    .then(|| report_reason(after_marker().unwrap_or("")))
+                    .then(|| Some(report_reason(after_marker().unwrap_or(""))))
             }
             Waits::CutFailed => {
                 crate::record::latest_marker(crate::cut::FAILED, [body])?;
-                Some(report_reason(after_marker()?))
+                Some(Some(report_reason(after_marker()?)))
             }
             Waits::Verdict { .. } | Waits::Ended => {
-                StageRecord::read(body).map(|record| record.text)
+                StageRecord::read(body).map(|record| Some(record.text))
             }
         }
+    }
+}
+
+/// Whether a stage record that says `stated` hands its issue on, to a stage
+/// or back to the fleet: no reason for a human to answer.
+fn hands_on(stated: Stated) -> bool {
+    match stated {
+        Stated::Declared(declared) => {
+            matches!(declared, Declared::Pass | Declared::AlreadySatisfied | Declared::Ruling)
+        }
+        Stated::Sent | Stated::LockClosed => true,
+        Stated::Failed(_) => false,
     }
 }
 
@@ -502,6 +520,24 @@ mod tests {
         assert!(
             rule().answer_lines(12, &tracker).ends_with("`gh issue close 12 --repo acme/tracker`")
         );
+    }
+
+    #[test]
+    fn a_record_that_handed_the_issue_on_is_no_reason_for_a_human() {
+        let record = |verdict: &str, text: &str| {
+            format!(
+                "<!--convoy:stage stage=build verdict={verdict} by=human-->\n**afkconvoy** — x.\n\n{text}"
+            )
+        };
+        let escalation = "<!--convoy:escalation-->\n**afkconvoy: escalated to a human.**\n\nOld.";
+        let (escalate, pass) = (record("escalate", "Which API?"), record("pass", "Build done."));
+        let said = |body| Said { body, url: "u", at: Some(5) };
+        let mut waiting = Waiting::new(7, &Tracker::Own, "t", rule(), None);
+        waiting.explain(&[said(&escalate)]);
+        assert_eq!(waiting.why, "escalated at workup: Which API?");
+        let mut waiting = Waiting::new(7, &Tracker::Own, "t", rule(), None);
+        waiting.explain(&[said(escalation), said(&pass)]);
+        assert_eq!((waiting.why.as_str(), waiting.url), ("escalated at workup", None));
     }
 
     #[test]
