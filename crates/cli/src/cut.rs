@@ -33,6 +33,7 @@ use crate::gh::GitHub;
 use crate::git::Repo;
 use crate::log::What;
 use crate::orca::{Source, Worktree};
+use crate::orca_name::{Label, Shown};
 use crate::remote::{Fresh, Push};
 use crate::stage::Flows;
 
@@ -373,6 +374,8 @@ fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Opti
     clear_branches(fleet, &record.version, &base)?;
     let checkout = Worktree::cut(&source, CHECKOUT, &base, None)?;
     checkout.record_cut(&record)?;
+    let name = Shown::Cut { version: &record.version }.name(&fleet.gh.tracker);
+    Label::once(&checkout.path, name);
     let path = checkout.path.display().to_string();
     let command = crate::own_command_in(&path).fixed(" cut; exit").own();
     let title = format!("afkconvoy cut v{}", record.version);

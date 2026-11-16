@@ -1,5 +1,6 @@
 //! A watch lands its own change in a turn, on no issue, and its checkout
 //! goes once it has landed.
+use crate::orca_name::{Label, Shown};
 use crate::{gh::GitHub, git::Repo, host_watch::CHECKOUT, orca::Worktree};
 use afkconvoy_core::{config::Config, landing::Of};
 use anyhow::Result;
@@ -30,6 +31,8 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
             config.base_branch
         );
     };
+    let name = Shown::Watch { fixes: &pr.title }.name(&gh.tracker);
+    Label::once(&checkout.path, name);
     let answer = json!({"watch": host, "pr": pr.number});
     let locks = crate::lock::standing_locks(gh, config)?;
     if !locks.is_empty() {

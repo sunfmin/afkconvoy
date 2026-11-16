@@ -94,6 +94,25 @@ fn lands_on_no_issue(world: &World, name: &str) {
     assert_eq!(world.gh()["issues"], json!([]), "no issue was opened");
     let plan = world.afk(&["plan", "--instance", "me", "--now", "10100"]).ok();
     assert!(plan.get("watches_on_train").is_none(), "no train: {plan}");
+    // Orca names the watch's checkout and its candidate's worktree by what
+    // the change fixes, never its PR's number (sunfmin/control#1226).
+    let shown = world.orca()["shown"].clone();
+    let said: Vec<_> = shown
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| (&row["displayName"], &row["comment"]))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (&json!("watch · Queue the gates"), &serde_json::Value::Null),
+            (&json!("landing watch · Queue the gates"), &json!("gating")),
+            (&json!("landing watch · Queue the gates"), &json!("green")),
+        ],
+        "{shown}"
+    );
+    assert_eq!(shown[0]["path"], json!(checkout));
     checkout_gone(world, &checkout, &joined);
 }
 

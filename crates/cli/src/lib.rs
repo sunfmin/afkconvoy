@@ -101,6 +101,7 @@ pub mod machine;
 pub mod measure;
 pub mod named_harness;
 pub mod orca;
+mod orca_name;
 pub mod own_cpu;
 pub mod panel;
 pub mod park;
