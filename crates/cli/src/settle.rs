@@ -111,23 +111,25 @@ fn remove_settled(fleet: &Fleet, issue: u64, worktree: &Worktree) -> Result<Opti
         }
         Ok(Some(since))
     };
+    let mut listed = None;
     if worktree.holds_a_worker() {
         match worktree.state(fleet.now)? {
             WorkerState::Busy => return wait(),
             // One still ending is waited for like one still working: the
             // grace, not this tick, says when that is a finding.
-            WorkerState::Idle { .. } => {
-                if let Ended::Unconfirmed(_) = worktree.end_settled()? {
-                    return wait();
-                }
-            }
+            WorkerState::Idle { .. } => match worktree.end_settled()? {
+                (Ended::Unconfirmed(_), _) => return wait(),
+                (Ended::Confirmed, confirmed) => listed = confirmed,
+            },
             WorkerState::Gone => {}
         }
     }
     // A stopped orphan can never leave on its own: it is ended, and only a
     // process that outlives that keeps the worktree.
-    worktree.end_stopped_orphans()?;
-    let busy = crate::hot::working_directories()?;
+    let busy = match worktree.end_stopped_orphans(listed)? {
+        Some(listed) => crate::hot::working_directories_of(&listed),
+        None => crate::hot::working_directories()?,
+    };
     if crate::hot::occupies(&busy, &worktree.path) {
         return wait();
     }

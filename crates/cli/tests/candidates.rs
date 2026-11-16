@@ -746,7 +746,10 @@ fn a_stalled_gate_record_push_releases_the_lane_without_recording_green() {
     assert!(not_recorded.contains(" sent before the push was ended"), "{failed}");
     assert_eq!(world.state(1), "open");
 
-    began(&world, "b");
+    until(|| world.root.join("start-b").exists() || bb.try_wait().unwrap().is_some());
+    if bb.try_wait().unwrap().is_some() {
+        panic!("the queued turn ended before its gate: {}", finish(bb));
+    }
     release(&world, "b", false);
     let landed = finish(bb);
     assert_eq!(landed["outcome"], "merged", "{landed}");

@@ -146,13 +146,13 @@ fn works_in(pid: u32) -> Option<PathBuf> {
 /// it works somewhere else. An error from the process list removes nothing
 /// that was waiting on this answer.
 pub(crate) fn working_directories() -> anyhow::Result<Vec<PathBuf>> {
-    let mut dirs = vec![];
-    for proc in listed_checked()? {
-        if let Some(cwd) = works_in(proc.pid) {
-            dirs.push(cwd);
-        }
-    }
-    Ok(dirs)
+    Ok(working_directories_of(&listed_checked()?))
+}
+
+/// `working_directories`, of the processes `procs` lists: a listing its
+/// caller has just made.
+pub(crate) fn working_directories_of(procs: &[Proc]) -> Vec<PathBuf> {
+    procs.iter().filter_map(|proc| works_in(proc.pid)).collect()
 }
 
 /// The stopped orphans working in `worktree`, and every process under one:
@@ -318,6 +318,146 @@ pub(crate) fn listed_checked() -> anyhow::Result<Vec<Proc>> {
         }
     }
     Ok(rows)
+}
+
+/// Every process of this host that has a terminal, and every process above
+/// one, each with its command line and its environment: what says how a
+/// worker's harness stands at its terminal (`foreground::holds`), which
+/// judges only a process with a terminal. Whether a process is a worker's
+/// (`tree`) follows from it and the processes above it alone, so a listing
+/// that holds every process above each it holds judges it as the whole
+/// table does. Read from the kernel, not `ps`: the full listing, every
+/// environment read, took about 160 ms on a loaded host, and a slow-gate
+/// run made 1,443 of them only to type a line or look at a harness; this
+/// takes about 3 ms (sunfmin/control#1158). A process this user cannot
+/// read is another user's, which no worker here starts: the processes
+/// above it are left out, as no worker's. Errors: the kernel listed none.
+#[cfg(target_os = "macos")]
+pub(crate) fn on_terminals() -> anyhow::Result<Vec<Proc>> {
+    /// No terminal, as the kernel says a device.
+    const NODEV: u32 = u32::MAX;
+    let mut pids = vec![0 as libc::pid_t; 4096];
+    let listed = loop {
+        let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+        // SAFETY: `pids` holds `bytes` bytes of pids, as many as asked for.
+        let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        anyhow::ensure!(
+            n > 0,
+            "cannot list this host's processes: {}",
+            std::io::Error::last_os_error()
+        );
+        let n = n as usize;
+        if n < pids.len() {
+            break n;
+        }
+        pids.resize(pids.len() * 2, 0);
+    };
+    // pid → its parent, and whether it has a terminal: of every process
+    // this user may read.
+    let mut table: HashMap<u32, (u32, bool)> = HashMap::new();
+    for &pid in pids.get(..listed).unwrap_or_default() {
+        let Ok(pid) = u32::try_from(pid) else { continue };
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: `info` is a `proc_bsdinfo`, the flavor asked for, and
+        // `size` is its size: the kernel writes no more than that.
+        let got = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if got != size {
+            continue;
+        }
+        // SAFETY: a complete kernel write of numeric fields and byte arrays.
+        let info = unsafe { info.assume_init() };
+        if info.pbi_status == libc::SZOMB {
+            continue;
+        }
+        table.insert(pid, (info.pbi_ppid, info.e_tdev != NODEV));
+    }
+    let mut asked: BTreeSet<u32> = BTreeSet::new();
+    for (&pid, &(_, terminal)) in &table {
+        if !terminal {
+            continue;
+        }
+        let mut at = pid;
+        while at > 1 && asked.insert(at) {
+            match table.get(&at) {
+                Some(&(ppid, _)) => at = ppid,
+                // Gone, or another user's, which no worker here starts:
+                // nothing above it is a worker's either.
+                None => break,
+            }
+        }
+    }
+    let mut rows = vec![];
+    for pid in asked {
+        let Some(&(ppid, _)) = table.get(&pid) else { continue };
+        let line = said(pid).unwrap_or_default();
+        let cwd = (ppid == 1).then(|| works_in(pid)).flatten();
+        rows.push(Proc { pid, ppid, resident: 0, cpu_ms: 0, cpu_share: 0, written: 0, line, cwd });
+    }
+    Ok(rows)
+}
+
+/// The arguments, then the environment, `pid` was started with, each one
+/// after a space, as `ps axeww` says them; `None` where they cannot be
+/// read: a process of another user, or one gone.
+#[cfg(target_os = "macos")]
+fn said(pid: u32) -> Option<String> {
+    let mut name = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    // SAFETY: a size query: no buffer is written.
+    let asked = unsafe {
+        libc::sysctl(name.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0)
+    };
+    if asked != 0 || size == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u8; size];
+    // SAFETY: `buffer` holds `size` bytes, as many as the kernel may write.
+    let read = unsafe {
+        libc::sysctl(
+            name.as_mut_ptr(),
+            3,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read != 0 {
+        return None;
+    }
+    let buffer = buffer.get(..size)?;
+    // How many arguments, then the path it executed, then what it was given.
+    let argc = i32::from_ne_bytes(buffer.get(..4)?.try_into().ok()?);
+    let rest = buffer.get(4..)?;
+    let path_end = rest.iter().position(|&byte| byte == 0)?;
+    let given = rest.get(path_end..)?;
+    let start = given.iter().position(|&byte| byte != 0)?;
+    let mut words = given.get(start..)?.split(|&byte| byte == 0);
+    let argc = usize::try_from(argc).ok()?;
+    let mut said: Vec<String> =
+        words.by_ref().take(argc).map(|word| String::from_utf8_lossy(word).into_owned()).collect();
+    // The environment ends at the first empty string: what follows pads.
+    said.extend(
+        words
+            .take_while(|word| !word.is_empty())
+            .map(|word| String::from_utf8_lossy(word).into_owned()),
+    );
+    Some(said.join(" "))
+}
+
+/// Every process of this host, where it is not read from the kernel.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn on_terminals() -> anyhow::Result<Vec<Proc>> {
+    listed_checked()
 }
 
 /// Every process of this host with the share of a core it takes now, and,
