@@ -1193,6 +1193,44 @@ pub(super) fn limit_event(value: &serde_json::Value) -> Option<Limit> {
     Some(Limit { kind, window: None, resets_at: None })
 }
 
+/// How Codex is asked for its account's windows now: its app server's
+/// `account/rateLimits/read` (codex-cli 0.169.0), which refreshes the login
+/// of the home it is pointed at as a session would and spends no turn. The
+/// app server ends on its input's end before it answers a request still in
+/// flight, so its input is held open, through a fifo, by the reader of its
+/// answer until the answer to request 1 comes.
+pub(super) const WINDOWS_QUESTION: super::WindowsQuestion = super::WindowsQuestion {
+    line: r#"d=$(mktemp -d) && mkfifo "$d/in" && codex app-server <"$d/in" 2>/dev/null | (exec 3>"$d/in"; printf '%s\n' '{"id":0,"method":"initialize","params":{"clientInfo":{"name":"afkconvoy","version":"0"}}}' '{"method":"initialized"}' '{"id":1,"method":"account/rateLimits/read","params":{"excludeResetCreditDetails":true}}' >&3; sed -n '/^{.*"id":1[,}]/{p;q;}'); rm -rf "$d""#,
+    spends_turn: false,
+};
+
+/// The windows the app server's answer to `account/rateLimits/read` says:
+/// its `rateLimits`, whose `primary` and `secondary` each say
+/// `usedPercent`, `windowDurationMins` and `resetsAt` in unix seconds — the
+/// windows a session's `token_count` line names the same.
+pub(super) fn windows_answer(printed: &str) -> Vec<Window> {
+    let Some(limits) = printed
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|answer| answer["id"] == 1)
+        .map(|answer| answer["result"]["rateLimits"].clone())
+    else {
+        return Vec::new();
+    };
+    WINDOWS
+        .into_iter()
+        .filter_map(|name| {
+            let window = &limits[name];
+            Some(Window {
+                name: name.to_string(),
+                used_percent: window::number(&window["usedPercent"])?,
+                minutes: window["windowDurationMins"].as_u64(),
+                resets_at: window::seconds(&window["resetsAt"]),
+            })
+        })
+        .collect()
+}
+
 /// What Codex calls the windows of its `rate_limits`.
 const WINDOWS: [&str; 2] = ["primary", "secondary"];
 
