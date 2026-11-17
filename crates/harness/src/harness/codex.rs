@@ -711,7 +711,7 @@ pub(super) fn goal_row_query(thread: &str) -> Option<String> {
     })
 }
 
-/// The row as `sqlite3` answers `goal_row_query`: nothing where the session
+/// The row as `sqlite3 -readonly` prints its answer to `goal_row_query`: nothing where the session
 /// has none, as a cleared goal has not.
 pub(super) fn goal_row(answer: &str) -> Option<Option<super::GoalRow>> {
     let answer = answer.trim();

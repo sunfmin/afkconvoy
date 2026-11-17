@@ -474,8 +474,8 @@ fn a_harness_that_cannot_continue_a_session_has_no_resume_line() {
     }
 }
 
-/// What the crate depends on: Flux's attributes, serde and TOML — never
-/// afkconvoy-core, whose fleet concepts its API is to stay free of.
+/// What the crate depends on: Flux's attributes, serde, TOML and the
+/// system's host name — never afkconvoy-core, whose fleet concepts its API is to stay free of.
 #[test]
 fn the_crate_depends_on_nothing_of_the_fleet() {
     let manifest: toml::Table =
@@ -483,7 +483,10 @@ fn the_crate_depends_on_nothing_of_the_fleet() {
     let mut names: Vec<&str> =
         manifest["dependencies"].as_table().unwrap().keys().map(String::as_str).collect();
     names.sort_unstable();
-    assert_eq!(names, ["flux-alloc", "flux-core", "flux-rs", "serde", "serde_json", "toml"]);
+    assert_eq!(
+        names,
+        ["flux-alloc", "flux-core", "flux-rs", "gethostname", "serde", "serde_json", "toml"]
+    );
 }
 
 /// Each line of a recorded file of hook payloads, as `harness` says its

@@ -1790,8 +1790,7 @@ fn goal_at(home: &Path, status: &str) {
         "create table thread_goals (thread_id text primary key, status text not null, \
          updated_at_ms integer not null); insert into thread_goals values ('t', '{status}', 1);"
     );
-    let made = afkconvoy::census::command("sqlite3").arg(&store).arg(sql).status().unwrap();
-    assert!(made.success());
+    rusqlite::Connection::open(&store).unwrap().execute_batch(&sql).unwrap();
 }
 
 /// Codex's session of the worker in `dir`, in `home`, as codex-cli 0.166.0

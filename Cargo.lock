@@ -79,6 +79,7 @@ dependencies = [
  "flux-alloc",
  "flux-core",
  "flux-rs",
+ "gethostname",
  "proptest",
  "serde",
  "serde_json",
