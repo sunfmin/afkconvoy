@@ -17,15 +17,13 @@ const KIMI_SCREEN: &str = include_str!("screens/kimi-5-hour-usage-limit-control-
 const CODEX_REFUSAL: &str = include_str!("screens/codex-task-refusal-control-98.txt");
 
 fn name(world: &World, checkout: &Path, harness: &str) {
-    let file = world.cache().join("afkconvoy/checkouts.json");
     let mut list = world.checkout_list();
     let entries = list["checkouts"].as_array_mut().unwrap();
     match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
         Some(entry) => entry["harness"] = json!(harness),
         None => entries.push(json!({"checkout": checkout, "harness": harness})),
     }
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(file, list.to_string()).unwrap();
+    world.write_checkout_list(&list);
 }
 
 fn harness_of(world: &World, checkout: &Path) -> Value {

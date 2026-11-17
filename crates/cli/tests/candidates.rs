@@ -113,6 +113,7 @@ fn start_with_record_push_limit(
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), dir);
     command
         .env("XDG_CACHE_HOME", cache)
+        .env("XDG_DATA_HOME", crate::common::data_beside(cache))
         .env("AFKCONVOY_ISSUE", n.to_string())
         .args(["land", "--issue", &n.to_string()])
         .stdout(Stdio::piped())
@@ -382,6 +383,7 @@ fn a_cache_inside_any_checkout_is_refused_before_a_candidate_is_assigned() {
         let out = world
             .command(env!("CARGO_BIN_EXE_afkconvoy"), &source)
             .env("XDG_CACHE_HOME", checkout.join(".candidate-cache"))
+            .env("XDG_DATA_HOME", crate::common::data_beside(checkout.join(".candidate-cache")))
             .args(["land", "--issue", "1"])
             .output()
             .unwrap();
@@ -1964,6 +1966,7 @@ fn a_pending_turn_past_its_bound_ends_and_frees_its_place() {
     let behind = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &b)
         .env("XDG_CACHE_HOME", world.cache())
+        .env("XDG_DATA_HOME", world.data())
         .env("AFKCONVOY_ISSUE", "2")
         .env("AFKCONVOY_PENDING_SECONDS", "3")
         .args(["land", "--issue", "2"])
@@ -2124,6 +2127,7 @@ fn two_hosts_land_on_one_base_and_the_one_refused_gates_again_on_the_new_tip() {
     let again = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &b)
         .env("XDG_CACHE_HOME", &other)
+        .env("XDG_DATA_HOME", crate::common::data_beside(other))
         .env("AFKCONVOY_ISSUE", "2")
         .args(["land", "--issue", "2"])
         .output()

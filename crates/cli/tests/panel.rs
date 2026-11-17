@@ -466,7 +466,7 @@ fn with_no_port_said_the_panel_s_port_is_7070() {
     let world = World::new();
     let mut list = world.checkout_list();
     list["settings"].as_object_mut().unwrap().remove("panel");
-    std::fs::write(world.cache().join("afkconvoy/checkouts.json"), list.to_string()).unwrap();
+    world.write_checkout_list(&list);
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     assert_eq!(doctor["host"]["settings"]["in_force"]["panel"], 7070, "{doctor}");
     assert_eq!(doctor["host"]["settings"]["said"]["panel"], Value::Null, "{doctor}");

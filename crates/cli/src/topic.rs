@@ -65,6 +65,11 @@ pub struct ExampleRun;
 pub struct Cache;
 
 #[derive(Topic)]
+#[topic(name = "data")]
+#[doc = include_str!("help/topics/data.md")]
+pub struct Data;
+
+#[derive(Topic)]
 #[topic(name = "tick-log")]
 #[doc = include_str!("help/topics/tick-log.md")]
 pub struct TickLog;

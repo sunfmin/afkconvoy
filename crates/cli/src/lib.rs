@@ -47,7 +47,7 @@ mod codex_launch;
 pub mod concurrency;
 pub mod config;
 pub mod copies;
-mod host_db;
+pub mod host_db;
 pub use afkconvoy_host_reading::cpu;
 pub mod cut;
 pub mod cut_holder;
@@ -1669,6 +1669,7 @@ pub fn manual() -> agent_help::Help {
         .topic::<Example>()
         .topic::<ExampleRun>()
         .topic::<Cache>()
+        .topic::<Data>()
         .topic::<TickLog>()
         .topic::<WorkerLaunch>()
         .topic::<WorkerCodex>()

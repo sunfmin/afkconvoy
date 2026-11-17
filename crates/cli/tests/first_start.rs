@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 /// deliberately begin before any host settings have been saved.
 fn fresh_host() -> World {
     let world = World::new();
-    std::fs::remove_file(world.cache().join("afkconvoy/checkouts.json")).unwrap();
+    std::fs::remove_file(world.host_db()).unwrap();
     world
 }
 

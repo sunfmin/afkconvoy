@@ -575,6 +575,7 @@ fn the_suite_s_host_runner_tests_never_stop_nor_signal_the_host_s_own_host_runne
         .args(ON_THE_HOST)
         .env("HOME", host.home())
         .env("XDG_CACHE_HOME", host.cache())
+        .env("XDG_DATA_HOME", host.data())
         .process_group(runner as i32)
         .output()
         .unwrap();
@@ -747,7 +748,7 @@ fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     assert_eq!(again["host_runner"]["started"], true, "{again}");
     assert_eq!(again["settings"], json!({}), "{again}");
     let settings = &world.afk(&["doctor", "--host", "h1"]).json["host"]["settings"];
-    assert_eq!(settings["file"], json!(world.cache().join("afkconvoy/checkouts.json")));
+    assert_eq!(settings["file"], json!(world.host_db()));
     let (said, in_force) = (&settings["said"], &settings["in_force"]);
     assert_eq!((&said["hot_cores"], &in_force["hot_cores"]), (&json!(2.5), &json!(2.5)));
     assert_eq!((&said["admit_disk"], &in_force["admit_disk"]), (&json!(0), &json!(0)));
@@ -966,8 +967,7 @@ fn a_newer_afkconvoy_moves_the_host_runner_onto_itself_on_the_same_list() {
     world.kill_host_runner("TERM");
     let mut list = world.checkout_list();
     list["settings"]["kept"] = json!("as it is");
-    let file = world.cache().join("afkconvoy/checkouts.json");
-    std::fs::write(file, list.to_string()).unwrap();
+    world.write_checkout_list(&list);
     let mut older = world.host_runner_of("0.0.1");
     let old = older.id();
 

@@ -167,6 +167,7 @@ fn start(world: &World, dir: &Path, cache: &Path, issue: u64) -> Turn {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), dir);
     command
         .env("XDG_CACHE_HOME", cache)
+        .env("XDG_DATA_HOME", crate::common::data_beside(cache))
         .env("AFKCONVOY_ISSUE", issue.to_string())
         .args(["gate", "--land"]);
     Turn::spawn(format!("of issue {issue}"), command)
@@ -391,7 +392,7 @@ fn a_light_gate_takes_its_repo_turn_while_the_worker_lane_is_occupied() {
         quote(&release)
     );
     let mut command = other.command(env!("CARGO_BIN_EXE_afkconvoy"), &other.clone);
-    command.env("XDG_CACHE_HOME", world.cache());
+    command.env("XDG_CACHE_HOME", world.cache()).env("XDG_DATA_HOME", world.data());
     let heavy = command
         .args(["exclusive", "--", "sh", "-c", &script])
         .stdout(Stdio::null())
@@ -428,7 +429,7 @@ fn the_exclusive_bound_ends_the_whole_turn_and_releases_the_next_one() {
         asked_after(&world) == 1
     });
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
-    command.env("XDG_CACHE_HOME", world.cache());
+    command.env("XDG_CACHE_HOME", world.cache()).env("XDG_DATA_HOME", world.data());
     let queued = command
         .args(["exclusive", "--", "true"])
         .stdout(Stdio::null())
@@ -844,6 +845,7 @@ fn land_waiting(world: &World, worker: &Path, pending: u64) -> Turn {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), worker);
     command
         .env("XDG_CACHE_HOME", world.cache())
+        .env("XDG_DATA_HOME", world.data())
         .env("AFKCONVOY_PENDING_SECONDS", pending.to_string())
         .args(["land", "--issue", "1"]);
     Turn::spawn("land of issue 1".into(), command)

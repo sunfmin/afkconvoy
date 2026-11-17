@@ -314,7 +314,7 @@ fn a_share_said_wrong_is_refused_and_one_kept_wrong_is_an_error_not_a_default() 
     // a file mended wrong by hand holds nothing back by a default
     world.say_host_settings(json!({"hot_cores": -1}));
     let error = world.afk(&["plan", "--now", "1000"]).error();
-    assert!(error.contains("checkouts.json cannot be read"), "{error}");
+    assert!(error.contains("the checkout list in") && error.contains("cannot be read"), "{error}");
 }
 
 /// A candidate chain that had more conflicts than landings in the last hour holds new

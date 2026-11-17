@@ -202,6 +202,7 @@ fn guarded(world: &World, command: &str, line: &str) -> (i32, String) {
         .env_clear()
         .envs(world.login_env())
         .env("XDG_CACHE_HOME", world.cache())
+        .env("XDG_DATA_HOME", world.data())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
