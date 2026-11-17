@@ -140,15 +140,11 @@ fn a_repos_fast_gate_runs_in_the_queue_and_its_run_reads_back_from_the_record() 
     assert_eq!(took.seconds(), ran.ran.seconds, "the run's own duration");
     assert_eq!(read.at(), now);
     // Read from its record's whole message, it times each test its output timed.
-    let timed = run::recorded_with_tests(&reader, &tree, &fast, now).unwrap().expect("on record");
     let quick = TestTime { name: "nx tests::quick".into(), wall_ms: Some(12), cpu_ms: Some(10) };
-    assert_eq!(timed.tests(), [quick]);
-    assert_eq!((timed.at(), timed.took()), (read.at(), read.took()));
-    assert!(read.tests().is_empty(), "a subject alone times no test");
+    assert_eq!(read.tests(), [quick]);
     // The slow gate never ran on it: nothing of it is on record.
     let slow = GateCommand::new(&gates.slow.command);
     assert_eq!(run::recorded(&reader, &tree, &slow, now).unwrap(), None);
-    assert_eq!(run::recorded_with_tests(&reader, &tree, &slow, now).unwrap(), None);
 }
 
 #[test]
@@ -160,9 +156,8 @@ fn a_run_whose_output_times_no_test_reads_back_as_the_same_run_with_none() {
     let on = ("scratch-host", "a-kind");
     let ran = run::gate(&repo, &slow, on, now, afkconvoy_patience::PATIENCE, &[]).unwrap();
     assert_eq!(ran.judged, Judged::Green, "{:?}", ran.output);
-    let read = run::recorded_with_tests(&repo, &ran.tree, &slow, now).unwrap().expect("on record");
+    let read = run::recorded(&repo, &ran.tree, &slow, now).unwrap().expect("on record");
     assert!(read.tests().is_empty());
-    assert_eq!(Some(read), run::recorded(&repo, &ran.tree, &slow, now).unwrap());
 }
 
 /// A gate that counts its runs in `counted`, outside the worktree, and is

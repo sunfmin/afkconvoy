@@ -390,7 +390,10 @@ fn a_promotion_gates_what_another_host_landed_while_it_waited_for_its_lane() {
     assert_eq!(promoted["outcome"], "promoted", "{promoted}");
     assert_eq!(promoted["proving_tip"], after.as_str(), "it read the tip again: {promoted}");
     assert_eq!(promoted["gated_tip"], after.as_str(), "{promoted}");
-    assert_eq!(ran(&world, "slow"), std::slice::from_ref(&after), "one slow run, of that tip");
+    // The fast run of that tip is host A's record, not B's (docs/adr/0037):
+    // B gates it whole, once.
+    assert_eq!(ran(&world, "whole"), std::slice::from_ref(&after), "one run, of that tip");
+    assert!(ran(&world, "slow").is_empty(), "{:?}", ran(&world, "slow"));
     assert_eq!(tip(&world, "main"), after, "the base branch fast-forwards to it");
     assert_eq!(promoted["base_tip"], base.as_str(), "{promoted}");
     assert_eq!(promoted["unpromoted"], 3, "{promoted}");
@@ -410,7 +413,8 @@ fn a_second_host_s_promotion_of_a_tip_the_base_already_holds_pushes_nothing() {
     let proving = tip(&world, PROVING);
     let b = Host::new(&world, B);
     let mut late = b.start(&world, &b.clone, &["promote", "--host", B]);
-    let held = hold(&world, &mut late, "slow", B, &in_clone(&b.clone));
+    // B has no fast run of the tip on its record: it gates it whole.
+    let held = hold(&world, &mut late, "whole", B, &in_clone(&b.clone));
     let first = world.afk(&["promote", "--host", A]).ok();
     assert_eq!(first["outcome"], "promoted", "{first}");
     assert_eq!(tip(&world, "main"), proving);
@@ -452,7 +456,8 @@ fn a_second_host_s_promotion_of_a_tip_ahead_of_the_first_s_fast_forwards_onto_it
     let newer = tip(&world, PROVING);
     // ...and B's the newer one, read while the base branch was at neither.
     let mut late = b.start(&world, &b.clone, &["promote", "--host", B]);
-    let held_b = hold(&world, &mut late, "slow", B, &in_clone(&b.clone));
+    // B has no fast run of the tip on its record: it gates it whole.
+    let held_b = hold(&world, &mut late, "whole", B, &in_clone(&b.clone));
     std::fs::remove_file(held_a).unwrap();
     let first = early.answer();
     assert_eq!(first["outcome"], "promoted", "{first}");

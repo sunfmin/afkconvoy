@@ -1402,6 +1402,95 @@ impl World {
         }
     }
 
+    /// The green gate records this world's host keeps (docs/adr/0037), each
+    /// the record's whole text, oldest first; empty where it keeps none.
+    pub fn gate_records(&self) -> Vec<String> {
+        self.host_rows("SELECT record FROM gate_records ORDER BY at, tree, command")
+    }
+
+    /// The red gate runs this world's host keeps until a work account cites
+    /// them, each the record's text, oldest first.
+    pub fn red_gate_runs(&self) -> Vec<String> {
+        self.host_rows("SELECT record FROM red_gate_runs ORDER BY at")
+    }
+
+    /// Whether this world's host keeps a green gate record of `tree`, of any
+    /// command.
+    pub fn gate_recorded(&self, tree: &str) -> bool {
+        self.gate_recorded_on(&self.cache(), tree)
+    }
+
+    /// Whether the host whose cache directory is `cache` — this world's, or
+    /// another host's beside it — keeps a green gate record of `tree`.
+    pub fn gate_recorded_on(&self, cache: &Path, tree: &str) -> bool {
+        let db = data_beside(cache).join("afkconvoy/host.db");
+        let stated = format!("convoy:gate tree={tree} ");
+        rows_of(&db, "SELECT record FROM gate_records").iter().any(|r| r.starts_with(&stated))
+    }
+
+    /// The remote's gate refs, on either layout: none is written any more.
+    pub fn remote_gate_refs(&self) -> Vec<String> {
+        let listed = self.remote(&[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/convoy/gate/",
+            "refs/heads/convoy-gate/",
+        ]);
+        listed.lines().map(str::to_string).collect()
+    }
+
+    /// The first column of each row `sql` selects from this world's host
+    /// database; empty where there is none yet.
+    fn host_rows(&self, sql: &str) -> Vec<String> {
+        rows_of(&self.host_db(), sql)
+    }
+
+    /// Keeps `record`, a green gate record of `command` on `tree` finished
+    /// at `at`, in this world's host database, as a gate run of its host
+    /// writes one (docs/adr/0037).
+    pub fn keep_gate_record(&self, tree: &str, command: &str, at: u64, record: &str) {
+        let path = self.host_db();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        afkconvoy::host_db::forget(&path, "paused.json").unwrap();
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        let common = std::fs::canonicalize(self.clone.join(".git")).unwrap();
+        let repo = format!("{:016x}", afkconvoy_core::gate::key(&common.to_string_lossy()));
+        db.execute(
+            "INSERT OR REPLACE INTO gate_records (repo, tree, command, at, record)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![repo, tree, command, at as i64, record],
+        )
+        .unwrap();
+    }
+
+    /// Lets the host's database take green gate records again
+    /// (`refuse_gate_records`).
+    pub fn allow_gate_records(&self) {
+        let db = rusqlite::Connection::open(self.host_db()).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        db.execute_batch("DROP TRIGGER IF EXISTS refuse_gate").unwrap();
+    }
+
+    /// Makes the host's database refuse every write of a green gate record,
+    /// with `reason`: what a remote hook refused a record with, before the
+    /// records were the host's.
+    pub fn refuse_gate_records(&self, reason: &str) {
+        let path = self.host_db();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // The tables are afkconvoy's to make: forgetting what a store holds
+        // opens, and so makes, the database.
+        afkconvoy::host_db::forget(&path, "paused.json").unwrap();
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        let reason = reason.replace('\'', "''");
+        db.execute_batch(&format!(
+            "CREATE TRIGGER refuse_gate BEFORE INSERT ON gate_records \
+             BEGIN SELECT RAISE(ABORT, '{reason}'); END"
+        ))
+        .unwrap();
+    }
+
     /// Makes the host's database refuse every write of a chain whose text
     /// holds `fragment`, with `reason`: what a remote hook refused a record
     /// with, before the chain was the host's.
@@ -2934,4 +3023,26 @@ pub fn data_beside(cache: impl AsRef<Path>) -> PathBuf {
     let mut name = cache.file_name().unwrap_or_default().to_os_string();
     name.push("-data");
     cache.with_file_name(name)
+}
+
+/// The test process's `PATH` with this build's `afkconvoy` first: what a
+/// command run with a cleared environment finds by that name. The installed
+/// release found otherwise refuses a host database this build migrated past
+/// it.
+pub fn built_first_path() -> String {
+    let built = std::path::Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap();
+    format!("{}:{}", built.display(), std::env::var("PATH").unwrap())
+}
+
+/// The first column of each row `sql` selects from the host database `db`;
+/// empty where there is none yet, or it was never migrated this far.
+fn rows_of(db: &Path, sql: &str) -> Vec<String> {
+    if !db.exists() {
+        return vec![];
+    }
+    let db = rusqlite::Connection::open(db).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+    let Ok(mut statement) = db.prepare(sql) else { return vec![] };
+    let rows = statement.query_map([], |row| row.get::<_, String>(0)).unwrap();
+    rows.map(Result::unwrap).collect()
 }

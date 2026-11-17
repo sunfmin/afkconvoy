@@ -66,8 +66,6 @@ pub(crate) struct RemoteReads {
     pub(crate) seen: Mutex<Seen>,
     /// A commit's subject, by sha. The sha names the subject, so it stays.
     subjects: Mutex<HashMap<String, String>>,
-    /// A commit's whole message, by sha (`Repo::message`): it stays too.
-    messages: Mutex<HashMap<String, String>>,
     /// The empty tree's id in the repository's object format
     /// (`record_commit`), which it keeps for as long as it is there.
     empty_tree: OnceLock<String>,
@@ -81,7 +79,6 @@ impl RemoteReads {
             wire,
             seen: Mutex::default(),
             subjects: Mutex::default(),
-            messages: Mutex::default(),
             empty_tree: OnceLock::new(),
             present: Mutex::default(),
         }
@@ -511,30 +508,6 @@ impl Repo {
             bail!("git commit-tree failed: {}", ran.stderr.trim());
         }
         Ok(ran.stdout)
-    }
-
-    /// A commit of `tree` on `parent`, whose subject is `record`. The parent
-    /// gives a push the edge of the tested commit, so a remote holding it is
-    /// sent only the record and objects it still lacks.
-    pub fn record_commit_on(&self, tree: &str, parent: &str, record: &str) -> Result<String> {
-        let ran = commit_tree(&self.dir, tree, &[parent], record, &RECORD_IDENTITY)?;
-        if !ran.ok {
-            bail!("git commit-tree failed: {}", ran.stderr.trim());
-        }
-        Ok(ran.stdout)
-    }
-
-    /// The whole message of the commit `sha`, which is here. A sha already
-    /// read is not asked again: the sha names the message, and a turn waiting
-    /// on a record reads the same one many times.
-    pub(crate) fn message(&self, sha: &str) -> Result<String> {
-        let reads = self.reads();
-        if let Some(message) = lock(&reads.messages).get(sha) {
-            return Ok(message.clone());
-        }
-        let message = self.git(&["show", "-s", "--format=%B", sha])?;
-        lock(&reads.messages).insert(sha.to_string(), message.clone());
-        Ok(message)
     }
 
     /// The subject of each of `records`, fetched by ref name when its commit

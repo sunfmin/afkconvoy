@@ -89,6 +89,27 @@ const MIGRATIONS: &[&str] = &[
         said TEXT NOT NULL,
         PRIMARY KEY (repo, issue)
      )",
+    // The host's recorded gate runs (`gate_records`), which were refs of the
+    // remote: the green run of a command on a tree, by repo; and the red
+    // runs of an issue's trees, until its work account cites them. `record`
+    // is the record's one encoding, as its ref's commit message held it.
+    "CREATE TABLE gate_records (
+        repo TEXT NOT NULL,
+        tree TEXT NOT NULL,
+        command TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        record TEXT NOT NULL,
+        PRIMARY KEY (repo, tree, command)
+     );
+     CREATE TABLE red_gate_runs (
+        repo TEXT NOT NULL,
+        issue INTEGER NOT NULL,
+        at INTEGER NOT NULL,
+        tree TEXT NOT NULL,
+        command TEXT NOT NULL,
+        record TEXT NOT NULL,
+        PRIMARY KEY (repo, issue, at, tree, command)
+     )",
 ];
 
 /// The host's database: `host.db` in the data directory.

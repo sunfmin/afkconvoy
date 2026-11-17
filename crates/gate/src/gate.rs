@@ -3,9 +3,9 @@
 //!
 //! A record says: this command passed on this tree, and how long the run took
 //! on which host, and each test's wall time and CPU time where the run's
-//! output said them. It is one ref on the remote, named for the tree and the
-//! command, so it stands wherever the same content is about to land — in
-//! another worktree, on another machine.
+//! output said them. It is filed under the tree and the command, so it
+//! stands wherever the same content is about to land — in another worktree;
+//! where it is kept is its program's (`run::Records`).
 
 use flux_rs::attrs::*;
 
@@ -83,7 +83,8 @@ impl GateCommand {
     }
 }
 
-/// The remote ref a recorded run of `command` on `tree` lives at. The name is
+/// The remote ref a recorded run of `command` on `tree` lives at, where a
+/// program keeps its records on a remote (`run::Git`). The name is
 /// the key, so asking "was this tested green?" is asking for one ref, and two
 /// runs never contend.
 pub fn record_ref(layout: Layout, tree: &Tree, command: &GateCommand) -> String {

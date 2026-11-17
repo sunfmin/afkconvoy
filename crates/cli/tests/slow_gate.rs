@@ -8,7 +8,7 @@ use crate::common;
 use afkconvoy::claims::{Me, Scan, take_run};
 use afkconvoy::git::Repo;
 use afkconvoy_core::claims::InstanceId;
-use afkconvoy_core::gate::{GateCommand, Ran, Recording, Tree, after_run, record_ref};
+use afkconvoy_core::gate::{GateCommand, Ran, Recording, Tree, after_run};
 use afkconvoy_core::slow_gate::{CLAIM_KEY, LABEL, LANDINGS, PERCENT, TITLE};
 use common::{BASE, World, commit, git};
 use serde_json::{Value, json};
@@ -22,7 +22,6 @@ const COMMAND: &str = "./gate.sh";
 fn land(world: &World, name: &str, host: &str, seconds: u64, at: u64) -> String {
     let landed = commit(&world.clone, name, name);
     git(&world.clone, &["push", "-q", "origin", BASE]);
-    let repo = Repo::at(&world.clone).unwrap();
     let tree = Tree::named(&git(&world.clone, &["rev-parse", "HEAD^{tree}"]));
     let command = GateCommand::new(COMMAND);
     let ran =
@@ -30,9 +29,7 @@ fn land(world: &World, name: &str, host: &str, seconds: u64, at: u64) -> String 
     let Recording::Write(run) = after_run(&tree, &command, ran, host, at) else {
         panic!("a green run on a committed tree is put on record")
     };
-    let record = repo.record_commit_of(tree.name(), &run.write(&tree, &command)).unwrap();
-    let to = format!("{record}:{}", record_ref(repo.layout(), &tree, &command));
-    git(&world.clone, &["push", "-q", "origin", &to]);
+    world.keep_gate_record(tree.name(), COMMAND, at, &run.write(&tree, &command));
     landed
 }
 

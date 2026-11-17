@@ -74,6 +74,7 @@ pub mod forget;
 pub mod found;
 pub mod fresh_look;
 pub mod gate;
+mod gate_records;
 pub mod gh;
 mod gh_equivalent;
 mod gh_quota;
