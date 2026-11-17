@@ -1,7 +1,7 @@
 use crate::common;
 
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use afkconvoy_core::lease::{FORGOTTEN, LEASE};
 use common::{World, bookkeeping};
@@ -25,7 +25,8 @@ fn stopped_by(world: &World, signal: &str, args: &[&str]) -> (Vec<String>, Value
             break;
         }
     }
-    let told = Command::new("kill").args([signal, &run.id().to_string()]).status().unwrap();
+    let told =
+        afkconvoy::census::command("kill").args([signal, &run.id().to_string()]).status().unwrap();
     assert!(told.success(), "the run was gone before it was told to stop: {lines:?}");
     lines.extend(stdout.map(|line| line.unwrap()));
     assert!(run.wait().unwrap().success(), "{lines:?}");

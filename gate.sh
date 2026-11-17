@@ -8,7 +8,7 @@
 # It is two gates, run one after the other (docs/adr/0047):
 #   ./gate.sh fast   the fast gate, which a worker passes before it opens or
 #                    updates its PR: fmt, Flux, clippy, the manual, the build
-#                    of every test, and the tests that start no process
+#                    of every test, and the tests that start few processes
 #   ./gate.sh slow   the slow gate: every other test, and nothing the fast
 #                    gate checks
 #   ./gate.sh        both: the whole gate, which a landing turn runs
@@ -73,9 +73,13 @@ else
     echo "gate: $target_dir absent; shared compiler and dependency caches may still be warm" >&2
 fi
 took=
+# The processes the step's tests started, when it ran tests: said beside its
+# seconds (see `census_report`).
+processes=
 step() {
     now=$(date +%s)
-    took="$took $1 $((now - began))s"
+    took="$took $1 $((now - began))s${processes:+ $processes processes}"
+    processes=
     began=$now
 }
 steps() {
@@ -165,15 +169,51 @@ test_threads() {
 # deep TMPDIR, into "$test_log/output" → tests_status, which also fails on a
 # process the tests left behind.
 nextest_run() {
+    # Every process a test starts through afkconvoy's own code is written, a
+    # line each, to a file of that test in this directory (census.rs).
+    rm -rf "$test_log/census"
+    mkdir -p "$test_log/census"
     # Keep nextest's output live and retain its own exit status through tee.
     # shellcheck disable=SC2086
-    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet $threads --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
+    (if TMPDIR="$tests_tmpdir" AFKCONVOY_PROCESS_CENSUS_DIR="$test_log/census" cargo nextest run --workspace --cargo-quiet $threads --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
         echo 0 >"$test_log/status"
     else
         echo "$?" >"$test_log/status"
     fi) 2>&1 | tee "$test_log/output"
     tests_status=$(cat "$test_log/status")
     left_behind || [ "$tests_status" -ne 0 ] || tests_status=1
+}
+# The processes the tests of the run just ended started, counted by afkconvoy's
+# own code as each is started (crates/cli/src/census.rs): not the kernel's
+# count, which on a host shared with other gates says nothing of these tests
+# (sunfmin/control#1347). A test's file is `<binary>@<name>`, one line to a
+# process. Says the total and the ten tests that started most as the run
+# ends, green or red, and leaves the total in `processes` for `step`.
+census_report() {
+    census="$test_log/census"
+    processes=$(find "$census" -type f -exec cat {} + 2>/dev/null | wc -l | tr -d ' ')
+    echo "gate: the $1 tests started $processes processes; the most each started:" >&2
+    awk '{ n[FILENAME]++ } END { for (f in n) { name = f; sub(/^.*\//, "", name); sub(/@/, " ", name); print n[f], name } }' "$census"/* 2>/dev/null |
+        sort -rn | head -10 | sed 's/^/gate:     /' >&2 || true
+}
+# The bound on the processes one fast-gate test starts: one number, written in
+# .config/process-bound, past which a test belongs in .config/slow-tests, as
+# one past the 2s line does (sunfmin/control#1347). Fails by name, as a test
+# past the line does, each test of the run `$1` started more.
+check_process_bound() {
+    bound=$(awk '/^[[:space:]]*(#|$)/ { next } { print $1; exit }' .config/process-bound)
+    case "$bound" in
+    "" | *[!0-9]*)
+        echo "gate: .config/process-bound names no number" >&2
+        return 1
+        ;;
+    esac
+    over=$(awk -v bound="$bound" '{ n[FILENAME]++ } END { for (f in n) if (n[f] > bound) { name = f; sub(/^.*\//, "", name); sub(/@/, " ", name); print n[f], name } }' "$1"/* 2>/dev/null | sort -rn)
+    [ -n "$over" ] || return 0
+    printf '%s\n' "$over" | while read -r count name; do
+        echo "gate: $name started $count processes in the fast gate, more than the bound of $bound (.config/process-bound). Name it in .config/slow-tests as its binary and name, or make it start fewer." >&2
+    done
+    return 1
 }
 # The tests nextest's output `$1` names TIMEOUT, as `<binary> <name>` lines.
 timed_out() {
@@ -202,6 +242,7 @@ run_tests() {
     [ -z "$threads" ] ||
         echo "gate: the $1 tests run ${threads#--test-threads } at a time, two to each of the $NEXTEST_TEST_THREADS cores this gate was given" >&2
     nextest_run "$1" "$2"
+    census_report "$1"
     # A fast gate red only on TIMEOUTs on a loaded host says nothing of the
     # tests: their 6 seconds are the line between the gates, not a hang, and
     # a host loaded from outside the fleet — another user's simulators on
@@ -218,6 +259,7 @@ run_tests() {
             timed_out=$(timed_out "$test_log/output")
             echo "gate: the fast tests ran red only on TIMEOUTs, on a loaded host (load ${load:-unknown}, CPUs ${cpus:-unknown}): they run again under the limit for one test, which only a hang reaches" >&2
             nextest_run fast-loaded "$2"
+            census_report fast
             if [ "$tests_status" -eq 0 ]; then
                 printf '%s\n' "$timed_out" | while read -r binary name; do
                     echo "gate: flagged: $binary $name timed out in the fast gate and passed under the limit for one test, unclassified on a loaded host" >&2
@@ -255,6 +297,10 @@ run_tests() {
     # checked alone, as a TIMEOUT is, and one still past the line on a quiet
     # host fails the gate. One a loaded host cannot classify is flagged.
     if [ "$1" = fast ] && ! check_fast_timeouts "$test_log/output"; then
+        rm -rf "$test_log"
+        exit 1
+    fi
+    if [ "$1" = fast ] && ! check_process_bound "$test_log/census"; then
         rm -rf "$test_log"
         exit 1
     fi

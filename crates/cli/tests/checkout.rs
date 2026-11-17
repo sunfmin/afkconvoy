@@ -6,14 +6,15 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use common::{World, git};
 use serde_json::json;
 
 /// What the binary's `--help` of `command` prints.
 fn text_of(command: &str) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args([command, "--help"]).output();
+    let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
+        .args([command, "--help"])
+        .output();
     String::from_utf8(out.unwrap().stdout).unwrap()
 }
 

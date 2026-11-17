@@ -14,7 +14,6 @@
 //! started: the one whose parent is no process of the worker.
 
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::harness::Keystroke;
@@ -143,7 +142,7 @@ pub(crate) fn holds(procs: &[Proc], worktree: &Path) -> Result<Holds> {
 /// What `ps` says of `pids` at their terminals. A pid gone is not listed.
 fn jobs(pids: &[u32]) -> Result<Vec<Job>> {
     let list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-    let out = crate::process::output(Command::new("ps").args([
+    let out = crate::process::output(crate::census::command("ps").args([
         "-o",
         "pid=,pgid=,tpgid=,stat=,tty=",
         "-p",
@@ -179,7 +178,7 @@ pub(crate) fn recover(
         type_fg()?;
     } else if held.stopped {
         let group = format!("-{}", held.pgid);
-        crate::process::output(Command::new("kill").args(["-CONT", "--", &group]))?;
+        crate::process::output(crate::census::command("kill").args(["-CONT", "--", &group]))?;
     } else {
         return Ok(false);
     }
@@ -229,7 +228,7 @@ fn flush(tty: &str) -> Result<()> {
 /// was last seen on, is a bare shell: some process is on it, and none of
 /// the worker's. A terminal nothing is on is gone, not bare.
 pub(crate) fn bare_shell(procs: &[Proc], worktree: &Path, tty: &str) -> Result<bool> {
-    let out = crate::process::output(Command::new("ps").args(["-o", "pid=", "-t", tty]))?;
+    let out = crate::process::output(crate::census::command("ps").args(["-o", "pid=", "-t", tty]))?;
     let on: Vec<u32> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|row| row.trim().parse().ok())
@@ -300,7 +299,7 @@ mod tests {
             let (master, slave) =
                 unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
             let home = tempfile::tempdir().unwrap();
-            let mut command = Command::new(zsh);
+            let mut command = crate::census::command(zsh);
             command
                 .args(["-l", "-i"])
                 .env_clear()

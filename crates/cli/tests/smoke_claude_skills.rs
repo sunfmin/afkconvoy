@@ -4,7 +4,7 @@
 //! -- --ignored --nocapture`. No host configuration is edited.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use afkconvoy::copies::{Copies, Copy};
 use afkconvoy::kept::keep_under;
@@ -63,7 +63,7 @@ struct Scratch(tempfile::TempDir);
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = Command::new("chmod").args(["-R", "u+w"]).arg(self.0.path()).status();
+        let _ = afkconvoy::census::command("chmod").args(["-R", "u+w"]).arg(self.0.path()).status();
     }
 }
 
@@ -173,8 +173,11 @@ fn real_claude_skills_keep_host_ancestors_opt_in() {
                 quoted(&format!("/{SHARED}")),
                 quoted(&text(&debug)),
             );
-            let out =
-                Command::new(&shell).args(["-lic", &line]).stdin(Stdio::null()).output().unwrap();
+            let out = afkconvoy::census::command(&shell)
+                .args(["-lic", &line])
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
             let stdout = String::from_utf8_lossy(&out.stdout);
             let events: Vec<Value> =
                 stdout.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();

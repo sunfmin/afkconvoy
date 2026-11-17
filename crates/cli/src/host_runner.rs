@@ -45,7 +45,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -711,7 +711,7 @@ fn keep() -> Result<Value> {
     loop {
         followed_log();
         let mut child = crate::process::spawn(
-            crate::process::inheriting_nothing(&mut Command::new(&program))
+            crate::process::inheriting_nothing(&mut crate::census::command(&program))
                 .args(["host-runner", "--kept-by", &keeper.to_string()])
                 .current_dir("/")
                 .stdin(Stdio::null())
@@ -1292,7 +1292,7 @@ fn found_at(path: &Path, log: &RunnerLog) -> Option<Installed> {
 /// error, or said no version.
 pub(crate) fn version_of(path: &Path) -> Result<String> {
     let mut child = crate::process::spawn(
-        Command::new(path)
+        crate::census::command(path)
             .arg("--version")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1349,7 +1349,8 @@ fn handed_over(path: &Path, lock: File) -> Result<Value> {
             // Its keeper and the host runner it started, which is in a
             // process group of its own.
             if let Some(kept) = kept_by(&lock_file, child.id()) {
-                let _ = crate::process::status(Command::new("kill").args(["-KILL", &kept]));
+                let _ =
+                    crate::process::status(crate::census::command("kill").args(["-KILL", &kept]));
             }
             let _ = child.kill();
             let _ = child.wait();
@@ -2546,7 +2547,9 @@ impl Older {
     /// host go → its {pid, version}.
     fn replaced(self) -> Result<Value> {
         let Older { pid, version } = self;
-        let told = crate::process::status(Command::new("kill").args(["-TERM", &pid.to_string()]));
+        let told = crate::process::status(
+            crate::census::command("kill").args(["-TERM", &pid.to_string()]),
+        );
         told.context("`kill` could not be run to stop the host runner")?;
         // However `kill` ended: one already gone has let the host go.
         if !let_go(&cache()?.join(LOCK), UP_WITHIN) {
@@ -2789,7 +2792,7 @@ fn start_detached(program: &Path) -> Result<Child> {
         .context("the host runner starts with the environment of a fresh login shell")?;
     let log = opened_log(&dir.join(LOG))?;
     crate::process::spawn(
-        crate::process::inheriting_nothing(&mut Command::new(program))
+        crate::process::inheriting_nothing(&mut crate::census::command(program))
             .arg("host-runner")
             .env_clear()
             .envs(env)

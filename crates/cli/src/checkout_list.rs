@@ -302,7 +302,6 @@ pub fn repo_of(repo: &Repo) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
 
     use super::*;
 
@@ -418,7 +417,8 @@ mod tests {
         let root = dir.path().canonicalize().unwrap();
         let git = |args: &[&str]| {
             let ran =
-                crate::process::output(Command::new("git").args(args).current_dir(&root)).unwrap();
+                crate::process::output(crate::census::command("git").args(args).current_dir(&root))
+                    .unwrap();
             assert!(ran.status.success(), "{ran:?}");
         };
         git(&["init", "--quiet", "w"]);
@@ -462,7 +462,8 @@ mod tests {
         let root = dir.path().canonicalize().unwrap();
         let git = |args: &[&str]| {
             let ran =
-                crate::process::output(Command::new("git").args(args).current_dir(&root)).unwrap();
+                crate::process::output(crate::census::command("git").args(args).current_dir(&root))
+                    .unwrap();
             assert!(ran.status.success(), "{ran:?}");
         };
         git(&["init", "--quiet", "w"]);
@@ -512,9 +513,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let checkout = dir.path().join("w");
         let git = |args: &[&str]| {
-            let ran =
-                crate::process::output(Command::new("git").args(args).current_dir(dir.path()))
-                    .unwrap();
+            let ran = crate::process::output(
+                crate::census::command("git").args(args).current_dir(dir.path()),
+            )
+            .unwrap();
             assert!(ran.status.success(), "{ran:?}");
         };
         git(&["init", "--quiet", "--bare", "remote.git"]);

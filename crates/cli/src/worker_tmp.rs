@@ -207,7 +207,7 @@ mod tests {
     use super::*;
 
     use std::os::unix::net::UnixListener;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     /// What macOS gives a user for a temporary directory,
     /// `getconf DARWIN_USER_TEMP_DIR`: `/var/folders/xx/<28 characters>/T/`.
@@ -285,7 +285,7 @@ mod tests {
         let worktree = worktree(under.path(), 0);
         let tmp = make(&worktree).unwrap();
         let mut server = crate::process::spawn(
-            Command::new(std::env::current_exe().unwrap())
+            crate::census::command(std::env::current_exe().unwrap())
                 .args(["--exact", "worker_tmp::tests::a_server", "--ignored"])
                 .env("TMPDIR", &tmp)
                 .stdin(Stdio::null())

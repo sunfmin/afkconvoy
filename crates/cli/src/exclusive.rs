@@ -1132,7 +1132,7 @@ pub fn exclusive(
     now: impl Fn() -> u64,
 ) -> ExitCode {
     if let Some(owner) = inherited(checkout.as_ref()) {
-        let mut nested = Command::new(&command[0]);
+        let mut nested = crate::census::command(&command[0]);
         keep_within(&mut nested);
         if std::env::var_os(SHARE_ENV).is_some() {
             share(&mut nested, owner);
@@ -1218,7 +1218,7 @@ fn run_command(
     now: &dyn Fn() -> u64,
     slot: &crate::slots::Slot,
 ) -> std::io::Result<Option<ExitStatus>> {
-    let mut cmd = Command::new(&command[0]);
+    let mut cmd = crate::census::command(&command[0]);
     cmd.args(&command[1..]).current_dir(dir).env_remove(GATE_ENV);
     keep_within(&mut cmd);
     if std::env::var_os(SHARE_ENV).is_some() {
@@ -1583,8 +1583,9 @@ mod tests {
 
     #[test]
     fn an_ended_command_is_passed_on_as_a_shell_would() {
-        let run =
-            |line: &str| crate::process::status(Command::new("sh").args(["-c", line])).unwrap();
+        let run = |line: &str| {
+            crate::process::status(crate::census::command("sh").args(["-c", line])).unwrap()
+        };
         assert_eq!(ended(run("exit 3")), (3, "exit 3".to_string()));
         assert_eq!(ended(run("kill -9 $$")), (137, "killed by signal 9".to_string()));
     }

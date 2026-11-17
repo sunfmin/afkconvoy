@@ -46,8 +46,10 @@ impl FixtureProcess {
     }
 
     fn state(pid: u32) -> Option<char> {
-        let out =
-            Command::new("ps").args(["-p", &pid.to_string(), "-o", "stat="]).output().unwrap();
+        let out = afkconvoy::census::command("ps")
+            .args(["-p", &pid.to_string(), "-o", "stat="])
+            .output()
+            .unwrap();
         assert!(
             out.status.success() || (out.status.code() == Some(1) && out.stderr.is_empty()),
             "cannot observe fixture process {pid}"
@@ -88,7 +90,8 @@ impl Drop for FixtureProcess {
         unsafe { libc::kill(root as libc::pid_t, libc::SIGSTOP) };
         Self::wait_for(root, true);
         loop {
-            let listed = Command::new("ps").args(["-axo", "pid=,ppid="]).output().unwrap();
+            let listed =
+                afkconvoy::census::command("ps").args(["-axo", "pid=,ppid="]).output().unwrap();
             assert!(listed.status.success(), "cannot discover fixture descendants");
             let children: Vec<u32> = String::from_utf8_lossy(&listed.stdout)
                 .lines()
@@ -248,17 +251,12 @@ impl World {
         let dir = TempDir::new().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let (bare, clone, bin) = (root.join("remote.git"), root.join("clone"), root.join("bin"));
-        git(&root, &["init", "-q", "--bare", "-b", BASE, bare.to_str().unwrap()]);
-        // git takes a pusher's config off before it starts the remote's side:
-        // the remote is told by itself to do no housekeeping (`GIT_ENV`).
-        append(&bare.join("config"), "[maintenance]\n\tauto = false\n");
-        git(&root, &["clone", "-q", bare.to_str().unwrap(), clone.to_str().unwrap()]);
-        std::fs::write(clone.join("README.md"), "widgets\n").unwrap();
-        std::fs::create_dir_all(clone.join("docs/agents")).unwrap();
-        std::fs::write(clone.join("docs/agents/afkconvoy.md"), CONFIG).unwrap();
-        git(&clone, &["add", "."]);
-        git(&clone, &["commit", "-q", "-m", "initial"]);
-        git(&clone, &["push", "-q", "origin", BASE]);
+        // The remote and its clone are one seed, built once and copied: a
+        // world starts no git of its own (sunfmin/control#1347).
+        let seed = publish_seed(&[], &["world"], include_str!("mod.rs"), create_world_seed);
+        copy_repository(&seed.join("remote.git"), &bare);
+        copy_repository(&seed.join("clone"), &clone);
+        point_origin_at(&clone, &bare);
 
         std::fs::create_dir(&bin).unwrap();
         let built = Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap().join("examples");
@@ -441,7 +439,7 @@ impl World {
     /// A command with the stand-ins first on PATH and nothing of the caller's
     /// git or GitHub setup leaking in.
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
-        let mut cmd = Command::new(program);
+        let mut cmd = afkconvoy::census::command(program);
         // A gate a worker runs inherits its stage's facts (AFKCONVOY_HARNESS,
         // AFKCONVOY_ISSUE, …): none is the world's (sunfmin/control#495). What
         // the world means to say, it sets below.
@@ -1434,9 +1432,20 @@ const SEED_GENERATIONS: usize = 64;
 /// the same one-rename publish under the next generation's name. A seed is
 /// never moved, so a path handed to a reader stays valid.
 pub(crate) fn publish_repository_template(files: &[(&str, &str)], builder: &str) -> PathBuf {
+    publish_seed(files, &[], builder, |dir| create_repository(dir, files))
+}
+
+/// The seed of one kind and one input: `create` fills a directory with what
+/// it holds, once, and the seed's own directory is answered.
+pub(crate) fn publish_seed(
+    files: &[(&str, &str)],
+    kind: &[&str],
+    builder: &str,
+    create: impl Fn(&Path),
+) -> PathBuf {
     use std::hash::{DefaultHasher, Hash, Hasher};
     use std::os::unix::fs::PermissionsExt;
-    let manifest = serde_json::to_vec(&(BASE, files)).unwrap();
+    let manifest = serde_json::to_vec(&(BASE, files, kind)).unwrap();
     let mut hash = DefaultHasher::new();
     manifest.hash(&mut hash);
     builder.hash(&mut hash);
@@ -1454,7 +1463,7 @@ pub(crate) fn publish_repository_template(files: &[(&str, &str)], builder: &str)
         };
         if !kept.exists() {
             let scratch = tempfile::tempdir_in(&templates).unwrap();
-            create_repository(&scratch.path().join("repo"), files);
+            create(&scratch.path().join("repo"));
             std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
             let inventory = serde_json::to_vec(&inventory(&scratch.path().join("repo"))).unwrap();
             std::fs::write(scratch.path().join("inventory.json"), inventory).unwrap();
@@ -1465,6 +1474,38 @@ pub(crate) fn publish_repository_template(files: &[(&str, &str)], builder: &str)
         }
     }
     panic!("{SEED_GENERATIONS} seeds of {name} in {} are broken; remove them", templates.display());
+}
+
+/// What every world starts with: a bare remote, and a clone of it that holds
+/// the config on the base branch, pushed.
+fn create_world_seed(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let (bare, clone) = (dir.join("remote.git"), dir.join("clone"));
+    git(dir, &["init", "-q", "--bare", "-b", BASE, bare.to_str().unwrap()]);
+    // git takes a pusher's config off before it starts the remote's side:
+    // the remote is told by itself to do no housekeeping (`GIT_ENV`).
+    append(&bare.join("config"), "[maintenance]\n\tauto = false\n");
+    git(dir, &["clone", "-q", bare.to_str().unwrap(), clone.to_str().unwrap()]);
+    std::fs::write(clone.join("README.md"), "widgets\n").unwrap();
+    std::fs::create_dir_all(clone.join("docs/agents")).unwrap();
+    std::fs::write(clone.join("docs/agents/afkconvoy.md"), CONFIG).unwrap();
+    git(&clone, &["add", "."]);
+    git(&clone, &["commit", "-q", "-m", "initial"]);
+    git(&clone, &["push", "-q", "origin", BASE]);
+}
+
+/// The copy of a seed's clone names the copy of its remote, not the seed's.
+fn point_origin_at(clone: &Path, bare: &Path) {
+    let config = clone.join(".git/config");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let pointed: String = text
+        .lines()
+        .map(|line| match line.trim_start().strip_prefix("url = ") {
+            Some(_) => format!("\turl = {}\n", bare.display()),
+            None => format!("{line}\n"),
+        })
+        .collect();
+    std::fs::write(config, pointed).unwrap();
 }
 
 /// Every path under `repo`, relative to it, directories included.
@@ -1499,12 +1540,14 @@ fn seed_is_complete(kept: &Path, manifest: &[u8]) -> bool {
 /// Freezes `scratch` and publishes it as `kept` by one rename. A publisher
 /// that loses the race thaws its own scratch so the scratch can be removed.
 pub(crate) fn publish_scratch(scratch: &Path, kept: &Path) {
-    let frozen = Command::new("chmod").args(["-R", "a-w"]).arg(scratch).status().unwrap();
+    let frozen =
+        afkconvoy::census::command("chmod").args(["-R", "a-w"]).arg(scratch).status().unwrap();
     assert!(frozen.success(), "freezing the repository template");
     if let Err(error) = std::fs::rename(scratch, kept) {
         // Another complete seed may have won. Open our scratch again so it
         // can be removed, including when the failure was real.
-        let thawed = Command::new("chmod").args(["-R", "u+w"]).arg(scratch).status().unwrap();
+        let thawed =
+            afkconvoy::census::command("chmod").args(["-R", "u+w"]).arg(scratch).status().unwrap();
         assert!(thawed.success(), "thawing the losing repository template");
         assert!(kept.is_dir(), "cannot publish repository template: {error}");
     }
@@ -1656,7 +1699,8 @@ impl Drop for World {
         while self.runner_lock_held() && Instant::now() < until {
             // Its keeper first, which would start it again.
             for pid in [self.keeper(), self.host_runner()].into_iter().flatten() {
-                let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+                let _ =
+                    afkconvoy::census::command("kill").args(["-KILL", &pid.to_string()]).status();
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -1676,7 +1720,8 @@ impl Drop for World {
 /// whose tests leave one behind in a way no world's end reaches.
 fn end_left_behind(root: &Path) {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let Ok(listed) = Command::new("/bin/ps").args(["-axo", "pid=,ppid="]).output() else {
+    let Ok(listed) = afkconvoy::census::command("/bin/ps").args(["-axo", "pid=,ppid="]).output()
+    else {
         return;
     };
     let rows: Vec<(u32, u32)> = String::from_utf8_lossy(&listed.stdout)
@@ -2020,10 +2065,14 @@ impl World {
             && signal != "INT"
             && let Some(keeper) = self.keeper()
         {
-            let ended = Command::new("kill").args(["-KILL", &keeper.to_string()]).status();
+            let ended =
+                afkconvoy::census::command("kill").args(["-KILL", &keeper.to_string()]).status();
             assert!(ended.unwrap().success(), "kill -KILL {keeper}, the keeper");
         }
-        let sent = Command::new("kill").arg(format!("-{signal}")).arg(pid.to_string()).status();
+        let sent = afkconvoy::census::command("kill")
+            .arg(format!("-{signal}"))
+            .arg(pid.to_string())
+            .status();
         assert!(sent.unwrap().success(), "kill -{signal} {pid}");
         let until = Instant::now() + PATIENCE;
         while self.runner_lock_held() {
@@ -2583,7 +2632,7 @@ static REAL_GIT_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock:
     if first? != Path::new("/usr/bin/git") {
         return None;
     }
-    let found = Command::new("xcrun").args(["--find", "git"]).output().ok()?;
+    let found = afkconvoy::census::command("xcrun").args(["--find", "git"]).output().ok()?;
     let real = PathBuf::from(String::from_utf8(found.stdout).ok()?.trim());
     (found.status.success() && real.is_file()).then(|| real.parent().unwrap().to_path_buf())
 });
@@ -2603,8 +2652,12 @@ pub fn git_program() -> PathBuf {
 
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.
 pub fn git(cwd: &Path, args: &[&str]) -> String {
-    let out =
-        Command::new(git_program()).current_dir(cwd).args(args).envs(GIT_ENV).output().unwrap();
+    let out = afkconvoy::census::command(git_program())
+        .current_dir(cwd)
+        .args(args)
+        .envs(GIT_ENV)
+        .output()
+        .unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -2628,7 +2681,9 @@ pub fn refusing_a_workers_worktree(brief: &str) -> Vec<String> {
     named.sort();
     named.dedup();
     named.retain(|name| {
-        let help = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args([name, "--help"]).output();
+        let help = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
+            .args([name, "--help"])
+            .output();
         let help = help.unwrap();
         // A word that is no command answers no help.
         let text = String::from_utf8_lossy(&help.stdout);
@@ -2680,7 +2735,7 @@ impl World {
         let _ = std::fs::remove_file(&png);
         let named = std::env::var("CONVOY_BROWSER").ok();
         let drew = named.iter().map(String::as_str).chain(BROWSERS).any(|browser| {
-            let browser = Command::new(browser)
+            let browser = afkconvoy::census::command(browser)
                 .args(["--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run"])
                 .args(["--force-prefers-reduced-motion", "--force-device-scale-factor=2"])
                 .arg(format!("--user-data-dir={}", self.root.join("browser").display()))

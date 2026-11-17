@@ -5,7 +5,6 @@
 //! only read and typed.
 
 use std::path::Path;
-use std::process::Command;
 
 use afkconvoy_core::harness::{Goal, Harness};
 use anyhow::{Context, Result, bail};
@@ -32,7 +31,8 @@ fn read(cwd: &Path, harness: Harness) -> Option<Goal> {
     if !file.exists() {
         return Some(Goal::Unset);
     }
-    let answered = Command::new(SQLITE).arg("-readonly").arg(&file).arg(store.query).output();
+    let answered =
+        crate::census::command(SQLITE).arg("-readonly").arg(&file).arg(store.query).output();
     let answered = answered.ok().filter(|answered| answered.status.success())?;
     harness.goal(&String::from_utf8_lossy(&answered.stdout))
 }
@@ -82,7 +82,7 @@ fn row(
         return None;
     }
     let query = harness.goal_row_query(thread?)?;
-    let answered = Command::new(SQLITE).arg("-readonly").arg(&file).arg(query).output();
+    let answered = crate::census::command(SQLITE).arg("-readonly").arg(&file).arg(query).output();
     let answered = answered.ok().filter(|answered| answered.status.success())?;
     harness.goal_row(&String::from_utf8_lossy(&answered.stdout))
 }
@@ -136,8 +136,11 @@ mod tests {
                  1000000, {used}, 0, 0, 0);"
             ));
         }
-        let made =
-            Command::new(SQLITE).arg(home.join("goals_1.sqlite")).arg(&sql).status().unwrap();
+        let made = crate::census::command(SQLITE)
+            .arg(home.join("goals_1.sqlite"))
+            .arg(&sql)
+            .status()
+            .unwrap();
         assert!(made.success());
         (dir, cwd)
     }

@@ -8,7 +8,7 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use common::{World, git, write};
 use serde_json::{Value, json};
@@ -538,7 +538,10 @@ console.log(JSON.stringify({ started, answers, rules: contextFiles }))
 
 /// Whether this host has a `node` to run the stand-in pi with.
 fn has_node() -> bool {
-    Command::new("node").arg("--version").output().is_ok_and(|out| out.status.success())
+    afkconvoy::census::command("node")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// Runs `line`, the line a pi worker was started with, with the stand-in pi
@@ -551,7 +554,7 @@ fn under_pi(world: &World, line: &str, calls: &Value) -> Value {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("pi"), STAND_IN_PI).unwrap();
     std::fs::set_permissions(bin.join("pi"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    let out = Command::new("/bin/sh")
+    let out = afkconvoy::census::command("/bin/sh")
         .args(["-c", line])
         .env_clear()
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
@@ -575,7 +578,7 @@ fn claude_is_told(world: &World, line: &str, shell: &str) -> (i32, String) {
         "{enter} && {facts} && AFKCONVOY_HARNESS=claude-code '{}' guard",
         env!("CARGO_BIN_EXE_afkconvoy")
     );
-    let mut child = Command::new("/bin/sh")
+    let mut child = afkconvoy::census::command("/bin/sh")
         .args(["-c", &guard])
         .env_clear()
         .envs(world.login_env())
@@ -738,7 +741,7 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     // An extension that is not there is no session at all.
     let gone = line.replace("/afkconvoy.js'", "/nothing.js'");
     let bin = world.root.join("stand-in");
-    let out = Command::new("/bin/sh")
+    let out = afkconvoy::census::command("/bin/sh")
         .args(["-c", &gone])
         .env_clear()
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))

@@ -2163,7 +2163,7 @@ fn account_table(world: &World, mine: u64, other: (u32, &str, u64)) {
     )
     .unwrap();
     std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let me = std::process::Command::new("id").arg("-u").output().unwrap();
+    let me = afkconvoy::census::command("id").arg("-u").output().unwrap();
     let me = String::from_utf8(me.stdout).unwrap();
     let (uid, user, gib) = other;
     let kib = |gib: u64| gib << 20;

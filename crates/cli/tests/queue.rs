@@ -5,7 +5,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
@@ -82,7 +81,7 @@ impl Local {
 
     fn query(&self) -> (i32, Value) {
         let before = files(self.root.path());
-        let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
+        let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
             .env_clear()
             .env("XDG_CACHE_HOME", self.root.path().join("cache"))
             .env("HOME", self.root.path())
@@ -506,7 +505,10 @@ fn the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_room() {
 #[test]
 fn queue_is_discoverable_in_operator_help_and_its_contract_is_complete() {
     let help = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
+        let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
+            .args(args)
+            .output()
+            .unwrap();
         assert!(out.status.success());
         String::from_utf8(out.stdout).unwrap()
     };

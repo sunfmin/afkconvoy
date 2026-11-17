@@ -1,7 +1,7 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use common::{World, commit, git};
@@ -101,17 +101,19 @@ impl Escaped {
 
     fn in_directory(world: &World, worktree: &Path, dir: &Path, ignores_term: bool) -> Self {
         let ready = dir.join("escaped-ready");
-        let mut child = common::on_no_terminal(&mut Command::new(std::env::current_exe().unwrap()))
-            .args(["--exact", "continuation::escaped_helper", "--ignored"])
-            .current_dir(dir)
-            .env("TMPDIR", world.tmp(worktree))
-            .env("ESCAPED_READY", &ready)
-            .env("ESCAPED_IGNORES_TERM", ignores_term.to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = common::on_no_terminal(&mut afkconvoy::census::command(
+            std::env::current_exe().unwrap(),
+        ))
+        .args(["--exact", "continuation::escaped_helper", "--ignored"])
+        .current_dir(dir)
+        .env("TMPDIR", world.tmp(worktree))
+        .env("ESCAPED_READY", &ready)
+        .env("ESCAPED_IGNORES_TERM", ignores_term.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
         let pid = child.id();
         let escaped = Self { pid, reaper: Some(std::thread::spawn(move || child.wait().unwrap())) };
         let until = afkconvoy_patience::deadline();
@@ -157,7 +159,7 @@ fn escaped_helper() {
 #[ignore = "the orphan regression starts this as the helper's short-lived parent"]
 #[allow(clippy::zombie_processes, reason = "the regression requires this parent to exit first")]
 fn orphan_launcher() {
-    Command::new(std::env::current_exe().unwrap())
+    afkconvoy::census::command(std::env::current_exe().unwrap())
         .args(["--exact", "continuation::escaped_helper", "--ignored"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -173,23 +175,25 @@ struct Orphan(u32);
 impl Orphan {
     fn start(world: &World, worktree: &Path, cwd: &Path) -> Self {
         let ready = cwd.join("orphan-ready");
-        let status = common::on_no_terminal(&mut Command::new(std::env::current_exe().unwrap()))
-            .args(["--exact", "continuation::orphan_launcher", "--ignored"])
-            .current_dir(cwd)
-            .env("TMPDIR", world.tmp(worktree))
-            .env("ESCAPED_READY", &ready)
-            .env("ESCAPED_IGNORES_TERM", "false")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
+        let status = common::on_no_terminal(&mut afkconvoy::census::command(
+            std::env::current_exe().unwrap(),
+        ))
+        .args(["--exact", "continuation::orphan_launcher", "--ignored"])
+        .current_dir(cwd)
+        .env("TMPDIR", world.tmp(worktree))
+        .env("ESCAPED_READY", &ready)
+        .env("ESCAPED_IGNORES_TERM", "false")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
         assert!(status.success());
         let until = afkconvoy_patience::deadline();
         loop {
             if let Ok(ready) = std::fs::read_to_string(&ready) {
                 let pid: u32 = ready.parse().unwrap();
-                let ppid = Command::new("ps")
+                let ppid = afkconvoy::census::command("ps")
                     .args(["-p", &pid.to_string(), "-o", "ppid="])
                     .output()
                     .unwrap();

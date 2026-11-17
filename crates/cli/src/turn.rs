@@ -743,8 +743,7 @@ mod tests {
     fn a_merge_commits_a_message_past_arg_max_and_each_parent_once() {
         let root = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            let out =
-                std::process::Command::new("git").current_dir(root.path()).args(args).output();
+            let out = crate::census::command("git").current_dir(root.path()).args(args).output();
             let out = out.unwrap();
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
             String::from_utf8_lossy(&out.stdout).trim().to_string()

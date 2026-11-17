@@ -148,7 +148,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git").args(args).current_dir(root).output();
+            let out = crate::census::command("git").args(args).current_dir(root).output();
             assert!(out.unwrap().status.success(), "git {args:?}");
         };
         git(&["init", "-q"]);

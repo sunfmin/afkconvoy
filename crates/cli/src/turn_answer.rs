@@ -5,7 +5,7 @@
 //! ending calls for one.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use afkconvoy_core::candidate::Process;
 use afkconvoy_core::ending::Ending;
@@ -390,7 +390,7 @@ pub fn ask_again(worktree: &Worktree, issue: u64) -> Result<()> {
         .with_context(|| format!("cannot open {}", log.display()))?;
     let program = std::env::current_exe().context("cannot find this afkconvoy")?;
     let mut child = crate::process::spawn(
-        Command::new(program)
+        crate::census::command(program)
             .args(["land", "--issue", &issue.to_string()])
             .env(HANDOFF, uuid::Uuid::new_v4().to_string())
             .current_dir(&worktree.path)

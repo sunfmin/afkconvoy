@@ -564,7 +564,7 @@ pub fn give_every_agent_setup(now: u64) -> Value {
 /// Runs a targeted refresh in a process detached from the switch's answer.
 /// The caller invokes this only after writing that answer to stdout.
 pub fn refresh_after_answer(harness: Harness) -> Result<()> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = crate::census::command(std::env::current_exe()?);
     command
         .args(["kit", "--harness", harness.key()])
         .stdin(std::process::Stdio::null())
@@ -1329,7 +1329,7 @@ mod tests {
 
     #[test]
     fn dsh_server_models_are_listed_and_held_without_the_credentials() {
-        let node = std::process::Command::new("node").arg("--version").output();
+        let node = crate::census::command("node").arg("--version").output();
         if !node.is_ok_and(|out| out.status.success()) {
             eprintln!("skipped: no `node` on PATH to run the DSH plugin with");
             return;
@@ -1352,7 +1352,7 @@ mod tests {
         .unwrap();
         for mode in ["list", "key", "refused", "truncated", "none", "malformed", "redirect"] {
             let run = crate::process::output(
-                std::process::Command::new("node").arg(root.path().join("test.mjs")).arg(mode),
+                crate::census::command("node").arg(root.path().join("test.mjs")).arg(mode),
             )
             .unwrap();
             assert!(run.status.success(), "{mode}: {}", String::from_utf8_lossy(&run.stderr));

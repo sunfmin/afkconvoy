@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::Command;
 use std::sync::Mutex;
 
 use afkconvoy_core::admission::{
@@ -24,7 +23,7 @@ use crate::measure;
 
 /// The output of `program` with `args`, which must succeed.
 pub(crate) fn output(program: &str, args: &[&str]) -> Result<String> {
-    let out = crate::process::output(Command::new(program).args(args))
+    let out = crate::process::output(crate::census::command(program).args(args))
         .with_context(|| format!("`{program}` could not be run"))?;
     if !out.status.success() {
         bail!("`{program} {}` failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr));

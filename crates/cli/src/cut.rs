@@ -6,7 +6,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::blocked::CutWait;
@@ -1286,7 +1286,7 @@ impl Cutting<'_> {
         let mut output = File::open(&file)?;
         output.seek(SeekFrom::End(0))?;
         let mut child = crate::process::spawn(
-            Command::new("sh")
+            crate::census::command("sh")
                 .args(["-e", "-c", lines])
                 .current_dir(&self.repo.dir)
                 .env(cut::VERSION_ENV, version)

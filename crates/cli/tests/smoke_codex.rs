@@ -24,7 +24,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -143,7 +143,7 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_t
     // The very line a bound repo's dispatch hands orca, and what has Codex
     // say what it would show the model instead of starting a session.
     let line = format!("{} debug prompt-input go", start.in_role(Harness::Codex, &launch));
-    let out = Command::new("/bin/sh")
+    let out = afkconvoy::census::command("/bin/sh")
         .args(["-c", &line])
         .env("HOME", &home)
         .stdin(Stdio::null())
@@ -363,7 +363,7 @@ fn a_real_codex_worker_starts_on_its_brief_and_makes_no_call_its_role_or_the_gua
         "stty rows 50 cols 160; {} '{BRIEF_WORD} go'",
         start.in_role(Harness::Codex, &launch)
     );
-    let mut terminal = Command::new("script");
+    let mut terminal = afkconvoy::census::command("script");
     if cfg!(target_os = "macos") {
         terminal.args(["-q", "/dev/null", "/bin/sh", "-c", &line]);
     } else {

@@ -2,8 +2,6 @@
 //! one comment, and edits it at a later end. A patrol, a cut and a watch are
 //! not issues, and this is not called for them.
 
-use std::process::Command;
-
 use afkconvoy_core::account::{self, End, Heard, Machine};
 use afkconvoy_core::claims::{Claim, claim_ref};
 use afkconvoy_core::layout::GATE_KIND;
@@ -194,7 +192,7 @@ fn machine_of_host() -> (Option<String>, Option<String>, Option<u64>, Option<u64
 }
 
 fn sysctl_text(name: &str) -> Option<String> {
-    let out = crate::process::output(Command::new("sysctl").args(["-n", name])).ok()?;
+    let out = crate::process::output(crate::census::command("sysctl").args(["-n", name])).ok()?;
     if !out.status.success() {
         return None;
     }

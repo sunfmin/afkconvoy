@@ -367,7 +367,7 @@ pub(crate) fn json() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     fn watch(directory: PathBuf) -> Watch {
@@ -387,7 +387,7 @@ mod tests {
             Line::new().fixed("printf 'executed\\n' >> ").word(&output.display().to_string()).own();
         let line = launch_line(&watch, &line);
         let spawn = || {
-            Command::new("sh")
+            crate::census::command("sh")
                 .args(["-c", &line])
                 .env("ORCA_TERMINAL_HANDLE", "own-terminal")
                 .stdout(Stdio::null())
@@ -409,7 +409,7 @@ mod tests {
         let watch = watch(dir.path().into());
         let output = dir.path().join("executions");
         let line = Line::new().fixed("touch ").word(&output.display().to_string()).own();
-        Command::new("sh")
+        crate::census::command("sh")
             .args(["-c", &launch_line(&watch, &line)])
             .env_remove("ORCA_TERMINAL_HANDLE")
             .output()
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(locate(&watch).unwrap().unwrap(), terminal);
         watch.terminal = terminal.clone();
         set_status(&watch, LaunchState::Running).unwrap();
-        let sent = Command::new("orca")
+        let sent = crate::census::command("orca")
             .args([
                 "terminal",
                 "send",

@@ -295,7 +295,7 @@ fn run_private(repo: &Repo, command: &str, seconds: u64, stderr: &Path) -> Resul
         std::fs::create_dir_all(dir)?;
     }
     let script = format!("exec 1>/dev/null\n{command}");
-    let mut shell = std::process::Command::new("sh");
+    let mut shell = crate::census::command("sh");
     shell.args(["-e", "-c", &script]).current_dir(&repo.dir).env_clear().envs(host_environment()?);
     crate::exclusive::inherit(&mut shell, repo)?;
     let (output, timed_out) = crate::process::output_within_with_timeout(

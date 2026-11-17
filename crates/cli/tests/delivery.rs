@@ -482,7 +482,7 @@ fn discussion_creation_reconstructs_three_tasks_and_lands_only_on_their_two_deli
         assert_eq!(landed["target_branch"], branch);
         assert_eq!(world.remote(&["show", &format!("refs/heads/{branch}:{file}")]), number);
         let other = if at < 2 { &second } else { &first };
-        let absent = std::process::Command::new("git")
+        let absent = afkconvoy::census::command("git")
             .args([
                 "--git-dir",
                 world.bare.to_str().unwrap(),

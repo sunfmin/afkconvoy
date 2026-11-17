@@ -323,7 +323,8 @@ mod tests {
         // macOS's ARG_MAX is 1 MiB; a candidate record was refused there
         // as an argument (sunfmin/control#308).
         let input = "x".repeat(2 << 20);
-        let out = output_with_input(Command::new("wc").arg("-c"), input.as_bytes()).unwrap();
+        let out =
+            output_with_input(crate::census::command("wc").arg("-c"), input.as_bytes()).unwrap();
         assert!(out.status.success());
         assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), (2 << 20).to_string());
     }
@@ -340,8 +341,8 @@ mod tests {
             let out = command.args(["-c", &probe]).output().unwrap();
             String::from_utf8(out.stdout).unwrap().trim().to_string()
         };
-        assert_eq!(open(&mut Command::new("sh")), "open");
-        assert_eq!(open(inheriting_nothing(&mut Command::new("sh"))), "closed");
+        assert_eq!(open(&mut crate::census::command("sh")), "open");
+        assert_eq!(open(inheriting_nothing(&mut crate::census::command("sh"))), "closed");
     }
 
     #[test]
@@ -354,7 +355,7 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         std::thread::scope(|scope| {
             let first = scope.spawn(|| {
-                output(Command::new("sh").args([
+                output(crate::census::command("sh").args([
                     "-c",
                     "printf ready > \"$1\"; read -r line < \"$2\"; printf first",
                     "sh",
@@ -370,7 +371,7 @@ mod tests {
             }
             let (sent, received) = mpsc::channel();
             scope.spawn(move || {
-                let second = output(Command::new("sh").args(["-c", "printf second"]));
+                let second = output(crate::census::command("sh").args(["-c", "printf second"]));
                 let _ = sent.send(second);
             });
             let second = received.recv_timeout(Duration::from_secs(5));
@@ -391,9 +392,9 @@ mod tests {
         let pidfile = dir.path().join("holder");
         let script = format!("sleep 30 & echo $! > '{}'; printf done", pidfile.display());
         let started = Instant::now();
-        let out = output(Command::new("sh").args(["-c", &script])).unwrap();
+        let out = output(crate::census::command("sh").args(["-c", &script])).unwrap();
         if let Ok(pid) = std::fs::read_to_string(&pidfile) {
-            let _ = status(Command::new("kill").arg(pid.trim()));
+            let _ = status(crate::census::command("kill").arg(pid.trim()));
         }
         assert!(out.status.success());
         assert_eq!(out.stdout, b"done");
@@ -420,7 +421,7 @@ mod tests {
                 let (finished, finishing) = mpsc::channel();
                 let child = scope.spawn(move || {
                     attempting.send(()).unwrap();
-                    let ran = status(Command::new("sh").args([
+                    let ran = status(crate::census::command("sh").args([
                         "-c",
                         "test ! -e /dev/fd/\"$1\"",
                         "sh",
@@ -469,11 +470,9 @@ mod inherited {
         // SAFETY: clears close-on-exec of this test's own open descriptor.
         assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
         let probe = format!("if [ -e /dev/fd/{fd} ]; then echo held; else echo closed; fi");
-        let out = super::output(std::process::Command::new("sh").args(["-c", &probe])).unwrap();
+        let out = super::output(crate::census::command("sh").args(["-c", &probe])).unwrap();
         let mut spawned = super::spawn(
-            std::process::Command::new("sh")
-                .args(["-c", &probe])
-                .stdout(std::process::Stdio::piped()),
+            crate::census::command("sh").args(["-c", &probe]).stdout(std::process::Stdio::piped()),
         )
         .unwrap();
         let mut passed = String::new();

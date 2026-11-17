@@ -643,3 +643,93 @@ System time is still more than half of it. The same tests run once more
 with a `ps` that counts its calls first on the PATH started 56 `ps`
 between them: the table is not what is left. What is left is the processes
 each test starts, one after another, as above.
+
+## Processes the tests start (sunfmin/control#1347)
+
+On macOS every process a test starts costs kernel time and wakes the system's
+daemons, so the number of processes matters beside the CPU a test takes.
+Measured on macnoMac-Studio (18 cores) with BSD process accounting over 6
+seconds while the fleet's gates and workers ran, 23,120 processes ended: about
+3,850 a second, git, afkconvoy, shells and the tests' stand-ins most of them.
+
+### How the gate counts
+
+The gate counts processes itself, with no root and no accounting: it names a
+directory in `AFKCONVOY_PROCESS_CENSUS_DIR`, and every command the cli crate and
+its tests start is made by `afkconvoy::census::command`, which writes the
+program's name as one line to a file of the test it runs in
+(`<binary>@<test>`, from nextest's `NEXTEST_BINARY_ID` and `NEXTEST_TEST_NAME`)
+and passes the file on, so an afkconvoy a test starts counts its own starts in
+the same file. Process accounting and counting PIDs were tried first and
+refused: `accton` needs root, and the PID counter moved 7,939 in 5 seconds on
+this host with nothing of ours running, so no count of it says what one test
+started. The census counts starts by this repo's code, not by the kernel: a
+program a program started (a stand-in script's `cat`) is not on it, so the
+number is a floor, and a test's stand-ins are programs where they can be.
+
+`./gate.sh` says the total and the ten tests that started most as each test
+step ends, and the total beside the step's seconds in
+`gate: the seconds each step took:` (`fast-tests 12s 1784 processes`).
+The bound on one fast-gate test is the number in `.config/process-bound`: a
+test past it fails the fast gate by name, as one past the 2s line does, and is
+named in `.config/slow-tests` or made to start fewer.
+
+### Before and after
+
+The fast gate's tests (`./gate.sh fast`), `main` at `dd8375e2b` and this change,
+each run with the census on Studio (load averages 27–38 at the start):
+
+| | before | after |
+| --- | ---: | ---: |
+| tests that started a process | 370 | 235 |
+| processes started | 11,309 | 1,784 |
+| nextest wall seconds (a loaded host, not a benchmark) | 47.5 | 11.5 |
+
+That is 6.3 times fewer. By command:
+
+| command | before | after |
+| --- | ---: | ---: |
+| git | 6,357 | 771 |
+| afkconvoy | 1,369 | 426 |
+| gh (`fake_gh`) | 1,208 | 138 |
+| shell (the login-shell stand-in) | 742 | 65 |
+| orca (`fake_orca`) | 622 | 16 |
+| ps (the stand-in) | 324 | 132 |
+| xcrun (Apple's git shim) | 216 | 93 |
+
+What changed:
+
+- A world's remote and clone are one seed, built once and copied (the seed
+  machinery repositories of `World::repo` already used), not five git commands
+  a world: before any test moved, the run's git starts went from 6,357 to 5,252
+  and its processes from 11,309 to 10,193.
+- 133 tests that started more than 25 processes each are named in
+  `.config/slow-tests`. They are not dropped: the slow gate runs them, and so
+  does every landing turn, whole. What they started is what a worker's fast
+  gate no longer starts. The bound is 25: with it, the 235 tests that remain
+  start 1,784 between them, one in six of what the 370 did.
+
+### The 20 tests that started the most (before)
+
+| processes | test |
+| ---: | --- |
+| 189 | `afkconvoy::cli takeover::a_failed_close_of_a_taken_worker_is_retried_without_losing_its_worktree` |
+| 175 | `afkconvoy::cli tick::a_removal_orca_refuses_leaves_the_worktree_s_files_where_they_were` |
+| 153 | `afkconvoy::cli stopped::a_stopped_worker_is_told_a_later_comment_before_the_tick_judges_it` |
+| 149 | `afkconvoy::cli exclusive::an_ordinary_command_that_ended_frees_its_repo_though_a_server_it_started_holds_its_lease` |
+| 148 | `afkconvoy::cli stopped::later_fleet_comments_and_earlier_comments_are_not_told` |
+| 148 | `afkconvoy::cli stopped::a_busy_grok_is_told_by_send_now_once_the_line_is_queued` |
+| 147 | `afkconvoy::cli exclusive::a_fast_gate_that_ended_frees_its_lane_though_a_server_it_started_holds_its_slot` |
+| 141 | `afkconvoy::cli stopped::later_comments_wait_for_a_worker_of_the_claim_s_host` |
+| 135 | `afkconvoy::cli stopped::with_no_worker_of_this_host_at_work_a_note_is_only_commented_and_says_why` |
+| 131 | `afkconvoy::cli stopped::a_note_is_told_to_a_stopped_worker_the_same_way` |
+| 130 | `afkconvoy::cli stopped::a_busy_grok_whose_line_is_not_queued_is_not_sent_now` |
+| 121 | `afkconvoy::cli turns::old_stored_lane_keys_load_and_a_run_drops_them` |
+| 121 | `afkconvoy::cli launch::removing_a_harness_with_a_running_worker_is_refused_without_ending_it` |
+| 119 | `afkconvoy::cli cutting::a_cut_need_that_passes_then_fails_claims_no_cut_and_doctor_names_its_stderr` |
+| 114 | `afkconvoy::cli stopped::a_claim_with_no_worker_types_no_comment_and_dispatches_normally` |
+| 111 | `afkconvoy::cli probe::an_install_that_failed_in_a_worker_command_is_not_noted_as_failed_on_this_host` |
+| 111 | `afkconvoy::cli cutting::a_cut_whose_time_holds_no_other_gate_run_fails_on_an_overloaded_timeout` |
+| 109 | `afkconvoy::cli codex::an_unbound_codex_worker_is_given_the_declared_guards_in_its_kept_home_and_nothing_else` |
+| 108 | `afkconvoy::cli doctor::a_harness_login_check_asks_once_more_only_after_a_logged_out_answer` |
+| 108 | `afkconvoy::cli dispatch::with_every_account_at_ninety_percent_no_worker_starts_until_a_window_resets` |

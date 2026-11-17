@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -236,7 +236,7 @@ fn step(ended: &AtomicBool, panel: Option<&str>, bound: Duration) -> Result<()> 
 }
 
 fn send(command: &str, payload: &Value, ended: &AtomicBool, bound: Duration) -> Result<()> {
-    let mut child = Command::new("sh")
+    let mut child = crate::census::command("sh")
         .args(["-c", command])
         .process_group(0)
         .stdin(Stdio::piped())
