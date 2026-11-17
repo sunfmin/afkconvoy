@@ -35,6 +35,10 @@ Each command reads the variable for itself, so two commands find the same copies
 
 None of it is fleet state: that is in GitHub and on the repo's remote.
 
+## Beside it: the data directory
+
+What nothing else can give back is not in the cache but in afkconvoy's data directory: `$XDG_DATA_HOME/afkconvoy` where XDG_DATA_HOME is set and not empty, else `$HOME/.local/share/afkconvoy`. It holds `issues.db`, the host's local tracker, and `daybook.db`, the host's daybook (`afkconvoy daybook --help`), each made by its first write.
+
 ## See also
 
 - `afkconvoy check --help`: when a copy is cloned, and what is read from it

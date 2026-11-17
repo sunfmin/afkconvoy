@@ -20,7 +20,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::daybook::{Kind, Said, Whose};
+use crate::daybook::{Kind, Said};
 use crate::git::Repo;
 use crate::host_watch::Watch;
 use crate::watch_report::Report;
@@ -242,21 +242,20 @@ fn host_tracker() -> Result<RepoName> {
         })
 }
 
-/// Whose daybook the round of `queued` goes to: that of the checkout the
-/// watch ran in, as `afkconvoy daybook` run there would say, else the host's.
-fn whose(queued: &Queued) -> Result<Whose> {
+/// The repo the round of `queued` is of: that of the checkout the watch ran
+/// in, as `afkconvoy daybook` run there would say, else the host's tracker.
+fn repo(queued: &Queued) -> Result<RepoName> {
     match Repo::at(&queued.directory) {
-        Ok(checkout) => Whose::of(Ok(checkout), None, None),
-        Err(_) => {
-            let tracker = host_tracker()?;
-            Whose::of(Err(anyhow::anyhow!("no checkout")), Some(tracker.clone()), Some(tracker))
-        }
+        Ok(checkout) => crate::daybook::repo_of(Ok(checkout), None),
+        Err(_) => host_tracker(),
     }
 }
 
-/// Writes the entry of `queued` → the comment's URL.
+/// Writes the entry of `queued` to this host's daybook → its url.
 fn write(queued: &Queued) -> Result<String> {
-    let answer = whose(queued)?.append(&queued.day, Kind::Watch, &queued.said)?;
+    let at = crate::clock();
+    let answer =
+        crate::daybook::append(&queued.day, at, &repo(queued)?, Kind::Watch, &queued.said)?;
     Ok(answer["url"].as_str().unwrap_or_default().to_string())
 }
 
@@ -347,9 +346,8 @@ pub fn findings() -> Vec<crate::doctor::Finding> {
             identity,
             "a watch round's daybook entry is not written".into(),
             evidence,
-            "fix what its error says (a missing `Daybook` category is created at \
-             https://github.com/<tracker>/discussions/categories/new); the host runner retries \
-             it by itself"
+            "fix what its error says (the host's daybook, `daybook.db` in afkconvoy's data \
+             directory, could not be written); the host runner retries it by itself"
                 .into(),
         )
     };
@@ -501,14 +499,14 @@ mod tests {
         assert_eq!(read().unwrap().queued.len(), 1);
         assert!(findings().is_empty());
 
-        let failed = step(1000, |_| anyhow::bail!("no `Daybook` category")).unwrap();
+        let failed = step(1000, |_| anyhow::bail!("the daybook is locked")).unwrap();
         assert!(failed);
         let queued = read().unwrap().queued[&watch.id].clone();
         assert_eq!((queued.failures, queued.next), (1, 1000 + RETRY_FIRST));
         let found = findings();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, crate::doctor::Kind::DaybookUnwritten);
-        assert!(found[0].evidence.contains("no `Daybook` category"), "{}", found[0].evidence);
+        assert!(found[0].evidence.contains("the daybook is locked"), "{}", found[0].evidence);
 
         // not due yet: nothing is tried
         assert!(!step(1001, |_| panic!("tried before its wait")).unwrap());

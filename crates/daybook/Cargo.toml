@@ -1,6 +1,6 @@
 [package]
 name = "afkconvoy-daybook"
-description = "The daybook written to a GitHub tracker's Discussions — the entry format and its lesson, one discussion a day, appending an entry, the lesson index — with GitHub behind an interface and no fleet concept in its API (docs/adr/0071)"
+description = "The daybook — the entry format and its lesson, the day, appending an entry and reading a span — kept in a host's own SQLite database or a GitHub tracker's Discussions behind one interface, with no fleet concept in its API (docs/adr/0071, docs/adr/0118)"
 version.workspace = true
 edition.workspace = true
 publish = false
@@ -11,5 +11,12 @@ build = "../commit.rs"
 anyhow = "1"
 # The host's local date, which titles the day's discussion (`localtime_r`).
 libc = "0.2"
+# A host's own daybook (`Local`), at the version the workspace's other SQLite
+# users are on: `libsqlite3-sys` links the one `sqlite3`, so the workspace can
+# hold one version of it alone. Bundled, so no system library is assumed.
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

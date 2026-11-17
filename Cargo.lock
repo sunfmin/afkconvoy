@@ -54,8 +54,10 @@ version = "0.5.64"
 dependencies = [
  "anyhow",
  "libc",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

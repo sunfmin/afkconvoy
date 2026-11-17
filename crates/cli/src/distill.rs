@@ -1,13 +1,10 @@
 //! The watch's weekly **distillation** of the daybook (ADR-0065): a
-//! look reads, when one is due (`afkconvoy_core::distill`), what each
-//! tracker's daybook holds of its span, and a span that holds something is a
+//! look reads, when one is due (`afkconvoy_core::distill`), what this
+//! host's daybook holds of its span (ADR-0118), and a span that holds something is a
 //! watch item. The watch keeps only when it last distilled and the last day
 //! it covered — never a lesson, a precedent or a proposal: each proposal is
 //! its own home's record, and the run's daybook entry maps the lessons to them.
 
-use std::path::PathBuf;
-
-use afkconvoy_core::config::RepoName;
 use afkconvoy_core::distill::{self, EVERY};
 use afkconvoy_core::host_watch::Item;
 use serde::{Deserialize, Serialize};
@@ -80,77 +77,49 @@ impl Distilling {
     }
 }
 
-/// Each tracker of this host's checkout list, with a checkout to run `gh`
-/// in: the daybooks the host's watch distills.
-fn trackers() -> Vec<(RepoName, PathBuf)> {
-    let mut trackers: Vec<(RepoName, PathBuf)> = Vec::new();
-    let Ok(listed) = crate::checkout_list::List::of_host().and_then(|list| list.read()) else {
-        return trackers;
-    };
-    for entry in listed.checkouts {
-        let tracker = match entry.tracker.as_ref().and_then(afkconvoy_core::tracker::Said::repo) {
-            Some(tracker) => Some(tracker.clone()),
-            None => crate::git::Repo::at(&entry.checkout)
-                .and_then(|repo| crate::checkout_list::named_repo(&repo))
-                .ok(),
-        };
-        if let Some(tracker) =
-            tracker.filter(|tracker| trackers.iter().all(|(had, _)| had != tracker))
-        {
-            trackers.push((tracker, entry.checkout));
-        }
-    }
-    trackers
-}
-
-/// Where a distillation is due, reads what each tracker's daybook holds of
-/// its span into the look's `daybook`, [{tracker, since, until, lessons,
-/// unlessoned, holds}], or {tracker, error} where it could not be read. A
-/// span that holds nothing anywhere is read again only an hour on.
+/// Where a distillation is due, reads what this host's daybook holds of its
+/// span into the look's `daybook`, {since, until, lessons, unlessoned,
+/// holds}, or {error} where it could not be read. A span that holds nothing
+/// is read again only an hour on.
 pub fn look(look: &mut Value, distilling: &mut Distilling, now: u64) {
     let asked = distilling.asked.is_some();
     if !distill::due(distilling.started, asked, distilling.read, now) {
         return;
     }
     let (since, until) = distilling.span(now);
-    let mut rows = Vec::new();
-    if since <= until {
-        for (tracker, dir) in trackers() {
-            rows.push(match crate::daybook::held(dir, &tracker, &since, &until) {
-                Ok(held) => json!({"tracker": tracker, "since": since, "until": until,
-                    "lessons": held.lessons, "unlessoned": held.unlessoned,
-                    "holds": distill::holds(held.lessons, held.unlessoned)}),
-                Err(error) => json!({"tracker": tracker, "error": format!("{error:#}")}),
-            });
-        }
-    }
-    if !rows.iter().any(|row| row["holds"] == true) {
+    let read = match since <= until {
+        true => match crate::daybook::held(&since, &until) {
+            Ok(held) => json!({"since": since, "until": until,
+                "lessons": held.lessons, "unlessoned": held.unlessoned,
+                "holds": distill::holds(held.lessons, held.unlessoned)}),
+            Err(error) => json!({"error": format!("{error:#}")}),
+        },
+        false => Value::Null,
+    };
+    if read["holds"] != true {
         distilling.read = Some(now);
         distilling.asked = None;
     }
-    look["daybook"] = json!(rows);
+    look["daybook"] = read;
 }
 
-/// The look's distillation items: one for each tracker whose span holds
-/// something.
+/// The look's distillation item, where the daybook's span holds something.
 pub fn items(look: &Value) -> Vec<Item> {
-    look["daybook"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|row| row["holds"] == true)
-        .filter_map(|row| {
-            let (tracker, since, until) =
-                (row["tracker"].as_str()?, row["since"].as_str()?, row["until"].as_str()?);
-            let reason = format!(
-                "the daybook of {tracker} holds {} lessons and {} entries without one from \
-                 {since} to {until}: distill them into their lasting homes, then record it with \
-                 `afkconvoy daybook --distilled <file> --tracker {tracker} --repo {tracker}`",
-                row["lessons"], row["unlessoned"]
-            );
-            Some(Item::new(distill::item(tracker, since, until), reason))
-        })
-        .collect()
+    let read = &look["daybook"];
+    let (Some(since), Some(until)) = (read["since"].as_str(), read["until"].as_str()) else {
+        return Vec::new();
+    };
+    if read["holds"] != true {
+        return Vec::new();
+    }
+    let reason = format!(
+        "this host's daybook holds {} lessons and {} entries without one from {since} to \
+         {until}: distill them into their lasting homes, then record it with `afkconvoy \
+         daybook --distilled <file>` (with `--repo <owner/repo>`, the repo it is of, where you \
+         run in no checkout)",
+        read["lessons"], read["unlessoned"]
+    );
+    vec![Item::new(distill::item(since, until), reason)]
 }
 
 #[cfg(test)]
@@ -166,7 +135,7 @@ mod tests {
         let mut distilling = Distilling { asked: Some(5), ..Distilling::default() };
         distilling.started(&[item("finding:host:x")], 10);
         assert_eq!((distilling.started, distilling.asked), (None, Some(5)));
-        let taken = [item(&distill::item("acme/control", "2026-10-27", "2026-11-02"))];
+        let taken = [item(&distill::item("2026-10-27", "2026-11-02"))];
         distilling.started(&taken, 10);
         assert_eq!((distilling.started, distilling.asked), (Some(10), None));
         distilling.unreported(9);
@@ -176,8 +145,7 @@ mod tests {
         distilling.reported(&taken, 20);
         assert_eq!(distilling.started, Some(20));
         assert_eq!(distilling.until.as_deref(), Some("2026-11-02"));
-        distilling
-            .reported(&[item(&distill::item("acme/control", "2026-10-01", "2026-10-02"))], 30);
+        distilling.reported(&[item(&distill::item("2026-10-01", "2026-10-02"))], 30);
         assert_eq!(distilling.until.as_deref(), Some("2026-11-02"), "a span never moves back");
     }
 
@@ -194,17 +162,16 @@ mod tests {
 
     #[test]
     fn only_a_span_that_holds_something_is_an_item() {
-        let look = json!({"daybook": [
-            {"tracker": "acme/control", "since": "2026-10-27", "until": "2026-11-02",
-                "lessons": 2, "unlessoned": 0, "holds": true},
-            {"tracker": "acme/other", "since": "2026-10-27", "until": "2026-11-02",
-                "lessons": 0, "unlessoned": 1, "holds": false},
-            {"tracker": "acme/third", "error": "no Daybook category"},
-        ]});
+        let look = json!({"daybook": {"since": "2026-10-27", "until": "2026-11-02",
+            "lessons": 2, "unlessoned": 0, "holds": true}});
         let items = items(&look);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].id, "daybook-distill:acme/control:2026-10-27:2026-11-02");
+        assert_eq!(items[0].id, "daybook-distill:2026-10-27:2026-11-02");
         assert!(items[0].reason.contains("2 lessons"), "{}", items[0].reason);
+        let nothing = json!({"daybook": {"since": "2026-10-27", "until": "2026-11-02",
+            "lessons": 0, "unlessoned": 1, "holds": false}});
+        assert!(super::items(&nothing).is_empty());
+        assert!(super::items(&json!({"daybook": {"error": "locked"}})).is_empty());
         assert!(super::items(&json!({})).is_empty());
     }
 }

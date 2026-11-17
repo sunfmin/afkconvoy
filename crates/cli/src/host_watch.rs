@@ -1575,12 +1575,12 @@ fn brief(watch: &Watch) -> String {
          `placed`, `settled` and updated doctor answer; record what you placed or settled \
          and what remains unplaced.\n\n\
          ## Distill the daybook's lessons into their lasting homes\n\n\
-         A `{DISTILL}<tracker>:<since>:<until>` item is the week's distillation of that \
-         tracker's daybook; take it after anything holding work up. Read \
+         A `{DISTILL}<since>:<until>` item is the week's distillation of this host's \
+         daybook; take it after anything holding work up. Read \
          `afkconvoy daybook --help`. List the span's lessons with `afkconvoy daybook \
-         --lessons --since <since> --until <until> --tracker <tracker>`, and read the span's \
-         day discussions in the tracker's `Daybook` category for patterns that recur across \
-         entries without a lesson, the same fault twice. Decide each one's lasting home and \
+         --lessons --since <since> --until <until>`, and read the span's entries with \
+         `afkconvoy daybook --read --since <since> --until <until>` for patterns that recur \
+         across entries without a lesson, the same fault twice. Decide each one's lasting home and \
          propose it there through that home's normal path:\n\n\
          - a repeated mistake: first a mechanism — a hook, a gate check, a tool fix — as a \
          ticket to the repo that owns it;\n\
@@ -1596,8 +1596,9 @@ fn brief(watch: &Watch) -> String {
          the home: a lesson its home already holds is `covered`, with a link to where. Keep \
          nothing of your own — no memory, precedent or proposal list: the proposal is the \
          record. Then write a JSON file carrying every lesson of the span exactly once, and \
-         each pattern from its entries, and record the run with `afkconvoy daybook \
-         --distilled <file> --tracker <tracker> --repo <tracker>`: it checks the file against \
+         each pattern from its entries, each entry by its `url`, and record the run with \
+         `afkconvoy daybook --distilled <file>` (`--repo <owner/repo>` where you run in no \
+         checkout): it checks the file against \
          the span and writes the run's one daybook entry mapping each lesson to its outcome. \
          A refusal names what is wrong: correct the file and run it again. The daybook's \
          entries are left to age out.\n\n\
