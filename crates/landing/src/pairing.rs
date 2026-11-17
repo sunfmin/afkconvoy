@@ -1155,7 +1155,10 @@ impl<N: Clone> Chain<N> {
         // A pair cancelled and not yet stopped holds the candidate window
         // (`Chain::can_assign`): the root waits for its gate to stop, rather
         // than its turn answering the window held.
-        let stopping = self.candidates.iter().any(|c| c.is_pair() && c.active() && !c.valid());
+        let mut stopping = false;
+        for c in &self.candidates {
+            stopping = stopping || (c.is_pair() && c.active() && !c.valid());
+        }
         Some(if ready && !stopping { RoundNext::Assign } else { RoundNext::Wait })
     }
 
@@ -1214,12 +1217,12 @@ impl<N: Clone> Chain<N> {
                 ask.asks.carried_by = Some(by);
             }
         }
-        let pairs: Vec<String> = self
-            .candidates
-            .iter()
-            .filter(|c| c.is_pair() && c.change == change && c.valid() && c.phase != Phase::Green)
-            .map(|c| c.id.clone())
-            .collect();
+        let mut pairs: Vec<String> = vec![];
+        for c in &self.candidates {
+            if c.is_pair() && c.change == change && c.valid() && c.phase != Phase::Green {
+                pairs.push(c.id.clone());
+            }
+        }
         for pair in pairs {
             self.invalidate(&pair, "carried");
         }
