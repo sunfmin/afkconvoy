@@ -316,6 +316,11 @@ fn worktree_set(st: &mut State) -> ! {
 
 fn worktree_rm(st: &mut State) -> ! {
     let path = selected(st);
+    // as real orca: a worktree whose directory went out from under it may
+    // be dropped from its list by the time it is asked to remove it
+    if st.doc["rm_not_found"] == true {
+        st.list("worktrees").retain(|row| row["path"] != path.as_str());
+    }
     if !knows_worktree(st, &path) {
         fail(st, "selector_not_found");
     }
