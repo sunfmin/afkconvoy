@@ -1658,6 +1658,63 @@ fn a_round_gates_its_pair_then_its_root_whole_once_and_lands_both_together() {
     assert!(!started(&world, "whole", "b"), "the round's tip needed no certification run");
 }
 
+/// A PR closed as carried while its turn gates a pair of its round
+/// (sunfmin/control#1349): a later PR whose branch holds it asks to land,
+/// and that turn closes it as carried. The carried PR's turn ends at once,
+/// answering `carried`, its pair's gate stopped: no process of it is left in
+/// its worktree for doctor to call settling waiting. The round goes on
+/// without it, and the carrying PR lands its change with its own.
+#[test]
+fn a_pr_carried_while_its_turn_gates_a_pair_ends_at_once_answering_carried() {
+    let world = split_world(3);
+    let (e, _) = worker(&world, 5, "e");
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let _runner = world.host_held();
+    let mut children = one_round(
+        &world,
+        &e,
+        &[(&a, 1), (&b, 2)],
+        || until(|| started(&world, "fast", "e")),
+        || {
+            let_go(&world, "fast", "e", false);
+            let_go(&world, "slow", "e", false);
+        },
+    );
+    until(|| started(&world, "fast", "b"));
+    // c's branch holds b's: its turn closes #20 as carried as it asks.
+    let (c, _) = worker(&world, 3, "c");
+    git(&c, &["fetch", "-q", "origin", "issue-2"]);
+    git(&c, &["merge", "-q", "--no-edit", "FETCH_HEAD"]);
+    git(&c, &["push", "-q", "origin", "HEAD"]);
+    let cc = start(&world, &c, &world.cache(), 3);
+    let carried = finish(children.pop().unwrap());
+    assert_eq!(carried["outcome"], "carried", "{carried}");
+    assert_eq!(carried["carried_by"], 30, "{carried}");
+    let state = chain(&world);
+    let pair = state["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| !c["pair"].is_null() && c["pr"] == 20)
+        .cloned()
+        .unwrap();
+    assert_eq!(pair["cause"], "carried", "{state:#}");
+    let pr = |n: u64| {
+        world.gh()["prs"].as_array().unwrap().iter().find(|p| p["number"] == n).unwrap().clone()
+    };
+    assert_eq!(pr(20)["state"], "closed");
+    for (part, name) in [("fast", "a"), ("slow", "a"), ("fast", "c"), ("slow", "c")] {
+        let_go(&world, part, name, false);
+    }
+    let landed_a = finish(children.pop().unwrap());
+    assert_eq!(landed_a["outcome"], "merged", "{landed_a}");
+    let landed_c = finish(cc);
+    assert_eq!(landed_c["outcome"], "merged", "{landed_c}");
+    assert_eq!(world.remote(&["show", "refs/heads/main:b.txt"]), "b", "carried, it landed");
+    assert_eq!(world.state(2), "closed", "the carried issue closes as its carrier lands");
+}
+
 /// A red root is not bisected (docs/adr/0083): the round's last-asked PR
 /// fixes it on the spot. Its branch is brought up to the root's tip and
 /// pushed, every other PR of the round is closed at once as carried by it,

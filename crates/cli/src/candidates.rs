@@ -16,6 +16,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use afkconvoy_landing::forge::{Change, Forge};
@@ -212,14 +213,31 @@ fn read(repo: &Repo, config: &Config, fresh: Read) -> Result<Snapshot> {
     if let Some(sha) = &sha {
         repo.bring(sha, &state_ref)?;
     }
-    let chain = match &sha {
-        Some(sha) => serde_json::from_str(&repo.message(sha)?)?,
-        None => Chain::default(),
-    };
+    let chain = recorded_chain(repo, sha.as_deref())?;
     announce(&chain);
     let snapshot = Snapshot { sha, base, chain };
     Known::set(repo, &state_ref, &snapshot);
     Ok(snapshot)
+}
+
+/// The chain the record at `sha` holds, brought here; none at no record.
+fn recorded_chain(repo: &Repo, sha: Option<&str>) -> Result<Chain> {
+    Ok(match sha {
+        Some(sha) => serde_json::from_str(&repo.message(sha)?)?,
+        None => Chain::default(),
+    })
+}
+
+/// The chain as the remote holds it now, at `state_ref`, read apart from
+/// any turn's own reads: what a turn waiting in the queue asks of it from
+/// another thread (`Permit::candidate_unless`).
+fn remote_chain(repo: &Repo, state_ref: &str) -> Result<Chain> {
+    let refs = repo.remote().refs(&[state_ref], Fresh::Live)?;
+    let sha = refs.iter().find(|r| r.name == state_ref).map(|r| r.sha.clone());
+    if let Some(sha) = &sha {
+        repo.bring(sha, state_ref)?;
+    }
+    recorded_chain(repo, sha.as_deref())
 }
 
 thread_local! { static ANNOUNCED: std::cell::RefCell<Option<(afkconvoy_core::candidate::Validation, std::time::Instant)>> = const { std::cell::RefCell::new(None) }; }
@@ -1730,6 +1748,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         change: pr.number,
         branch: pr.head_branch.clone(),
         head: original.clone(),
+        carried_by: None,
     });
     let reserve = |chain: &mut Chain| {
         let in_round = chain.rounds().flat_map(|r| &r.asked).any(|a| a.id == id);
@@ -2307,6 +2326,11 @@ fn in_round(
         if let Some(hold) = issue.and_then(|n| crate::landing_hold::keeping_off(repo, n)) {
             return Ok(Rounded::Answer(crate::turn::held(answer, &hold)));
         }
+        // Its PR closed as carried as it asked: it ends at once, and leaving
+        // cancels each pair of it not yet passed (sunfmin/control#1349).
+        if let Some(by) = chain.carried_by(id) {
+            return Ok(Rounded::Answer(carried_answer(answer, by)));
+        }
         let next = chain.round_next(id);
         match next {
             None => {
@@ -2382,8 +2406,9 @@ fn in_round(
 /// tip does not (docs/adr/0083): its worker merged that PR in, their pair
 /// having run red or the two conflicting. Each is closed, commented
 /// "carried by #…", its branch deleted while still at that head, and its
-/// issues told (`forge::carry`); this PR's description takes theirs → the
-/// PRs it carried.
+/// issues told (`forge::carry`), and the chain says so of any turn of it
+/// still asking (`Chain::carried`); this PR's description takes theirs →
+/// the PRs it carried.
 fn carry_held(turn: &InRound<'_>, head: &str) -> Result<Vec<u64>> {
     let InRound { repo, config, gh, forge, asked, pr, .. } = *turn;
     let base = read(repo, config, Read::Known)?.base;
@@ -2402,6 +2427,15 @@ fn carry_held(turn: &InRound<'_>, head: &str) -> Result<Vec<u64>> {
         let change = crate::forge::change(&other);
         afkconvoy_landing::forge::carry(forge, asked, &change, &other.head_sha)?;
         carried.push(other.number);
+    }
+    // A turn of a PR it carried, asked again before it was, ends at its next
+    // step rather than gating a pair of it (sunfmin/control#1349).
+    if !carried.is_empty() {
+        change(repo, config, |chain| {
+            for &other in &carried {
+                chain.carried(other, pr.number);
+            }
+        })?;
     }
     Ok(carried)
 }
@@ -2590,10 +2624,26 @@ fn stack_root(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
 
 /// Runs the fast gate of `pair`, which this turn is the later-asked PR of,
 /// in a worktree of its own on this host and a lane of it, and lets the
-/// round carry on from what it said.
+/// round carry on from what it said. The pair no longer to gate as it
+/// waits for its lane — its PR carried (`Chain::carried`), or the pair
+/// cancelled otherwise — it gives its place up and gates nothing
+/// (sunfmin/control#1349).
 fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
     let InRound { repo, config, root, host, issue, heavy, clock, .. } = *turn;
-    let _lane = Permit::candidate(repo, "turn: a pair's fast gate", heavy)?;
+    let quit = {
+        let (repo, state_ref, pair) = (repo.clone(), refname(repo, config), pair.to_string());
+        Arc::new(move || {
+            remote_chain(&repo, &state_ref).is_ok_and(|chain| {
+                !chain.candidates.iter().any(|c| {
+                    c.id == pair && c.phase == Phase::Building && c.valid() && c.gate.is_none()
+                })
+            })
+        })
+    };
+    let Some(_lane) = Permit::candidate_unless(repo, "turn: a pair's fast gate", heavy, quit)?
+    else {
+        return Ok(());
+    };
     // Whichever host paired it, its worktree is this host's.
     let path = root.join(pair);
     let mut started = None;
