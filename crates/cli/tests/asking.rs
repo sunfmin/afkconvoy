@@ -560,7 +560,7 @@ impl Executor {
         let marker = format!("afkconvoy-watch-session-{session}");
         // One process, its command line carrying the marker: killing it
         // leaves no child behind.
-        let child = std::process::Command::new("perl")
+        let child = afkconvoy::census::command("perl")
             .args(["-e", "sleep 120", &marker])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())

@@ -2,7 +2,6 @@
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::common;
 
@@ -242,7 +241,8 @@ fn a_world_takes_a_rebuilt_seed_in_place_of_a_swept_one() {
 /// Deletes the files under the seed `kept` that `swept` picks, as the OS's
 /// `/tmp` sweep does, and leaves every directory. Thaws the seed to do so.
 fn sweep(kept: &Path, swept: impl Fn(&Path) -> bool) {
-    let thawed = Command::new("chmod").args(["-R", "u+w"]).arg(kept).status().unwrap();
+    let thawed =
+        afkconvoy::census::command("chmod").args(["-R", "u+w"]).arg(kept).status().unwrap();
     assert!(thawed.success(), "thawing the seed to sweep it");
     let mut pending = vec![kept.to_path_buf()];
     while let Some(dir) = pending.pop() {
@@ -345,8 +345,11 @@ fn a_worktree_removes_after_a_repository_template_is_published() {
     assert!(!seed.starts_with(this_checkout()), "the seed landed in this checkout");
     assert!(!inside_build_output(&seed), "the seed landed in the build output");
 
-    let removed =
-        Command::new("rm").args(["-rf", "--"]).arg(linked.join("target")).status().unwrap();
+    let removed = afkconvoy::census::command("rm")
+        .args(["-rf", "--"])
+        .arg(linked.join("target"))
+        .status()
+        .unwrap();
     assert!(removed.success(), "removing the worktree's build output");
     assert!(!linked.join("target").exists());
     git(&main, &["worktree", "remove", "--force", linked.to_str().unwrap()]);

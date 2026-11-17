@@ -1698,7 +1698,7 @@ fn cutting_red() -> World {
 
 /// The git dir of `checkout`, where its cut keeps each gate run's output.
 fn git_dir(checkout: &Path) -> PathBuf {
-    let out = std::process::Command::new("git")
+    let out = afkconvoy::census::command("git")
         .args(["rev-parse", "--absolute-git-dir"])
         .current_dir(checkout)
         .output()
@@ -1864,7 +1864,7 @@ fn a_cut_s_gate_red_only_on_timeouts_it_cannot_classify_under_overload_gates_aga
     assert_eq!(gate_runs(&world), 3, "two overloaded runs, then a green one");
     assert_eq!(cut(&tick_as(&world, "alpha", now()))[0], "end_cut done");
     assert!(failures(&world).is_empty(), "no failure issue opens");
-    let help = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
+    let help = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
         .args(["cut", "--help"])
         .output()
         .unwrap();

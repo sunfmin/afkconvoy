@@ -22,7 +22,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -162,7 +161,7 @@ pub(crate) fn working_directories_of(procs: &[Proc]) -> Vec<PathBuf> {
 /// working in the worktree. Nothing is left to resume one: it stays stopped
 /// for good, and a SIGTERM to it stays pending (sunfmin/control#837).
 pub(crate) fn stopped_orphans(procs: &[Proc], worktree: &Path) -> anyhow::Result<Vec<u32>> {
-    let out = crate::process::output(Command::new("ps").args(["-axo", "pid=,stat="]))?;
+    let out = crate::process::output(crate::census::command("ps").args(["-axo", "pid=,stat="]))?;
     anyhow::ensure!(out.status.success(), "cannot read which processes are stopped: ps failed");
     let stopped: HashSet<u32> = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -235,7 +234,7 @@ pub fn memory() -> Option<u64> {
 }
 
 fn sysctl(name: &str) -> Option<u64> {
-    let out = crate::process::output(Command::new("sysctl").args(["-n", name])).ok()?;
+    let out = crate::process::output(crate::census::command("sysctl").args(["-n", name])).ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
@@ -301,7 +300,7 @@ pub(crate) fn listed() -> Vec<Proc> {
 
 /// A failed observation must never certify that an old writer is gone.
 pub(crate) fn listed_checked() -> anyhow::Result<Vec<Proc>> {
-    let out = crate::process::output(Command::new("ps").args([
+    let out = crate::process::output(crate::census::command("ps").args([
         "axeww",
         "-o",
         "pid=,ppid=,pcpu=,rss=,time=,command=",
@@ -468,7 +467,7 @@ pub(crate) fn on_terminals() -> anyhow::Result<Vec<Proc>> {
 /// queue's share of the CPU by, every few seconds while it runs
 /// (`queue_share`). Errors: `ps` failed, or listed nothing.
 pub(crate) fn cpu_table() -> anyhow::Result<Vec<Proc>> {
-    let out = crate::process::output(Command::new("ps").args([
+    let out = crate::process::output(crate::census::command("ps").args([
         "ax",
         "-o",
         "pid=,ppid=,pcpu=,rss=,time=,comm=",
@@ -1319,8 +1318,10 @@ mod tests {
     fn a_worktree_is_measured_only_once_its_fresh_build_is_on_record() {
         let dir = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            let ok = crate::process::output(Command::new("git").args(args).current_dir(dir.path()))
-                .unwrap();
+            let ok = crate::process::output(
+                crate::census::command("git").args(args).current_dir(dir.path()),
+            )
+            .unwrap();
             assert!(ok.status.success(), "{ok:?}");
         };
         git(&["init", "--quiet"]);

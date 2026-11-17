@@ -11,7 +11,7 @@
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -88,7 +88,7 @@ pub fn put_back(entry: &Path, path: &Path) -> Result<()> {
 /// on it but a thread reaping it: the deletion is the child's own CPU. A
 /// child that cannot start leaves the entry to the next `sweep`.
 pub fn delete_detached(entry: &Path) {
-    let child = Command::new("nice")
+    let child = crate::census::command("nice")
         .args(["-n", "20", "/bin/sh", "-c", DELETE, "sh"])
         .arg(entry)
         .current_dir("/")

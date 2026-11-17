@@ -794,7 +794,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
     use std::os::unix::process::CommandExt;
 
     let unrelated = common::FixtureProcess::spawn(
-        std::process::Command::new("sleep")
+        afkconvoy::census::command("sleep")
             .arg("600")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -813,7 +813,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
             // Also clean up a red reproduction: only this unique descriptor's
             // inheritors are ours, including helpers reparented to pid 1.
             let holders =
-                std::process::Command::new("lsof").arg("-t").arg(&self.path).output().unwrap();
+                afkconvoy::census::command("lsof").arg("-t").arg(&self.path).output().unwrap();
             for pid in String::from_utf8_lossy(&holders.stdout).split_whitespace() {
                 let pid: u32 = pid.parse().unwrap();
                 if pid != std::process::id() {
@@ -842,7 +842,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
         lease.lock_shared().unwrap();
         let observer = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
         let fd = lease.as_raw_fd();
-        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        let mut command = afkconvoy::census::command(std::env::current_exe().unwrap());
         command
             .args(["--exact", scenario, "--nocapture"])
             .env("CONVOY_FIXTURE_LEASE_PROBE", rendezvous.path())
@@ -876,7 +876,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let holders =
-            std::process::Command::new("lsof").arg("-Fpc").arg(&probe.path).output().unwrap();
+            afkconvoy::census::command("lsof").arg("-Fpc").arg(&probe.path).output().unwrap();
         assert!(
             String::from_utf8_lossy(&holders.stdout).lines().any(|line| line == "csleep"),
             "the actual worker must inherit its lease: {}",
@@ -916,7 +916,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
             probe.observer.try_lock().is_ok(),
             "completed {scenario} workers still retain the inherited lease"
         );
-        let state = std::process::Command::new("ps")
+        let state = afkconvoy::census::command("ps")
             .args(["-p", &unrelated.id().to_string(), "-o", "stat="])
             .output()
             .unwrap();

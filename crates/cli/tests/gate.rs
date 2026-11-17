@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -22,7 +22,7 @@ const GATE_BINARY: &str = env!("CARGO_BIN_EXE_afkconvoy");
 fn fast_gate_checks_timeouts_before_calling_tests_slow() {
     let script =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/gate-timeouts.sh");
-    let output = std::process::Command::new("sh").arg(script).output().unwrap();
+    let output = afkconvoy::census::command("sh").arg(script).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
@@ -30,7 +30,7 @@ fn fast_gate_checks_timeouts_before_calling_tests_slow() {
 fn a_gate_runs_two_tests_to_each_core_it_is_given() {
     let script =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/gate-threads.sh");
-    let output = std::process::Command::new("sh").arg(script).output().unwrap();
+    let output = afkconvoy::census::command("sh").arg(script).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
@@ -38,7 +38,7 @@ fn a_gate_runs_two_tests_to_each_core_it_is_given() {
 fn verify_installs_the_newest_toolchain_of_the_tap_and_leaves_the_newest_alone() {
     let script =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/verify-install.sh");
-    let output = std::process::Command::new("sh").arg(script).output().unwrap();
+    let output = afkconvoy::census::command("sh").arg(script).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
@@ -262,7 +262,7 @@ fn a_record_push_packs_only_objects_past_the_tested_commit() {
     let record = records(&world).pop().unwrap();
     let sha = world.remote(&["rev-parse", &record]);
     assert_eq!(world.remote(&["rev-parse", &format!("{record}^")]), head);
-    let mut pack = Command::new("git")
+    let mut pack = afkconvoy::census::command("git")
         .current_dir(&world.clone)
         .args(["pack-objects", "--revs", "--stdout"])
         .stdin(Stdio::piped())

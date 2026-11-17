@@ -193,7 +193,7 @@ fn a_tick_trusts_only_a_probe_that_checked_its_worker_launch_command() {
 
 #[test]
 fn plan_help_says_when_it_probes() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
+    let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
         .args(["plan", "--help"])
         .output()
         .unwrap();

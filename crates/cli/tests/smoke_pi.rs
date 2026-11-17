@@ -21,7 +21,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 use afkconvoy::kept::keep_under;
@@ -203,7 +203,7 @@ fn real_pi_started_in_a_role_sees_the_role_and_the_project_and_nothing_of_the_us
         },
     };
     let line = format!("{} -p --no-session --offline 'go'", start.in_role(Harness::Pi, &launch));
-    let out = Command::new("/bin/sh")
+    let out = afkconvoy::census::command("/bin/sh")
         .args(["-c", &line])
         .env("HOME", &home)
         .stdin(Stdio::null())

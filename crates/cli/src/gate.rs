@@ -111,7 +111,7 @@ fn run_command(
                 )
             })
             .transpose()?;
-    let mut shell = Command::new("sh");
+    let mut shell = crate::census::command("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
     // A gate command that takes no lane of its own keeps its rustc to one
     // front-end thread as one that does (sunfmin/control#1127).
@@ -245,7 +245,9 @@ fn run_command(
                 candidate.failed(TIMED_OUT_CODE, true, started.elapsed().as_secs(), None)?;
             } else {
                 let group = format!("-{}", child.id());
-                let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
+                let _ = crate::process::status(
+                    crate::census::command("kill").args(["-KILL", "--", &group]),
+                );
             }
             let _ = child.wait();
             eprintln!("[afkconvoy] the gate reached the gate limit of {}s", limit.as_secs());

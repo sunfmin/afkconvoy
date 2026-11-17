@@ -6,7 +6,6 @@
 //! release this account's host runner runs.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Result, ensure};
 use serde::Serialize;
@@ -42,7 +41,7 @@ pub struct Table {
 
 impl Table {
     pub fn read() -> Result<Table> {
-        let out = crate::process::output(Command::new("ps").args([
+        let out = crate::process::output(crate::census::command("ps").args([
             "-axww",
             "-o",
             "uid=,user=,pid=,%cpu=,rss=,command=",

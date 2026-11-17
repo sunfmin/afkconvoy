@@ -1,0 +1,6 @@
+# The most processes one test of the fast gate may start (./gate.sh,
+# sunfmin/control#1347): the number on the first line that is no comment.
+# Counted as afkconvoy's own code starts them (crates/cli/src/census.rs), not
+# as the kernel does. A test that starts more fails the fast gate by name: it
+# is named in .config/slow-tests, or made to start fewer.
+25

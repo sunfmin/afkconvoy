@@ -841,7 +841,7 @@ impl BareShell {
                 std::ffi::CStr::from_ptr(name.as_ptr()).to_string_lossy().into_owned(),
             )
         };
-        let mut command = std::process::Command::new("/bin/sh");
+        let mut command = afkconvoy::census::command("/bin/sh");
         command
             .args(["-c", "sleep 60"])
             .stdin(Stdio::from(slave.try_clone().unwrap()))
@@ -862,7 +862,7 @@ impl BareShell {
         let until = afkconvoy_patience::deadline();
         loop {
             let on =
-                std::process::Command::new("ps").args(["-o", "pid=", "-t", &bare.tty]).output();
+                afkconvoy::census::command("ps").args(["-o", "pid=", "-t", &bare.tty]).output();
             if String::from_utf8_lossy(&on.unwrap().stdout).trim() == bare.shell.id().to_string() {
                 return bare;
             }

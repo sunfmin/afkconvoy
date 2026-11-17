@@ -10,7 +10,6 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use afkconvoy::log::{Entry, What};
@@ -48,7 +47,7 @@ fn a_host_runner_ends_when_its_test_is_killed() {
     }
     let rendezvous = tempfile::tempdir().unwrap();
     let pid_file = rendezvous.path().join("runner");
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let mut child = afkconvoy::census::command(std::env::current_exe().unwrap())
         .args(["--exact", "host_runner::a_host_runner_ends_when_its_test_is_killed"])
         .env(PROBE, &pid_file)
         .stdout(std::process::Stdio::null())
@@ -104,7 +103,7 @@ fn keys(object: &Value) -> BTreeSet<String> {
 /// Whether the process `pid` is alive.
 fn alive(pid: &Value) -> bool {
     let pid = pid.as_u64().unwrap().to_string();
-    Command::new("kill").args(["-0", &pid]).status().unwrap().success()
+    afkconvoy::census::command("kill").args(["-0", &pid]).status().unwrap().success()
 }
 
 /// The checkouts the host's list holds, in order.
@@ -215,7 +214,8 @@ fn the_host_runner_is_detached_and_writes_its_own_log() {
     // a process group of its own, which a terminal's Ctrl-C and hangup miss
     let pid = answer["host_runner"]["pid"].as_u64().unwrap();
     let group_of = |pid: u64| {
-        let ps = Command::new("ps").args(["-o", "pgid=", "-p", &pid.to_string()]).output();
+        let ps =
+            afkconvoy::census::command("ps").args(["-o", "pgid=", "-p", &pid.to_string()]).output();
         String::from_utf8_lossy(&ps.unwrap().stdout).trim().parse::<u64>().unwrap()
     };
     assert_eq!(group_of(pid), pid);
@@ -500,7 +500,7 @@ fn a_host_runner_ended_unexpectedly_is_started_again_by_its_keeper_on_the_same_l
     assert_ne!(old, keeper, "the keeper holds nothing of the host");
     // not from `/`, as the host runner works: what ends every process working
     // in `/` leaves it to start the host runner again (sunfmin/control#831)
-    let cwd = Command::new("/usr/sbin/lsof")
+    let cwd = afkconvoy::census::command("/usr/sbin/lsof")
         .args(["-a", "-d", "cwd", "-Fn", "-p", &keeper.to_string()])
         .output()
         .unwrap();
@@ -513,7 +513,8 @@ fn a_host_runner_ended_unexpectedly_is_started_again_by_its_keeper_on_the_same_l
     assert_eq!(first["host_runner"]["pid"], old, "{first}");
 
     // kill -9 of the host runner: nobody runs `afkconvoy run`
-    let killed = Command::new("kill").args(["-KILL", &old.to_string()]).status().unwrap();
+    let killed =
+        afkconvoy::census::command("kill").args(["-KILL", &old.to_string()]).status().unwrap();
     assert!(killed.success());
     let again =
         until("host runner started again", || world.host_runner().filter(|pid| *pid != old));
@@ -569,7 +570,7 @@ fn the_suite_s_host_runner_tests_never_stop_nor_signal_the_host_s_own_host_runne
     host.afk(&RUN).ok();
     let (runner, keeper) = (host.host_runner().unwrap(), host.keeper().unwrap());
     let before = host.runner_log().len();
-    let tests = Command::new(std::env::current_exe().unwrap())
+    let tests = afkconvoy::census::command(std::env::current_exe().unwrap())
         .args(["--exact", "--test-threads", "5"])
         .args(ON_THE_HOST)
         .env("HOME", host.home())

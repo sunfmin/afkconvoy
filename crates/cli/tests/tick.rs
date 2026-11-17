@@ -1,6 +1,6 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Child;
 
 use crate::common;
 
@@ -377,7 +377,7 @@ fn a_settled_worktree_goes_with_a_nested_worktree_and_read_only_fixtures_left_in
 #[test]
 fn a_tick_removes_a_gate_worktree_whose_process_is_gone() {
     let world = backlog(&[]);
-    let mut ended = Command::new("true").spawn().unwrap();
+    let mut ended = afkconvoy::census::command("true").spawn().unwrap();
     ended.wait().unwrap();
     let tmp = world.root.join("gate-tmp");
     std::fs::create_dir_all(&tmp).unwrap();
@@ -452,7 +452,9 @@ fn a_worktree_a_process_is_in_waits_until_that_process_is_gone() {
     tick(&world, "1000");
     let worktree = worker_worktree(&world);
     world.close_issue(3);
-    let _held = Hold(Command::new("sleep").arg("120").current_dir(&worktree).spawn().unwrap());
+    let _held = Hold(
+        afkconvoy::census::command("sleep").arg("120").current_dir(&worktree).spawn().unwrap(),
+    );
 
     let ticked = tick(&world, "1090");
     assert_eq!(did(&ticked), ["settle 3 waiting", "heartbeat done"], "{ticked}");
@@ -541,8 +543,12 @@ while ! test -s "$2/child"; do sleep 0.01; done
 kill -STOP "$(cat "$2/child")" "$(cat "$2/gate")"
 touch "$2/paused"
 exec sleep 120"#;
-        let mut scheduler =
-            Command::new("sh").args(["-c", script, "sh"]).arg(worktree).arg(marks).spawn().unwrap();
+        let mut scheduler = afkconvoy::census::command("sh")
+            .args(["-c", script, "sh"])
+            .arg(worktree)
+            .arg(marks)
+            .spawn()
+            .unwrap();
         let until = afkconvoy_patience::deadline();
         while !marks.join("paused").exists() {
             assert!(std::time::Instant::now() < until, "the scheduler never paused its gate");
@@ -577,7 +583,10 @@ impl Drop for Paused {
 
 /// The first letter of `pid`'s state, `None` once it is gone or a zombie.
 fn state(pid: u32) -> Option<String> {
-    let out = Command::new("ps").args(["-p", &pid.to_string(), "-o", "stat="]).output().unwrap();
+    let out = afkconvoy::census::command("ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
+        .output()
+        .unwrap();
     let state = String::from_utf8_lossy(&out.stdout).trim().chars().next()?;
     (state != 'Z').then(|| state.to_string())
 }
@@ -883,7 +892,7 @@ fn seal(worktree: &Path) -> PathBuf {
 }
 
 fn unregister(world: &World, path: &Path) {
-    let out = Command::new("git")
+    let out = afkconvoy::census::command("git")
         .current_dir(&world.clone)
         .args(["worktree", "remove", "--force"])
         .arg(path)
@@ -962,16 +971,18 @@ impl Session {
     pub(crate) fn start(world: &World, worktree: &Path) -> Self {
         // Not a system binary: `ps` reads the environment of this one.
         let ready = worktree.join(".afkconvoy-tmp/session-ready");
-        let mut child = common::on_no_terminal(&mut Command::new(std::env::current_exe().unwrap()))
-            .args(["--exact", "tick::session_helper", "--ignored"])
-            .current_dir(worktree)
-            .env("TMPDIR", world.tmp(worktree))
-            .env("SESSION_READY", &ready)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = common::on_no_terminal(&mut afkconvoy::census::command(
+            std::env::current_exe().unwrap(),
+        ))
+        .args(["--exact", "tick::session_helper", "--ignored"])
+        .current_dir(worktree)
+        .env("TMPDIR", world.tmp(worktree))
+        .env("SESSION_READY", &ready)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
         let pid = child.id();
         let reaper = std::thread::spawn(move || {
             child.wait().unwrap();

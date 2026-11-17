@@ -282,14 +282,14 @@ fn bash_call(command: &str) -> String {
 /// call, as Claude Code does, on `command` → each one's exit code.
 fn hooked(dir: &std::path::Path, command: &str) -> Vec<Option<i32>> {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let settings = std::fs::read_to_string(dir.join(".claude/settings.json")).unwrap();
     let settings: Value = serde_json::from_str(&settings).unwrap();
     let before = settings["hooks"]["PreToolUse"].as_array().cloned().unwrap_or_default();
     let hooks = before.iter().flat_map(|entry| entry["hooks"].as_array().unwrap());
     let run = |hook: &Value| {
         let line = hook["command"].as_str().unwrap();
-        let mut sh = Command::new("sh");
+        let mut sh = afkconvoy::census::command("sh");
         sh.args(["-c", line]).env("CLAUDE_PROJECT_DIR", dir).current_dir(dir);
         let mut child = sh.stdin(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         child.stdin.take().unwrap().write_all(bash_call(command).as_bytes()).unwrap();
@@ -482,7 +482,7 @@ fn named_in(topic: &str) -> Vec<String> {
 
 /// What the binary prints for `args`, which is no JSON object.
 fn printed(args: &[&str]) -> String {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output();
+    let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output();
     String::from_utf8(out.unwrap().stdout).unwrap()
 }
 

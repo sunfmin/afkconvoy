@@ -268,7 +268,7 @@ const CODEX_HOOKS: &str = r#"{
 /// standard input → its exit code and what it wrote on standard error.
 fn ask_hook(command: &str, call: &Value) -> (i32, String) {
     use std::io::Write;
-    let mut child = std::process::Command::new("/bin/sh")
+    let mut child = afkconvoy::census::command("/bin/sh")
         .args(["-c", command])
         .stdin(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

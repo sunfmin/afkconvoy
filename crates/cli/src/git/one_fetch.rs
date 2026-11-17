@@ -336,11 +336,11 @@ impl Repo {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::process::Command;
+
     use std::sync::Arc;
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        let out = crate::census::command("git")
             .current_dir(dir)
             .args(args)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")

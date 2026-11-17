@@ -338,7 +338,7 @@ fn kit_discovers_grok_models_through_its_isolated_home() {
 /// This machine's name, as an account's `MACHINE` names the one its login
 /// is on.
 fn machine() -> String {
-    let ran = std::process::Command::new("hostname").arg("-s").output().unwrap();
+    let ran = afkconvoy::census::command("hostname").arg("-s").output().unwrap();
     String::from_utf8(ran.stdout).unwrap().trim().to_string()
 }
 

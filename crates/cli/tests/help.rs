@@ -9,7 +9,6 @@ use crate::common;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use common::World;
 
@@ -18,7 +17,8 @@ const README: &str = include_str!("../../../README.md");
 
 /// What the binary prints for `args`, which must exit 0 and leave stderr empty.
 fn asked(args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
+    let out =
+        afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
     assert!(out.status.success(), "{args:?} exits 0");
     assert!(out.stderr.is_empty(), "{args:?} prints to stdout only");
     String::from_utf8(out.stdout).unwrap()
@@ -41,7 +41,8 @@ fn land_help_and_a_missing_issue_name_the_same_forms() {
     let forms = "afkconvoy land <n> | afkconvoy land --issue <n>";
     let help = asked(&["land", "--help"]);
     assert!(help.contains(forms), "{help}");
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).arg("land").output().unwrap();
+    let out =
+        afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy")).arg("land").output().unwrap();
     assert!(!out.status.success());
     let said = String::from_utf8(out.stdout).unwrap();
     assert!(said.contains(forms), "{said}");
@@ -311,7 +312,9 @@ fn the_manual_holds_the_topics_there_are_and_no_other() {
 
 #[test]
 fn help_refuses_a_name_that_is_neither_a_command_nor_a_topic() {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(["help", "nosuch"]).output();
+    let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
+        .args(["help", "nosuch"])
+        .output();
     let out = out.unwrap();
     assert_eq!(out.status.code(), Some(2));
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -768,7 +771,8 @@ fn fix_from_usage(usage: &str) -> String {
 /// `(exit, error)` of `args`. A usage refusal is exit 2; a checkout the
 /// command cannot take is exit 1. Stderr stays empty either way.
 fn ran(args: &[&str]) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
+    let out =
+        afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
     assert!(out.stderr.is_empty(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     let error = serde_json::from_str::<serde_json::Value>(&stdout)
@@ -1426,7 +1430,7 @@ fn the_retired_train_commands_and_lanes_are_absent_from_public_help() {
 /// (sunfmin/control#495). The command and its mentions stay gone.
 #[test]
 fn the_removed_no_node_command_is_refused_and_absent_from_the_manual() {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
+    let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
         .args(["no-node", "--", "true"])
         .output()
         .unwrap();

@@ -36,6 +36,7 @@ pub mod blockers;
 pub mod board;
 mod candidates;
 pub mod caster;
+pub mod census;
 pub mod checkout;
 pub mod checkout_list;
 pub mod checkouts;

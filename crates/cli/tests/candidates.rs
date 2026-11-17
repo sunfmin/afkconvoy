@@ -4,7 +4,7 @@ use crate::common::{World, commit, git, worktree_listed};
 use serde_json::{Value, json};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 fn quote(path: &Path) -> String {
@@ -37,7 +37,8 @@ impl Drop for Fleet {
         // (sunfmin/control#820). So a gate's group is ended only while the
         // gate is still in it, and a pid only while it is in that group.
         let group_of = |pid: &str| {
-            let group = Command::new("ps").args(["-p", pid, "-o", "pgid="]).output().unwrap();
+            let group =
+                afkconvoy::census::command("ps").args(["-p", pid, "-o", "pgid="]).output().unwrap();
             String::from_utf8_lossy(&group.stdout).trim().to_string()
         };
         let read = |kind: &str, name: &str| {
@@ -51,11 +52,13 @@ impl Drop for Fleet {
             // SAFETY: getpgrp only reads this process's group.
             let ours = unsafe { libc::getpgrp() }.to_string();
             if group != ours && group_of(&gate) == group {
-                let _ = Command::new("kill").args(["-KILL", "--", &format!("-{group}")]).status();
+                let _ = afkconvoy::census::command("kill")
+                    .args(["-KILL", "--", &format!("-{group}")])
+                    .status();
             }
             for pid in std::iter::once(gate).chain(read("child", name)) {
                 if group_of(&pid) == group {
-                    let _ = Command::new("kill").args(["-KILL", &pid]).status();
+                    let _ = afkconvoy::census::command("kill").args(["-KILL", &pid]).status();
                 }
             }
         }
@@ -172,7 +175,10 @@ fn gone(world: &World, name: &str) {
     for kind in ["gate", "child"] {
         let pid = std::fs::read_to_string(world.root.join(format!("{kind}-{name}"))).unwrap();
         until(|| {
-            let ps = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+            let ps = afkconvoy::census::command("ps")
+                .args(["-p", pid.trim(), "-o", "stat="])
+                .output()
+                .unwrap();
             let status = String::from_utf8_lossy(&ps.stdout);
             status.trim().is_empty() || status.trim().starts_with('Z')
         });
@@ -185,14 +191,16 @@ struct Held(String);
 impl Held {
     fn stop(turn: &Child) -> Held {
         let pid = turn.id().to_string();
-        assert!(Command::new("kill").args(["-STOP", &pid]).status().unwrap().success());
+        assert!(
+            afkconvoy::census::command("kill").args(["-STOP", &pid]).status().unwrap().success()
+        );
         Held(pid)
     }
 }
 
 impl Drop for Held {
     fn drop(&mut self) {
-        let _ = Command::new("kill").args(["-CONT", &self.0]).status();
+        let _ = afkconvoy::census::command("kill").args(["-CONT", &self.0]).status();
     }
 }
 
@@ -242,7 +250,7 @@ fn hold_pending(world: &World) {
         let tree = world.remote(&["hash-object", "-w", "-t", "tree", "/dev/null"]);
         let message = state.to_string();
         let new = world.remote(&["commit-tree", &tree, "-p", &old, "-m", &message]);
-        let moved = Command::new("git")
+        let moved = afkconvoy::census::command("git")
             .current_dir(&world.bare)
             .args(["update-ref", name, &new, &old])
             .status()
@@ -297,7 +305,8 @@ fn gate_pids(world: &World, name: &str) -> Vec<String> {
 fn ended_all(pids: &[String]) {
     for pid in pids {
         until(|| {
-            let ps = Command::new("ps").args(["-p", pid, "-o", "stat="]).output().unwrap();
+            let ps =
+                afkconvoy::census::command("ps").args(["-p", pid, "-o", "stat="]).output().unwrap();
             let status = String::from_utf8_lossy(&ps.stdout);
             status.trim().is_empty() || status.trim().starts_with('Z')
         });
@@ -1181,7 +1190,8 @@ fn a_reparented_descendant_is_still_owned_and_terminated() {
     let pid = std::fs::read_to_string(world.root.join("escaped")).unwrap();
     release(&world, "a", true);
     assert_eq!(finish(child)["outcome"], "gate_red");
-    let ps = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+    let ps =
+        afkconvoy::census::command("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
     let status = String::from_utf8_lossy(&ps.stdout);
     assert!(status.trim().is_empty() || status.trim().starts_with('Z'), "{status}");
 }
@@ -1402,7 +1412,8 @@ fn a_gating_candidate_keeps_its_worktree_and_a_stopped_one_loses_it() {
     let a_tree = candidate_path(&world, 1);
     assert_eq!(chained(&world)[0]["phase"], "validating");
     assert!(listed(&world, &a_tree), "a validating candidate stays listed");
-    let hold = Hold(Command::new("sleep").arg("300").current_dir(&a_tree).spawn().unwrap());
+    let hold =
+        Hold(afkconvoy::census::command("sleep").arg("300").current_dir(&a_tree).spawn().unwrap());
     release(&world, "a", false);
     let landed_a = finish(aa);
     assert_eq!(landed_a["outcome"], "merged", "{landed_a}");
@@ -1839,7 +1850,7 @@ fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
     let mut seed = chain(&world);
     let template = seed["candidates"][0].clone();
     // Its owner's pid: a process this test saw exit.
-    let mut exited = Command::new("true").spawn().unwrap();
+    let mut exited = afkconvoy::census::command("true").spawn().unwrap();
     let dead = exited.id();
     exited.wait().unwrap();
     let pad = "x".repeat(4096);

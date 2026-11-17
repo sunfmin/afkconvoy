@@ -1,6 +1,5 @@
 //! DSH's launch, profile isolation and the import-free plugin's real guard
 //! and worker backend contracts. No installed DSH or model is needed here.
-use std::process::Command;
 
 use crate::common::{World, write};
 use afkconvoy::kept::keep_under;
@@ -104,7 +103,7 @@ fn a_dsh_profile_links_only_credentials_and_opted_in_skills_and_rules() {
 /// started under a test's stand-in HOME reads none of the user's installs and
 /// may try to download one, so the stand-in DSH would never start.
 fn node() -> Option<String> {
-    let out = Command::new("node").args(["-p", "process.execPath"]).output().ok()?;
+    let out = afkconvoy::census::command("node").args(["-p", "process.execPath"]).output().ok()?;
     let path = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && !path.is_empty()).then_some(path)
 }
@@ -129,7 +128,7 @@ fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted
         "---\nname: build\ndescription: shadowed-skill\n---",
     );
     write(root, "driver.mjs", DRIVER);
-    let output = Command::new(&node)
+    let output = afkconvoy::census::command(&node)
         .arg(root.join("driver.mjs"))
         .current_dir(root)
         .env("AFKCONVOY_GUARD", format!("'{}' guard", env!("CARGO_BIN_EXE_afkconvoy")))
@@ -294,7 +293,7 @@ process.stdin.once('data', input => {
         .own();
     let line = start.in_role(Harness::Dsh, &launch);
     let run = |line: &str| {
-        let mut child = Command::new("sh")
+        let mut child = afkconvoy::census::command("sh")
             .args(["-c", line])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -333,7 +332,7 @@ process.stdin.once('data', input => {
     write(&host, "cordis.patch.yml", "host home patch");
     let host_start = Start { dsh_profile: afkconvoy_core::team::DshProfile::HostUser, ..start };
     let host_line = host_start.in_role(Harness::Dsh, &launch);
-    let output = Command::new("sh")
+    let output = afkconvoy::census::command("sh")
         .args(["-c", &host_line])
         .env("DSH_HOME", &host)
         .env("DSH_AGENTS_HOME", &agents)
@@ -365,7 +364,7 @@ process.stdin.once('data', input => {
     }
     // Default home paths are resolved in the launching shell, without a
     // dependency on the fleet process's own environment.
-    let output = Command::new("sh")
+    let output = afkconvoy::census::command("sh")
         .args(["-c", &host_line])
         .env_remove("DSH_HOME")
         .env_remove("DSH_AGENTS_HOME")
@@ -428,7 +427,7 @@ fn native_dsh_loader_refuses_a_worker_without_its_guard_service() {
         "- insert:\n    - id: system-prompt\n      name: ../../system.mjs\n    - id: agent-loop\n      name: ../../worker.mjs\n    - id: dsh-tui\n      name: ../../worker.mjs\n    - id: control\n      name: ../../control.mjs\n",
     );
     let run = |guard: bool| {
-        let mut command = Command::new("dsh");
+        let mut command = afkconvoy::census::command("dsh");
         command
             .args(["--profile", "smoke", "--patch"])
             .arg(kept.join("afkconvoy.patch.yml"))
@@ -578,7 +577,7 @@ export function apply(ctx, config) {
     };
     let line = start.in_role(Harness::Dsh, "dsh --profile dsh-tui");
     let run = || {
-        Command::new("sh")
+        afkconvoy::census::command("sh")
             .args(["-c", &line])
             .env("DSH_HOME", &host)
             .env("DSH_AGENTS_HOME", root.join("agents"))

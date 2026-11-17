@@ -4,7 +4,7 @@
 
 use std::fs::File;
 use std::path::PathBuf;
-use std::process::{Command, exit};
+use std::process::exit;
 
 use serde_json::Value;
 
@@ -120,11 +120,11 @@ fn session_names() -> Vec<String> {
 
 /// git's stdout, trimmed; empty when the command failed.
 pub fn git(args: &[&str]) -> String {
-    let out = Command::new("git").args(args).output().expect("git runs");
+    let out = afkconvoy::census::command("git").args(args).output().expect("git runs");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 /// Whether a git command succeeded.
 pub fn ok(args: &[&str]) -> bool {
-    Command::new("git").args(args).output().expect("git runs").status.success()
+    afkconvoy::census::command("git").args(args).output().expect("git runs").status.success()
 }

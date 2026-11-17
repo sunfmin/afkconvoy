@@ -4,7 +4,7 @@
 //! to test (`afkconvoy_core::guard`); here it is what the subcommand answers.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde_json::json;
 
@@ -38,7 +38,7 @@ fn guard_at(
     home: &std::path::Path,
     terminal_only: bool,
 ) -> Answered {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
+    let mut command = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"));
     command.arg("guard").env_clear().env("HOME", home).env("XDG_CACHE_HOME", home);
     if terminal_only {
         command.arg("--terminal-input-only");

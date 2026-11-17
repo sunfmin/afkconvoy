@@ -7,7 +7,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -155,7 +154,7 @@ struct Ending {
 impl Ending {
     fn observe(proc: &crate::hot::Proc, clock: &TerminationTime) -> Self {
         let pid = proc.pid.to_string();
-        let metadata = crate::process::output(Command::new("ps").args([
+        let metadata = crate::process::output(crate::census::command("ps").args([
             "-ww",
             "-p",
             &pid,
@@ -186,7 +185,8 @@ impl Ending {
     fn signal(&mut self, pid: u32, forced: bool) {
         self.forced = forced;
         let signal = if forced { "-KILL" } else { "-TERM" };
-        let sent = crate::process::output(Command::new("kill").args([signal, &pid.to_string()]));
+        let sent =
+            crate::process::output(crate::census::command("kill").args([signal, &pid.to_string()]));
         match sent {
             Ok(out) if out.status.success() => self.sent = true,
             Ok(out) => {
@@ -200,7 +200,9 @@ impl Ending {
     /// Resumes `pid`, so that a signal pending on it is delivered. Soft:
     /// the SIGKILL that follows needs no resume.
     fn resume(pid: u32) {
-        let _ = crate::process::output(Command::new("kill").args(["-CONT", &pid.to_string()]));
+        let _ = crate::process::output(
+            crate::census::command("kill").args(["-CONT", &pid.to_string()]),
+        );
     }
 
     /// One line of the tick log, under `command`, saying the end of this
@@ -507,7 +509,7 @@ impl Asked {
     fn of(args: &[&str]) -> Result<Asked> {
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
         let out = crate::process::output(
-            Command::new("orca").args(args).arg("--json").current_dir(asked_from()),
+            crate::census::command("orca").args(args).arg("--json").current_dir(asked_from()),
         )
         .with_context(|| format!("orca {what} could not run"))?;
         Ok(Asked {
@@ -645,7 +647,7 @@ pub(crate) fn listed_repos() -> Result<BTreeSet<PathBuf>> {
 pub(crate) fn repos_listed_by(program: &Path) -> Result<BTreeSet<PathBuf>> {
     let shown = program.display();
     let out = crate::process::output(
-        Command::new(program).args(["repo", "list", "--json"]).current_dir(asked_from()),
+        crate::census::command(program).args(["repo", "list", "--json"]).current_dir(asked_from()),
     )
     .with_context(|| format!("{shown} repo list could not run"))?;
     let answer = read_answer(&out.stdout).unwrap_or(Value::Null);

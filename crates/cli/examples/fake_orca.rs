@@ -191,7 +191,7 @@ fn worktree_create(st: &mut State) -> ! {
     let path = format!("{root}/{}", name.replace('/', "-"));
     let branch = format!("tester/{name}");
     let base = st.doc["stale_base"].as_str().or(st.opt("--base-branch")).unwrap().to_string();
-    let made = std::process::Command::new("git")
+    let made = afkconvoy::census::command("git")
         .args(["-C", source, "worktree", "add", "-q", "-b", &branch, &path, &base])
         .output()
         .unwrap();
@@ -327,7 +327,7 @@ fn worktree_rm(st: &mut State) -> ! {
     if Path::new(&path).is_dir() {
         let source = st.doc["repos"][0]["path"].as_str().unwrap().to_string();
         let branch = fake::git(&["-C", &path, "symbolic-ref", "-q", "--short", "HEAD"]);
-        let removed = std::process::Command::new("git")
+        let removed = afkconvoy::census::command("git")
             .args(["-C", &source, "worktree", "remove", "--force", &path])
             .output()
             .unwrap();
@@ -421,7 +421,7 @@ fn asked(st: &mut State, script: String) -> ! {
         fail(st, "selector_not_found");
     }
     let shell = std::env::var("SHELL").expect("SHELL");
-    let ran = std::process::Command::new(shell)
+    let ran = afkconvoy::census::command(shell)
         .args(["-lic", &script])
         .stdin(std::process::Stdio::null())
         .output()

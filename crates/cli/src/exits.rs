@@ -5,7 +5,6 @@
 //! wait whose turn is alive as a finding of the host for its watch
 //! (sunfmin/control#1096). The record goes once they are gone.
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -121,7 +120,7 @@ fn said_by_ps(pids: &[u32]) -> Option<Vec<Left>> {
         return Some(vec![]);
     }
     let asked: Vec<String> = pids.iter().map(u32::to_string).collect();
-    let out = crate::process::output(Command::new("ps").args([
+    let out = crate::process::output(crate::census::command("ps").args([
         "-o",
         "pid=,user=,stat=,command=",
         "-p",

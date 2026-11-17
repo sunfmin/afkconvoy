@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::resources::Reason;
@@ -224,7 +224,7 @@ fn sizes_said(dirs: &[PathBuf], inside: &[(PathBuf, u64)], deadline: Instant) ->
 /// by then is said not to be listed.
 fn largest_said(home: &Path, worktrees: &[PathBuf], deadline: Instant) -> String {
     let child = crate::process::spawn(
-        Command::new("du")
+        crate::census::command("du")
             .args(["-xk", "-d", DEPTH])
             .arg(home)
             .stdout(Stdio::piped())
@@ -290,7 +290,11 @@ pub(crate) fn du(dir: &Path, deadline: Instant) -> Option<u64> {
         return None;
     }
     let mut child = crate::process::spawn(
-        Command::new("du").arg("-sxk").arg(dir).stdout(Stdio::piped()).stderr(Stdio::null()),
+        crate::census::command("du")
+            .arg("-sxk")
+            .arg(dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
     )
     .ok()?;
     loop {
@@ -372,7 +376,7 @@ fn hostvitals() -> Result<String> {
         readings: Map<String, Value>,
     }
 
-    let output = crate::process::output(Command::new("hostvitals").arg("now"))
+    let output = crate::process::output(crate::census::command("hostvitals").arg("now"))
         .context("could not be run from the host runner's PATH")?;
     let said = format!(
         "{} {}",

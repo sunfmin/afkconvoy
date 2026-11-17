@@ -103,7 +103,7 @@ fn github_https(url: &str) -> Option<String> {
 fn transport(repo: &Repo, url: &str) -> Result<Command> {
     if !url.contains("://") && !url.contains(':') || url.starts_with("file://") {
         let path = url.strip_prefix("file://").unwrap_or(url);
-        let mut command = Command::new("git");
+        let mut command = crate::census::command("git");
         command.args(["receive-pack", path]).current_dir(&repo.dir);
         return Ok(command);
     }
@@ -123,7 +123,7 @@ fn transport(repo: &Repo, url: &str) -> Result<Command> {
     };
     ensure!(!target.starts_with('-') && !path.is_empty(), "invalid Git SSH origin");
     let remote = afkconvoy_core::line::Line::new().fixed("git-receive-pack ").word(&path).own();
-    let mut command = Command::new("ssh");
+    let mut command = crate::census::command("ssh");
     command.args([
         "-o",
         "BatchMode=yes",
@@ -144,7 +144,7 @@ fn transport(repo: &Repo, url: &str) -> Result<Command> {
 }
 
 fn pack(repo: &Repo, updates: &[Update<'_>]) -> Result<Vec<u8>> {
-    let mut command = Command::new("git");
+    let mut command = crate::census::command("git");
     command
         .args(["pack-objects", "--revs", "--stdout"])
         .current_dir(&repo.dir)

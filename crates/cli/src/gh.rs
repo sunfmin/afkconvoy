@@ -8,7 +8,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -739,7 +738,7 @@ impl GitHub {
     /// One `gh` call → its stdout, or what it is named by and what `gh` said
     /// of its failing.
     fn call(&self, args: &[&str]) -> Result<Result<String, (String, String)>> {
-        let mut command = Command::new("gh");
+        let mut command = crate::census::command("gh");
         command.current_dir(&self.dir).args(args);
         let text_body = args.iter().any(|s| {
             s.contains("application/vnd.github.raw")

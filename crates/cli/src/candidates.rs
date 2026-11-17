@@ -519,7 +519,7 @@ pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn identity(pid: u32) -> Result<Option<Process>> {
-    let out = crate::process::output(std::process::Command::new("ps").args([
+    let out = crate::process::output(crate::census::command("ps").args([
         "-p",
         &pid.to_string(),
         "-o",
@@ -646,8 +646,7 @@ fn freezable(pid: u32) -> Result<Option<Process>> {
 
 /// The processes of the process group `group`, by pid.
 fn in_group(group: u32) -> Result<Vec<u32>> {
-    let out =
-        crate::process::output(std::process::Command::new("ps").args(["-axo", "pid=,pgid="]))?;
+    let out = crate::process::output(crate::census::command("ps").args(["-axo", "pid=,pgid="]))?;
     ensure!(out.status.success(), "cannot list the gate's process group: ps failed");
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -1587,7 +1586,7 @@ fn candidate_directory(root: &Path, path: &Path, id: &str) -> bool {
 /// (macnoMac-Studio). A file system that cannot clone refuses it rather
 /// than copying it whole.
 fn clone_tree(from: &Path, to: &Path) -> Result<()> {
-    let mut cp = std::process::Command::new("cp");
+    let mut cp = crate::census::command("cp");
     if cfg!(target_os = "macos") {
         cp.arg("-c");
     } else {
@@ -3257,7 +3256,7 @@ mod tests {
     /// state and command, while its waiter is alive; it goes once they are.
     #[test]
     fn a_long_wait_is_a_finding_naming_the_candidate_the_lane_and_each_pid() {
-        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut child = crate::census::command("sleep").arg("30").spawn().unwrap();
         let scope = std::path::Path::new("/tmp/w.processes");
         let waited = std::time::Duration::from_secs(11 * 60);
         let left = super::Left { pids: vec![child.id()], held: true, unkillable: vec![] };
@@ -3291,7 +3290,7 @@ mod tests {
         use std::time::Duration;
         let dir = tempfile::tempdir().unwrap();
         let scope = dir.path().join("w.processes");
-        let mut command = std::process::Command::new("sh");
+        let mut command = crate::census::command("sh");
         command.args(["-c", "trap 'sleep 15' TERM INT HUP; while :; do sleep 1; done"]);
         let parent = crate::process_scope::create(&scope, &mut command).unwrap();
         let mut child = command.spawn().unwrap();
@@ -3331,12 +3330,12 @@ mod tests {
         use std::time::Duration;
         let dir = tempfile::tempdir().unwrap();
         let scope = dir.path().join("w.processes");
-        let mut gate = std::process::Command::new("sh");
+        let mut gate = crate::census::command("sh");
         gate.args(["-c", "while :; do sleep 1; done"]);
         let parent = crate::process_scope::create(&scope, &mut gate).unwrap();
         let mut holder = gate.spawn().unwrap();
         drop(parent);
-        let mut looker = std::process::Command::new("sh")
+        let mut looker = crate::census::command("sh")
             .args(["-c", "exec 3<\"$1\"; touch \"$1.looking\"; while :; do sleep 1; done", "sh"])
             .arg(&scope)
             .spawn()
@@ -3383,7 +3382,7 @@ mod tests {
         use super::Exiting;
         let dir = tempfile::tempdir().unwrap();
         let scope = dir.path().join("w.processes");
-        let mut command = std::process::Command::new("sh");
+        let mut command = crate::census::command("sh");
         command.args(["-c", "while :; do sleep 1; done"]);
         let parent = crate::process_scope::create(&scope, &mut command).unwrap();
         let mut spawned: Vec<std::process::Child> =
@@ -3421,14 +3420,14 @@ mod tests {
     #[test]
     fn a_setuid_child_is_never_frozen_and_is_waited_for_until_it_ends() {
         use std::time::Duration;
-        let mut ps = std::process::Command::new("/bin/ps")
+        let mut ps = crate::census::command("/bin/ps")
             .args(["axeww", "-o", "command="])
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
         // Unread, its output fills the pipe and it blocks, running.
         std::thread::sleep(Duration::from_millis(500));
-        let mut sleeper = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut sleeper = crate::census::command("sleep").arg("30").spawn().unwrap();
         let ours = super::freezable(sleeper.id()).unwrap();
         let setuid = super::freezable(ps.id()).unwrap();
         let _ = sleeper.kill();

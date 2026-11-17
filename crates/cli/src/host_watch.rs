@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -1292,7 +1292,9 @@ pub(crate) fn stop_marked(identity: &str) -> Result<()> {
         }
         let signal = if began.elapsed() >= Duration::from_secs(1) { "-KILL" } else { "-TERM" };
         for pid in &pids {
-            let _ = crate::process::output(Command::new("kill").args([signal, &pid.to_string()]));
+            let _ = crate::process::output(
+                crate::census::command("kill").args([signal, &pid.to_string()]),
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -1739,7 +1741,7 @@ fn doctor_look(until: Option<u64>, ended: &AtomicBool) -> Result<Value> {
     if let Some(until) = until {
         args.extend(["--since".to_string(), until.to_string()]);
     }
-    let mut child = Command::new(program)
+    let mut child = crate::census::command(program)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -2319,8 +2321,9 @@ mod tests {
                 .fixed("; exec sleep 30")
                 .own()
         );
-        let mut terminal = Command::new("sh").args(["-c", &line]).spawn().unwrap();
-        let mut operator = Command::new("sleep").arg("30").current_dir(dir.path()).spawn().unwrap();
+        let mut terminal = crate::census::command("sh").args(["-c", &line]).spawn().unwrap();
+        let mut operator =
+            crate::census::command("sleep").arg("30").current_dir(dir.path()).spawn().unwrap();
         let deadline = afkconvoy_patience::deadline();
         while !ready.exists() {
             assert!(Instant::now() < deadline, "harness never started");

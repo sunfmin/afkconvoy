@@ -10,7 +10,7 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use common::{World, git, write};
 use serde_json::{Value, json};
@@ -102,7 +102,7 @@ fn a_large_codex_catalog_reaches_the_terminal_as_model_names_alone() {
     // A real shell runs the production listing, including its output filter.
     let command = format!("/bin/sh -c 'cat \"{}/catalog.json\"' --", world.root.display());
     let question = Harness::Codex.models_question(&command, "/unused");
-    let output = Command::new("/bin/sh").args(["-c", &question]).output().unwrap();
+    let output = afkconvoy::census::command("/bin/sh").args(["-c", &question]).output().unwrap();
     assert!(output.status.success());
     let printed = String::from_utf8(output.stdout).unwrap();
     assert!(printed.len() < 100, "the catalog must fit in terminal scrollback");
@@ -678,7 +678,7 @@ fn under_codex(world: &World, line: &str) -> Vec<String> {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("codex"), STAND_IN_CODEX).unwrap();
     std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    let out = Command::new("/bin/sh")
+    let out = afkconvoy::census::command("/bin/sh")
         .args(["-c", line])
         .env_clear()
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
@@ -724,7 +724,7 @@ fn hook_answers(
 ) -> (i32, String, String) {
     use std::io::Write;
     let (worker, _) = line.split_once(" && codex ").expect("the stock command");
-    let mut hook_run = Command::new("/bin/sh");
+    let mut hook_run = afkconvoy::census::command("/bin/sh");
     hook_run
         .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
         .env_clear()
@@ -935,7 +935,7 @@ fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_pl
     let role_s = |event: &str, call: &Value| -> Vec<(i32, String)> {
         use std::io::Write;
         let run = |hook: String| {
-            let mut child = Command::new("/bin/sh")
+            let mut child = afkconvoy::census::command("/bin/sh")
                 .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
                 .env_clear()
                 .env("PATH", std::env::var("PATH").unwrap())
@@ -1702,7 +1702,7 @@ fn declare_guard(world: &World) {
 fn guard_answers(command: &str, line: &str) -> (i32, String) {
     use std::io::Write;
     let call = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": line}, "cwd": "/tmp"});
-    let mut child = Command::new("/bin/sh")
+    let mut child = afkconvoy::census::command("/bin/sh")
         .args(["-c", command])
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1790,7 +1790,7 @@ fn goal_at(home: &Path, status: &str) {
         "create table thread_goals (thread_id text primary key, status text not null, \
          updated_at_ms integer not null); insert into thread_goals values ('t', '{status}', 1);"
     );
-    let made = Command::new("sqlite3").arg(&store).arg(sql).status().unwrap();
+    let made = afkconvoy::census::command("sqlite3").arg(&store).arg(sql).status().unwrap();
     assert!(made.success());
 }
 

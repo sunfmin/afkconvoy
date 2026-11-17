@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -99,7 +99,7 @@ fn answer(mut stream: TcpStream, asked: &Mutex<Vec<Value>>) {
 #[test]
 #[ignore = "starts real Kimi Code: cargo test -p afkconvoy --test cli smoke_kimi:: -- --ignored"]
 fn a_real_kimi_worker_loads_its_role_and_refuses_what_the_role_and_guard_refuse() {
-    if Command::new("kimi").arg("--version").output().is_err() {
+    if afkconvoy::census::command("kimi").arg("--version").output().is_err() {
         eprintln!("skipped: no `kimi` on PATH");
         return;
     }
@@ -218,7 +218,7 @@ fn a_real_kimi_worker_loads_its_role_and_refuses_what_the_role_and_guard_refuse(
     };
     let line =
         format!("stty rows 50 cols 160; {}", start.in_role(Harness::Kimi, Harness::Kimi.stock()));
-    let mut terminal = Command::new("script");
+    let mut terminal = afkconvoy::census::command("script");
     if cfg!(target_os = "macos") {
         terminal.args(["-q", "/dev/null", "/bin/sh", "-c", &line]);
     } else {

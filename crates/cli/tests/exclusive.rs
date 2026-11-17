@@ -4,7 +4,7 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use common::World;
@@ -41,7 +41,8 @@ fn a_command_is_ended_after_contended_time_and_the_next_runs_after_its_descendan
     assert!(waiting.status.success(), "{}", text(&waiting.stderr));
     assert_eq!(waiting.stdout, b"next\n");
     let pid = std::fs::read_to_string(cache.join("descendant")).unwrap();
-    let state = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+    let state =
+        afkconvoy::census::command("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
     let state = text(&state.stdout);
     assert!(
         state.trim().is_empty() || state.trim().starts_with('Z'),
@@ -114,7 +115,8 @@ fn a_gate_timeout_still_ends_a_nested_exclusive_command_and_its_descendants() {
         }
     }
     let pid = std::fs::read_to_string(&descendant).unwrap();
-    let state = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
+    let state =
+        afkconvoy::census::command("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
     let state = text(&state.stdout);
     assert!(state.trim().is_empty() || state.trim().starts_with('Z'), "{state}");
     assert!(
@@ -570,7 +572,7 @@ fn one_that_waits_as_its_host_runner_ends_waits_in_the_next_one_s_queue() {
 
 /// Kills the process `child` with SIGKILL: it has no chance to tidy up.
 fn kill(child: &mut Child) {
-    Command::new("kill").args(["-9", &child.id().to_string()]).status().unwrap();
+    afkconvoy::census::command("kill").args(["-9", &child.id().to_string()]).status().unwrap();
     child.wait().unwrap();
 }
 
@@ -600,7 +602,7 @@ fn a_waiter_killed_leaves_the_queue_and_a_holder_that_dies_frees_its_place() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(next.try_wait().unwrap().is_none(), "the orphan still owns its worker slot");
     let orphan = lines(&pid)[0].clone();
-    let _ = Command::new("kill").arg(orphan).status();
+    let _ = afkconvoy::census::command("kill").arg(orphan).status();
     let next = next.wait_with_output().unwrap();
     assert!(next.status.success());
     assert_eq!(lines(&order), ["next-ran"]);
@@ -645,7 +647,8 @@ fn a_fast_gate_that_ended_frees_its_lane_though_a_server_it_started_holds_its_sl
     assert!(first.status.success(), "{}", text(&first.stderr));
     let server = lines(&server)[0].clone();
     until(|| {
-        let ppid = Command::new("ps").args(["-o", "ppid=", "-p", &server]).output().unwrap();
+        let ppid =
+            afkconvoy::census::command("ps").args(["-o", "ppid=", "-p", &server]).output().unwrap();
         text(&ppid.stdout).trim() == "1"
     });
 
@@ -653,8 +656,9 @@ fn a_fast_gate_that_ended_frees_its_lane_though_a_server_it_started_holds_its_sl
     // it still runs proves it did not wait for it, however loaded the host.
     let next = fast_gate(&world, &cache, 2, "echo next >> \"$CACHE/order\"");
     let next = next.wait_with_output().unwrap();
-    let running = Command::new("kill").args(["-0", &server]).status().unwrap().success();
-    let _ = Command::new("kill").arg(&server).status();
+    let running =
+        afkconvoy::census::command("kill").args(["-0", &server]).status().unwrap().success();
+    let _ = afkconvoy::census::command("kill").arg(&server).status();
     assert!(next.status.success(), "{}", text(&next.stderr));
     assert!(running, "the next fast gate waited for the server to end");
     assert_eq!(lines(&order), ["first", "next"]);
@@ -728,7 +732,8 @@ fn an_ordinary_command_that_ended_frees_its_repo_though_a_server_it_started_hold
     assert!(first.status.success(), "{}", text(&first.stderr));
     let server = lines(&server)[0].clone();
     until(|| {
-        let ppid = Command::new("ps").args(["-o", "ppid=", "-p", &server]).output().unwrap();
+        let ppid =
+            afkconvoy::census::command("ps").args(["-o", "ppid=", "-p", &server]).output().unwrap();
         text(&ppid.stdout).trim() == "1"
     });
 
@@ -736,8 +741,9 @@ fn an_ordinary_command_that_ended_frees_its_repo_though_a_server_it_started_hold
     // it still runs proves it did not wait for it, however loaded the host.
     let next = exclusive(&world, &cache, 2, "echo next >> \"$CACHE/order\"");
     let next = next.wait_with_output().unwrap();
-    let running = Command::new("kill").args(["-0", &server]).status().unwrap().success();
-    let _ = Command::new("kill").arg(&server).status();
+    let running =
+        afkconvoy::census::command("kill").args(["-0", &server]).status().unwrap().success();
+    let _ = afkconvoy::census::command("kill").arg(&server).status();
     assert!(next.status.success(), "{}", text(&next.stderr));
     assert!(running, "the next command of the repo waited for the server to end");
     assert_eq!(lines(&order), ["first", "next"]);
