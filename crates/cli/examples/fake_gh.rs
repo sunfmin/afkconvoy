@@ -33,6 +33,12 @@
 //!
 //! `visibility`: who GitHub lets see the repo — of a tracker, in its own
 //! state — `private` where it says none.
+//!
+//! `secondary_quiet`: seconds, by the real clock. A write (`writes`) that
+//! comes sooner than that after the last write, `secondary_last_write`, is
+//! refused as GitHub's secondary limit refuses it, saying `Retry-After: 1`,
+//! and noted in `secondary_refused`; one after that much quiet goes through
+//! and is noted in `secondary_accepted`.
 
 mod fake;
 
@@ -50,6 +56,16 @@ use serde_json::{Value, json};
 
 const REPO: &str = "repos/{owner}/{repo}/";
 
+/// Whether the call `line` writes to GitHub, as `secondary_quiet` counts it.
+fn writes(line: &str) -> bool {
+    let verbs = ["create", "comment", "merge", "close", "edit", "ready", "reopen"];
+    ["pr", "issue", "repo", "release"]
+        .iter()
+        .any(|noun| verbs.iter().any(|verb| line.starts_with(&format!("{noun} {verb}"))))
+        || line.starts_with("api") && (line.contains("--method P") || line.contains("--method D"))
+        || line.starts_with("api graphql") && line.contains("query=mutation")
+}
+
 fn main() {
     let mut st = State::open_routed("CONVOY_FAKE_GH", "convoy-fake-gh");
     st.argv.retain(|a| a != "--include");
@@ -61,6 +77,25 @@ fn main() {
     } else {
         "other"
     };
+    if let Some(quiet) = st.doc["secondary_quiet"].as_f64()
+        && writes(&line)
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let last = st.doc["secondary_last_write"].as_f64().unwrap_or(f64::MIN);
+        st.doc["secondary_last_write"] = json!(now);
+        if now - last < quiet {
+            st.list("secondary_refused").push(json!(now));
+            st.finish(
+                "",
+                1,
+                "You have exceeded a secondary rate limit and have been temporarily blocked from content creation. (HTTP 403)\nRetry-After: 1\n",
+            );
+        }
+        st.list("secondary_accepted").push(json!(now));
+    }
     if let Some(said) = st.doc["quota_fail"][resource].as_str() {
         st.finish("", 1, said);
     }
