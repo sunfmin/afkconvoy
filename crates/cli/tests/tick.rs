@@ -1442,8 +1442,9 @@ fn a_tick_lets_go_of_a_deleted_issue_in_its_answer_with_no_error() {
 #[test]
 fn an_issue_deleted_during_its_own_dispatch_leaves_no_claim_behind() {
     let world = backlog(&[3, 5]);
-    // answered as the dispatch reads it and its blockers; deleted once it is claimed
-    gone(&world, 3, "deleted", 2);
+    // answered as the dispatch reads it, its blockers and, three times, the
+    // comments its target is chosen from; deleted once it is claimed
+    gone(&world, 3, "deleted", 5);
     let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
     assert_eq!(
         lines,

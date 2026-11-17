@@ -147,7 +147,10 @@ fn plan_writes_nothing() {
         assert!(!call.iter().any(|arg| writes.contains(&arg.as_str())), "{line}");
     }
     let mut gh_after = world.gh();
+    // What it called is a log, not state: the calls and the environment
+    // each ran in.
     gh_after["calls"] = gh_before["calls"].clone();
+    gh_after["envs"] = gh_before["envs"].clone();
     assert_eq!(gh_after, gh_before);
 }
 

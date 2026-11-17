@@ -300,6 +300,7 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
             "host",
             "issues",
             "kept_at_settle",
+            "legacy_candidate_chains",
             "refusals",
             "targets",
             "waiting_on_human"

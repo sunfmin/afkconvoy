@@ -508,6 +508,9 @@ impl World {
             // How busy the host's cores are, as `cores_busy` says it: none
             // said, and admission's load is judged alone.
             ("AFKCONVOY_FAKE_CPU_BUSY".to_string(), shown(&self.root.join("host-cpu-busy"))),
+            // The host's process creation rate: none read, so two answers of
+            // one world agree, and admission judges without it.
+            ("AFKCONVOY_FAKE_PID_COUNTER".to_string(), shown(&self.root.join("host-pid-counter"))),
         ];
         env.extend(GIT_ENV.iter().map(|(name, value)| (name.to_string(), value.to_string())));
         // No checkout above the world is one of its: a test's directory

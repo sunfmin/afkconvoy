@@ -1203,3 +1203,15 @@ afkconvoy::cli turns::old_stored_lane_keys_load_and_a_run_drops_them
 afkconvoy::cli unworked::a_look_with_rest_core_spent_says_one_quota_finding_with_its_reset_and_no_repo_unread
 afkconvoy::cli watch_landing::a_watch_never_treats_a_failed_rest_lock_read_as_no_locks
 afkconvoy::cli watch_landing::with_a_fleet_lock_standing_a_watch_s_pr_joins_nothing
+
+# Each started more than .config/process-bound allows a fast-gate test once
+# #1347's bound met the tests of the PRs merged beside it (#967, #969, #970,
+# and four older ones): counted by ./gate.sh in the fast gate.
+afkconvoy hot::tests::a_worker_spinning_sleeps_is_hot_by_its_rate_of_process_creation
+afkconvoy::cli target::a_takeover_by_another_host_keeps_the_claims_target_and_lands_on_it
+afkconvoy::cli stopped::a_verdict_declared_while_the_tick_holds_the_worker_on_background_work_is_carried_out
+afkconvoy::cli target::legacy_target_records_are_carried_once_and_removed
+afkconvoy::cli dispatch::a_base_branch_the_remote_lacks_is_an_error
+afkconvoy::cli patrol::check_requires_a_positive_whole_landing_bound
+afkconvoy::cli accounts::account_windows_select_the_end_and_report_unknown_data
+afkconvoy::cli accounts::token_summary_counts_known_workers_by_harness_and_ranks_issues
