@@ -69,7 +69,9 @@ fn help_explains_the_idle_wait_and_a_closed_blockers_wake() {
 }
 
 /// The most the index may be: what an agent's harness shows whole, with room.
-const INDEX_MOST: usize = 21 * 1024;
+/// Raised by a quarter KiB for `promote` (sunfmin/control#1308), as `hold`
+/// took a line of the short help.
+const INDEX_MOST: usize = 21 * 1024 + 256;
 
 /// The lines of `text` from the one starting with `from` up to the one
 /// starting with `to`, both left out.
@@ -971,7 +973,7 @@ fn the_readme_points_to_the_help_as_the_whole_manual() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 60, "{short}");
+    assert!(short.lines().count() <= 61, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 

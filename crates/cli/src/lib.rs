@@ -116,6 +116,7 @@ mod plan;
 pub mod probe;
 mod process;
 mod process_scope;
+mod promote;
 pub mod published;
 pub mod queue;
 pub mod queue_share;
@@ -249,7 +250,7 @@ const READER: &str = "Run by whoever reads this manual";
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` picks a task's target; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `hold` for one PR; `queue` for the exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` old ones; `kit`, `cast`, `switch` for harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something; `takeover` takes another instance's claims; `daybook` records what an agent did off any issue.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` picks a task's target; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `hold` for one PR; `promote` for a proving branch; `queue` for the exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` old ones; `kit`, `cast`, `switch` for harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something; `takeover` takes another instance's claims; `daybook` records what an agent did off any issue.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 /// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -1047,6 +1048,15 @@ enum Command {
         /// The clock's `--now <seconds>` shares the flag, so it is read from there.
         #[arg(skip)]
         now: bool,
+        #[command(flatten)]
+        at: At,
+    },
+    /// Slow-gate the proving branch, then move the base branch to it
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = promote::HELP)]
+    Promote {
+        /// The host its gate runs and is recorded as on [default: this machine's name]
+        #[arg(long)]
+        host: Option<String>,
         #[command(flatten)]
         at: At,
     },
@@ -2861,6 +2871,9 @@ fn run(
         }
         // `Acting::end` sends it, as it does for every command that acts.
         Command::Wake { .. } => Ok(json!({})),
+        Command::Promote { host, .. } => {
+            promote::promote(&checkout?, &host.unwrap_or_else(this_host), now)
+        }
         Command::Scan { .. } => Ok(Scan::read_said(&checkout?)?.json()),
         Command::Claim { issue, who, .. } => {
             let repo = checkout?;

@@ -19,3 +19,7 @@ Before a claim, a branch selection is the issue's `<!--convoy:target branch=…-
 Earlier, selection wrote a parentless record under `target/<tracker claim key>` that was never removed: 327 of them stood against 12 open issues. Each acting tick now reads every such record once, carries it — a claim naming it gets its pin, a non-base branch becomes the issue's selection comment, a delivery's task joins its task record — and removes it; `doctor` reports any still left. Legacy tasks lacking a target retain the configured destination until their next claim resolves it.
 
 Dispatch, stage briefs, guard settings, switches, continuation, landing and settlement read that destination. A missing branch, unreadable record or a target that contradicts its claim is a refusal with a repair diagnostic, never permission to use the configured base. The branch identity is pinned; its tip continues moving through ordinary gated turns.
+
+## Amended by ADR-0090
+
+A repo that names a proving branch has two branches in play (sunfmin/control#1308): a task's target branch is the proving branch, and the base branch moves only by promotion. Versions are still cut from the base branch.

@@ -1058,3 +1058,8 @@ afkconvoy::cli cutting::a_dead_cut_s_hold_is_taken_over
 afkconvoy::cli cutting::the_next_due_cut_starts_nothing_in_a_checkout_a_cut_by_hand_holds_and_says_so
 afkconvoy::cli gate::a_gate_runs_two_tests_to_each_core_it_is_given
 afkconvoy::cli joining::a_landing_stopped_at_a_fleet_lock_is_asked_again_by_the_tick_once_the_lock_closes
+# Proving branch (sunfmin/control#1308): each lands two PRs through real turns, as candidates' tests do.
+afkconvoy::cli proving::two_fast_green_prs_land_on_the_proving_branch_and_a_promotion_moves_the_base_to_it
+afkconvoy::cli proving::a_worker_started_after_a_landing_on_the_proving_branch_branches_from_it
+afkconvoy::cli proving::a_promotion_whose_slow_gate_is_red_leaves_the_base_branch_and_says_so
+afkconvoy::cli proving::a_promotion_never_moves_the_base_branch_to_what_is_no_fast_forward_of_it

@@ -71,7 +71,7 @@ pub fn parse(markdown: &str) -> Result<Config> {
     let gates = declared::gates(markdown, config.gate_seconds(), config.gate_budget_seconds)
         .map_err(said)
         .context("its ```yaml gates block")?;
-    let mut config = config.split(gates);
+    let mut config = config.split(gates).proving_checked()?;
     for (block, target) in
         [("gate-needs", &mut config.gate_needs), ("cut-needs", &mut config.cut_needs)]
     {
@@ -248,6 +248,8 @@ slow:
 
 The two are the gate split, not a gate more: together they check what `gate_command` checks: a landing turn runs the fast gate per candidate and the slow gate once per round (`afkconvoy land --help`), and a base tip with no record is gated with `gate_command` whole. So each budget is below its limit, their limits add up to no more than `gate_seconds`, and their budgets to no more than `gate_budget_seconds` where it is declared. `afkconvoy gate --fast` and `--slow` run each alone (`afkconvoy gate --help`). Older versions skip the block.
 
+A repo that declares a ```yaml gates block may name a proving branch in its ```yaml block, `proving_branch: proving`: a branch other than `base_branch`, which the remote holds. Then a round lands on the proving branch once its fast gate is green — its root merged onto the proving branch's tip and fast-gated only, every PR answering `merged` and its issue closing — and new workers, watches and fleet-lock repairs are cut from it and land on it. The base branch moves only by a promotion: `afkconvoy promote` runs the slow gate on the proving branch's tip, puts `gate_command` on record from it and the fast run on record of that tree, and fast-forwards the base branch there once it is green (`afkconvoy promote --help`). Versions are still cut from the base branch. A repo that names no proving branch lands on its base branch, as without the key. The answer has it as {"proving_branch"} where it is named.
+
 What is outside these blocks is yours to explain it in — but for a second block opened by the line ```yaml cut, which names the repo's cut steps and turns cutting on (`afkconvoy cut --help`). It is read beside this one; older versions read only this one, and refuse nothing for it.
 
 No command writes this file: write it, commit it, and run `afkconvoy config`.
@@ -298,7 +300,7 @@ A repo whose config names a team is a bound repo, and answers three keys more: {
 
 Where the file names cut steps, the answer has one key more: {"cut": {"set", "publish", "initial"?, "minor_paths"?}} — each as the ```yaml cut block says it. Optional `initial: X.Y.Z` declares the first version to cut when the remote has no version tag; after the first tag it is ignored. Optional `minor_paths`, a list such as `["decisions/"]`, makes a cut minor where a PR landed since the newest tag adds or changes a file under one of them (`afkconvoy cut --help`). Where it splits its gate, one more: {"gates": {"fast", "slow"}}, each {"command", "seconds", "budget_seconds"}.
 
-Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish`, `initial`, `busy_after_seconds` and `minor_paths`, lacks a required step, a step names nothing to run, `initial` is not X.Y.Z, or `minor_paths` names an empty path; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml heavy-commands block has a key but `commands`, an empty pattern or one declared twice; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; a `landing`, which a config says no more: every round lands through a pairing tree, and the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout", or git's own words for a checkout it refuses.
+Errors: the file cannot be read; it has no ```yaml block; a ```yaml cut block has a key but `set`, `publish`, `initial`, `busy_after_seconds` and `minor_paths`, lacks a required step, a step names nothing to run, `initial` is not X.Y.Z, or `minor_paths` names an empty path; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `gate_budget_seconds` is not a positive whole number below `gate_seconds`, is declared twice, or its separate block has another key; the ```yaml heavy-commands block has a key but `commands`, an empty pattern or one declared twice; the ```yaml gates block lacks `fast` or `slow` or one of their keys, has another key, a gate names nothing to run, has no seconds or a budget not below them, or the two gates' limits or budgets add up past the gate's; `proving_branch` is empty, names `base_branch`, or is named in a repo that declares no ```yaml gates block — the error names the reason; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; a `landing`, which a config says no more: every round lands through a pairing tree, and the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout", or git's own words for a checkout it refuses.
 
 ## What trips you up
 
@@ -473,6 +475,35 @@ mod tests {
             let why = format!("{:#}", split(fast, slow).unwrap_err());
             assert!(why.contains(key) && why.contains("```yaml gates"), "{key}: {why}");
         }
+    }
+
+    /// A proving branch is read only beside a fast and a slow gate, and a
+    /// landing on it gates the fast one as its whole gate (docs/adr/0090).
+    #[test]
+    fn a_proving_branch_is_read_only_beside_a_gates_block() {
+        let main = |more: &str| {
+            format!(
+                "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 3600\n{more}```\n"
+            )
+        };
+        let gates = "```yaml gates\nfast:\n  command: ./gate.sh fast\n  seconds: 600\n  budget_seconds: 120\nslow:\n  command: ./gate.sh slow\n  seconds: 3000\n  budget_seconds: 480\n```\n";
+        let config = parse(&format!("{}{gates}", main("proving_branch: proving\n"))).unwrap();
+        assert_eq!(config.proving_branch.as_deref(), Some("proving"));
+        assert_eq!((config.lands_on(), config.base_branch.as_str()), ("proving", "main"));
+        assert!(config.proves_on("proving") && !config.proves_on("main"));
+        let fast = config.fast_as_whole();
+        assert_eq!((fast.gate_command.as_str(), fast.gate_seconds()), ("./gate.sh fast", 600));
+        assert_eq!((fast.gates, fast.gate_budget_seconds), (None, Some(120)));
+        // Without one, the repo lands on its base branch, as before.
+        let plain = parse(&format!("{}{gates}", main(""))).unwrap();
+        assert_eq!((plain.lands_on(), plain.proving_branch.as_deref()), ("main", None));
+        let alone = format!("{:#}", parse(&main("proving_branch: proving\n")).unwrap_err());
+        assert!(alone.contains("proving_branch") && alone.contains("```yaml gates"), "{alone}");
+        let itself = format!(
+            "{:#}",
+            parse(&format!("{}{gates}", main("proving_branch: main\n"))).unwrap_err()
+        );
+        assert!(itself.contains("other than base_branch"), "{itself}");
     }
 
     #[test]

@@ -869,7 +869,7 @@ pub(crate) fn continue_brief(
     let branch = number
         .map(|n| fleet.task_branch(n))
         .transpose()?
-        .unwrap_or_else(|| fleet.config.base_branch.clone());
+        .unwrap_or_else(|| fleet.config.lands_on().to_string());
     let base = fleet
         .repo
         .remote()

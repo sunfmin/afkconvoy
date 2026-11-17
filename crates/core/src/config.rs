@@ -67,6 +67,7 @@ pub const INTAKE_LIMIT: u64 = 50;
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub base_branch: Option<String>,
+    pub proving_branch: Option<String>,
     pub gate_command: Option<String>,
     pub gate_seconds: Option<u64>,
     pub gate_budget_seconds: Option<u64>,
@@ -106,6 +107,11 @@ pub struct Bound {
 #[invariant(gate_seconds > 0)]
 pub struct Config {
     pub base_branch: String,
+    /// The proving branch (docs/adr/0090): where a round lands once its
+    /// fast gate is green, and what a promotion moves the base branch to
+    /// once its slow gate is. `None` where the repo lands on its base branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proving_branch: Option<String>,
     pub gate_command: String,
     /// The gate limit, in seconds: the repo's, or `GATE_SECONDS`.
     #[field(u64[gate_seconds])]
@@ -194,6 +200,10 @@ pub enum ConfigError {
     Harness(String),
     /// `landing`, which a config says no more: what it was set to.
     Landing(String),
+    /// `proving_branch` names the base branch itself.
+    ProvingIsBase,
+    /// `proving_branch` in a repo that declares no fast and slow gate.
+    ProvingNeedsGates,
     /// A key that means something only in an unbound repo, in a repo naming a team.
     Unbound(&'static str),
     /// `escalate_to` is neither `consult` nor `human`: what it was set to.
@@ -237,6 +247,18 @@ impl std::fmt::Display for ConfigError {
                  delete the line `landing: {named}`: every round lands through a pairing tree, \
                  and no batch round is left"
             ),
+            ConfigError::ProvingIsBase => write!(
+                f,
+                "proving_branch: must name a branch other than base_branch, which a promotion \
+                 moves to it"
+            ),
+            ConfigError::ProvingNeedsGates => write!(
+                f,
+                "proving_branch: is read only in a repo that declares a ```yaml gates block: a \
+                 round lands on the proving branch once its fast gate is green, and a promotion \
+                 moves the base branch there once the slow gate is (docs/adr/0090); declare the \
+                 two gates, or delete the line"
+            ),
             ConfigError::Unbound(key) => write!(
                 f,
                 "{key}: is read only in an unbound repo: a bound repo's stage says where its \
@@ -262,6 +284,14 @@ impl Config {
             return Err(ConfigError::Landing(named));
         }
         let base_branch = required("base_branch", settings.base_branch)?;
+        let proving_branch = match settings.proving_branch {
+            None => None,
+            Some(text) if text.trim().is_empty() => {
+                return Err(ConfigError::Empty("proving_branch"));
+            }
+            Some(text) if text == base_branch => return Err(ConfigError::ProvingIsBase),
+            Some(text) => Some(text),
+        };
         if settings.gate_budget_seconds.is_some_and(|budget| {
             budget == 0 || budget >= settings.gate_seconds.unwrap_or(GATE_SECONDS)
         }) {
@@ -312,9 +342,11 @@ impl Config {
             escalate_to,
             bound,
         ) {
-            Some(config) => {
-                Ok(Config { gate_budget_seconds: settings.gate_budget_seconds, ..config })
-            }
+            Some(config) => Ok(Config {
+                gate_budget_seconds: settings.gate_budget_seconds,
+                proving_branch,
+                ..config
+            }),
             None => Err(ConfigError::ZeroGateSeconds),
         }
     }
@@ -334,6 +366,51 @@ impl Config {
     /// block of their own.
     pub fn split(self, gates: Option<Gates>) -> Config {
         Config { gates, ..self }
+    }
+
+    /// This config, or why its proving branch cannot be: one is read only
+    /// beside a fast and a slow gate (`split`), which a landing on it and a
+    /// promotion of it run apart.
+    pub fn proving_checked(self) -> Result<Config, ConfigError> {
+        match (&self.proving_branch, &self.gates) {
+            (Some(_), None) => Err(ConfigError::ProvingNeedsGates),
+            _ => Ok(self),
+        }
+    }
+
+    /// The branch a task is cut from and lands on unless it is pinned to
+    /// another: the proving branch, where the repo declares one, else the
+    /// base branch.
+    pub fn lands_on(&self) -> &str {
+        self.proving_branch.as_deref().unwrap_or(&self.base_branch)
+    }
+
+    /// Whether a landing on `target` is a landing on this repo's proving
+    /// branch, which runs the fast gate alone (docs/adr/0090).
+    pub fn proves_on(&self, target: &str) -> bool {
+        self.proving_branch.as_deref() == Some(target)
+    }
+
+    /// This config as a landing on the proving branch gates by: its fast
+    /// gate is its whole gate, with that gate's limit and budget, and it
+    /// splits nothing (docs/adr/0090); the slow gate runs at a promotion.
+    /// Unchanged where it declares no fast gate with time to run.
+    pub fn fast_as_whole(self) -> Config {
+        let Some(fast) = self.gates.as_ref().map(|gates| gates.fast.clone()) else {
+            return self;
+        };
+        if fast.seconds == 0 {
+            return self;
+        }
+        let budget = Some(fast.budget_seconds).filter(|b| *b > 0 && *b < fast.seconds);
+        Config {
+            gate_command: fast.command,
+            gate_seconds: fast.seconds,
+            gate_budget_seconds: budget,
+            gate_limit_declared: true,
+            gates: None,
+            ..self
+        }
     }
 
     /// The gate `which` names: the fast one or the slow one, where the
@@ -378,6 +455,7 @@ fn checked(
     }
     Some(Config {
         base_branch,
+        proving_branch: None,
         gate_command,
         gate_seconds,
         gate_budget_seconds: None,

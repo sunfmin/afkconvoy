@@ -2658,6 +2658,23 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     };
     fleet["tracker"] = report.tracker.clone();
     fleet["landing_hold"] = crate::landing_hold::json(repo);
+    // Where a proving branch is declared: its tip, the base's, and what
+    // landed on it waits for a promotion (docs/adr/0090).
+    if let Ok(config) = crate::config::of(repo)
+        && config.proving_branch.is_some()
+    {
+        let read = crate::gh::GitHub::of(repo)
+            .and_then(|gh| crate::promote::Standing::read(repo, &config, &gh.tracker));
+        fleet["proving"] = match read {
+            Ok(Some(standing)) => {
+                let mut said = standing.json(now);
+                said["said"] = json!(standing.line(now));
+                said
+            }
+            Ok(None) => Value::Null,
+            Err(error) => json!({"error": format!("{error:#}")}),
+        };
+    }
     let deliveries = match &state {
         Ok(state) => state.deliveries.clone(),
         Err(error) => vec![json!({ "error": error })],

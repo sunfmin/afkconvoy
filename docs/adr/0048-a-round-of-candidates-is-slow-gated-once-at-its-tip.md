@@ -69,3 +69,7 @@ Now the lanes bound only the gates running:
 So a PR that becomes ready while the others are still merging and fast-gating joins their round; one that asks once the slow gate has started joins the next.
 
 A stream of PRs that never stops would hold a round back. No bound is set for that yet: a fleet's workers finish in bursts, and a bound is added once a round is seen waiting on it.
+
+## Amended by ADR-0090
+
+On a proving branch a round is not slow-gated: its root is fast-gated onto the proving tip, and a promotion runs the slow gate later (sunfmin/control#1308). A red slow gate there is repaired by the proving branch's own worker, since the round's workers have ended once it landed; the refusal of a separate repair worker stands for a round landing on a base branch.

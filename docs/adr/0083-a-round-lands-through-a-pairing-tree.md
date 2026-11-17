@@ -90,3 +90,7 @@ The plain runner (`Lander::land`) carries the same way among the changes it is g
 - `Phase::Batched` and a candidate's `batch` now mean a candidate of a round's root, not gated alone; records of batch rounds still read.
 - Guild lands with the same crate, and its `land_with` and `Landing` are gone with the batch round.
 - A repo's `landing: batch` (sunfmin/control#1120), which put afkconvoy's own turns in batch rounds, goes with them: every round pairs, and the key is unknown again.
+
+## Amended by ADR-0090
+
+On a proving branch a round is not slow-gated: its root is fast-gated onto the proving tip, and a promotion runs the slow gate later (sunfmin/control#1308). A red slow gate there is repaired by the proving branch's own worker, since the round's workers have ended once it landed; the refusal of a separate repair worker stands for a round landing on a base branch.

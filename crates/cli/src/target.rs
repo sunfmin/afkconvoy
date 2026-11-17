@@ -261,7 +261,7 @@ pub struct Seen {
 /// An unclaimed issue's comments are read without a quota probe.
 pub fn once(repo: &Repo, config: &Config, gh: &GitHub, issue: u64) -> Result<Seen> {
     let tracker = &gh.tracker;
-    let base_ref = format!("refs/heads/{}", config.base_branch);
+    let base_ref = format!("refs/heads/{}", config.lands_on());
     let [claim_ref, legacy, members] = patterns(repo, tracker, issue);
     let asked_refs = [claim_ref.as_str(), legacy.as_str(), members.as_str(), base_ref.as_str()];
     let mut listed = repo.remote().refs(&asked_refs, Fresh::Live)?;
@@ -272,7 +272,7 @@ pub fn once(repo: &Repo, config: &Config, gh: &GitHub, issue: u64) -> Result<See
         gh.comments(issue)
     })?;
     let branch = match target {
-        None => config.base_branch.clone(),
+        None => config.lands_on().to_string(),
         Some(target) => target.resolve_known(repo, &asked_refs, &listed)?,
     };
     let tip_ref = format!("refs/heads/{branch}");
@@ -297,7 +297,7 @@ pub fn snapshot_branch(
         None => GitHub::of(repo)?.comments(issue),
     };
     match decide(repo, tracker, issue, records, read)? {
-        None => Ok(config.base_branch.clone()),
+        None => Ok(config.lands_on().to_string()),
         Some(target) => target.resolve_snapshot(repo, records),
     }
 }
@@ -312,7 +312,7 @@ pub fn for_claim(repo: &Repo, config: &Config, issue: u64, taken: Option<&Claim>
     let gh = GitHub::of(repo)?;
     Ok(match existing(repo, &gh, issue)? {
         Some(target) => target.pin(),
-        None => Pin::Branch(config.base_branch.clone()),
+        None => Pin::Branch(config.lands_on().to_string()),
     })
 }
 
@@ -344,7 +344,7 @@ fn validate_known(
 pub fn branch(repo: &Repo, config: &Config, issue: u64) -> Result<String> {
     match existing(repo, &GitHub::of(repo)?, issue)? {
         Some(target) => target.resolve(repo),
-        None => Ok(config.base_branch.clone()),
+        None => Ok(config.lands_on().to_string()),
     }
 }
 
@@ -541,7 +541,7 @@ pub fn listing(
             answer["delivery"] = json!(reference.identity);
         }
         let branch = decided.and_then(|target| match target {
-            None => Ok(config.base_branch.clone()),
+            None => Ok(config.lands_on().to_string()),
             Some(target) => target.resolve_snapshot(repo, &listing.records),
         });
         match branch {

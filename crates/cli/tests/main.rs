@@ -56,6 +56,7 @@ mod patrol;
 mod pi;
 mod plan;
 mod probe;
+mod proving;
 mod proxy;
 mod public_tracker;
 mod queue;
