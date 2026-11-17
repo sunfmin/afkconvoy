@@ -985,8 +985,10 @@ fn claim_findings(run: &Run, held: &[Held], now: u64, locks: &[u64]) -> Vec<Find
                         "it declared its verdict, and no tick has carried it out".to_string()
                     }
                     Some(waited) => format!(
-                        "it waited {} on background work of its own, past the gate limit",
-                        lasted(waited)
+                        "it waited {} on background work of its own{}, past the gate limit of {}",
+                        lasted(waited.seconds),
+                        waited.on.map(|on| format!(", `{on}`")).unwrap_or_default(),
+                        lasted(waited.limit)
                     ),
                     None if silent.nudged => "it stayed silent after its nudge".to_string(),
                     None => "it declared nothing and showed no sign of life for the grace \
@@ -3265,7 +3267,7 @@ With `--all --since <time>`, each checkout's `doctor.watching` adds what happene
 
 It exits non-zero where any finding is critical, the host's or a checkout's, or a checkout could not be asked — printing the same object. Errors: the checkout list cannot be read.
 
-The findings: a command the fleet needs is missing or logged out; orca cannot be asked, or does not know the checkout; the worker launch command of a harness the fleet could be asked for cannot start a worker — said with the harness and what calls for it; no `run` is alive and claims are held; the fleet instance of this checkout is broken — with why, since when and when the host runner starts it again; the same step failed in each of the last three ticks; the team has a fault at its head; a fleet lock stands on an issue that cannot be worked (all critical) — a step failed and has not recovered, including a worker that failed to start, with its error and the line to try again; a claim has no worker; a worker is silent with its claim still at work, as the tick judges it — its `fix` the command the tick runs next for it; the frontier is not empty, admission held nothing back and the last tick started nobody; a flow label names no workflow of the team; an issue has been at a stage longer than the repo's p95 for completed performances of that stage, or, with fewer than 20, longer than its own earlier record gaps of at least a minute; an issue is one rework from a breaker; a patrol is failed or full; an issue has waited for a human for more than an hour, its `fix` being the line that answers it; the gate is slow — with the host, the fixed duration budget when declared, the termination gate limit and the {const:SLOW_GATE_LANDINGS} runs, each a commit and its seconds, as `afkconvoy plan` has them, and the issue open for it when there is one; the host runner did not move onto the newer release installed where it was started from — it did not start, does not say its version, or waited past the release move limit — with the file, both releases and why, its `fix` that file's `--version` (all warning) — a concurrency is still named, which is ignored, as no number bounds a fleet's workers and admission alone decides each start: one this checkout keeps on the checkout list, as a `run --concurrency` said it, whose `fix` is `afkconvoy run <checkout> --concurrency default`, or one the repo's config names, whose `fix` is deleting the key; nothing is held up; the role or the team a stage in flight started under has moved since; and the repo's config declares no gate limit, so the gate has the default's {const:GATE_SECONDS} seconds before anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on this host is kept with no claim on its issue — said with what it holds that the remote does not (uncommitted changes, commits only it has, or nothing), and, where a settle kept it, the settle's recorded reason in `evidence`, naming where doctor now reads nothing held; its `fix` the line that removes it, pushing first whatever only it holds (all info). A checkout that names a harness no worker of this checkout starts on is said with the checkout, the harness and why — the role holds no limits for that harness, or the harness cannot start — and no other harness is started in its place.
+The findings: a command the fleet needs is missing or logged out; orca cannot be asked, or does not know the checkout; the worker launch command of a harness the fleet could be asked for cannot start a worker — said with the harness and what calls for it; no `run` is alive and claims are held; the fleet instance of this checkout is broken — with why, since when and when the host runner starts it again; the same step failed in each of the last three ticks; the team has a fault at its head; a fleet lock stands on an issue that cannot be worked (all critical) — a step failed and has not recovered, including a worker that failed to start, with its error and the line to try again; a claim has no worker; a worker is silent with its claim still at work, as the tick judges it — its `fix` the command the tick runs next for it; one silent for waiting on its own background work past the gate limit is said with how long it waited, the bound, and the command where the fleet knows it: a landing worker's own `afkconvoy land`, still asking for its turn; the frontier is not empty, admission held nothing back and the last tick started nobody; a flow label names no workflow of the team; an issue has been at a stage longer than the repo's p95 for completed performances of that stage, or, with fewer than 20, longer than its own earlier record gaps of at least a minute; an issue is one rework from a breaker; a patrol is failed or full; an issue has waited for a human for more than an hour, its `fix` being the line that answers it; the gate is slow — with the host, the fixed duration budget when declared, the termination gate limit and the {const:SLOW_GATE_LANDINGS} runs, each a commit and its seconds, as `afkconvoy plan` has them, and the issue open for it when there is one; the host runner did not move onto the newer release installed where it was started from — it did not start, does not say its version, or waited past the release move limit — with the file, both releases and why, its `fix` that file's `--version` (all warning) — a concurrency is still named, which is ignored, as no number bounds a fleet's workers and admission alone decides each start: one this checkout keeps on the checkout list, as a `run --concurrency` said it, whose `fix` is `afkconvoy run <checkout> --concurrency default`, or one the repo's config names, whose `fix` is deleting the key; nothing is held up; the role or the team a stage in flight started under has moved since; and the repo's config declares no gate limit, so the gate has the default's {const:GATE_SECONDS} seconds before anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on this host is kept with no claim on its issue — said with what it holds that the remote does not (uncommitted changes, commits only it has, or nothing), and, where a settle kept it, the settle's recorded reason in `evidence`, naming where doctor now reads nothing held; its `fix` the line that removes it, pushing first whatever only it holds (all info). A checkout that names a harness no worker of this checkout starts on is said with the checkout, the harness and why — the role holds no limits for that harness, or the harness cannot start — and no other harness is started in its place.
 
 Moved: the role's directory holds something else at the head of its repo than at the commit the stage started under — a file added, removed or changed. A new commit is not it: in a repo of several roles a push gives every role a new commit, and moves the ones whose directory it changed. The team has moved when its directory has, without what a worker is not given of it: the directories of its roles, and the .claude/ at its top. So a push that changes only a role moves no team, one that changes only the team's rules — the CLAUDE.md at its top, which every worker is given — moves the team, and one that changes a workflow moves no role. A role in a repo of its own moves with every push that changes a file there. The two are compared in the copies this host keeps (copies/ under the cache directory); where the one the stage started under is no longer there, a different commit is all there is to go by, and it is said to have moved. `evidence` gives both commits.
 
@@ -3333,6 +3335,7 @@ mod tests {
     use afkconvoy_core::worker::GRACE;
 
     use super::*;
+    use crate::judge::Waited;
     use crate::log::Cause;
 
     const NOW: u64 = 100_000;
@@ -3844,8 +3847,10 @@ mod tests {
     #[test]
     fn a_silent_worker_with_its_claim_at_work_names_what_the_tick_runs_next() {
         let mut state = state();
-        let silent =
-            |command, nudged, waited| Some(Silenced { command, nudged, waited, declared: false });
+        let silent = |command, nudged, waited: Option<u64>| {
+            let waited = waited.map(|seconds| Waited { seconds, limit: 3600, on: None });
+            Some(Silenced { command, nudged, waited, declared: false })
+        };
         let stopped = |quiet, silent| Held {
             worker: Some(WorkerState::Idle { quiet: Some(quiet) }),
             silent,
@@ -3871,6 +3876,27 @@ mod tests {
         let found = self::found(&host(), &run(vec![]), &state);
         assert_eq!(fixes(&found, "has been stopped for"), ["afkconvoy tick --instance alpha"]);
         assert!(found[0].evidence.contains("waited 2h 0m on background work"), "{found:?}");
+        assert!(found[0].evidence.contains("past the gate limit of 1h 0m"), "{found:?}");
+        // a landing worker's own `land`, still asking past it, is named
+        let landing = Waited { seconds: 7200, limit: 3600, on: Some("afkconvoy land") };
+        state.held = vec![Held {
+            silent: Some(Silenced {
+                command: "tick",
+                nudged: false,
+                waited: Some(landing),
+                declared: false,
+            }),
+            ..stopped(GRACE, None)
+        }];
+        let found = self::found(&host(), &run(vec![]), &state);
+        assert_eq!(fixes(&found, "has been stopped for"), ["afkconvoy tick --instance alpha"]);
+        assert!(
+            found[0].evidence.starts_with(
+                "it waited 2h 0m on background work of its own, `afkconvoy land`, past the gate \
+                 limit of 1h 0m"
+            ),
+            "{found:?}"
+        );
         // a worker the tick does not judge silent is none, however long it stopped
         state.held = vec![stopped(GRACE * 100, None)];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);

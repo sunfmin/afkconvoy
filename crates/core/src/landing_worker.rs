@@ -209,8 +209,9 @@ pub enum LandingRoute {
     Stalled(Silent),
 }
 
-/// Routes one claim whose PR is open and not landed, from its worker's
-/// state, its worktree's progress, the nudge this host recorded, the restart
+/// Routes one claim whose PR is open and not landed — nudge → restart →
+/// nudge → escalate, a wait on its own background work past the limit
+/// climbing the same rungs — from its worker's state, its worktree's progress, the nudge this host recorded, the restart
 /// the PR records, and when the worker was last handed its work — started,
 /// or restarted. What the worker stopped on — a merge conflict it is
 /// resolving, a gate it is fixing — changes nothing: the rungs are the same.
@@ -227,6 +228,11 @@ pub fn join_route(
         Silence::Lively => LandingRoute::Leave,
         Silence::Waiting(since) => LandingRoute::Waiting(since),
         Silence::Nudge(unnudged) => LandingRoute::Nudge(unnudged),
+        // Its wait on its own background work past the limit is its
+        // silence, and it is nudged first, as any silent landing worker is.
+        Silence::Stalled(silent) if let Some(unnudged) = silent.unnudged(nudged) => {
+            LandingRoute::Nudge(unnudged)
+        }
         Silence::Stalled(silent) => {
             let had = restarts(restarted);
             if had == 0 {
@@ -387,6 +393,28 @@ mod tests {
         let reason = stalled_reason(70, &silent, &Tail::of(&["Proceed? [y/n]".to_string()]));
         assert!(reason.contains("PR #70") && reason.contains("are kept"), "{reason}");
         assert!(reason.ends_with("```\nProceed? [y/n]\n```"), "{reason}");
+    }
+
+    /// sunfmin/control#1303: a landing worker waiting on its own background
+    /// work — its `land` still asking — past the limit climbs the same rungs,
+    /// from a nudge; inside the limit it only waits.
+    #[test]
+    fn a_wait_on_its_own_background_work_past_the_limit_climbs_the_ladder_from_a_nudge() {
+        let long_ago = NOW - GRACE;
+        let waited = |nudged, restarted, since| {
+            let background = Some(Background { since, limit: 3600 });
+            join_route(STOPPED, &work(), nudged, restarted, (restarted, background), NOW)
+        };
+        let past = NOW - 3600;
+        assert_eq!(waited(Nudged::Never, None, past + 1), LandingRoute::Waiting(past + 1));
+        assert!(matches!(waited(Nudged::Never, None, past), LandingRoute::Nudge(_)));
+        assert_eq!(waited(Nudged::At(long_ago + 1), None, past), LandingRoute::Leave);
+        assert!(matches!(waited(Nudged::At(long_ago), None, past), LandingRoute::Restart(_)));
+        assert!(matches!(waited(Nudged::Never, Some(long_ago), past), LandingRoute::Nudge(_)));
+        let LandingRoute::Stalled(silent) = waited(Nudged::At(long_ago), Some(1), past) else {
+            panic!("past its restart and second nudge it escalates")
+        };
+        assert_eq!(silent.waited, Some(3600));
     }
 
     #[test]

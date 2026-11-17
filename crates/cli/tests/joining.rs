@@ -1321,3 +1321,89 @@ fn a_landing_hold_keeps_a_workers_turn_and_gate_off_until_it_is_lifted() {
     assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
     assert!(notes.join("convoy-turn.log").exists(), "the held turn was not asked again");
 }
+
+/// sunfmin/control#1303: a landing worker whose own `land`, run in the
+/// background, still asks for its turn but has written no tick-log line past
+/// the gate limit is judged as any worker waiting on background work of its
+/// own: `doctor` names it, and the tick nudges it — never `watch: nothing`
+/// for ever. Inside the limit it only waits.
+#[test]
+fn a_landing_worker_waiting_on_its_own_land_past_the_gate_limit_is_judged_silent() {
+    let world = World::new();
+    let started = world.root.join("gate-started");
+    let release = world.root.join("release-gate");
+    let line = afkconvoy_core::line::Line::new()
+        .fixed("touch ")
+        .word(&started.to_string_lossy())
+        .fixed("; while test -d ")
+        .word(&world.root.to_string_lossy())
+        .fixed(" && test ! -f ")
+        .word(&release.to_string_lossy())
+        .fixed("; do sleep 0.02; done")
+        .own();
+    // the gate limit, 600 s, is the bound
+    world.set_gate(&line);
+    let world = joining_in(world);
+    let dir = worktree(&world);
+    let notes = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    let child = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &dir)
+        .args(["land", "--issue", "7"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let began = Instant::now();
+    while !started.exists() {
+        assert!(began.elapsed() < afkconvoy_patience::PATIENCE, "the landing gate did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let asking: Value =
+        serde_json::from_slice(&std::fs::read(notes.join("convoy-turn.json")).unwrap()).unwrap();
+    // its last tick-log line, on its issue, is when it was last heard from
+    let runs = world.cache().join("afkconvoy/runs");
+    let logs = std::fs::read_dir(&runs).unwrap().map(|entry| entry.unwrap().path());
+    let logs = logs.filter(|file| file.extension().is_some_and(|ext| ext == "jsonl"));
+    let lines: Vec<Value> = logs
+        .flat_map(|file| {
+            let text = std::fs::read_to_string(file).unwrap();
+            text.lines().map(|line| serde_json::from_str(line).unwrap()).collect::<Vec<Value>>()
+        })
+        .collect();
+    let heard = lines
+        .iter()
+        .filter(|line| line["command"] == "land" && line["on"] == "#7")
+        .filter_map(|line| line["at"].as_u64())
+        .fold(asking["at"].as_u64().unwrap(), u64::max);
+    let stopped = |findings: &Value| -> Vec<String> {
+        let findings = findings["findings"].as_array().unwrap();
+        let stopped = findings.iter().filter(|f| f["kind"] == "worker_stopped");
+        stopped.map(|f| f["evidence"].as_str().unwrap().to_string()).collect()
+    };
+    let doctor = |now: u64| world.afk(&["doctor", "--host", "h1", "--now", &now.to_string()]).json;
+
+    let within = doctor(heard + 599);
+    let within_tick = tick(&world, heard + 599);
+    let past = doctor(heard + 600);
+    let past_tick = tick(&world, heard + 600);
+    let still = notes.join("convoy-turn.json").exists();
+    std::fs::write(release, "").unwrap();
+    let finished = child.wait_with_output().unwrap();
+    assert!(finished.status.success(), "{}", String::from_utf8_lossy(&finished.stderr));
+
+    assert!(asking["asking"]["pid"].is_number(), "{asking}");
+    assert_eq!(stopped(&within), [] as [String; 0], "{within}");
+    assert!(did(&within_tick).contains(&"watch 7 nothing".to_string()), "{within_tick}");
+    let evidence = stopped(&past);
+    assert_eq!(evidence.len(), 1, "{past}");
+    assert!(
+        evidence[0].starts_with(
+            "it waited 10m on background work of its own, `afkconvoy land`, past the gate limit \
+             of 10m"
+        ),
+        "{evidence:?}"
+    );
+    assert_eq!(past_tick["errors"], json!([]), "{past_tick}");
+    assert!(did(&past_tick).contains(&"watch 7 nudged".to_string()), "{past_tick}");
+    assert!(still, "a nudge forgets no turn still being asked for");
+}

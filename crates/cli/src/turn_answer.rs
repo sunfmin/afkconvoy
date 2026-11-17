@@ -52,6 +52,10 @@ struct Note {
     /// Every dependency after a blocked answer, open or closed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dependencies: Option<Vec<Dependency>>,
+    /// The issue the turn is asked for: whose tick-log lines are the asking
+    /// process's sign of life (`asking_since`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issue: Option<u64>,
     at: u64,
 }
 
@@ -146,6 +150,7 @@ pub fn noted(
                 handoff: handoff.clone(),
                 answer: None,
                 dependencies: None,
+                issue,
                 at: now,
             },
         );
@@ -176,6 +181,7 @@ pub fn noted(
                 handoff,
                 answer: answer.as_ref().ok().cloned(),
                 dependencies,
+                issue,
                 at: crate::clock(),
             },
         );
@@ -242,8 +248,14 @@ pub(crate) fn handed(worktree: &Worktree) -> Result<Option<u64>> {
 }
 
 /// Ordinary starts and nudges forget a wait; a handoff remains until the
-/// worker asks for its next turn (or the operator gives different work).
+/// worker asks for its next turn (or the operator gives different work). A
+/// turn still being asked for is no wait to forget: its process lives, and
+/// the silence of the worker that waits on it is bounded by when it was last
+/// heard from (`asking_since`), across a nudge or a restart.
 pub(crate) fn forget_wait(worktree: &Worktree) -> Result<()> {
+    if matches!(read(worktree)?, Answered::Asking) {
+        return Ok(());
+    }
     if pending(worktree)?.is_none() && handed(worktree)?.is_none() {
         worktree.clear_turn()?;
     }
@@ -270,6 +282,48 @@ pub fn read(worktree: &Worktree) -> Result<Answered> {
         return Ok(if alive { Answered::Asking } else { Answered::Said("error".to_string()) });
     }
     Ok(note.outcome.map_or(Answered::Never, Answered::Said))
+}
+
+/// The command a landing worker runs in the background to ask for its turn,
+/// as `doctor` names it.
+pub const ASKING_COMMAND: &str = "afkconvoy land";
+
+/// Since when the turn being asked for in `worktree` was last heard from —
+/// its process started asking, or a tick-log line of `land` on its issue,
+/// or of the `exclusive` queue it runs its gates in, was written on this
+/// host since — while that process lives; `None` when no turn
+/// is being asked for. A worker waiting on it waits on background work of its
+/// own, bounded by the gate limit from then as any is (Silent worker).
+pub(crate) fn asking_since(worktree: &Worktree) -> Result<Option<u64>> {
+    if !matches!(read(worktree)?, Answered::Asking) {
+        return Ok(None);
+    }
+    let Some(note) = note(worktree)? else { return Ok(None) };
+    let Some(issue) = note.issue else { return Ok(Some(note.at)) };
+    let lines = crate::log::Log::of(&Repo::new(worktree.path.clone()))
+        .ok()
+        .and_then(|log| log.read())
+        .unwrap_or_default();
+    Ok(Some(last_heard(&lines, issue, &crate::this_host(), note.at)))
+}
+
+/// The commands whose tick-log lines on its issue are an asking turn heard
+/// from: `land` itself, and the queue it runs its gates in.
+const HEARD_FROM: [&str; 2] = ["land", "exclusive"];
+
+/// The latest of `asked` and the tick-log lines `host` wrote on `issue` of
+/// `land`, or of the `exclusive` queue its gates run in.
+fn last_heard(lines: &[crate::log::Entry], issue: u64, host: &str, asked: u64) -> u64 {
+    let on = format!("#{issue}");
+    lines
+        .iter()
+        .filter(|entry| entry.host == host)
+        .filter(|entry| {
+            matches!(&entry.what, crate::log::What::Command { command, on: Some(at), .. }
+                if HEARD_FROM.contains(&command.as_str()) && *at == on)
+        })
+        .map(|entry| entry.at)
+        .fold(asked, u64::max)
 }
 
 fn unchanged(note: &Note, current: &[BlockedBy]) -> bool {

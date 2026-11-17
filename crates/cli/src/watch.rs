@@ -96,7 +96,7 @@ pub(crate) struct Turn {
 
 /// The last turn of my landing claim on `issue`, where it answered what the
 /// tick handles before worker health can hold its harness: a turn still
-/// asking, an answer to hand to the worker, or a wait to ask again for
+/// asking and heard from within the gate limit, an answer to hand to the worker, or a wait to ask again for
 /// while its worker is not at work. `None` leaves the claim to the step's
 /// own look at its worker. Reads only.
 pub(crate) fn turn(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Turn>> {
@@ -108,6 +108,14 @@ pub(crate) fn turn(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Turn>> {
     };
     let answered = crate::turn_answer::read(&worktree)?;
     if answered == Answered::Asking {
+        // Unheard from past the gate limit, the worker waiting on it is
+        // judged as any waiting on background work of its own: the step's
+        // own look nudges it, then restarts or escalates it
+        // (sunfmin/control#1303).
+        let asking = crate::turn_answer::asking_since(&worktree)?;
+        if crate::judge::unheard_past(asking, fleet.config.gate_seconds(), fleet.now) {
+            return Ok(None);
+        }
         return Ok(Some(Turn { worktree, answered, handoff: None, reds: vec![] }));
     }
     // Red twice in a row: not handed back to the same worker in the same
