@@ -650,9 +650,19 @@ pub(super) fn note_layout(cwd: &str) -> SessionLayout {
     SessionLayout::Files { dir: format!("projects/{}", dir_name(cwd)), extension: "jsonl" }
 }
 
-/// `/Users/sunfmin/Developments/chessmirror` → `-Users-sunfmin-Developments-chessmirror`.
+/// The directory Claude Code files `cwd`'s sessions under: every character
+/// that is not an ASCII letter or digit turned into `-` (one per UTF-16 unit,
+/// as Claude Code's JavaScript replaces), so
+/// `/Users/felix/.guild/instances/x_y` → `-Users-felix--guild-instances-x-y`.
 fn dir_name(cwd: &str) -> String {
-    session::stored_name(cwd.replace('/', "-"), cwd)
+    let natural = cwd
+        .chars()
+        .flat_map(|ch| match ch.is_ascii_alphanumeric() {
+            true => std::iter::repeat_n(ch, 1),
+            false => std::iter::repeat_n('-', ch.len_utf16()),
+        })
+        .collect();
+    session::stored_name(natural, cwd)
 }
 
 /// The turn for `cwd`, or for the worker its initial brief pointer names
