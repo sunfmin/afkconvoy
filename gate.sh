@@ -225,9 +225,24 @@ run_tests() {
             fi
         fi
     fi
+    # Red only on TIMEOUTs, each of which alone on a quiet host is still past
+    # the line and is a test the change did not touch, is a green gate: the
+    # tests are named in an issue, not paid for by this change
+    # (sunfmin/control#1307).
+    untouched_only=
+    if [ "$tests_status" -ne 0 ] && [ "$1" = fast ] && only_timeouts "$test_log/output"; then
+        check_fast_timeouts "$test_log/output" || true
+        if [ -n "$untouched_only" ]; then
+            tests_status=0
+            rm -rf "$test_log"
+            return
+        fi
+    elif [ "$tests_status" -ne 0 ] && [ "$1" = fast ]; then
+        check_fast_timeouts "$test_log/output" || true
+    fi
     if [ "$tests_status" -ne 0 ]; then
         if [ "$1" = fast ]; then
-            check_fast_timeouts "$test_log/output" || true
+            :
         elif grep -q 'TIMEOUT' "$test_log/output"; then
             echo "gate: a test listed above as TIMEOUT ran too long: it was ended at the limit for one test, which .config/nextest.toml gives" >&2
         fi
@@ -262,6 +277,8 @@ check_fast_timeouts() {
     timeouts=$(awk '/(TIMEOUT|SLOW)[[:space:]]*\[/ { sub(/^.*(TIMEOUT|SLOW)[[:space:]]*\[[^]]*\][[:space:]]*/, ""); if (NF >= 2) print $1, $2 }' "$1" | sort -u)
     [ -n "$timeouts" ] || return 0
     : >"$1.past-the-line"
+    : >"$1.untouched"
+    untouched_only=
     cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
     load=$(host_load)
     if ! quiet_host "$load" "$cpus"; then
@@ -289,8 +306,13 @@ check_fast_timeouts() {
         elif grep -q 'TIMEOUT' "$check_log"; then
             after=$(host_load)
             if quiet_host "$after" "$cpus"; then
-                echo "gate: $binary $name was still TIMEOUT at 2s on a quiet host. Name it in .config/slow-tests as its binary and name, or make it fast." >&2
-                echo "$binary $name" >>"$1.past-the-line"
+                if change_touches "$name"; then
+                    echo "gate: $binary $name was still TIMEOUT at 2s on a quiet host. Name it in .config/slow-tests as its binary and name, or make it fast." >&2
+                    echo "$binary $name" >>"$1.past-the-line"
+                else
+                    echo "gate: $binary $name is past the 2s line and was not touched by this change" >&2
+                    echo "$binary $name" >>"$1.untouched"
+                fi
             else
                 echo "gate: host overloaded during the check (load ${after:-unknown}, CPUs $cpus); cannot classify $binary $name." >&2
             fi
@@ -302,7 +324,72 @@ check_fast_timeouts() {
     done
     past=$(cat "$1.past-the-line")
     rm -f "$1.past-the-line"
+    if [ -s "$1.untouched" ]; then
+        report_untouched "$1.untouched"
+        # Every test past the line was alone past it, and untouched.
+        [ "$(wc -l <"$1.untouched" | tr -d ' ')" = "$(printf '%s\n' "$timeouts" | wc -l | tr -d ' ')" ] &&
+            [ -z "$past" ] && untouched_only=yes
+    fi
+    rm -f "$1.untouched"
     [ -z "$past" ]
+}
+# The change under test is the diff from where the branch left the base
+# branch; for a candidate or a round, a merge commit, it is the diff from the
+# base tip it was merged onto, the merge's first parent (sunfmin/control#1307).
+# A test is touched when a line the diff adds or removes names it, or when a
+# hunk lies inside its function. Where the diff cannot be read, every test is
+# touched: the line fails, as it did before.
+change_base() {
+    if git rev-parse --verify --quiet HEAD^2 >/dev/null 2>&1; then
+        git rev-parse HEAD^1
+    else
+        git merge-base HEAD "origin/${AFKCONVOY_BASE_BRANCH:-main}" 2>/dev/null ||
+            git merge-base HEAD "${AFKCONVOY_BASE_BRANCH:-main}" 2>/dev/null
+    fi
+}
+change_touches() {
+    leaf=${1##*::}
+    if [ -z "${change_diff+x}" ]; then
+        change_diff=
+        change_diff_ok=
+        if base=$(change_base) && [ -n "$base" ]; then
+            attrs="$PWD/.afkconvoy-tmp/diff-attributes"
+            echo '*.rs diff=rustfn' >"$attrs"
+            if change_diff=$(git -c core.attributesFile="$attrs" \
+                -c 'diff.rustfn.xfuncname=^[[:space:]]*(pub[^[:space:]]*[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[A-Za-z0-9_]+' \
+                diff --no-ext-diff -U0 "$base" HEAD 2>/dev/null); then
+                change_diff_ok=yes
+            fi
+            rm -f "$attrs"
+        fi
+    fi
+    [ -n "$change_diff_ok" ] || return 0
+    printf '%s\n' "$change_diff" | grep -Eq "^([+-]|@@.*@@).*(^|[^A-Za-z0-9_])$leaf([^A-Za-z0-9_]|\$)"
+}
+# Each test past the line that the change did not touch is named in one open
+# issue, never a red: a second sighting adds to that issue and opens no other.
+# This is the path a slow gate takes (ADR-0024): the issue carries the ready
+# label, and the fleet works it. Where gh cannot reach the tracker the line
+# printed above is all there is, and the gate is not red for it.
+report_untouched() {
+    command -v gh >/dev/null 2>&1 || return 0
+    label=slow-test
+    found=$(gh issue list --state open --label "$label" --json number --jq '.[0].number // empty' 2>/dev/null) || return 0
+    if [ -z "$found" ]; then
+        gh label create "$label" --description "A test past the fast gate's 2s line" >/dev/null 2>&1 || true
+        body="Tests past the fast gate's 2s line, alone on a quiet host, that the change under test did not touch (sunfmin/control#1307). Move each to .config/slow-tests as its binary and name, or make it fast, then close this issue."
+        while read -r binary name; do
+            body="$body
+- \`$binary $name\`"
+        done <"$1"
+        gh issue create --title "Tests are past the fast gate's 2s line: move them to .config/slow-tests or make them fast" --label "$label" --label ready-for-agent --body "$body" >/dev/null 2>&1 || true
+        return 0
+    fi
+    text=$(gh issue view "$found" --json body,comments --jq '.body, (.comments[].body)' 2>/dev/null) || return 0
+    while read -r binary name; do
+        case "$text" in *"$binary $name"*) continue ;; esac
+        gh issue comment "$found" --body "Seen again past the 2s line, untouched by the change under test: \`$binary $name\`" >/dev/null 2>&1 || true
+    done <"$1"
 }
 if [ -z "$nextest" ] && [ -n "${1:-}" ]; then
     echo "gate: the fast gate and the slow gate are told apart by nextest's filter, and cargo-nextest is not installed: run ./gate.sh, the whole gate" >&2
