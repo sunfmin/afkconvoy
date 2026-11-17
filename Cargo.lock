@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "afkconvoy"
-version = "0.5.64"
+version = "0.6.2"
 dependencies = [
  "afkconvoy-core",
  "afkconvoy-daybook",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-core"
-version = "0.5.64"
+version = "0.6.2"
 dependencies = [
  "afkconvoy-gate",
  "afkconvoy-harness",
@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-daybook"
-version = "0.5.64"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "libc",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-gate"
-version = "0.5.64"
+version = "0.6.2"
 dependencies = [
  "afkconvoy-patience",
  "flux-alloc",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-harness"
-version = "0.5.64"
+version = "0.6.2"
 dependencies = [
  "flux-alloc",
  "flux-core",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-host-kit"
-version = "0.5.64"
+version = "0.6.2"
 dependencies = [
  "afkconvoy-harness",
  "anyhow",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-host-reading"
-version = "0.5.64"
+version = "0.6.2"
 dependencies = [
  "afkconvoy-gate",
  "libc",
@@ -111,14 +111,14 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-issues"
-version = "0.5.64"
+version = "0.6.2"
 dependencies = [
  "rusqlite",
 ]
 
 [[package]]
 name = "afkconvoy-landing"
-version = "0.5.64"
+version = "0.6.2"
 dependencies = [
  "afkconvoy-gate",
  "afkconvoy-patience",
@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "afkconvoy-patience"
-version = "0.5.64"
+version = "0.6.2"
 
 [[package]]
 name = "agent-help"
