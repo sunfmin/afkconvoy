@@ -25,7 +25,7 @@ So a host keeps its issues in a **local tracker**: one SQLite database on the ho
 
 `afkconvoy issue import --from <owner>/<tracker>` moves a GitHub tracker's open issues into this host's local tracker: those of the repos this host has a checkout of, claimed by this host or by no host. Each moved GitHub issue is closed with a comment naming its new name, so no other host takes it too, and an import run again moves nothing twice. An issue another host has claimed stays for that host's own import.
 
-A checkout says `--tracker local` to work its host's local tracker. A GitHub tracker stays readable until every host has moved its issues; then its adapter is removed.
+**The local tracker is the default.** A checkout that says no tracker, or says `--tracker local` or `--tracker default`, works its host's local tracker. One that works GitHub issues names its tracker, `--tracker <owner>/<repo>`, its own repo among them. A checkout entry kept before this said no tracker and meant its own repo: when the checkout list moves into the host database, such an entry is kept with its own repo named, so no host's fleet changes trackers by upgrading. A GitHub tracker stays readable until every host has moved its issues; then its adapter is removed.
 
 ## Considered options
 
