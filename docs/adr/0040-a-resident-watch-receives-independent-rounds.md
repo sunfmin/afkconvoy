@@ -8,7 +8,7 @@ Amended by ADR-0052 (sunfmin/control#417): human entries of recorded reports
 are asked in a separate resident asking session. The watch's own rounds and
 resident session are unchanged.
 
-Amends ADR-0030, ADR-0035, ADR-0038 and ADR-0039 for sunfmin/control#145.
+Amends ADR-0030, ADR-0035, ADR-0038 and ADR-0096 for sunfmin/control#145.
 Their rules that an active watch stops looks, a report ends the harness,
 and each later watch starts a new Agent no longer apply. Authority, guards,
 the four human decisions, resource episode recovery spans and harness
@@ -37,7 +37,7 @@ never types into a busy Agent. A healthy session remains after reporting.
 Standby without pending work sends no prompt and runs no model. Idle is not
 completion of an unreported round.
 
-The launch journal from ADR-0039 still fences creation and owns exactly one
+The launch journal from ADR-0096 still fences creation and owns exactly one
 executor. Its session identity is independent of round IDs. Before every
 round submission it persists a UUID request key, exact brief pointer and
 send intent. Orca's supported `terminal send --retry-request` replays that
@@ -46,7 +46,7 @@ proves the turn; the receipt and the Terminal's screen do not. An
 accepted send with no session turn stays unproven.
 Each round retains its delivery archive after the session advances. Unproven or unsupported delivery remains explicit and paused,
 never retried as fresh input. The journal's round intent wins over a stale
-progress snapshot after a crash. Creation ambiguity retains ADR-0039's
+progress snapshot after a crash. Creation ambiguity retains ADR-0096's
 pause and recovery instructions; no external Orca change is required.
 
 Exit, a proven quota/harness/context failure or an explicit directory reset

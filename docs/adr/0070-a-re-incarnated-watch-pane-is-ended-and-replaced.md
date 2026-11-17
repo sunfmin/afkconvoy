@@ -4,7 +4,7 @@ status: accepted
 
 # A re-incarnated watch pane is ended and replaced
 
-Amends ADR-0039 (sunfmin/control#807). ADR-0039 associates a watch
+Amends ADR-0096 (sunfmin/control#807). ADR-0096 associates a watch
 Terminal only when its saved public pane identity matches: both its
 `ptyId` and its `incarnationId`. When Orca restarts or restores the
 resident watch's pane, it keeps the `ptyId` and gives a new handle and a
@@ -26,4 +26,4 @@ starts a fresh watch for the work pending.
 This is not a repeated creation: the old creation was confirmed, its
 executor has ended before anything starts, and nothing is resent into the
 restored pane. A same-name pane with no saved identity, a changed
-`ptyId`, or several candidates still pause as ADR-0039 says.
+`ptyId`, or several candidates still pause as ADR-0096 says.

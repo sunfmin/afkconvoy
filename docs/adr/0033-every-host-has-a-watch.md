@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0036, ADR-0038, ADR-0053 and ADR-0073
+status: accepted, amended by ADR-0036, ADR-0038, ADR-0103 and ADR-0073
 ---
 
 # Every host has a watch

@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0017 and ADR-0043
+status: accepted, amended by ADR-0017 and ADR-0098
 ---
 
 # A worker starts in its role, with the issue's worktree added to it
@@ -10,7 +10,7 @@ The worker loads nothing of the host user's own configuration. A role's behaviou
 
 _Amended by ADR-0017:_ a worker is now given the host user's own skills and rules by default, beside its role's and below it, and never their settings, hooks or MCP servers. A team file that says `host_user: false` restores the guarantee above.
 
-_Amended by ADR-0043:_ a Grok worker starts in the issue's worktree. Grok 1.0.60 and later reject an added directory, and a session works only in its cwd. The role's rules are told, and its skills are named, from the home the fleet keeps for that worker.
+_Amended by ADR-0098:_ a Grok worker starts in the issue's worktree. Grok 1.0.60 and later reject an added directory, and a session works only in its cwd. The role's rules are told, and its skills are named, from the home the fleet keeps for that worker.
 
 ## Consequences
 

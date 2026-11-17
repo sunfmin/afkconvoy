@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0035, ADR-0072, ADR-0084 and ADR-0088
+status: accepted, amended by ADR-0035, ADR-0107, ADR-0084 and ADR-0088
 ---
 
 # A hot worker is inspected, and a heavy command queues
@@ -54,7 +54,7 @@ This amends ADR-0034's FIFO rule for cuts. Doctor and the panel show the same or
 
 ## Admission, and priority
 
-- **Admission.** A tick starts no new worker while the host is past a share of its load with its cores more than 90% busy (ADR-0084), below its share of memory free, or low on free disk; each start is admitted by a reading of its own (ADR-0072). The issue stays on the frontier for the next tick. Workers already running are left alone.
+- **Admission.** A tick starts no new worker while the host is past a share of its load with its cores more than 90% busy (ADR-0084), below its share of memory free, or low on free disk; each start is admitted by a reading of its own (ADR-0107). The issue stays on the frontier for the next tick. Workers already running are left alone.
 - **Priority.** Every worker is started under `nice`. It runs as fast as before on a host with nothing else to do, and gives way to the human and to the fleet's own gate when the host is busy.
 
 ## Admission holding back calls for the host's watch

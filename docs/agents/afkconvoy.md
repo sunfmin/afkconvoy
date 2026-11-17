@@ -64,7 +64,7 @@ Apple's shim, twelve tests at a time, it took 665 seconds there
 
 How many claims are at work at once is no key here, nor anywhere: admission
 alone decides each start, by what the host and its accounts can carry now
-(`docs/adr/0072`).
+(`docs/adr/0107`).
 
 This repo names no `team`, so it is unbound. A bound repo's three keys more —
 `team`, `patrols`, `intake_limit` — are in `afkconvoy config --help`.

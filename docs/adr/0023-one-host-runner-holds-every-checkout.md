@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0032 and ADR-0074
+status: accepted, amended by ADR-0032 and ADR-0109
 ---
 
 # One host runner holds every checkout of its host
@@ -28,7 +28,7 @@ A fleet instance is still one repo's fleet — its own id, claims, heartbeat, ti
 
 - **One process that is one fleet instance across repos.** One id and one concurrency for every repo would undo the per-repo claims and takeover of ADR-0003 for nothing.
 - **The first `run` becomes the host runner in the foreground.** Every repo would stop with whichever terminal happened to start first.
-- **launchd.** Starts at login and restarts on a crash, but is a larger step. A keeper starts the host runner again instead (ADR-0074).
+- **launchd.** Starts at login and restarts on a crash, but is a larger step. A keeper starts the host runner again instead (ADR-0109).
 - **The checkout list in memory only.** Every upgrade would have every checkout added again by hand.
 
 ## Consequences

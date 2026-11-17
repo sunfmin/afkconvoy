@@ -6,7 +6,7 @@ status: accepted
 
 Amends ADR-0027. Decided by Felix, control session 2026-11-17.
 
-Every issue of every fleet was a GitHub issue, and every claim comment, stage record, verdict, work account, label and blocker was read and written through GitHub's API. Those reads are what spend the login's hourly quota (ADR-0079), each is a round trip, and none of it works while GitHub cannot be reached. Yet no host needs another host's issues: a host works the issues it opened, and two hosts that work one repo meet only in that repo's git — its claims, branches, PRs and base branch.
+Every issue of every fleet was a GitHub issue, and every claim comment, stage record, verdict, work account, label and blocker was read and written through GitHub's API. Those reads are what spend the login's hourly quota (ADR-0111), each is a round trip, and none of it works while GitHub cannot be reached. Yet no host needs another host's issues: a host works the issues it opened, and two hosts that work one repo meet only in that repo's git — its claims, branches, PRs and base branch.
 
 So a host keeps its issues in a **local tracker**: one SQLite database on the host, which every fleet, worker, watch and human on that host reads and writes through `afkconvoy issue`. An issue opened on a host is worked by that host's fleets alone. Nothing is sent from one host's tracker to another's.
 

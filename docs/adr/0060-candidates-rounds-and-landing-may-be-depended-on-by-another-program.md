@@ -4,7 +4,7 @@ status: accepted
 
 # Candidates, rounds and landing may be depended on by another program, with the forge behind an interface
 
-_See ADR-0090:_ afkconvoy keeps its chain in the host's database and no longer on the remote; the crate's `turn::publication` is what a publication updates without a chain record, and `turn::updates` is kept for a program that records its chain on the remote.
+_See ADR-0117:_ afkconvoy keeps its chain in the host's database and no longer on the remote; the crate's `turn::publication` is what a publication updates without a chain record, and `turn::updates` is kept for a program that records its chain on the remote.
 
 Amends ADR-0024, ADR-0048 and ADR-0059 (sunfmin/control#696).
 

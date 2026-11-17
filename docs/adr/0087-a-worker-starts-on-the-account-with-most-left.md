@@ -30,7 +30,7 @@ Running workers are never stopped for it. With no account of a harness left,
 admission holds that harness's next worker (`Hold::Accounts`); it calls no
 watch, since nothing on the host gives an account's use back before its
 window resets, and `doctor` says it once, of the host, not once per issue
-(ADR-0079). A quota a worker on an account meets rests that account, not its
+(ADR-0111). A quota a worker on an account meets rests that account, not its
 harness: the harness on another account still takes work.
 
 ## What the host heard of each account is kept in one book
@@ -43,7 +43,7 @@ at 92% is still known to be so once its worker has ended.
 
 ## Only a Claude Code account is handed to a worker yet
 
-_Amended by ADR-0088: a Codex, Grok or Kimi Code worker on an account starts in a kept home of that account, which links its login._
+_Amended by ADR-0112: a Codex, Grok or Kimi Code worker on an account starts in a kept home of that account, which links its login._
 
 A Claude Code session is given its account's token as
 `CLAUDE_CODE_OAUTH_TOKEN`, which Claude Code takes before the login kept in

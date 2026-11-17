@@ -4,7 +4,7 @@ status: accepted
 
 # A host caps afkconvoy's own share
 
-Amends ADR-0019 and ADR-0072 (sunfmin/control#896).
+Amends ADR-0019 and ADR-0107 (sunfmin/control#896).
 
 On 2026-11-14 the Guild Hub, Studio64, refused Guild's tasks: its CPU would
 be 92–101% busy, over Guild's 85%. The load was mostly afkconvoy's own: the

@@ -4,7 +4,7 @@ status: accepted
 
 # A turn lands its PR on its target branch
 
-_Amended by ADR-0090:_ the candidate chain is the host's own, in its database, not a ref of the remote; a turn no longer cancels another host's candidates through it, nor judges another host dead by a lease for the chain. Publication stays one atomic push of the base and the source heads, and it still requires the base to be exactly the expected predecessor, so two hosts can never land an untested commit; one whose push is refused builds its round again on the new tip.
+_Amended by ADR-0117:_ the candidate chain is the host's own, in its database, not a ref of the remote; a turn no longer cancels another host's candidates through it, nor judges another host dead by a lease for the chain. Publication stays one atomic push of the base and the source heads, and it still requires the base to be exactly the expected predecessor, so two hosts can never land an untested commit; one whose push is refused builds its round again on the new tip.
 
 A turn makes the PR's merge commit on the current target tip, gates that commit, records green, and pushes that same commit to the target branch as a fast-forward. Nothing is joined after the turn: a second step would add no verification after a recorded turn, and would need another worker and a separate lane.
 

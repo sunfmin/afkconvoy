@@ -4,7 +4,7 @@ status: accepted
 
 # The disk is held to what its builds take
 
-Amends ADR-0019 and ADR-0072 (sunfmin/control#1126).
+Amends ADR-0019 and ADR-0107 (sunfmin/control#1126).
 
 On 2026-11-15 Studio64's 460 GB data volume went from about 95 GB free to 0 twice in twenty minutes, while 23 worktrees ran cargo, rustc or flux at once: workers' own builds, fast gates, candidate turns and a slow gate. Each time ENOSPC broke what was running — landing turns' cleanup, `tell` steps, a fleet instance's tick log, the host runner itself. Admission held new workers back under 1% free (4.9 GB), which is past the point of no return: what is already building is not held back by anything, and the exclusive queue went on granting gates and turns on a 2 GB disk.
 
@@ -12,7 +12,7 @@ On 2026-11-15 Studio64's 460 GB data volume went from about 95 GB free to 0 twic
 
 The disk is held to a **disk floor** measured from the host's builds, not a fixed share: the largest fresh build on record in the worktrees of the checkouts on the list, times what may build at once — the queue's worker, fast and slow lanes, and the worktrees a worker was started in. It is never under the share the host says or its default (1%), and never over a quarter of the disk, so a host whose builds would ask more still builds one at a time as space returns. A host that says its own share (`--admit-disk`) holds to that alone: the operator's word stands, `--admit-disk 0` among it.
 
-The one floor holds both new work and heavy commands. Admission starts no worker under it (ADR-0072). The host runner, which holds the exclusive queue (ADR-0023), reads the disk every ten seconds; under the floor it grants no new command — gate, turn, candidate, cut build — until space returns, and running commands keep their lanes. The queue crate stays free of fleet concepts (ADR-0059): its embedder says the disk is low through `Host::disk`, with the bytes free and the floor, and every waiting request shows a `disk` reason.
+The one floor holds both new work and heavy commands. Admission starts no worker under it (ADR-0107). The host runner, which holds the exclusive queue (ADR-0023), reads the disk every ten seconds; under the floor it grants no new command — gate, turn, candidate, cut build — until space returns, and running commands keep their lanes. The queue crate stays free of fleet concepts (ADR-0059): its embedder says the disk is low through `Host::disk`, with the bytes free and the floor, and every waiting request shows a `disk` reason.
 
 Rebuildable space is reclaimed before anything is refused. Under the floor, the host runner reclaims the `target/` of each worktree no one builds in — those whose worker's processes ended first, then those nothing wrote for six hours — and only then holds. A `target/` an exclusive command runs in, or written in the last ten minutes, is never reclaimed. It is set aside into the trash beside the worktree, never inside it where git would see it, and deleted by a detached child (sunfmin/control#987).
 

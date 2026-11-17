@@ -4,7 +4,7 @@ status: accepted
 
 # Admission holds a repo whose candidate chain cannot keep up
 
-Amends ADR-0072 (sunfmin/control#914).
+Amends ADR-0107 (sunfmin/control#914).
 
 On 2026-11-14 the guild fleet on Studio64 had 24 workers at work on one
 repo: admission decides each start by what the host and its accounts can
@@ -47,5 +47,5 @@ here name them. A PR's diff is not read: that is a call per PR at every
 tick, and the issue that a PR closes names its files already. An issue that
 names none overlaps nothing.
 
-No number bounds a fleet still (ADR-0072): the chain's own answers decide
+No number bounds a fleet still (ADR-0107): the chain's own answers decide
 when a repo has enough workers, and that changes with the work.

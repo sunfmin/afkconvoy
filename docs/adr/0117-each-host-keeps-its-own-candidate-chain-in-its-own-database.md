@@ -5,7 +5,7 @@ status: accepted
 # Each host keeps its own candidate chain, in its own database; only publication touches the remote
 
 sunfmin/control#1321. Amends ADR-0037 (the chain on the remote, cancelling
-another host's candidates), ADR-0083 (a round across hosts) and ADR-0079 (the
+another host's candidates), ADR-0083 (a round across hosts) and ADR-0111 (the
 shared chain reading of #1321 is gone, its lock reading kept). Linked from
 ADR-0060, since the landing crate changes.
 
