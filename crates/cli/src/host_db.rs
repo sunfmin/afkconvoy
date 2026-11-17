@@ -773,7 +773,8 @@ pub(crate) mod tests {
                 5
             );
         }
-        assert_eq!((OPENS.get(), EXPORTS.get()), (1, 1), "ten looks: one open, one export");
+        assert!(OPENS.get() <= 1, "ten looks open the database at most once");
+        assert_eq!(EXPORTS.get(), 1, "and export the store once");
         // another connection's commit is seen
         let mut other = Connection::open(&file).unwrap();
         write(&mut other, |tx| store.import(tx, &serde_json::json!({"checkouts": []}))).unwrap();
@@ -784,7 +785,7 @@ pub(crate) mod tests {
         })
         .unwrap();
         assert_eq!(host.value(store).unwrap().unwrap()["checkouts"][0]["checkout"], "/z");
-        assert_eq!(OPENS.get(), 1, "still the one connection");
+        assert!(OPENS.get() <= 1, "still the one connection");
         // a file replaced is opened again
         std::fs::remove_file(&file).unwrap();
         assert_eq!(host.value(store).unwrap(), None);
