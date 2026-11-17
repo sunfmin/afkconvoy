@@ -650,9 +650,19 @@ pub(super) fn note_layout(cwd: &str) -> SessionLayout {
     SessionLayout::Files { dir: format!("projects/{}", dir_name(cwd)), extension: "jsonl" }
 }
 
-/// `/Users/sunfmin/Developments/chessmirror` → `-Users-sunfmin-Developments-chessmirror`.
+/// The directory Claude Code files `cwd`'s sessions under: every character
+/// that is not an ASCII letter or digit turned into `-` (one per UTF-16 unit,
+/// as Claude Code's JavaScript replaces), so
+/// `/Users/felix/.guild/instances/x_y` → `-Users-felix--guild-instances-x-y`.
 fn dir_name(cwd: &str) -> String {
-    session::stored_name(cwd.replace('/', "-"), cwd)
+    let natural = cwd
+        .chars()
+        .flat_map(|ch| match ch.is_ascii_alphanumeric() {
+            true => std::iter::repeat_n(ch, 1),
+            false => std::iter::repeat_n('-', ch.len_utf16()),
+        })
+        .collect();
+    session::stored_name(natural, cwd)
 }
 
 /// The turn for `cwd`, or for the worker its initial brief pointer names
@@ -942,6 +952,20 @@ pub(super) fn said(value: &serde_json::Value) -> Vec<Said> {
 /// stdin, whose `rate_limits` [`windows`] reads.
 pub(super) const STATUS_LINE: StatusLine =
     StatusLine { settings: USER_HOOKS.settings, key: "statusLine" };
+
+/// How Claude Code is asked for its account's windows now. Its account usage
+/// (`/api/oauth/usage`) answers only a login with the `user:profile` scope,
+/// which a `claude setup-token` token lacks: Claude Code 2.1.326 itself reads
+/// such a token's windows from a one-token "quota" request. Its smallest such
+/// request a person can make is one turn on its smallest model, with no
+/// tools, settings, servers or kept session, whose stream says the windows
+/// in its `rate_limit_event` (recorded on this host: 3 s, under $0.0002).
+pub(super) const WINDOWS_QUESTION: super::WindowsQuestion = super::WindowsQuestion {
+    line: "claude -p --model haiku --output-format stream-json --verbose --tools '' \
+           --strict-mcp-config --no-session-persistence --setting-sources '' \
+           --system-prompt 'Answer with one word.' quota",
+    spends_turn: true,
+};
 
 /// The windows one record of Claude Code's says: the `rate_limits` of the
 /// input it hands its status line (`used_percentage`, `resets_at`), or the

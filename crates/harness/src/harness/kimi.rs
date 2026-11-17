@@ -670,6 +670,18 @@ pub(super) fn usage(value: &Json, _line: usize) -> Option<Usage> {
     })
 }
 
+/// How Kimi Code is asked for its account's windows now: what its `/usage`
+/// asks (`@moonshot-ai/kimi-code` 2.5.3, `fetchManagedUsage`), its base
+/// URL's `/usages` with the access token of its login, read from the home
+/// it is pointed at (`credentials/kimi-code.json`) and handed to curl on
+/// stdin. It spends no turn, and refreshes no token: Kimi Code offers no
+/// command that does without a session, so an access token that has expired
+/// since its last session is refused, and the answer says no window.
+pub(super) const WINDOWS_QUESTION: super::WindowsQuestion = super::WindowsQuestion {
+    line: r#"sed -n 's/^ *"access_token": *"\([^"]*\)".*/Authorization: Bearer \1/p' "${KIMI_CODE_HOME:-$HOME/.kimi-code}/credentials/kimi-code.json" | curl -fsS -m 20 -H @- -H 'Accept: application/json' "${KIMI_CODE_BASE_URL:-https://api.kimi.com/coding/v1}/usages""#,
+    spends_turn: false,
+};
+
 /// The windows Kimi Code's answer to its `/usage` says. Its session keeps
 /// none: `/usage` asks `<base url>/usages` with the account's token, and the
 /// answer's `usages` hold each window under Kimi's own name (`limit_5h`,

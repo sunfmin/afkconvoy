@@ -42,6 +42,26 @@ rejected for the original reason: a moving baseline follows slow gates upward.
 The declaration for afkconvoy itself and its evidence are in
 `docs/agents/afkconvoy.md` and `docs/gate-baseline.md`.
 
+## A test past the fast gate's 2s line that the change did not touch is a warning and an issue (sunfmin/control#1307)
+
+The fast gate's 2s line (`gate.sh`, `check_fast_timeouts`) is treated as the
+gate's total time is treated above. A test still past the line alone on a quiet
+host that the change under test adds or modifies fails the gate, naming
+`.config/slow-tests`. One the change did not touch does not: the gate prints it
+on a line of its own, past the line and not touched by this change, and is green.
+"The change" is the diff from where the branch left the base branch, or, for a
+candidate or a round, from the base tip it was merged onto (the merge's first
+parent). A test is touched when a changed line names it or a hunk lies in its
+function; where the diff cannot be read, every test is touched.
+
+Such a test is not lost. The gate names it in the one open issue labelled
+`slow-test`, carrying the ready label, and a second sighting adds a comment to
+that issue and opens no other. The gate does this itself with `gh`, as a repo's
+own script: the line is a fact of one test run, not of the recorded gate runs
+the fleet reads for a slow gate, and keeping the fleet ignorant of the gate's
+steps is ADR-0004's. Where `gh` cannot reach the tracker the printed line is
+all there is, and the gate is not red for it.
+
 ## Original decision
 
 The gate was given an hour by a flag nobody set, and a green run kept no time. So when one function of the core took Flux nine minutes instead of fifteen seconds, every run was green and nothing said so: the gate could grow to an hour before anything refused it.

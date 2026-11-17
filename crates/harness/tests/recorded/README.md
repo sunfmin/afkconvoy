@@ -31,6 +31,17 @@ spells it.
   asks `<base url>/usages` (`https://api.kimi.com/coding/v1/usages`) with the
   account's token. The sample takes the fields Kimi Code 2.5.3 parses
   (`parseQuotaUsages`): no Kimi account is on this host to record one.
+- `claude-code-windows-question.jsonl`: what `Harness::windows_question`'s
+  Claude Code line printed on this host on 2026-11-17 (Claude Code 2.1.326,
+  a `setup-token` account), less its `init` line and its thinking message;
+  ids and paths are neutral ones. Its `rate_limit_event` holds both windows.
+- `codex-rate-limits-read.jsonl`: what Codex's app server prints for
+  `Harness::windows_question`'s Codex line. No Codex account is on this
+  host: the first two lines are codex-cli 0.169.0's own, recorded here with
+  neutral names and paths; the answer to request 1 takes the fields of its
+  generated schema (`codex app-server generate-json-schema`,
+  `GetAccountRateLimitsResponse`). `codex-rate-limits-logged-out.jsonl` is
+  the answer it printed here for a home with no login.
 - `claude-code-hooks.jsonl`: the hook payloads Claude Code 2.1.322 handed one
   command registered at every event of `Harness::status_events`, recorded on
   this host on 2026-11-12 from four sessions: an interactive one in tmux (a

@@ -314,6 +314,23 @@ pub struct Login {
     pub line: &'static str,
 }
 
+/// How a harness's engine is asked for its account's usage windows now,
+/// outside any session (`Harness::windows_question`): whoever asks runs
+/// `line` and reads what it printed with `Harness::windows_answer`. Nothing
+/// in this crate runs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsQuestion {
+    /// The shell line that asks, run in the environment a session on the
+    /// account starts with (`account::Account::session`): a Claude Code
+    /// token, or the home a refreshing login is kept in. It puts no
+    /// credential on a command line. It ends once it has its answer.
+    pub line: &'static str,
+    /// Whether asking spends a model turn: where the engine offers its
+    /// account no usage query, the windows come back with the smallest turn
+    /// it takes.
+    pub spends_turn: bool,
+}
+
 /// The directory a harness reads its user configuration from — its login,
 /// settings, skills and rules — and the variable that points it at another
 /// (`Harness::config_dir`).
@@ -483,6 +500,41 @@ impl Harness {
         match self {
             Harness::ClaudeCode | Harness::Codex | Harness::Kimi => true,
             Harness::Pi | Harness::Dsh | Harness::Grok => false,
+        }
+    }
+
+    /// How its engine is asked for its account's usage windows now, without
+    /// a run (sunfmin/control#1299): Codex's app server reads its account's
+    /// rate limits and Kimi Code asks its `/usages` as its `/usage` does,
+    /// neither spending a turn; Claude Code offers a token's account no usage
+    /// query, so a one-word turn on its smallest model brings its stream's
+    /// `rate_limit_event`. `None`: a harness whose engine reports no window
+    /// ([`Harness::reports_windows`]).
+    pub const fn windows_question(self) -> Option<WindowsQuestion> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::WINDOWS_QUESTION),
+            Harness::Codex => Some(codex::WINDOWS_QUESTION),
+            Harness::Kimi => Some(kimi::WINDOWS_QUESTION),
+            Harness::Pi | Harness::Dsh | Harness::Grok => None,
+        }
+    }
+
+    /// The usage windows what its [`WindowsQuestion::line`] printed says,
+    /// each with when it resets. An answer that says none — an error, a
+    /// login refused, nothing printed — gives none: no window is predicted.
+    pub fn windows_answer(self, printed: &str) -> Vec<crate::window::Window> {
+        match self {
+            Harness::ClaudeCode => printed
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .map(|record| claude_code::windows(&record))
+                .find(|windows| !windows.is_empty())
+                .unwrap_or_default(),
+            Harness::Codex => codex::windows_answer(printed),
+            Harness::Kimi => serde_json::from_str::<serde_json::Value>(printed)
+                .map(|answer| kimi::windows(&answer))
+                .unwrap_or_default(),
+            Harness::Pi | Harness::Dsh | Harness::Grok => Vec::new(),
         }
     }
 
@@ -2195,6 +2247,19 @@ mod tests {
             }
             assert_eq!(harness.noted_home(), None, "{}", harness.key());
         }
+    }
+
+    #[test]
+    fn claude_code_names_its_project_directory_with_every_punctuation_as_a_dash() {
+        let place = |cwd: &str| match Harness::ClaudeCode.note_place(cwd).layout {
+            SessionLayout::Files { dir, .. } => dir,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            place("/Users/felix/.guild/instances/x_y"),
+            "projects/-Users-felix--guild-instances-x-y"
+        );
+        assert_eq!(place("/a b/c@d+e~f/é"), "projects/-a-b-c-d-e-f--");
     }
 
     #[test]
