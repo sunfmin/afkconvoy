@@ -94,6 +94,27 @@ pub struct View {
     pub blockers: Vec<Blocker>,
 }
 
+/// An issue another tracker held first, as `Store::import` keeps it. Times
+/// are epoch seconds, as that tracker says them.
+#[derive(Debug, Clone, Copy)]
+pub struct Import<'a> {
+    /// Where it was: what names it in the other tracker, `<owner>/<repo>#<n>`.
+    /// The database holds one issue of each source, at most.
+    pub source: &'a str,
+    /// The repo it is of, `<owner>/<repo>`.
+    pub repo: &'a str,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub labels: &'a [&'a str],
+    pub created: u64,
+    /// When its body was last edited, where it ever was.
+    pub body_edited: Option<u64>,
+    /// Each comment's body and when it was written, oldest first.
+    pub comments: &'a [(&'a str, u64)],
+    /// The numbers of the issues here it is blocked by.
+    pub blockers: &'a [u64],
+}
+
 /// Which issues a listing holds: each it names, or every one where it names
 /// none.
 #[derive(Debug, Clone, Copy, Default)]
@@ -123,6 +144,66 @@ impl Store {
         db.pragma_update(None, "foreign_keys", true)?;
         migrate(&mut db, MIGRATIONS)?;
         Ok(Store { db })
+    }
+
+    /// Keeps `moved`, an issue another tracker held first, as it was there,
+    /// at `at` → its number: the one already kept of its source, untouched,
+    /// where there is one, so that a move run again keeps no second copy.
+    /// It is kept whole or not at all — its labels, comments and blockers
+    /// with it, in one write. Every blocker must be an issue here already.
+    /// It was opened, and each comment written, when the other tracker
+    /// says; its labels were put on, and it last changed, at `at`.
+    pub fn import(&mut self, moved: &Import<'_>, at: u64) -> Result<u64> {
+        if !named_repo(moved.repo) {
+            return Err(Error::BadRepo(moved.repo.to_string()));
+        }
+        let tx = self.write()?;
+        if let Some(number) = kept_from(&tx, moved.source)? {
+            return Ok(number);
+        }
+        for blocker in moved.blockers {
+            exists(&tx, *blocker)?;
+        }
+        tx.execute(
+            "INSERT INTO issues (repo, title, body, created, updated, body_edited, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                moved.repo,
+                moved.title,
+                moved.body,
+                moved.created,
+                at.max(moved.created),
+                moved.body_edited,
+                moved.source
+            ],
+        )?;
+        let number = tx.last_insert_rowid() as u64;
+        for label in moved.labels {
+            tx.execute(
+                "INSERT OR IGNORE INTO labels (issue, name, added) VALUES (?1, ?2, ?3)",
+                params![number, label, at],
+            )?;
+        }
+        for (body, created) in moved.comments {
+            tx.execute(
+                "INSERT INTO comments (issue, body, created) VALUES (?1, ?2, ?3)",
+                params![number, body, created],
+            )?;
+        }
+        for blocker in moved.blockers {
+            tx.execute(
+                "INSERT OR IGNORE INTO blockers (issue, blocker) VALUES (?1, ?2)",
+                params![number, blocker],
+            )?;
+        }
+        tx.commit()?;
+        Ok(number)
+    }
+
+    /// The issue kept of `source` (`import`), where one is.
+    pub fn imported(&mut self, source: &str) -> Result<Option<u64>> {
+        let tx = self.db.transaction()?;
+        kept_from(&tx, source)
     }
 
     /// Opens an issue of `repo`, `<owner>/<repo>`, at `at` → its number.
@@ -395,6 +476,14 @@ fn exists(tx: &Transaction<'_>, number: u64) -> Result<()> {
     let found =
         tx.query_row("SELECT 1 FROM issues WHERE number = ?1", [number], |_| Ok(())).optional()?;
     found.ok_or(Error::NoSuchIssue(number))
+}
+
+/// The issue kept of `source` (`Store::import`), where one is.
+fn kept_from(tx: &Transaction<'_>, source: &str) -> Result<Option<u64>> {
+    let number = tx
+        .query_row("SELECT number FROM issues WHERE source = ?1", [source], |row| row.get(0))
+        .optional()?;
+    Ok(number)
 }
 
 /// Records issue `number` as changed at `at`: `NoSuchIssue` where there is

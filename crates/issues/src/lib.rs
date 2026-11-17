@@ -13,6 +13,11 @@
 //! same way across every issue. A blocker is an edge between two issues of
 //! the one database, and no edge is written that would make a cycle.
 //!
+//! An issue moved here from another tracker (`Store::import`) keeps the
+//! times that tracker gave it and its comments, and names where it was: the
+//! database keeps one issue of each such source, so a move run again keeps
+//! no second copy.
+//!
 //! No clock is read: each write is told when it is made, in epoch seconds.
 //! What the crate holds is text, labels and edges alone; what a comment or a
 //! label means is its caller's.
@@ -22,4 +27,4 @@ mod schema;
 mod store;
 
 pub use error::{Error, Result};
-pub use store::{Blocker, Comment, Filter, Issue, State, Store, View, Which};
+pub use store::{Blocker, Comment, Filter, Import, Issue, State, Store, View, Which};

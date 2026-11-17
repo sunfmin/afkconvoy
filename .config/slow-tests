@@ -1224,3 +1224,8 @@ afkconvoy::cli local_tracker::an_issue_opened_locally_is_claimed_worked_landed_a
 # Local tracker: 92 and 46 processes in the fast gate (plans and targets of a world), past its bound.
 afkconvoy::cli local_tracker::an_issue_is_held_back_while_one_it_is_blocked_by_is_open
 afkconvoy::cli local_tracker::a_comment_the_fleet_writes_is_read_back_from_the_local_tracker
+# Issue import (docs/adr/0091): 39–66 processes in the fast gate (claims pushed, imports run twice), past its bound.
+afkconvoy::cli issue_import::an_import_run_again_moves_nothing_twice
+afkconvoy::cli issue_import::an_import_moves_unclaimed_and_own_lapsed_issues_whole_and_closes_them_on_github
+afkconvoy::cli issue_import::a_dry_run_says_what_would_move_and_what_stays_and_changes_nothing
+afkconvoy::cli issue_import::an_import_cut_short_after_keeping_an_issue_converges_without_a_second_copy

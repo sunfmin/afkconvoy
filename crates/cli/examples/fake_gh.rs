@@ -857,14 +857,20 @@ fn api(st: &mut State) -> ! {
         }
         ["issues", number] if method == "PATCH" => {
             let state = st.argv.iter().find_map(|a| a.strip_prefix("state=")).map(str::to_string);
+            // GitHub's reason, as a close says it: completed where it says none.
+            let reason =
+                st.argv.iter().find_map(|a| a.strip_prefix("state_reason=")).map(str::to_string);
             let number: u64 = number.parse().unwrap();
             let rows = st.doc["issues"].as_array_mut().unwrap();
             let Some(issue) = rows.iter_mut().find(|issue| issue["number"] == number) else {
                 st.finish("", 1, "gh: Not Found (HTTP 404)\n")
             };
             if let Some(state) = state {
-                issue["state_reason"] =
-                    if state == "closed" { json!("completed") } else { Value::Null };
+                issue["state_reason"] = if state == "closed" {
+                    json!(reason.as_deref().unwrap_or("completed"))
+                } else {
+                    Value::Null
+                };
                 issue["state"] = json!(state);
             }
             st.finish("", 0, "")
