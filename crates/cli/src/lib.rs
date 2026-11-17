@@ -1734,7 +1734,6 @@ pub fn manual() -> agent_help::Help {
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("NOTIFY_SECONDS", watch_notify::SECONDS)
         .constant("NOTIFY_FAILURES", watch_notify::FAILURES)
-        .constant("DAYBOOK_RETRY_MAX", watch_daybook::RETRY_MAX)
         .constant("WATCH_EVERY", host_settings::WATCH_EVERY)
         .constant("WATCH_TITLE", watch_terminal::TITLE)
         .constant("WATCH_CHECKOUT", host_watch::CHECKOUT)

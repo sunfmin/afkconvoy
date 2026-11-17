@@ -188,7 +188,6 @@ kinds! {
     WatchUnavailable: Critical, "no harness can start this host's watch";
     WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotifyFailed: Warning, "human decision sending has failed repeatedly";
-    DaybookUnwritten: Warning, "a watch round's daybook entry is not written";
     NotMoved: Warning, "the host runner did not move onto";
     NotUpgraded: Warning, "is published, newer than the host runner's";
     RunnerBusy: Warning, "the host runner's own process uses";
@@ -271,7 +270,6 @@ impl Kind {
                 | Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotifyFailed
-                | Kind::DaybookUnwritten
                 | Kind::NotMoved
                 | Kind::NotUpgraded
                 | Kind::RunnerBusy
@@ -301,7 +299,6 @@ impl Kind {
             Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotifyFailed
-                | Kind::DaybookUnwritten
                 | Kind::PathStale
                 | Kind::OrcaDisagrees
                 | Kind::NotUpgraded
@@ -3026,7 +3023,6 @@ fn host_once(
         ("watch".to_string(), crate::host_watch::json(watch.as_ref(), rounds)),
         ("asking".to_string(), crate::host_asking::json()),
         ("notify".to_string(), crate::watch_notify::json()),
-        ("daybook".to_string(), crate::watch_daybook::json()),
         ("other_accounts".to_string(), crate::machine::json(others)),
     ])
 }
@@ -3047,7 +3043,6 @@ impl Look {
         findings.extend(crate::agent_setup::findings());
         findings.extend(crate::tmux::findings());
         findings.extend(crate::watch_notify::findings());
-        findings.extend(crate::watch_daybook::findings());
         Look { readings, host, findings, trackers: crate::tracker::Public::default() }
     }
 }
@@ -3309,7 +3304,7 @@ It exits 0 with no critical finding, and non-zero with one — printing the same
 
 With `--all`:
 
-{"host": {"host_kit", "exclusive", "watch", "notify", "daybook", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
+{"host": {"host_kit", "exclusive", "watch", "notify", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
 
 - `host`: what of `host` is the host's alone, as above, said once
 - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy, a worker health observation overdue by the pace of every fleet instance on the host. A checkout's own findings add, under `--all`, its fleet instance not alive, and, with `--since`, each tick of the interval that failed with what no unrecovered step's finding says

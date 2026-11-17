@@ -63,7 +63,10 @@ const MIGRATIONS: &[&str] = &[
     // runs' usage, the asking session's and the watch's state, the resource
     // episodes, the human-decision and daybook outboxes, the harnesses that
     // took their briefs, the trash directories; and, by repo, the landing
-    // hold and the fresh looks.
+    // hold and the fresh looks. `daybook_outbox` is read and written by
+    // nothing since the watch writes its daybook entry at once (ADR-0118);
+    // no later version drops it, which a host runner of the release before
+    // that version, still holding the host, could no longer open.
     "CREATE TABLE paused (position INTEGER PRIMARY KEY, key TEXT NOT NULL, value TEXT NOT NULL);
      CREATE TABLE worker_health (position INTEGER PRIMARY KEY, key TEXT NOT NULL, value TEXT NOT NULL);
      CREATE TABLE account_book (position INTEGER PRIMARY KEY, key TEXT NOT NULL, value TEXT NOT NULL);
@@ -608,7 +611,6 @@ const STORES: &[&Store] = &[
     &crate::watch_terminal::STORE,
     &crate::resources::STORE,
     &crate::watch_notify::STORE,
-    &crate::watch_daybook::STORE,
     &crate::trash::STORE,
 ];
 
@@ -797,7 +799,6 @@ pub(crate) mod tests {
             whole("watch/terminal.json"),
             whole("watch/resources.json"),
             whole("watch/notify.json"),
-            whole("watch/daybook.json"),
             (
                 "trash-dirs",
                 "/a/.afkconvoy-trash\n\n/b/.afkconvoy-trash\n".into(),

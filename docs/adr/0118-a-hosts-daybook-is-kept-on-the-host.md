@@ -19,7 +19,7 @@ So afkconvoy keeps a host's daybook on the host: `daybook.db`, one SQLite databa
 - The daybook crate keeps both stores behind one interface: the host's database, and GitHub Discussions. afkconvoy writes the host's. Guild, which depends on the crate (ADR-0058), keeps whichever its own design chose — its spec wants its repair records readable on GitHub while its Hub is down — and moves only when it says so.
 - The database is the crate's own file and its schema the crate's alone: a second program of the host's user writes the same file, as two writers once wrote one discussion.
 - A human reads it with `afkconvoy daybook --read`, by day or span. The Discussions written before stay where they are and are not moved.
-- An entry is written at once or the write fails locally; nothing queues entries waiting for GitHub.
+- An entry is written at once or the write fails locally; nothing queues entries waiting for GitHub. The host runner writes a round's entry as it reads the watch's report, once however often it reads it; a failure is the watch's to say, and nothing retries it. What an older release's queue, `watch/daybook.json`, still held is written to the daybook once, and the file moved aside.
 
 ## Considered options
 

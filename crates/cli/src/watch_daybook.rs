@@ -5,98 +5,90 @@
 //! (`watch_notify`, `host_asking`); the entry only says they were raised,
 //! with their links, and asks nothing.
 //!
-//! The round never waits on GitHub. Reading a report queues its entry in a
-//! durable outbox beside the watch's reports; a thread of the host runner's
-//! own appends it, and retries one that failed, later and later, until it is
-//! written. While one is failing, `doctor` names it (`findings`).
+//! The entry is written to the host's own daybook (docs/adr/0118) when the
+//! report is read, at once or not at all: a failure is the watch's to say,
+//! and nothing waits to retry it. A report read again writes nothing more.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use afkconvoy_core::config::RepoName;
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use anyhow::{Result, bail};
+use serde::Deserialize;
 
 use crate::daybook::{Kind, Said};
 use crate::git::Repo;
 use crate::host_watch::Watch;
 use crate::watch_report::Report;
 
-/// The longest a failed entry waits before it is tried again, in seconds.
-pub const RETRY_MAX: u64 = 3600;
-/// The first wait after a failure, doubled at each one after it.
-const RETRY_FIRST: u64 = 60;
-/// How many rounds' ids the outbox keeps once written, so a report read
-/// again is not written twice.
-const KEPT: usize = 200;
-
-/// One round's entry, queued until it is written.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Queued {
-    pub watch: String,
-    /// The host's local date the round reported on: the discussion it goes to.
-    pub day: String,
-    /// Where the watch ran: the checkout whose repo and tracker it is of,
-    /// where it is one.
-    pub directory: PathBuf,
-    pub said: Said,
-    pub queued: u64,
-    #[serde(default)]
-    pub failures: u64,
-    /// Not tried again before this, in epoch seconds.
-    #[serde(default)]
-    pub next: u64,
-    #[serde(default)]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct Outbox {
-    queued: BTreeMap<String, Queued>,
-    /// Rounds already written, newest last.
-    written: VecDeque<String>,
-    last: Option<Value>,
-}
-
-/// The outbox of daybook entries, whole, in the host's database: the one
-/// row of `daybook_outbox`. It was `watch/daybook.json` in the cache
-/// directory, with `watch/daybook.lock` beside it.
-pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
-    file: "watch/daybook.json",
-    old: crate::host_db::Old::Json,
-    layout: crate::host_db::Layout::Whole("daybook_outbox"),
-};
-
-/// Changes the outbox by `f`, in one transaction of the host's database.
-fn change<T>(f: impl FnOnce(&mut Outbox) -> T) -> Result<T> {
-    crate::host_db::change(&STORE, f)
-}
-
-fn read() -> Result<Outbox> {
-    crate::host_db::read(&STORE)
-}
-
-/// Queues the entry of the round `watch` reported as `report`, once: a
-/// report read again queues nothing more.
+/// Writes the entry of the round `watch` reported as `report` to this host's
+/// daybook, once: a report read again writes nothing more.
 pub fn reported(watch: &Watch, report: &Report) -> Result<()> {
-    let queued = Queued {
-        watch: watch.id.clone(),
-        day: crate::daybook::today(),
-        directory: watch.directory.clone(),
-        said: said(watch, report),
-        queued: crate::clock(),
-        failures: 0,
-        next: 0,
-        error: None,
+    write_once(&crate::daybook::today(), &watch.id, &watch.directory, &said(watch, report))
+}
+
+/// How the entry of the round `round` begins: what tells it is written.
+fn opening(round: &str) -> String {
+    format!("Watch round `{round}`.")
+}
+
+/// Appends `said`, the entry of the round `round` the watch ran in
+/// `directory`, to the day `day` of this host's daybook, where that day holds
+/// no entry of the round yet.
+fn write_once(day: &str, round: &str, directory: &Path, said: &Said) -> Result<()> {
+    let opening = opening(round);
+    let read = crate::daybook::read(Some(day), None, None)?;
+    let entries = read["entries"].as_array().into_iter().flatten();
+    if entries.into_iter().any(|entry| entry["text"].as_str().is_some_and(|t| t.contains(&opening)))
+    {
+        return Ok(());
+    }
+    crate::daybook::append(day, crate::clock(), &repo(directory)?, Kind::Watch, said)?;
+    Ok(())
+}
+
+/// Where an older release queued the entries it had not written yet, under
+/// the cache directory.
+const OLD_QUEUE: &str = "watch/daybook.json";
+
+/// What an older release's queue holds that is still to be written.
+#[derive(Deserialize)]
+struct OldQueue {
+    #[serde(default)]
+    queued: BTreeMap<String, OldEntry>,
+}
+
+#[derive(Deserialize)]
+struct OldEntry {
+    watch: String,
+    day: String,
+    directory: PathBuf,
+    said: Said,
+}
+
+/// Writes each entry an older release left queued in `watch/daybook.json`
+/// to this host's daybook, once, and moves the file aside once no host
+/// runner of an older release holds the host (`host_db::converge_file`).
+/// Run again, it changes nothing.
+pub fn take_in_old_queue() -> Result<()> {
+    let cache = crate::copies::cache()?;
+    let file = cache.join(OLD_QUEUE);
+    let bytes = match std::fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
     };
-    change(|outbox| {
-        if !outbox.written.contains(&queued.watch) {
-            outbox.queued.entry(queued.watch.clone()).or_insert(queued);
+    let old: OldQueue = serde_json::from_slice(&bytes)?;
+    for entry in old.queued.values() {
+        write_once(&entry.day, &entry.watch, &entry.directory, &entry.said)?;
+    }
+    // Recorded as taken in only as it was written from: one an older runner
+    // changed meanwhile is written again first.
+    crate::host_db::converge_file(&mut crate::host_db::open()?, &file, &cache, |_, now| {
+        if now != bytes.as_slice() {
+            bail!("it changed while its entries were written");
         }
+        Ok(())
     })
 }
 
@@ -128,7 +120,7 @@ pub fn said(watch: &Watch, report: &Report) -> Said {
     let list = |items: &[String]| {
         items.iter().map(|item| format!("- {}", item.trim())).collect::<Vec<_>>().join("\n")
     };
-    let mut did = format!("Watch round `{}`.", watch.id);
+    let mut did = opening(&watch.id);
     let mut part = |heading: &str, items: &[String], none: &str| {
         let body = if items.is_empty() { format!("- {none}") } else { list(items) };
         did.push_str(&format!("\n\n**{heading}**\n\n{body}"));
@@ -230,143 +222,20 @@ fn host_tracker() -> Result<RepoName> {
         })
 }
 
-/// The repo the round of `queued` is of: that of the checkout the watch ran
-/// in, as `afkconvoy daybook` run there would say, else the host's tracker.
-fn repo(queued: &Queued) -> Result<RepoName> {
-    match Repo::at(&queued.directory) {
+/// The repo of the round the watch ran in `directory`: that of its
+/// checkout, as `afkconvoy daybook` run there would say, else the host's
+/// tracker.
+fn repo(directory: &Path) -> Result<RepoName> {
+    match Repo::at(directory) {
         Ok(checkout) => crate::daybook::repo_of(Ok(checkout), None),
         Err(_) => host_tracker(),
     }
 }
 
-/// Writes the entry of `queued` to this host's daybook → its url.
-fn write(queued: &Queued) -> Result<String> {
-    let at = crate::clock();
-    let answer =
-        crate::daybook::append(&queued.day, at, &repo(queued)?, Kind::Watch, &queued.said)?;
-    Ok(answer["url"].as_str().unwrap_or_default().to_string())
-}
-
-/// The wait after the `failures`th failure in a row.
-fn backoff(failures: u64) -> u64 {
-    RETRY_FIRST.saturating_mul(1 << failures.saturating_sub(1).min(16)).min(RETRY_MAX)
-}
-
-/// Appends the oldest entry due by `now` with `append`, recording what came
-/// of it; `true` where one was tried. The attempt is claimed before it is
-/// made, so a runner that dies in it tries again only once its wait is over.
-fn step(now: u64, append: impl Fn(&Queued) -> Result<String>) -> Result<bool> {
-    let due = |outbox: &Outbox| {
-        outbox
-            .queued
-            .values()
-            .filter(|queued| queued.next <= now)
-            .min_by_key(|queued| (queued.queued, queued.watch.clone()))
-            .cloned()
-    };
-    if due(&read()?).is_none() {
-        return Ok(false);
-    }
-    let Some(queued) = change(|outbox| {
-        let queued = due(outbox)?;
-        let claimed = outbox.queued.get_mut(&queued.watch)?;
-        claimed.next = now + backoff(claimed.failures + 1);
-        Some(queued)
-    })?
-    else {
-        return Ok(false);
-    };
-    let result = append(&queued);
-    change(|outbox| match &result {
-        Ok(url) => {
-            outbox.queued.remove(&queued.watch);
-            outbox.written.push_back(queued.watch.clone());
-            while outbox.written.len() > KEPT {
-                outbox.written.pop_front();
-            }
-            outbox.last = Some(json!({"watch": queued.watch, "url": url, "at": crate::clock()}));
-        }
-        Err(error) => {
-            if let Some(failed) = outbox.queued.get_mut(&queued.watch) {
-                failed.failures = failed.failures.saturating_add(1);
-                failed.next = now + backoff(failed.failures);
-                failed.error = Some(format!("{error:#}"));
-            }
-        }
-    })?;
-    Ok(true)
-}
-
-/// Writes queued entries until `ended`, saying each failure to `say`.
-pub fn run(ended: &AtomicBool, say: impl Fn(String)) {
-    while !ended.load(Ordering::Relaxed) {
-        match step(crate::clock(), write) {
-            Ok(true) => continue,
-            Ok(false) => {}
-            Err(error) => say(format!("daybook outbox failed: {error:#}")),
-        }
-        for _ in 0..20 {
-            if ended.load(Ordering::Relaxed) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-    }
-}
-
-/// What `doctor.host.daybook` shows: the entries not yet written and the last
-/// one that was.
-pub fn json() -> Value {
-    match read() {
-        Ok(outbox) => json!({
-            "queued": outbox.queued.values().collect::<Vec<_>>(),
-            "last": outbox.last,
-        }),
-        Err(error) => json!({"error": format!("{error:#}")}),
-    }
-}
-
-/// One finding for each round whose entry failed to be written.
-pub fn findings() -> Vec<crate::doctor::Finding> {
-    let unwritten = |identity: Value, evidence: String| {
-        crate::doctor::finding(
-            crate::doctor::Kind::DaybookUnwritten,
-            identity,
-            "a watch round's daybook entry is not written".into(),
-            evidence,
-            "fix what its error says (the host's daybook, `daybook.db` in afkconvoy's data \
-             directory, could not be written); the host runner retries it by itself"
-                .into(),
-        )
-    };
-    match read() {
-        Ok(outbox) => outbox
-            .queued
-            .values()
-            .filter(|queued| queued.failures > 0)
-            .map(|queued| {
-                unwritten(
-                    json!(["daybook", queued.watch]),
-                    format!(
-                        "round {} of {}: {} failure(s), next try at {}; last error: {}",
-                        queued.watch,
-                        queued.day,
-                        queued.failures,
-                        queued.next,
-                        queued.error.as_deref().unwrap_or("none")
-                    ),
-                )
-            })
-            .collect(),
-        Err(error) => vec![unwritten(
-            json!(["daybook-cache"]),
-            format!("its outbox cannot be read: {error:#}"),
-        )],
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use serde_json::{Value, json};
+
     use super::*;
     use crate::watch_report::Human;
 
@@ -479,43 +348,73 @@ mod tests {
         );
     }
 
-    #[test]
-    fn each_reported_round_is_queued_once_and_a_failure_is_retried_later() {
-        let watch = watch(json!({}));
-        reported(&watch, &report(vec![])).unwrap();
-        reported(&watch, &report(vec![])).unwrap();
-        assert_eq!(read().unwrap().queued.len(), 1);
-        assert!(findings().is_empty());
+    /// This host's checkout list names one tracker, `acme/tracker`: the
+    /// daybook a watch outside any checkout writes to.
+    fn a_tracker() {
+        let list = json!({"checkouts": [{"checkout": "/c", "tracker": "acme/tracker"}]});
+        crate::host_db::put(&crate::checkout_list::STORE, &list).unwrap();
+    }
 
-        let failed = step(1000, |_| anyhow::bail!("the daybook is locked")).unwrap();
-        assert!(failed);
-        let queued = read().unwrap().queued[&watch.id].clone();
-        assert_eq!((queued.failures, queued.next), (1, 1000 + RETRY_FIRST));
-        let found = findings();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].kind, crate::doctor::Kind::DaybookUnwritten);
-        assert!(found[0].evidence.contains("the daybook is locked"), "{}", found[0].evidence);
-
-        // not due yet: nothing is tried
-        assert!(!step(1001, |_| panic!("tried before its wait")).unwrap());
-        assert!(step(1000 + RETRY_FIRST, |_| anyhow::bail!("again")).unwrap());
-        assert_eq!(read().unwrap().queued[&watch.id].next, 1000 + RETRY_FIRST + 2 * RETRY_FIRST);
-
-        assert!(
-            step(10_000, |_| Ok("https://github.com/acme/control/discussions/1#c".into())).unwrap()
-        );
-        let outbox = read().unwrap();
-        assert!(outbox.queued.is_empty());
-        assert!(findings().is_empty());
-        // the same report read again is not written twice
-        reported(&watch, &report(vec![])).unwrap();
-        assert!(read().unwrap().queued.is_empty());
+    /// The texts of today's entries of this host's daybook.
+    fn written(day: &str) -> Vec<String> {
+        let read = crate::daybook::read(Some(day), None, None).unwrap();
+        read["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["text"].as_str().unwrap().to_string())
+            .collect()
     }
 
     #[test]
-    fn the_wait_doubles_up_to_its_bound() {
-        assert_eq!(backoff(1), RETRY_FIRST);
-        assert_eq!(backoff(2), 2 * RETRY_FIRST);
-        assert_eq!(backoff(40), RETRY_MAX);
+    fn a_reported_round_is_written_at_once_and_once() {
+        a_tracker();
+        let watch = watch(json!({}));
+        reported(&watch, &report(vec![])).unwrap();
+        reported(&watch, &report(vec![])).unwrap();
+        let entries = written(&crate::daybook::today());
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert!(entries[0].contains("Watch round `1793620314-1-2`."), "{}", entries[0]);
+        assert!(entries[0].starts_with("**Repo** `acme/tracker` · **Session** watch"));
+    }
+
+    #[test]
+    fn what_an_older_release_left_queued_is_written_once_and_its_file_moved_aside() {
+        a_tracker();
+        let said = |round: &str| json!({"did": format!("Watch round `{round}`."), "links": []});
+        // As an older release kept it: `queued` still to be written,
+        // `written` already gone to GitHub.
+        let old = json!({
+            "queued": {
+                "1-1-1": {"watch": "1-1-1", "day": "2026-11-01", "directory": "/nowhere",
+                    "said": said("1-1-1"), "queued": 1, "failures": 3, "next": 9,
+                    "error": "GitHub said no"},
+                "2-2-2": {"watch": "2-2-2", "day": "2026-11-02", "directory": "/nowhere",
+                    "said": said("2-2-2"), "queued": 2},
+            },
+            "written": ["0-0-0"],
+            "last": null,
+        });
+        let file = crate::copies::cache().unwrap().join(OLD_QUEUE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, old.to_string()).unwrap();
+        // One of them reached this daybook already: it is not written twice.
+        write_once(
+            "2026-11-01",
+            "1-1-1",
+            Path::new("/nowhere"),
+            &serde_json::from_value(said("1-1-1")).unwrap(),
+        )
+        .unwrap();
+
+        take_in_old_queue().unwrap();
+        take_in_old_queue().unwrap();
+        for (day, round) in [("2026-11-01", "1-1-1"), ("2026-11-02", "2-2-2")] {
+            let entries = written(day);
+            assert_eq!(entries.len(), 1, "{day}: {entries:?}");
+            assert!(entries[0].contains(&opening(round)), "{}", entries[0]);
+        }
+        assert!(!file.exists());
+        assert!(file.with_extension("json.migrated").is_file());
     }
 }

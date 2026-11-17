@@ -76,7 +76,7 @@ latter.
 The host's other state was loose JSON files in the cache directory, each with
 its own lock or none: the checkout list and host settings, the paused
 harnesses, worker health, the account book, the patrol runs' usage, the
-watch's and the asking session's state, the outboxes, the trash
+watch's and the asking session's state, the outbox of human decisions, the trash
 directories; and, in each repo's git dir, the landing hold and the fresh
 looks. A cache is what can be thrown away; these cannot (decided by Felix,
 control session 2026-11-17).
