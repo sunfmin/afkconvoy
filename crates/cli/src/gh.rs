@@ -460,6 +460,59 @@ fn in_transit(said: &str) -> bool {
     crate::transient::met(crate::transient::GH, said)
 }
 
+/// What a `gh` call writes to GitHub, named by its kind as the host's write
+/// ledger keeps it — `gh pr create`, `api POST repos/o/r/issues/:n/comments`,
+/// `api graphql mutation` —; none for a call that only reads.
+pub(crate) fn writes(args: &[&str]) -> Option<String> {
+    const VERBS: [&str; 14] = [
+        "create", "comment", "merge", "close", "edit", "ready", "reopen", "review", "delete",
+        "upload", "lock", "unlock", "transfer", "develop",
+    ];
+    match args {
+        ["pr" | "issue" | "release" | "label" | "repo" | "gist", verb, ..]
+            if VERBS.contains(verb) =>
+        {
+            Some(format!("gh {} {verb}", args[0]))
+        }
+        ["api", "graphql", ..] => args
+            .iter()
+            .any(|a| {
+                a.strip_prefix("query=").is_some_and(|q| q.trim_start().starts_with("mutation"))
+            })
+            .then(|| "api graphql mutation".to_string()),
+        ["api", rest @ ..] => {
+            let mut method = None;
+            let mut fields = false;
+            let mut endpoint = None;
+            let mut each = rest.iter();
+            while let Some(arg) = each.next() {
+                match *arg {
+                    "--method" | "-X" => method = each.next().map(|m| m.to_ascii_uppercase()),
+                    "-f" | "-F" | "--field" | "--raw-field" | "--input" => {
+                        fields = true;
+                        each.next();
+                    }
+                    "-H" | "--header" | "--jq" | "-q" | "--template" | "-t" | "--hostname"
+                    | "--cache" | "-p" | "--preview" => {
+                        each.next();
+                    }
+                    flag if flag.starts_with('-') => {}
+                    path => endpoint = endpoint.or(Some(path)),
+                }
+            }
+            // `gh api` posts what it is given fields for, unless told otherwise.
+            let method = method.unwrap_or_else(|| if fields { "POST" } else { "GET" }.into());
+            let endpoint = endpoint?.split('?').next()?;
+            let endpoint: Vec<&str> = endpoint
+                .split('/')
+                .map(|part| if part.parse::<u64>().is_ok() { ":n" } else { part })
+                .collect();
+            (method != "GET").then(|| format!("api {method} {}", endpoint.join("/")))
+        }
+        _ => None,
+    }
+}
+
 /// How the help names the failures `in_transit` finds.
 pub(crate) fn in_transit_help() -> String {
     format!(
@@ -483,6 +536,20 @@ impl GitHub {
         if included {
             command.arg("--include");
         }
+        // Every GitHub write of the host waits on its one secondary hold,
+        // and is noted in its ledger (`gh_quota::Hold`).
+        let write = writes(args).and_then(|what| Some((what, self.scope_without_probe()?)));
+        if let Some((what, scope)) = &write {
+            let hold = scope.hold()?;
+            if hold.seen.reset > crate::gh_quota::now() {
+                bail!(
+                    "GitHub secondary rate limit: every GitHub write of this host waits until {} (Unix seconds), a wait of {}s, hold {} in a row; this {what} was not made",
+                    hold.seen.reset,
+                    hold.wait,
+                    hold.trips
+                );
+            }
+        }
         let out = crate::process::output(&mut command).context("gh could not run")?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let (body, headers) = if included {
@@ -496,11 +563,20 @@ impl GitHub {
         {
             scope.headers(&headers)?;
         }
+        let said = format!("{}\n{}", String::from_utf8_lossy(&out.stderr).trim(), headers)
+            .trim()
+            .to_string();
+        if let Some((what, scope)) = &write {
+            let now = crate::gh_quota::now();
+            if !out.status.success()
+                && let Some(reset) = crate::gh_quota::secondary(&said, now)
+            {
+                scope.trip(what, now, reset)?;
+            }
+            scope.wrote(what, now)?;
+        }
         if !out.status.success() {
             let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
-            let said = format!("{}\n{}", String::from_utf8_lossy(&out.stderr).trim(), headers)
-                .trim()
-                .to_string();
             return Ok(Err((format!("gh {what}"), said)));
         }
         Ok(Ok(body))
@@ -533,6 +609,13 @@ impl GitHub {
             *held = Some(made);
         }
         Ok(())
+    }
+
+    /// This view's quota scope from the note on disk, without a probe; none
+    /// where the login cannot be named, and a write then goes unheld.
+    fn scope_without_probe(&self) -> Option<crate::gh_quota::Scope> {
+        self.note_without_probe().ok()?;
+        self.quota.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn quota(&self) -> Result<crate::gh_quota::Scope> {
@@ -641,12 +724,16 @@ impl GitHub {
         }
         let made = if writing { self.raw(args) } else { self.read_once_backend(args) };
         if let Err(error) = &made
-            && let Some(reset) = crate::gh_quota::secondary(&error.to_string(), now)
+            && let Some(said) = crate::gh_quota::secondary(&error.to_string(), now)
         {
-            scope.save(
-                "secondary",
-                &crate::gh_quota::Observation { remaining: Some(0), reset, limit: None },
-            )?;
+            // A write met it, or was refused by the hold, in `call` already.
+            let reset = match writes(args) {
+                Some(_) => scope.hold()?.seen.reset,
+                None => {
+                    let what = format!("read gh {}", args[..2.min(args.len())].join(" "));
+                    scope.trip(&what, now, said)?
+                }
+            };
             bail!(
                 "GitHub secondary rate limit: both APIs wait until {reset} (Unix seconds); {error}"
             );

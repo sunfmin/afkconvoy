@@ -128,6 +128,7 @@ open no other PR. Nobody reads this terminal: never wait for an answer.
 - End with your PR landed on the base branch<landing_end> — never just stop.
 - Never close the PR, never open another, never rebase.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
+- Write to GitHub only with the commands this brief names. A GitHub write that answers `secondary rate limit` (HTTP 403) is never retried, by hand or in a loop: retrying extends GitHub's block for the whole host. Commit and push what you have, then stop — the one stop the first rule allows: your claim and branch stay for the fleet, whose own commands wait out the host's shared hold.
 ";
 
 /// The brief of a worker that takes up a PR a released claim kept: the issue
@@ -174,6 +175,7 @@ waits on the next version of this repo being installed (never poll for it):
 - End with your PR landed on the base branch, or with that comment — never just stop.
 - Never close the PR, never open another, never rebase.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
+- Write to GitHub only with the commands this brief names. A GitHub write that answers `secondary rate limit` (HTTP 403) is never retried, by hand or in a loop: retrying extends GitHub's block for the whole host. Commit and push what you have, then stop — the one stop the first rule allows: your claim and branch stay for the fleet, whose own commands wait out the host's shared hold.
 ";
 
 const WORKER: &str = "\
@@ -232,6 +234,7 @@ body:
 
 - End with your PR landed on the base branch, or with that comment — never just stop.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
+- Write to GitHub only with the commands this brief names. A GitHub write that answers `secondary rate limit` (HTTP 403) is never retried, by hand or in a loop: retrying extends GitHub's block for the whole host. Commit and push what you have, then stop — the one stop the first rule allows: your claim and branch stay for the fleet, whose own commands wait out the host's shared hold.
 ";
 
 /// What the join-only brief adds for a worker started in a workflow's landing
