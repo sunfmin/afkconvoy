@@ -7,6 +7,7 @@
 //! one reader of the kernel's ticks. Its API names no fleet concept.
 
 pub mod cpu;
+pub mod spawn;
 
 use std::process::{Command, Stdio};
 

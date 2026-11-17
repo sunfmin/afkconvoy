@@ -44,6 +44,9 @@ pub struct Taken {
     /// Its stall in words, its lock holders named, where it turned hot
     /// stalled (`crate::stall`).
     pub stall: Option<String>,
+    /// Its process creation, in processes a second, and the commands that
+    /// made them, with how many each, where it turned hot for it.
+    pub spawns: Option<(u64, Vec<(String, u64)>)>,
     /// The issue its worktree is linked to, where it is.
     pub issue: Option<u64>,
 }
@@ -60,6 +63,15 @@ pub fn take(worktree: &Worktree, taken: &Taken) -> Result<PathBuf> {
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let mut out = head(&taken.worker, taken.since);
     let _ = write!(out, "\n\nHot for {}; it held {}.\n", taken.why, taken.held);
+    if let Some((rate, commands)) = &taken.spawns {
+        let _ = write!(out, "\n## Process creation\n\n{rate} processes a second.\n\n");
+        for (command, made) in commands {
+            let _ = writeln!(
+                out,
+                "- `{command}`: {made} found alive in the last two minutes of samples"
+            );
+        }
+    }
     if let Some(stall) = &taken.stall {
         let _ = write!(out, "\n## The build-directory locks it waits on\n\n{stall}\n");
     }
