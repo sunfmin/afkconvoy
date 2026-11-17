@@ -14,10 +14,9 @@ use std::path::{Path, PathBuf};
 
 use afkconvoy_core::config::{Config, GateNeed};
 use afkconvoy_core::cut::{Held, NeedFailed};
-use afkconvoy_core::gate::outlived;
 use afkconvoy_core::layout::{
-    Answer, BaseCheck, GATE_KIND, Layout, PROBE_STANDS, answer, base_check, no_base_branch,
-    no_gate_records, probe_stands, settle,
+    Answer, BaseCheck, Layout, PROBE_STANDS, answer, base_check, no_base_branch, probe_stands,
+    settle,
 };
 use afkconvoy_core::tools::{Found, Tool};
 use afkconvoy_core::tracker::{Tracker, is_public, public};
@@ -733,20 +732,10 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
         .map_err(|why| See::Troubleshooting.refusal(why))?;
     warnings.extend(settled.warning);
     repo.note_settled(settled.layout, settled.streak)?;
-    let layout = settled.layout;
 
-    let records = match push(&layout.probe(GATE_KIND, &token)) {
-        Answer::Taken => true,
-        Answer::Rejected(why) | Answer::Unreached(why) => {
-            warnings.push(no_gate_records(layout, &why));
-            false
-        }
-    };
     // Probes — this one's, on whichever layout it asked, and any a start
-    // killed mid-probe left — and the gate records no landing would believe
-    // any more. A run that still stands stays, including one left on the
-    // layout the note moved off. Gate records of the noted layout are swept
-    // only where that layout takes them.
+    // killed mid-probe left — and every gate record: a host keeps its own
+    // in its database (docs/adr/0069), and none is read from the remote.
     let patterns: Vec<String> = Layout::ALL.into_iter().map(|layout| layout.every("")).collect();
     let patterns: Vec<&str> = patterns.iter().map(String::as_str).collect();
     let mut litter = vec![];
@@ -755,12 +744,7 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
         else {
             continue;
         };
-        let gate_record = home.kept(&record.name).is_some_and(|kept| kept.starts_with(GATE_KIND));
-        // A ref that moved while it was read has no subject yet: not litter.
-        let readable = gate_record && !record.subject.is_empty() && outlived(&record.subject, now);
-        let noted_takes_records = home == layout && records;
-        let left_behind = home != layout;
-        if home.is_probe(&record.name) || (readable && (noted_takes_records || left_behind)) {
+        if home.is_probe(&record.name) || home.is_gate_record(&record.name) {
             litter.push(record.name);
         }
     }

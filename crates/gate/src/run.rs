@@ -1,9 +1,10 @@
-//! A gate run's evidence on the remote: what a run of a gate command on a
+//! A gate run's evidence on record: what a run of a gate command on a
 //! committed tree writes there, takes away, and reads back (docs/adr/0047).
 //! Whether a run is put on record is `gate::after_run`'s to say; what is
-//! written where, and read from which ref layout, is said here once, for
-//! every program that records gate runs. How a record reaches the remote is
-//! the program's own (`Records`); `Git` reaches it with plain git, and
+//! written, and which record is believed, is said here once, for every
+//! program that records gate runs. Where a record is kept is the program's
+//! own (`Records`): afkconvoy keeps its host's in the host's database
+//! (docs/adr/0069); `Git` keeps them on a remote, reached with plain git, and
 //! `gate` runs a gate command with it, for a program that has no other way.
 
 use std::io::{BufRead, BufReader, Read};
@@ -14,48 +15,44 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::gate::{
-    GateCommand, GreenRun, Judged, Ran, Recording, Termination, Tree, after_run, believed_among,
-    judge, record_ref, test_times,
+    GateCommand, GreenRun, Judged, Ran, Recording, Termination, Tree, after_run, judge, record_ref,
+    test_times,
 };
 use crate::layout::Layout;
 
-/// Where a program's gate records are written and read: the remote, as it
-/// reaches it.
+/// Where a program's gate records are written and read: one record of a
+/// command on a tree, its whole message as `GreenRun::write_with` makes it.
 pub trait Records {
-    /// What reaching the remote fails with.
+    /// What reaching the records fails with.
     type Error;
 
-    /// The layout a new record is written on: the one the checkout noted.
-    fn layout(&self) -> Layout;
+    /// The whole message of each record of `command` on `tree` held, the one
+    /// to believe first first; empty where none is.
+    fn read(&self, tree: &Tree, command: &GateCommand) -> Result<Vec<String>, Self::Error>;
 
-    /// Each of the refs `names` the remote has, with the subject of the
-    /// commit it points at. A name it has not is left out.
-    fn read(&self, names: &[&str]) -> Result<Vec<(String, String)>, Self::Error>;
+    /// Puts `message` on record as the run of `command` on `tree`, tested at
+    /// the commit `head`, over whatever is there → why it is not on record,
+    /// `None` once it is.
+    fn write(
+        &self,
+        tree: &Tree,
+        head: &str,
+        command: &GateCommand,
+        message: &str,
+    ) -> Result<Option<String>, Self::Error>;
 
-    /// The whole message of the commit the remote's ref `name` points at;
-    /// `None` when it has no such ref. A record's subject is its first line.
-    fn message(&self, name: &str) -> Result<Option<String>, Self::Error>;
-
-    /// A commit of `tree` on `parent` whose message is `message` — a record's
-    /// subject, then the lines that time its tests → its sha.
-    fn commit(&self, tree: &str, parent: &str, message: &str) -> Result<String, Self::Error>;
-
-    /// Puts the commit `sha` at `refname`, over whatever is there → why it is
-    /// not there, `None` once it is.
-    fn put(&self, sha: &str, refname: &str) -> Result<Option<String>, Self::Error>;
-
-    /// Takes `refname` away, where it is: none there is what is wanted.
-    fn delete(&self, refname: &str);
+    /// Takes every record of `command` on `tree` away, where one is: none
+    /// there is what is wanted.
+    fn remove(&self, tree: &Tree, command: &GateCommand);
 }
 
 /// What became of a run's record.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Settled {
-    /// Green on a committed tree: the run, and why it is not on record on the
-    /// remote, when it is not.
+    /// Green on a committed tree: the run, and why it is not on record, when
+    /// it is not.
     Written { green: GreenRun, not_recorded: Option<String> },
-    /// Red on a committed tree: the tree's record of the command is gone,
-    /// from either layout.
+    /// Red on a committed tree: the tree's record of the command is gone.
     Dropped,
     /// The run says nothing of a committed tree: nothing changed.
     Left,
@@ -66,9 +63,9 @@ pub enum Settled {
 }
 
 /// Settles the record of `command` on `tree`, at the commit `head`, as
-/// `recording` says: a run put on record is written on the noted layout,
-/// with `more` fields its program notes of it; a red run takes the record
-/// away from both, so it is not believed from the one it was left on.
+/// `recording` says: a run put on record is written with `more` fields its
+/// program notes of it; a red run takes the record away, so it is not
+/// believed.
 pub fn settle<R: Records>(
     records: &R,
     tree: &Tree,
@@ -79,36 +76,31 @@ pub fn settle<R: Records>(
 ) -> Result<Settled, R::Error> {
     match recording {
         Recording::Write(green) => {
-            let sha = records.commit(tree.name(), head, &green.write_with(tree, command, more))?;
-            let not_recorded = records.put(&sha, &record_ref(records.layout(), tree, command))?;
+            let message = green.write_with(tree, command, more);
+            let not_recorded = records.write(tree, head, command, &message)?;
             Ok(Settled::Written { green, not_recorded })
         }
         Recording::Drop => {
-            for layout in Layout::ALL {
-                records.delete(&record_ref(layout, tree, command));
-            }
+            records.remove(tree, command);
             Ok(Settled::Dropped)
         }
         Recording::Leave => Ok(Settled::Left),
     }
 }
 
-/// The green run of `command` on `tree` the remote has on record and still
-/// believes at `now`, from either ref layout; `None` when it holds none that
-/// stands. One read asks for both.
+/// The green run of `command` on `tree` on record and still believed at
+/// `now`, timing each test its run's output timed (`GreenRun::tests`); `None`
+/// when none held stands. The first record `Records::read` gives that stands
+/// is the one believed.
 pub fn recorded<R: Records>(
     records: &R,
     tree: &Tree,
     command: &GateCommand,
     now: u64,
 ) -> Result<Option<GreenRun>, R::Error> {
-    let names: Vec<String> =
-        Layout::ALL.into_iter().map(|layout| record_ref(layout, tree, command)).collect();
-    let asked: Vec<&str> = names.iter().map(String::as_str).collect();
-    let found = records.read(&asked)?;
-    let pairs: Vec<(&str, &str)> =
-        found.iter().map(|(name, subject)| (name.as_str(), subject.as_str())).collect();
-    Ok(believed_among(&pairs, records.layout(), tree, command, now))
+    Ok(records.read(tree, command)?.iter().find_map(|message| {
+        GreenRun::recorded(message, tree, command).filter(|run| run.stands(now))
+    }))
 }
 
 /// The green run on record that answers for a run of `command` on `tree` on
@@ -127,38 +119,6 @@ pub fn reusable<R: Records>(
 ) -> Result<Option<GreenRun>, R::Error> {
     let run = recorded(records, tree, command, now)?;
     Ok(run.filter(|run| !machine.is_empty() && run.machine() == Some(machine)))
-}
-
-/// The green run `recorded` answers, read from its record's whole message:
-/// timing each test its run's output timed (`GreenRun::tests`). A record that
-/// times none is the same run, with no tests — every record so far.
-pub fn recorded_with_tests<R: Records>(
-    records: &R,
-    tree: &Tree,
-    command: &GateCommand,
-    now: u64,
-) -> Result<Option<GreenRun>, R::Error> {
-    let noted = records.layout();
-    let names: Vec<String> = [noted, noted.other()]
-        .into_iter()
-        .map(|layout| record_ref(layout, tree, command))
-        .collect();
-    let asked: Vec<&str> = names.iter().map(String::as_str).collect();
-    let found = records.read(&asked)?;
-    for name in &names {
-        let Some((_, subject)) = found.iter().find(|(found, _)| found == name) else { continue };
-        let Some(run) = GreenRun::recorded(subject, tree, command).filter(|run| run.stands(now))
-        else {
-            continue;
-        };
-        // The ref may have moved since it was listed: its run is the one the
-        // listing believed unless the message read now is a run that stands.
-        let whole = records.message(name)?.and_then(|message| {
-            GreenRun::recorded(&message, tree, command).filter(|run| run.stands(now))
-        });
-        return Ok(Some(whole.unwrap_or(run)));
-    }
-    Ok(None)
 }
 
 /// Puts the whole gate, `whole`, on record for `tree` at the commit `head`
@@ -183,11 +143,12 @@ pub fn record_whole<R: Records>(
     let Some(run) = GreenRun::joined(tree, whole, fast, &f, slow, &s) else {
         return Ok(Some("the fast and the slow gate are one command".into()));
     };
-    let sha = records.commit(tree.name(), head, &run.write_with(tree, whole, more))?;
-    records.put(&sha, &record_ref(records.layout(), tree, whole))
+    records.write(tree, head, whole, &run.write_with(tree, whole, more))
 }
 
-/// A worktree whose records are kept on one remote, reached with plain git.
+/// A worktree whose records are kept on one remote, reached with plain git:
+/// each a commit of the tested tree at `gate::record_ref`, on either ref
+/// layout.
 #[derive(Debug, Clone)]
 pub struct Git {
     /// The worktree: its commit is the one a run tests.
@@ -318,32 +279,28 @@ impl Git {
 impl Records for Git {
     type Error = String;
 
-    fn layout(&self) -> Layout {
-        self.layout
-    }
-
-    fn read(&self, names: &[&str]) -> Result<Vec<(String, String)>, String> {
+    /// The noted layout's record first, then the other's.
+    fn read(&self, tree: &Tree, command: &GateCommand) -> Result<Vec<String>, String> {
         let mut found = vec![];
-        for name in names {
-            if let Some(sha) = self.fetched(name)? {
-                let subject = git(&self.worktree, &["show", "-s", "--format=%s", &sha], &[])?;
-                found.push((name.to_string(), subject));
+        for layout in [self.layout, self.layout.other()] {
+            if let Some(sha) = self.fetched(&record_ref(layout, tree, command))? {
+                found.push(git(&self.worktree, &["show", "-s", "--format=%B", &sha], &[])?);
             }
         }
         Ok(found)
     }
 
-    fn message(&self, name: &str) -> Result<Option<String>, String> {
-        let Some(sha) = self.fetched(name)? else { return Ok(None) };
-        git(&self.worktree, &["show", "-s", "--format=%B", &sha], &[]).map(Some)
-    }
-
-    fn commit(&self, tree: &str, parent: &str, message: &str) -> Result<String, String> {
-        let args = ["commit-tree", tree, "-p", parent, "-F", "-"];
-        git_given(&self.worktree, &args, &RECORD_IDENTITY, &format!("{message}\n"))
-    }
-
-    fn put(&self, sha: &str, refname: &str) -> Result<Option<String>, String> {
+    /// On the noted layout alone.
+    fn write(
+        &self,
+        tree: &Tree,
+        head: &str,
+        command: &GateCommand,
+        message: &str,
+    ) -> Result<Option<String>, String> {
+        let args = ["commit-tree", tree.name(), "-p", head, "-F", "-"];
+        let sha = git_given(&self.worktree, &args, &RECORD_IDENTITY, &format!("{message}\n"))?;
+        let refname = record_ref(self.layout, tree, command);
         let pushed = git(
             &self.worktree,
             &["push", "--quiet", "--force", &self.remote, &format!("{sha}:{refname}")],
@@ -352,9 +309,12 @@ impl Records for Git {
         Ok(pushed.err())
     }
 
-    fn delete(&self, refname: &str) {
-        let gone = format!(":{refname}");
-        let _ = git(&self.worktree, &["push", "--quiet", &self.remote, &gone], &[]);
+    /// From both layouts, so it is not believed from the one it was left on.
+    fn remove(&self, tree: &Tree, command: &GateCommand) {
+        for layout in Layout::ALL {
+            let gone = format!(":{}", record_ref(layout, tree, command));
+            let _ = git(&self.worktree, &["push", "--quiet", &self.remote, &gone], &[]);
+        }
     }
 }
 
@@ -419,7 +379,7 @@ const LOOKS_EVERY: Duration = Duration::from_millis(20);
 /// nothing of its tree, or ran on no committed tree, changes nothing.
 ///
 /// A green run of a tree is not run again: where the worktree is exactly
-/// its commit and the remote holds a green run of `command` on its tree,
+/// its commit and `git` holds a green run of `command` on its tree,
 /// on the same kind of machine, still believed at `now` (`reusable`), that
 /// run answers, `Settled::Reused`, and nothing runs. Errors: git failed, or
 /// the command could not be started.

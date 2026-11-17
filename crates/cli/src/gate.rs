@@ -14,9 +14,8 @@ use afkconvoy_core::config::{Config, Which};
 pub use afkconvoy_core::gate::Termination;
 use afkconvoy_core::gate::{
     Ended, GateCommand, GreenRun, Judged, Ran, Recording, Red, TestTime, Tree, Unsettled,
-    after_run, believed_among, judge, red_ref, red_subject, test_times,
+    after_run, judge, red_subject, test_times,
 };
-use afkconvoy_core::layout::Layout;
 use afkconvoy_core::lock::named;
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
@@ -25,8 +24,10 @@ use crate::gh::GitHub;
 use crate::git::Repo;
 use crate::lock::standing_locks;
 use crate::measure;
-use crate::remote::{Fresh, Push};
-use afkconvoy_gate::run::{self, Records, Settled};
+use crate::remote::Fresh;
+use afkconvoy_gate::run::{self, Settled};
+
+use crate::gate_records::OnHost;
 
 /// What keeps a worktree from being exactly a commit, the gate crate's rule
 /// (`afkconvoy_gate::run::off_commit`): its uncommitted and untracked paths,
@@ -392,7 +393,7 @@ fn controlled_run(
     let more = afkconvoy_core::gate::noted(issued.as_deref());
     // A new record is written on the noted layout and not also on the other;
     // a red run's goes from both (`afkconvoy_gate::run::settle`).
-    match run::settle(&OnRemote(repo), &tree, &run.head, command, recording, &more)? {
+    match run::settle(&OnHost(repo), &tree, &run.head, command, recording, &more)? {
         Settled::Written { green, not_recorded } => {
             // Soft: a record that cannot be written costs the landing a run of the gate.
             run.not_recorded = not_recorded;
@@ -403,14 +404,7 @@ fn controlled_run(
             // work account cites it. A base-branch certification names no issue.
             if let Some(issue) = issue {
                 let subject = red_subject(&tree, command, ran.seconds, host, now, issue);
-                let red = red_ref(repo.layout(), issue, now, tree.key(), command.key());
-                if let Ok(sha) = repo.record_commit_on(tree.name(), &run.head, &subject) {
-                    let _ = repo.remote().try_push_retried(
-                        &Push::set(&sha, &red).force().progress(),
-                        Some(record_push_limit()),
-                        || Ok(false),
-                    );
-                }
+                crate::gate_records::keep_red(repo, issue, &tree, command, now, &subject);
             }
         }
         Settled::Left | Settled::Reused(_) => {}
@@ -437,7 +431,7 @@ pub(crate) fn candidate_gate(
     let tree = head_tree(repo)?;
     let machine = afkconvoy_gate::gate::machine();
     if off_commit(repo, None)?.is_empty()
-        && let Some(green) = run::reusable(&OnRemote(repo), &tree, command, &machine, now)?
+        && let Some(green) = run::reusable(&OnHost(repo), &tree, command, &machine, now)?
     {
         let evidence = Evidence::of(Observed {
             command: command.text(),
@@ -592,112 +586,18 @@ pub(crate) fn record_whole(
 ) -> Result<Option<String>> {
     let issued = issue.map(|issue| issue.to_string());
     let more = afkconvoy_core::gate::noted(issued.as_deref());
-    run::record_whole(&OnRemote(repo), tree, head, (whole, fast, slow), &more, now)
+    run::record_whole(&OnHost(repo), tree, head, (whole, fast, slow), &more, now)
 }
 
-/// How long one gate-record push may take before its process group is ended.
-/// The tests set this short; the production bound keeps a stalled transport
-/// from holding a candidate's worker lane.
-const RECORD_PUSH_SECONDS: u64 = 30;
-
-fn record_push_limit() -> Duration {
-    let seconds = std::env::var("AFKCONVOY_GATE_RECORD_PUSH_SECONDS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(RECORD_PUSH_SECONDS);
-    Duration::from_secs(seconds)
-}
-
-/// Pushes the record `sha` to `refname` → why it could not, `None` once it
-/// is there. A record's push is a force push of one commit, so trying it
-/// again is safe. A rejection that is GitHub's own fault is tried again
-/// (`Remote::try_push_retried`); any other is not. On 2026-10-29 two
-/// candidates whose fast gate was green went red for the first, cancelling
-/// every candidate behind them. A push that reaches `record_push_limit` is
-/// also not retried: its remote outcome is unknown, so this run stays
-/// unrecorded.
-fn push_record(repo: &Repo, sha: &str, refname: &str) -> Result<Option<String>> {
-    let push = Push::set(sha, refname).force().progress();
-    let pushed = repo.remote().try_push_retried(&push, Some(record_push_limit()), || Ok(false))?;
-    Ok((!pushed.ok).then(|| push_error(&pushed.stderr)))
-}
-
-/// The last pack size Git's writing progress reported, with its unit.
-fn sent_bytes(stderr: &str) -> Option<&str> {
-    stderr
-        .split(['\r', '\n'])
-        .filter_map(|line| {
-            let writing = line.rsplit_once("Writing objects:")?.1;
-            let (_, bytes) = writing.rsplit_once(',')?;
-            let bytes = bytes.split('|').next()?.trim();
-            (!bytes.is_empty()).then_some(bytes)
-        })
-        .next_back()
-}
-
-fn push_error(stderr: &str) -> String {
-    let stderr = stderr.trim();
-    if !stderr.contains(crate::git::PAST_LIMIT) {
-        return stderr.to_string();
-    }
-    let timeout = stderr
-        .rsplit(['\r', '\n'])
-        .find(|line| line.contains(crate::git::PAST_LIMIT))
-        .unwrap_or(stderr);
-    let sent = sent_bytes(stderr).unwrap_or("no pack bytes");
-    format!("{timeout}; Git reported {sent} sent before the push was ended")
-}
-
-/// A checkout's remote as the gate crate writes and reads its records:
-/// pushes tried again on the remote's own faults and bounded in time
-/// (`push_record`), listings read once per process.
-struct OnRemote<'a>(&'a Repo);
-
-impl Records for OnRemote<'_> {
-    type Error = anyhow::Error;
-
-    fn layout(&self) -> Layout {
-        self.0.layout()
-    }
-
-    fn read(&self, names: &[&str]) -> Result<Vec<(String, String)>> {
-        let found = self.0.remote().records(names, Fresh::Process)?;
-        Ok(found.into_iter().map(|record| (record.name, record.subject)).collect())
-    }
-
-    fn message(&self, name: &str) -> Result<Option<String>> {
-        let found = self.0.remote().records(&[name], Fresh::Process)?;
-        match found.into_iter().find(|record| record.name == name && !record.subject.is_empty()) {
-            Some(record) => self.0.message(&record.sha).map(Some),
-            None => Ok(None),
-        }
-    }
-
-    fn commit(&self, tree: &str, parent: &str, message: &str) -> Result<String> {
-        self.0.record_commit_on(tree, parent, message)
-    }
-
-    fn put(&self, sha: &str, refname: &str) -> Result<Option<String>> {
-        push_record(self.0, sha, refname)
-    }
-
-    // Soft: none there is what was wanted.
-    fn delete(&self, refname: &str) {
-        let limit = Some(record_push_limit());
-        let _ = self.0.remote().try_push_retried(&Push::delete(refname), limit, || Ok(false));
-    }
-}
-
-/// The green run of `command` on `tree` the remote has on record and still
-/// believes at `now`, from either ref layout; `None` when it holds none that
-/// stands. One listing reads both records.
+/// The green run of `command` on `tree` this host has on record and still
+/// believes at `now`; `None` when it holds none that stands.
 pub fn recorded(
     repo: &Repo,
     tree: &Tree,
     command: &GateCommand,
     now: u64,
 ) -> Result<Option<GreenRun>> {
-    run::recorded(&OnRemote(repo), tree, command, now)
+    run::recorded(&OnHost(repo), tree, command, now)
 }
 
 /// The green run of `command` on `tree` on record that answers for a run of
@@ -709,21 +609,7 @@ pub fn reusable(
     command: &GateCommand,
     now: u64,
 ) -> Result<Option<GreenRun>> {
-    run::reusable(&OnRemote(repo), tree, command, &afkconvoy_gate::gate::machine(), now)
-}
-
-/// The still-valid green run among an existing remote snapshot's records,
-/// from either ref layout. The noted layout's record wins when both stand.
-pub fn recorded_among(
-    records: &[crate::remote::RemoteRecord],
-    layout: afkconvoy_core::layout::Layout,
-    tree: &Tree,
-    command: &GateCommand,
-    now: u64,
-) -> Option<GreenRun> {
-    let pairs: Vec<(&str, &str)> =
-        records.iter().map(|record| (record.name.as_str(), record.subject.as_str())).collect();
-    believed_among(&pairs, layout, tree, command, now)
+    run::reusable(&OnHost(repo), tree, command, &afkconvoy_gate::gate::machine(), now)
 }
 
 /// Whether the committed tree of a worktree passes the gate — the one question
@@ -1061,18 +947,5 @@ mod tests {
         assert_eq!(kept.judged, unkept.judged);
         let file = std::fs::read_to_string(dir.path().join("gate.log")).unwrap();
         assert_eq!(file.lines().count(), 101, "the file keeps the whole output");
-    }
-
-    #[test]
-    fn a_timed_out_record_push_reports_gits_last_pack_progress() {
-        let stderr = "Writing objects:  50% (1/2)\r\
-                      Writing objects: 100% (2/2), 12.50 MiB | 1.25 MiB/s\r\
-                      git push --quiet --progress did not end within 1s; its process group was ended";
-        let said = push_error(stderr);
-        assert!(said.contains("did not end within 1s"), "{said}");
-        assert!(said.contains("Git reported 12.50 MiB sent before the push was ended"), "{said}");
-        assert!(!said.contains("Writing objects"), "progress is evidence, not the answer: {said}");
-        assert_eq!(sent_bytes("Writing objects: 50% (1/2)"), None);
-        assert!(push_error("git push did not end within 1s").contains("no pack bytes sent"));
     }
 }
