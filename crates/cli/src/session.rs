@@ -352,9 +352,13 @@ fn whole<T>(
 }
 
 /// Whether `text`, the session file at `path`, records a turn of `cwd`
-/// (`Harness::recorded_turn`). Once it does, it does while the file only
+/// (`Harness::recorded_turn`). The answer is kept while the file is
+/// unchanged, a negative one too. Once it does, it does while the file only
 /// grows, so a resident session tens of megabytes long is not parsed again
-/// for it at every look (sunfmin/control#993).
+/// for it at every look (sunfmin/control#993). Once it does not, it is
+/// parsed again only once a new line could make it so
+/// (`Harness::could_record`): a host's tree holds every worker's sessions,
+/// and each worker asks of all of them (local/macnomac-studio#28).
 fn records_turn(
     harness: Harness,
     cwd: &str,
@@ -363,20 +367,41 @@ fn records_turn(
     not_before: Option<u64>,
     brief: Option<&str>,
 ) -> bool {
-    let fact = format!(
+    let question = format!(
         "turn\0{}\0{cwd}\0{}\0{}",
         harness.key(),
         not_before.map_or(String::new(), |at| at.to_string()),
         brief.unwrap_or_default()
     );
-    if transcripts::known(path, &fact) {
-        return true;
-    }
-    let held = harness.recorded_turn(cwd, text, not_before, brief).is_some();
-    if held {
-        transcripts::know(path, text, &fact);
-    }
-    held
+    let owned = transcripts::answer(path, text, &question, |earlier: Option<(usize, Owned)>| {
+        let could = match earlier {
+            Some((_, owned)) if owned.held => return owned,
+            Some((given, owned)) => {
+                owned.could || harness.could_record(cwd, from_line(text, given), brief)
+            }
+            None => harness.could_record(cwd, text, brief),
+        };
+        let held = could && harness.recorded_turn(cwd, text, not_before, brief).is_some();
+        Owned { could, held }
+    });
+    owned.held
+}
+
+/// What `records_turn` found of a session file: whether any line of it
+/// could make it the worktree's, and whether it does.
+#[derive(Clone, Copy)]
+struct Owned {
+    could: bool,
+    held: bool,
+}
+
+/// `text` from the start of the line its first `given` bytes ended in:
+/// what a text that grew from those bytes holds that they did not, whole.
+fn from_line(text: &str, given: usize) -> &str {
+    let given = given.min(text.len());
+    let start =
+        text.as_bytes()[..given].iter().rposition(|byte| *byte == b'\n').map_or(0, |at| at + 1);
+    &text[start..]
 }
 
 /// What `read` makes of each session file `layout` names under `root`.
@@ -1295,10 +1320,7 @@ pub(crate) fn windows(
     harness: Harness,
     since: u64,
 ) -> Result<Option<(u64, Vec<afkconvoy_core::harness::window::Window>)>> {
-    newest(cwd, harness, since, |value| {
-        let windows = harness.windows(value);
-        (!windows.is_empty()).then_some(windows)
-    })
+    Ok(newest(cwd, harness, since)?.windows)
 }
 
 /// The newest limit of its account's use the worker in `cwd`, on `harness`,
@@ -1310,29 +1332,75 @@ pub(crate) fn limit(
     harness: Harness,
     since: u64,
 ) -> Result<Option<(u64, afkconvoy_core::harness::window::Limit)>> {
-    newest(cwd, harness, since, |value| {
-        harness
-            .limit_event(value)
-            .filter(|limit| limit.kind == afkconvoy_core::harness::window::Limited::Usage)
-    })
+    Ok(newest(cwd, harness, since)?.limit)
 }
 
-/// The newest record of the worker in `cwd`, on `harness`, of which `said`
-/// reads something, with when it was written. Files last written before
-/// `since` are not opened.
-fn newest<T>(
-    cwd: &Path,
-    harness: Harness,
-    since: u64,
-    said: impl Fn(&serde_json::Value) -> Option<T>,
-) -> Result<Option<(u64, T)>> {
+/// What the newest records of a worker's sessions say of its account, each
+/// with when it was written: its usage windows and the limit it met.
+#[derive(Clone, Default)]
+struct Said {
+    windows: Option<(u64, Vec<afkconvoy_core::harness::window::Window>)>,
+    limit: Option<(u64, afkconvoy_core::harness::window::Limit)>,
+}
+
+impl Said {
+    /// What `harness` reads of the lines of `text`, newest first, until it
+    /// read both.
+    fn of(harness: Harness, text: &str) -> Said {
+        let mut said = Said::default();
+        for line in text.lines().rev() {
+            if said.windows.is_some() && said.limit.is_some() {
+                break;
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let at = || session_first_at(line).unwrap_or(0);
+            if said.windows.is_none() {
+                let windows = harness.windows(&value);
+                if !windows.is_empty() {
+                    said.windows = Some((at(), windows));
+                }
+            }
+            if said.limit.is_none()
+                && let Some(limit) = harness
+                    .limit_event(&value)
+                    .filter(|limit| limit.kind == afkconvoy_core::harness::window::Limited::Usage)
+            {
+                said.limit = Some((at(), limit));
+            }
+        }
+        said
+    }
+
+    /// `newer`, and of what it does not say, what `self` does.
+    fn under(self, newer: Said) -> Said {
+        Said { windows: newer.windows.or(self.windows), limit: newer.limit.or(self.limit) }
+    }
+
+    /// Each newest of `self` and `other`.
+    fn newest(self, other: Said) -> Said {
+        fn later<T>(a: Option<(u64, T)>, b: Option<(u64, T)>) -> Option<(u64, T)> {
+            match (a, b) {
+                (Some(a), Some(b)) => Some(if b.0 > a.0 { b } else { a }),
+                (a, b) => a.or(b),
+            }
+        }
+        Said { windows: later(self.windows, other.windows), limit: later(self.limit, other.limit) }
+    }
+}
+
+/// What the newest records of the worker in `cwd`, on `harness`, say of its
+/// account. Files last written before `since` are not opened. A file's
+/// answer is kept while it is unchanged, and a file that grew is read from
+/// the line its last answer ended in (local/macnomac-studio#28).
+fn newest(cwd: &Path, harness: Harness, since: u64) -> Result<Said> {
     let cwd_text = cwd_str(cwd);
     let brief = brief(cwd);
     let layout = harness.session_place(&cwd_text).layout;
     // A tree of sessions holds every worktree's: a session there must record
     // this worktree's turn.
     let tree = matches!(layout, SessionLayout::Tree { .. });
-    let mut newest: Option<(u64, T)> = None;
+    let question = format!("said\0{}", harness.key());
+    let mut newest = Said::default();
     for home in worker_homes(cwd, harness)? {
         let found = read_layout(
             &home,
@@ -1344,25 +1412,24 @@ fn newest<T>(
                 if tree && !records_turn(harness, &cwd_text, path, text, None, brief.as_deref()) {
                     return None;
                 }
-                last_said(text, &said)
+                Some(transcripts::answer(
+                    path,
+                    text,
+                    &question,
+                    |earlier: Option<(usize, Said)>| match earlier {
+                        Some((given, said)) => {
+                            said.under(Said::of(harness, from_line(text, given)))
+                        }
+                        None => Said::of(harness, text),
+                    },
+                ))
             }),
         )?;
-        for (at, it) in found {
-            if newest.as_ref().is_none_or(|(newer, _)| at > *newer) {
-                newest = Some((at, it));
-            }
+        for said in found {
+            newest = newest.newest(said);
         }
     }
     Ok(newest)
-}
-
-/// The last record of `text` of which `said` reads something, with when it
-/// was written.
-fn last_said<T>(text: &str, said: &impl Fn(&serde_json::Value) -> Option<T>) -> Option<(u64, T)> {
-    text.lines().rev().find_map(|line| {
-        let value: serde_json::Value = serde_json::from_str(line).ok()?;
-        Some((session_first_at(line).unwrap_or(0), said(&value)?))
-    })
 }
 
 /// Read one resident session's usage between delivery and report. The brief
@@ -1485,6 +1552,95 @@ mod token_tests {
         assert!(loads() > read, "a written file is read again");
         let other = read_root(&root, harness, &cwd, None, Some(at + 60)).unwrap();
         assert_eq!(other, None, "another bound is its own question");
+    }
+
+    /// The CPU time this thread has used.
+    fn thread_cpu() -> std::time::Duration {
+        let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: `now` is a valid timespec for the call to fill.
+        assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut now) }, 0);
+        std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32)
+    }
+
+    /// Each tick asks the windows and the limit of every working worker's
+    /// account, and its windows again (`engine_accounts::sync`, `tick`), of
+    /// a tree holding every worker's sessions. A 20 MB session with no new
+    /// lines is parsed once over ten ticks, and another worker's 20 MB
+    /// session not at all; a grown one is read from its new lines
+    /// (local/macnomac-studio#28).
+    #[test]
+    fn ten_ticks_parse_a_large_unchanged_session_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("work");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let harness = Harness::ClaudeCode;
+        // Dated ahead, so no session of whoever runs this is fresh enough.
+        let at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 10 * 86_400;
+        let tree = crate::copies::cache().unwrap().join("harness").join(harness.key());
+        let rejected = json!({"type":"rate_limit_event","timestamp":"2026-11-27T10:00:00.000Z",
+            "rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":at + 3600,
+            "utilization":1.0}});
+        let session = |cwd: &Path, name: &str| {
+            let cwd = cwd_str(cwd);
+            let start = &harness.session_files(&cwd, true, at)[0].body;
+            let filler = format!(
+                "{}\n",
+                json!({"type":"assistant","cwd":cwd,"isSidechain":false,
+                    "message":{"role":"assistant","content":"x".repeat(1000)}})
+            );
+            let body = format!(
+                "{start}{rejected}\n{}",
+                filler.repeat(20 * 1024 * 1024 / filler.len() + 1)
+            );
+            let path = tree.join("projects").join(name).join("session.jsonl");
+            write_text(&path, &body, at).unwrap();
+            (path, filler)
+        };
+        let (own, filler) = session(&cwd, "work");
+        session(&other, "other");
+        assert!(own.metadata().unwrap().len() >= 20 * 1024 * 1024);
+        let asks = || transcripts::ASKS.with(std::cell::Cell::get);
+        let tick = || {
+            let said = windows(&cwd, harness, at).unwrap();
+            let met = limit(&cwd, harness, at).unwrap();
+            assert_eq!(windows(&cwd, harness, at).unwrap(), said);
+            (said, met)
+        };
+        let before = asks();
+        let cpu = thread_cpu();
+        let (_, met) = tick();
+        let first = thread_cpu() - cpu;
+        assert_eq!(met.map(|(_, limit)| limit.window), Some(Some("five_hour".into())));
+        // Its own session: whose it is, and what it says. The other's is
+        // asked whose it is, and answered unparsed.
+        assert_eq!(asks() - before, 3, "each session is asked each question once");
+        let asked = asks();
+        let cpu = thread_cpu();
+        for _ in 1..10 {
+            tick();
+        }
+        let rest = thread_cpu() - cpu;
+        assert_eq!(asks(), asked, "an unchanged session is not asked again");
+        let cpu = thread_cpu();
+        for _ in 1..10 {
+            assert_eq!(windows(&other.join("none"), harness, at).unwrap(), None);
+            limit(&other.join("none"), harness, at).unwrap();
+            windows(&other.join("none"), harness, at).unwrap();
+        }
+        let bare = thread_cpu() - cpu;
+        eprintln!(
+            "ten ticks over two 20 MB sessions: first {first:?}, the other nine {rest:?}; \
+             nine of a worker with no session {bare:?}"
+        );
+        let mut file = std::fs::OpenOptions::new().append(true).open(&own).unwrap();
+        file.write_all(filler.repeat(3).as_bytes()).unwrap();
+        file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(at + 1)).unwrap();
+        drop(file);
+        let bytes = transcripts::BYTES.with(std::cell::Cell::get);
+        let (_, met) = tick();
+        assert!(met.is_some(), "a grown session keeps what it said");
+        assert_eq!(transcripts::BYTES.with(std::cell::Cell::get) - bytes, filler.len() * 3);
     }
 
     #[test]

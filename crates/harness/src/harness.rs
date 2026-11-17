@@ -1662,6 +1662,34 @@ impl Harness {
         }
     }
 
+    /// Whether `text`, some whole lines of a session file, could make it the
+    /// worktree `cwd`'s session for [`Harness::recorded_turn`] — without
+    /// parsing it. False only where that turn is `None` for a file made of
+    /// this text and other lines that are each false here too, so a reader
+    /// of a growing file asks this of its new lines alone and parses the
+    /// file only once one of them is true (local/macnomac-studio#28).
+    ///
+    /// A harness that writes its sessions into one tree for every worktree
+    /// knows its own by a line naming `cwd` or the worker's `brief`, and JSON
+    /// writes either path as itself unless it holds a quote, a backslash or a
+    /// control character. Every other harness keeps a worktree's sessions
+    /// apart, and any line could be its turn.
+    pub fn could_record(self, cwd: &str, text: &str, brief: Option<&str>) -> bool {
+        match self {
+            Harness::ClaudeCode | Harness::Codex => {
+                let written_as_is =
+                    |path: &str| !path.chars().any(|ch| ch == '"' || ch == '\\' || ch.is_control());
+                let cwd = cwd.trim_end_matches('/');
+                if cwd.is_empty() || !written_as_is(cwd) || brief.is_some_and(|b| !written_as_is(b))
+                {
+                    return true;
+                }
+                text.contains(cwd) || brief.is_some_and(|brief| text.contains(brief))
+            }
+            Harness::Pi | Harness::Dsh | Harness::Kimi | Harness::Grok => true,
+        }
+    }
+
     /// The token use one session file's `text` records: the whole session, or
     /// from `window.0` through `window.1` inclusive. `None` is no usage
     /// evidence, not zero (`tokens::fold`). A session that keeps its

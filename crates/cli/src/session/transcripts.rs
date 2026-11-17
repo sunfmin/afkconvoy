@@ -83,9 +83,13 @@ struct Kept {
     /// The start of a character the last read ended inside.
     partial: Vec<u8>,
     used: u64,
-    /// What was found to hold of the text, which holds while it only grows.
-    known: std::collections::HashSet<String>,
+    /// Each question's last answer about the text, with how far the file
+    /// was read (`read`) and how long the text was when it was given.
+    answers: HashMap<String, (u64, usize, Answer)>,
 }
+
+/// One answer about a kept text, of whichever type its question gives.
+type Answer = Arc<dyn std::any::Any + Send + Sync>;
 
 impl Kept {
     fn view(&self) -> Text {
@@ -247,7 +251,7 @@ pub(super) fn text(path: &Path) -> Result<Option<Text>> {
         text: Arc::new(String::with_capacity(bytes.len())),
         partial: Vec::new(),
         used: asked,
-        known: Default::default(),
+        answers: HashMap::new(),
     };
     kept.take(&bytes);
     let text = kept.view();
@@ -256,24 +260,51 @@ pub(super) fn text(path: &Path) -> Result<Option<Text>> {
     Ok(Some(text))
 }
 
-/// Whether `fact` was found to hold of the kept text of `path`
-/// (`know`). A file read whole again knows nothing yet.
-pub(super) fn known(path: &Path, fact: &str) -> bool {
-    cache()
-        .as_ref()
-        .and_then(|cache| cache.files.get(path))
-        .is_some_and(|kept| kept.known.contains(fact))
+/// What `question` asks of `text`, the kept text of the session file at
+/// `path`: its earlier answer while the file is unchanged since, or else
+/// `ask`, handed the earlier answer and how long the text was when it was
+/// given where the file only grew since. A file read whole again, and a
+/// text the cache does not keep as it is, has no earlier answer. The cache
+/// is not held while `ask` runs.
+pub(super) fn answer<T: Clone + Send + Sync + 'static>(
+    path: &Path,
+    text: &Text,
+    question: &str,
+    ask: impl FnOnce(Option<(usize, T)>) -> T,
+) -> T {
+    let (read, earlier) = {
+        let mut guard = cache();
+        let Some(kept) = kept_as(&mut guard, path, text) else { return asked(ask(None)) };
+        let earlier = kept.answers.get(question).and_then(|(read, len, answer)| {
+            Some((*read, *len, answer.downcast_ref::<T>()?.clone()))
+        });
+        match earlier {
+            Some((read, _, answer)) if read == kept.read => return answer,
+            Some((_, len, answer)) => (kept.read, Some((len, answer))),
+            None => (kept.read, None),
+        }
+    };
+    let answer = asked(ask(earlier));
+    if let Some(kept) = kept_as(&mut cache(), path, text)
+        && kept.read == read
+    {
+        let given: Answer = Arc::new(answer.clone());
+        kept.answers.insert(question.to_owned(), (read, text.len(), given));
+    }
+    answer
 }
 
-/// Notes that `fact` holds of `text`, the kept text of `path`, and so of
-/// every text it grows into: a session's record of whose it is, once
-/// written, stays in it. A text the cache no longer keeps notes nothing.
-pub(super) fn know(path: &Path, text: &Text, fact: &str) {
-    if let Some(kept) = cache().as_mut().and_then(|cache| cache.files.get_mut(path))
-        && Arc::ptr_eq(&kept.text, text)
-    {
-        kept.known.insert(fact.to_owned());
-    }
+/// The file at `path` as the cache keeps it, while its text is `text`.
+fn kept_as<'a>(cache: &'a mut Option<Cache>, path: &Path, text: &Text) -> Option<&'a mut Kept> {
+    let kept = cache.as_mut()?.files.get_mut(path)?;
+    (kept.partial.is_empty() && Arc::ptr_eq(&kept.text, text)).then_some(kept)
+}
+
+/// `answer`, counted for a test.
+fn asked<T>(answer: T) -> T {
+    #[cfg(test)]
+    ASKS.with(|asks| asks.set(asks.get() + 1));
+    answer
 }
 
 /// A directory's entries, each with whether it is a directory.
@@ -340,9 +371,11 @@ pub(super) fn listing(dir: &Path) -> Result<Option<Listing>> {
 #[cfg(test)]
 thread_local! {
     /// How many bytes of session files this thread read.
-    static BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many directories this thread listed.
     static LISTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many questions about session texts this thread answered afresh.
+    pub(super) static ASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -427,21 +460,45 @@ mod tests {
         assert!(denied.unwrap_err().to_string().contains("cannot read"));
     }
 
+    /// An unchanged file's answer is reused, a negative one too; a grown
+    /// file's question is handed its earlier answer and where it was given;
+    /// a rewritten file's is asked afresh.
     #[test]
-    fn what_holds_of_a_session_holds_while_it_grows_and_not_once_it_is_rewritten() {
+    fn an_answer_holds_while_its_file_is_unchanged_and_carries_over_as_it_grows() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.jsonl");
         std::fs::write(&path, "{\"cwd\":\"/w\"}\n").unwrap();
+        let asks = || ASKS.with(std::cell::Cell::get);
         let first = text(&path).unwrap().unwrap();
-        know(&path, &first, "here");
+        let mut given = Vec::new();
+        assert!(!answer(&path, &first, "q", |earlier: Option<(usize, bool)>| {
+            given.push(earlier);
+            false
+        }));
         drop(first);
-        assert!(known(&path, "here"));
+        let before = asks();
+        for _ in 0..10 {
+            let same = text(&path).unwrap().unwrap();
+            assert!(!answer(&path, &same, "q", |_: Option<(usize, bool)>| -> bool {
+                panic!("an unchanged file is not asked")
+            }));
+        }
+        assert_eq!(asks(), before);
         append(&path, b"{}\n");
-        text(&path).unwrap().unwrap();
-        assert!(known(&path, "here"), "a grown session still holds it");
+        let grown = text(&path).unwrap().unwrap();
+        assert!(answer(&path, &grown, "q", |earlier| {
+            given.push(earlier);
+            true
+        }));
+        drop(grown);
         std::fs::write(&path, "{\"cwd\":\"/other\"}\n{}\n{}\n").unwrap();
-        text(&path).unwrap().unwrap();
-        assert!(!known(&path, "here"), "a rewritten session knows nothing yet");
+        let rewritten = text(&path).unwrap().unwrap();
+        answer(&path, &rewritten, "q", |earlier| {
+            given.push(earlier);
+            false
+        });
+        let first_len = "{\"cwd\":\"/w\"}\n".len();
+        assert_eq!(given, [None, Some((first_len, false)), None]);
     }
 
     /// One tick lists each session tree at most once: a directory is
