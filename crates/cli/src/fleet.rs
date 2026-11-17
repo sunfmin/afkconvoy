@@ -3,7 +3,7 @@
 //!
 //! A rebuild asks the remote once and GitHub a fixed number of times, side by
 //! side: one listing of branch tips and every ref of the fleet
-//! (`Remote::open`), and what is open on GitHub (`GitHub::open`). A patrol
+//! (`Remote::open`), and what is open on GitHub (`issues::open`). A patrol
 //! that bounds how many issues it lands in a day is read in that same issues
 //! query. Neither grows with the issues in flight.
 
@@ -18,11 +18,13 @@ use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::team::{Role, Team, Workflow};
 use afkconvoy_core::worker::{carried_by, recorded_branches};
 use anyhow::{Context, Result, anyhow};
+use std::sync::Arc;
 use std::thread;
 
 use crate::claims::Scan;
-use crate::gh::{GitHub, Open, OpenIssues, beside, gone};
+use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::issues::{Issues, Open, OpenIssues, beside, gone};
 use crate::orca::{Source, Worktree};
 use crate::patrol;
 use crate::remote::{Fresh, Listing, Remote};
@@ -63,6 +65,8 @@ pub struct Fleet {
     /// The repo's config, read anew at each view.
     pub config: Config,
     pub gh: GitHub,
+    /// The issues of the tracker `gh` names (`crate::issues::of`).
+    pub issues: Arc<dyn Issues>,
     pub scan: Scan,
     /// The remote, opened on the base branch and the fleet's refs as it had
     /// them when this view was opened: what `scan` was read from, and what a
@@ -115,6 +119,7 @@ impl Fleet {
             user: std::cell::RefCell::new(None),
             refusals: std::cell::RefCell::new(Default::default()),
             config,
+            issues: crate::issues::of(&gh),
             gh,
             scan,
             remote,
@@ -136,12 +141,14 @@ impl Fleet {
     /// asked side by side, of the one tracker the view goes by.
     pub fn read(repo: &Repo, now: u64) -> Result<(Fleet, Open)> {
         let gh = GitHub::of(repo)?;
+        let fleet_issues = crate::issues::of(&gh);
         // Before the issues query, so a patrol that bounds its day is counted
         // in that query instead of a second one. A team that cannot be read
         // leaves the landings unasked.
         let since = patrol::landings_since(repo, now);
         let (fleet, open) = thread::scope(|scope| {
-            let open = scope.spawn(|| gh.open_with_landings(since));
+            let open =
+                scope.spawn(|| crate::issues::open_with_landings(&gh, &*fleet_issues, since));
             (Fleet::open_on(repo, gh.clone(), now), beside(open))
         });
         let mut fleet = fleet?;
@@ -348,7 +355,7 @@ impl Fleet {
 
     pub fn refusals(&self, issue: u64) -> Result<Vec<afkconvoy_core::worker::Refusal>> {
         if !self.refusals.borrow().contains_key(&issue) {
-            let comments = self.gh.comments(issue)?;
+            let comments = self.issues.comments(issue)?;
             self.refusals.borrow_mut().insert(
                 issue,
                 afkconvoy_core::worker::refusals(comments.iter().map(|c| c.body.as_str())),
@@ -366,7 +373,7 @@ impl Fleet {
     ) -> Result<()> {
         let mut refusals = self.refusals(issue)?;
         if !refusals.iter().any(|r| r.harness == refusal.harness) {
-            self.gh.comment(issue, &refusal.comment())?;
+            self.issues.comment(issue, &refusal.comment())?;
             refusals.push(refusal);
             self.refusals.borrow_mut().insert(issue, refusals);
         }
@@ -640,7 +647,7 @@ impl Fleet {
             if issues.iter().any(|issue| issue.number == claim.number) {
                 continue;
             }
-            match self.gh.issue(claim.number) {
+            match self.issues.issue(claim.number) {
                 Ok(read) if read.is_closed() => {
                     closed.push(claim.number);
                     claimed.closers.extend(read.closed_by.map(|by| (claim.number, by)));
@@ -866,7 +873,7 @@ impl Fleet {
     /// What cannot be read says no: the claim then takes a slot.
     pub(crate) fn declared_since(&self, open: &Open, claim: &Claim) -> bool {
         let comments = open.issues.comments(claim.number);
-        let Some(verdict) = crate::gh::verdict_since(comments, claim.since) else {
+        let Some(verdict) = crate::issues::verdict_since(comments, claim.since) else {
             return false;
         };
         let Some(said) = comments.get(verdict.comment) else { return false };
@@ -907,7 +914,7 @@ impl Fleet {
     /// The open issues no claim holds whose named files overlap the files
     /// the claimed issues name: the work in flight (`apart::overlapping`,
     /// docs/adr/0076). Of an issue whose body was not read, nothing is known.
-    fn overlapping(&self, open: &crate::gh::OpenIssues) -> Vec<u64> {
+    fn overlapping(&self, open: &crate::issues::OpenIssues) -> Vec<u64> {
         use afkconvoy_core::apart::{named_files, overlapping};
         let named =
             |number: u64| open.body(number).map(|body| named_files(&body.body)).unwrap_or_default();

@@ -9,13 +9,13 @@ use anyhow::Result;
 use crate::claims::{Me, delete};
 use crate::fleet::Fleet;
 use crate::found::Found;
-use crate::gh::{Gone, gone};
+use crate::issues::{Gone, gone};
 use crate::judge::{leaving, mine, worktree_of};
 
 /// Whether issue `number` is gone, as GitHub says now → how: `None` of one it
 /// still has. Any other failure to read it is an error.
 pub fn asked(fleet: &Fleet, number: u64) -> Result<Option<Gone>> {
-    match fleet.gh.issue(number) {
+    match fleet.issues.issue(number) {
         Ok(_) => Ok(None),
         Err(error) => gone(&error).cloned().map(Some).ok_or(error),
     }

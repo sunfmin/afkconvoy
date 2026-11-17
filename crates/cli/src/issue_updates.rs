@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::fleet::Fleet;
-use crate::gh::OpenIssues;
+use crate::issues::OpenIssues;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::worker::WorkerState;
 

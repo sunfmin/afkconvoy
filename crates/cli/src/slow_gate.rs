@@ -63,7 +63,8 @@ fn landings(
 
 /// The issues the fleet opened for a slow gate, as GitHub has them now.
 fn reported(gh: &GitHub) -> Result<Reported> {
-    Ok(Reported::among(&gh.carrying(LABEL)?))
+    let issues = crate::issues::of(gh);
+    Ok(Reported::among(&issues.carrying(LABEL)?))
 }
 
 /// What a rebuild reads for the slow gate → the landings below `base` with a
@@ -116,7 +117,7 @@ pub fn open(fleet: &mut Fleet, me: &Me, slow: &SlowGate) -> Result<Outcome> {
             return Ok(Outcome::Lost);
         }
         let body = report(slow, &config.gate_command, &config.base_branch);
-        fleet.gh.open_issue(TITLE, &body, &[config.ready_label.as_str(), LABEL])?;
+        fleet.issues.open_issue(TITLE, &body, &[config.ready_label.as_str(), LABEL])?;
         Ok(Outcome::Done)
     });
     // Whatever came of it, the claim is over: the issue is what stands.

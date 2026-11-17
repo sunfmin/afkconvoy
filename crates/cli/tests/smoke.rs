@@ -446,10 +446,10 @@ fn a_real_claimed_worker_receives_a_later_comment_in_its_session() {
     );
     let existing = std::env::var("AFKCONVOY_LIVE_COMMENT_URL").ok();
     if existing.is_none() {
-        fleet.gh.comment(issue, &text).unwrap();
+        fleet.issues.comment(issue, &text).unwrap();
     }
     let comment = fleet
-        .gh
+        .issues
         .comments(issue)
         .unwrap()
         .into_iter()
@@ -463,7 +463,7 @@ fn a_real_claimed_worker_receives_a_later_comment_in_its_session() {
     let started = worker.handed(None).unwrap().unwrap();
     let began = Instant::now();
     loop {
-        let mut open = fleet.gh.open().unwrap();
+        let mut open = afkconvoy::issues::open(&fleet.gh, &*fleet.issues).unwrap();
         open.issues.rows.retain(|row| row.number == issue);
         let steps = reconcile(&fleet, &host, &open.issues);
         if afkconvoy::session::holds_note(&checkout, harness, started, &comment.url).unwrap() {

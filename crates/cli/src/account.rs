@@ -16,10 +16,11 @@ use crate::remote::Fresh;
 /// none (`End::accounted`), and an issue with no claim, no worker start and no
 /// account yet, are left untouched.
 pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result<()> {
+    let issues = crate::issues::of(gh);
     if !end.accounted() {
         return Ok(());
     }
-    let comments = gh.comments(issue)?;
+    let comments = issues.comments(issue)?;
     for comment in &comments {
         if afkconvoy_core::record::read_marker(account::ACCOUNT, &comment.body).is_some()
             && account::read(&comment.body, issue).is_err()
@@ -116,8 +117,8 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
     });
     match found {
         Some(comment) if comment.body.trim() == text.trim() => Ok(()),
-        Some(comment) => gh.edit_comment(comment.id, &text),
-        None => gh.comment(issue, &text),
+        Some(comment) => issues.edit_comment(comment.id, &text),
+        None => issues.comment(issue, &text),
     }
 }
 
@@ -127,14 +128,14 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
 /// none.
 fn verdict_at(
     worker: &account::Worker,
-    comments: &[crate::gh::Comment],
+    comments: &[crate::issues::Comment],
     before: Option<u64>,
 ) -> Option<u64> {
     if worker.verdict.is_some() {
         return worker.end;
     }
     let start = worker.start?;
-    let within: Vec<&crate::gh::Comment> = comments
+    let within: Vec<&crate::issues::Comment> = comments
         .iter()
         .filter(|comment| {
             comment.at.is_some_and(|at| at >= start && before.is_none_or(|before| at < before))
@@ -150,7 +151,8 @@ fn verdict_at(
 /// worktree and its session records still exist. Keep the original end:
 /// finishing the worker must not lengthen the issue's wall clock.
 pub(crate) fn refresh_stopped(repo: &Repo, gh: &GitHub, issue: u64) -> Result<()> {
-    let comments = gh.comments(issue)?;
+    let issues = crate::issues::of(gh);
+    let comments = issues.comments(issue)?;
     let Some(row) = comments.iter().find_map(|comment| account::read(&comment.body, issue).ok())
     else {
         return Ok(());

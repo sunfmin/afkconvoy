@@ -10,8 +10,9 @@ use crate::{checkout_list, gh::GitHub, git::Repo};
 pub fn accounts(repo: &Repo, days: u64, all: bool, rows: bool, now: u64) -> Result<Value> {
     let tracker = checkout_list::tracker_of(repo)?;
     let gh = GitHub::new(repo.dir.clone(), tracker);
+    let issues = crate::issues::of(&gh);
     let start = (!all).then(|| now.saturating_sub(days.saturating_mul(86400)));
-    let issues = gh.accounts()?;
+    let issues = issues.accounts()?;
     let watch_rounds =
         afkconvoy_core::accounts::usage_rows(crate::host_watch::rounds()?, start, now);
     let asking_questions =

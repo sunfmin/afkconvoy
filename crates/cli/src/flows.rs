@@ -20,6 +20,7 @@ use crate::config;
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 use crate::intake::open_taken_in;
+use crate::issues::Issues;
 use crate::team;
 use crate::tracker::REPO_LABEL_SAYS;
 
@@ -47,12 +48,16 @@ fn line(tracker: &Tracker, label: Option<&str>) -> String {
 
 /// Creates each of `labels` the repo lacks, as one that says `says` → the
 /// ones created. GitHub tells labels apart by their letters, not their case.
-pub(crate) fn create_missing(gh: &GitHub, labels: &[String], says: &str) -> Result<Vec<String>> {
-    let has = gh.labels()?;
+pub(crate) fn create_missing(
+    issues: &dyn Issues,
+    labels: &[String],
+    says: &str,
+) -> Result<Vec<String>> {
+    let has = issues.labels()?;
     let mut created = vec![];
     for label in labels {
         if !has.iter().any(|had| had.eq_ignore_ascii_case(label)) {
-            gh.create_label(label, says)?;
+            issues.create_label(label, says)?;
             created.push(label.clone());
         }
     }
@@ -163,22 +168,23 @@ pub fn flows(repo: &Repo, delivery: Option<&str>, asked: Option<&RepoName>) -> R
     let config = config::load(&repo.dir.join(config::FILE))?;
     let (tracker, off_the_list) = tracker(repo, asked)?;
     let gh = GitHub::new(repo.dir.clone(), tracker);
+    let issues = crate::issues::of(&gh);
     if let Some(id) = delivery {
         crate::delivery::reference(repo, id)?;
     }
     // A tracker the list says was given the repo label by the `run` that
     // said it; one `--tracker` says off the list may lack it.
     let repo_label = gh.tracker.repo_label().filter(|_| off_the_list);
-    let labelled = |gh: &GitHub, mut created: Vec<String>| -> Result<Vec<String>> {
+    let labelled = |issues: &dyn Issues, mut created: Vec<String>| -> Result<Vec<String>> {
         if let Some(label) = &repo_label {
-            created.extend(create_missing(gh, std::slice::from_ref(label), REPO_LABEL_SAYS)?);
+            created.extend(create_missing(issues, std::slice::from_ref(label), REPO_LABEL_SAYS)?);
         }
         Ok(created)
     };
     let Some(bound) = &config.bound else {
         let created =
-            create_missing(&gh, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;
-        let created = labelled(&gh, created)?;
+            create_missing(&*issues, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;
+        let created = labelled(&*issues, created)?;
         let mut answer = json!({"team": null, "ready_label": config.ready_label,
             "line": line(&gh.tracker, delivery.is_none().then_some(config.ready_label.as_str())),
             "keep_off": keep_off(&config, &config.escalate_label), "created": created});
@@ -189,10 +195,10 @@ pub fn flows(repo: &Repo, delivery: Option<&str>, asked: Option<&RepoName>) -> R
         return Ok(answer);
     };
     let team = team::load(team::From::Config, Some(repo))?.team;
-    let open = open_taken_in(&team, &gh.open_issues()?);
+    let open = open_taken_in(&team, &issues.open_issues(None)?.issues);
     let flow_labels: Vec<String> =
         team.workflows.iter().map(|workflow| workflow.flow_label().to_string()).collect();
-    let created = labelled(&gh, create_missing(&gh, &flow_labels, FLOW_LABEL_SAYS)?)?;
+    let created = labelled(&*issues, create_missing(&*issues, &flow_labels, FLOW_LABEL_SAYS)?)?;
     let mut answer = json!({
         "team": bound.team,
         "workflows":

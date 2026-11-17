@@ -9,8 +9,9 @@ use afkconvoy_core::tracker::{Tracker, repo_labels};
 use anyhow::Result;
 
 use crate::checkout_list::{List, named_repo, repo_of};
-use crate::gh::{BlockedBy, GitHub, OpenIssues};
+use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::issues::{BlockedBy, OpenIssues};
 
 struct Checkout {
     repo: String,
@@ -156,7 +157,8 @@ pub fn can_hand_on(issue: u64, edges: &[BlockedBy], rows: &[UnworkedBlocker]) ->
 
 /// A fresh read for a consult, shared by its claim check and its brief.
 pub fn for_issue(repo: &Repo, gh: &GitHub, issue: u64) -> Result<Vec<UnworkedBlocker>> {
-    unworked(repo, &gh.tracker, &[(issue, gh.blocked_by(issue)?)])
+    let issues = crate::issues::of(gh);
+    unworked(repo, &gh.tracker, &[(issue, issues.blocked_by(issue)?)])
 }
 
 pub fn evidence(rows: &[UnworkedBlocker]) -> String {

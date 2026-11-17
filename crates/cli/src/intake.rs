@@ -12,8 +12,9 @@ use serde_json::{Value, json};
 
 use crate::config;
 use crate::copies::Copies;
-use crate::gh::{Comment, GitHub, OpenIssues};
+use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::issues::{Comment, Issues, OpenIssues};
 use crate::team::keep;
 
 /// What a worker takes in, and who it is.
@@ -73,24 +74,21 @@ pub(crate) fn open_taken_in(team: &Team, open: &OpenIssues) -> usize {
     open.rows.iter().filter(taken).count()
 }
 
-/// The database id of each issue `blocked_by` names, as a blocker of issue
-/// `number`: an edge is written by id. Refused: the issue itself, a pull
-/// request, and one that cannot be read.
-fn blockers(gh: &GitHub, number: u64, blocked_by: &[u64]) -> Result<Vec<(u64, u64)>> {
-    let mut found = vec![];
+/// Refuses, of the issues `blocked_by` names as blockers of issue `number`,
+/// the issue itself, a pull request, and one that cannot be read.
+fn blockers(issues: &dyn Issues, number: u64, blocked_by: &[u64]) -> Result<()> {
     for &blocker in blocked_by {
         if blocker == number {
             bail!("issue #{number} cannot wait for itself: --blocked-by names it");
         }
-        let read = gh.issue(blocker).map_err(|error| {
+        let read = issues.issue(blocker).map_err(|error| {
             anyhow!("--blocked-by names #{blocker}, which cannot be read: {error:#}")
         })?;
         if read.pull_request {
             bail!("--blocked-by names #{blocker}, a pull request: an issue waits for issues");
         }
-        found.push((blocker, read.id));
     }
-    Ok(found)
+    Ok(())
 }
 
 /// `afkconvoy intake`: take the issue `taking` names in to its workflow — a
@@ -111,6 +109,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     let Taking { issue: number, workflow: name, by, blocked_by, delivery, from } = taking;
     let config = config::load(&repo.dir.join(config::FILE))?;
     let gh = GitHub::of(repo)?;
+    let issues = crate::issues::of(&gh);
     // Only this supported operation's source task supplies inheritance. Edges,
     // parent links, checkout branches and ambient discussion supply none.
     let delivery = match delivery {
@@ -127,29 +126,29 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
                 "this repo is unbound: its config names no team, so it has no workflow to take in to"
             )
         }
-        let read = gh.issue(number)?;
+        let read = issues.issue(number)?;
         anyhow::ensure!(
             !read.pull_request && !read.is_closed(),
             "intake requires an open task issue"
         );
         gh.tracker.to_take(&read.labels).map_err(anyhow::Error::msg)?;
-        let blockers = blockers(&gh, number, &blocked_by)?;
+        blockers(&*issues, number, &blocked_by)?;
         if let Some(id) = &delivery {
             crate::target::attach(repo, number, id)?;
         }
-        let recorded = gh.blocked_by(number)?;
-        for (blocker, id) in blockers {
+        let recorded = issues.blocked_by(number)?;
+        for &blocker in &blocked_by {
             if !recorded.iter().any(|edge| edge.number == blocker) {
-                gh.add_blocker(number, id)?;
+                issues.add_blocker(number, blocker)?;
             }
         }
-        gh.take(number, &read.labels)?;
+        issues.take(number, &read.labels)?;
         crate::flows::create_missing(
-            &gh,
+            &*issues,
             std::slice::from_ref(&config.ready_label),
             crate::flows::READY_LABEL_SAYS,
         )?;
-        gh.add_label(number, &config.ready_label)?;
+        issues.add_label(number, &config.ready_label)?;
         return Ok(with(
             json!({"issue": number, "taken": true, "blocked_by": blocked_by}),
             crate::target::select(repo, number, None)?,
@@ -184,7 +183,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
             bound.team
         );
     }
-    let issue = gh.issue(number).map_err(|error| missing_issue(repo, &gh, number, error))?;
+    let issue = issues.issue(number).map_err(|error| missing_issue(repo, &gh, number, error))?;
     if issue.pull_request {
         bail!("#{number} is a pull request: only an issue is taken in");
     }
@@ -200,8 +199,8 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
             if let Some(id) = &delivery {
                 crate::target::attach(repo, number, id)?;
             }
-            gh.take(number, &issue.labels)?;
-            let standing = came_in(&kept.team, &issue.labels, &gh.comments(number)?);
+            issues.take(number, &issue.labels)?;
+            let standing = came_in(&kept.team, &issue.labels, &issues.comments(number)?);
             let answer =
                 json!({"issue": number, "workflow": name, "taken": false, "standing": standing});
             return if delivery.is_some() {
@@ -215,29 +214,30 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
             carried.join(", ")
         ),
     }
-    let blockers = blockers(&gh, number, &blocked_by)?;
-    let (open, limit) = (open_taken_in(&kept.team, &gh.open_issues()?), bound.intake_limit);
+    blockers(&*issues, number, &blocked_by)?;
+    let open = issues.open_issues(None)?.issues;
+    let (open, limit) = (open_taken_in(&kept.team, &open), bound.intake_limit);
     if by.is_some() && !has_room(open, limit) {
         bail!(
             "the intake limit is reached: {open} open issues were taken in by workers, and \
              `intake_limit` is {limit}. One has to close before a worker takes another in"
         );
     }
-    let recorded = gh.blocked_by(number)?;
+    let recorded = issues.blocked_by(number)?;
     if let Some(id) = &delivery {
         crate::target::attach(repo, number, id)?;
     }
-    for (blocker, id) in blockers {
+    for &blocker in &blocked_by {
         if !recorded.iter().any(|edge| edge.number == blocker) {
-            gh.add_blocker(number, id)?;
+            issues.add_blocker(number, blocker)?;
         }
     }
     let record = by.map(|by| IntakeRecord { workflow: name.clone(), by });
     if let Some(record) = &record {
-        gh.comment(number, &record.comment())?;
+        issues.comment(number, &record.comment())?;
     }
-    gh.take(number, &issue.labels)?;
-    gh.add_label(number, workflow.flow_label())?;
+    issues.take(number, &issue.labels)?;
+    issues.add_label(number, workflow.flow_label())?;
     let mut taken = json!({"issue": number, "workflow": name, "taken": true,
         "blocked_by": blocked_by});
     if let Some(record) = record {
@@ -253,7 +253,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
 /// Ask `gh` for its URL (following transfers); a failed lookup is not a claim
 /// that the issue is anywhere in particular.
 fn missing_issue(repo: &Repo, gh: &GitHub, number: u64, error: anyhow::Error) -> anyhow::Error {
-    if !crate::gh::gone(&error).is_some_and(|gone| gone.how != crate::gh::Went::Deleted) {
+    if !crate::issues::gone(&error).is_some_and(|gone| gone.how != crate::issues::Went::Deleted) {
         return error;
     }
     let own = crate::checkout_list::named_repo(repo)

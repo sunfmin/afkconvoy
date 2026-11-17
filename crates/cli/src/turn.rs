@@ -425,6 +425,7 @@ fn land_task(
     now: u64,
     looked: crate::target::Seen,
 ) -> Result<Value> {
+    let issues = crate::issues::of(gh);
     let mut routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
     // The claim, target and base were checked before the turn's receipt.
     // Finding no PR does not read any of those again.
@@ -446,8 +447,8 @@ fn land_task(
             .rev()
             .find(|pr| pr.issue() == Some(issue))
         {
-            if !gh.issue(issue)?.is_closed() {
-                gh.close_issue(issue)?;
+            if !issues.issue(issue)?.is_closed() {
+                issues.close_issue(issue)?;
             }
             crate::account::leave(repo, gh, issue, End::Landed, now)?;
             return Ok(
@@ -514,6 +515,7 @@ fn run(
     (host, now, on_red): (&str, u64, OnRedBase),
 ) -> Result<Value> {
     let gh = GitHub::of(repo)?;
+    let issues = crate::issues::of(&gh);
     let issue = match of {
         Of::Issue(n) => Some(*n),
         _ => None,
@@ -554,8 +556,8 @@ fn run(
     let current = base(repo, config)?;
     if repo.within(&here, &current)? {
         if let Some(n) = issue {
-            if !gh.issue(n)?.is_closed() {
-                gh.close_issue(n)?;
+            if !issues.issue(n)?.is_closed() {
+                issues.close_issue(n)?;
             }
             crate::account::leave(repo, &gh, n, End::Landed, now)?;
         }
@@ -565,7 +567,7 @@ fn run(
     }
     // A closed issue asks for no turn: nothing lands for it.
     if let Some(n) = issue
-        && gh.issue(n)?.is_closed()
+        && issues.issue(n)?.is_closed()
     {
         bail!(closed(n));
     }

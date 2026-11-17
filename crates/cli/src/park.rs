@@ -33,7 +33,7 @@ pub fn standings(fleet: &Fleet, issue: u64, named: &[u64]) -> Result<Vec<(u64, S
     let mut blockers = vec![];
     for &number in named {
         // One that cannot be read is never taken for closed.
-        let read = fleet.gh.issue(number).ok().map(|read| BlockerRead {
+        let read = fleet.issues.issue(number).ok().map(|read| BlockerRead {
             closed: read.is_closed(),
             state_reason: read.state_reason,
             labels: read.labels,
@@ -46,15 +46,13 @@ pub fn standings(fleet: &Fleet, issue: u64, named: &[u64]) -> Result<Vec<(u64, S
             open_pr: closing_pr(&prs, number).is_some(),
         });
     }
-    let edges = walk(issue, &walk_from(&blockers), |blocker| fleet.gh.open_blockers(blocker))
+    let edges = walk(issue, &walk_from(&blockers), |blocker| fleet.issues.open_blockers(blocker))
         .map_err(|stopped| match stopped {
-            WalkError::Read(error) => error,
-            WalkError::TooLong => {
-                anyhow!(
-                    "issue #{issue}: the dependency chain behind its blockers is too long to read"
-                )
-            }
-        })?;
+        WalkError::Read(error) => error,
+        WalkError::TooLong => {
+            anyhow!("issue #{issue}: the dependency chain behind its blockers is too long to read")
+        }
+    })?;
     let flows = crate::team::flow_labels(&fleet.gh, &fleet.config);
     let standings = blockers
         .iter()
@@ -77,7 +75,7 @@ pub fn routed(fleet: &Fleet, issue: u64, named: &BlockedOn) -> Result<Blocked> {
 /// starting its successor. Keeping its comment, rather than reading again
 /// after startup, never answers something the new worker just declared.
 pub(crate) fn cleared_verdict(fleet: &Fleet, issue: u64) -> Result<Option<String>> {
-    let comments = fleet.gh.comments(issue)?;
+    let comments = fleet.issues.comments(issue)?;
     let verdict = latest_verdict(comments.iter().map(|comment| comment.body.as_str()));
     let Some(verdict) = verdict.filter(|verdict| verdict.phase == Some(Phase::Blocked)) else {
         return Ok(None);
@@ -102,20 +100,20 @@ pub fn park_claim(
     let issue = claim.number;
     let left =
         worktree.map(|worktree| leaving(fleet, issue, worktree)).transpose()?.map(|l| l.left);
-    let recorded = fleet.gh.blocked_by(issue)?;
+    let recorded = fleet.issues.blocked_by(issue)?;
     let spare = left.as_ref().and_then(Left::spare);
     let kept = left.as_ref().and_then(Left::kept).copied();
     transition::park(issue, parkable, spare, |step| {
         match step {
             ParkStep::Edge { blocker } => {
                 if !recorded.iter().any(|edge| edge.number == blocker) {
-                    fleet.gh.add_blocker(issue, fleet.gh.issue(blocker)?.id)?;
+                    fleet.issues.add_blocker(issue, blocker)?;
                 }
             }
             ParkStep::Cut => {
-                let labels = fleet.gh.issue(issue)?.labels;
+                let labels = fleet.issues.issue(issue)?.labels;
                 if !labels.iter().any(|label| label == WAITING_LABEL) {
-                    fleet.gh.add_label(issue, WAITING_LABEL)?;
+                    fleet.issues.add_label(issue, WAITING_LABEL)?;
                 }
             }
             ParkStep::Board => parked(fleet, claim, parkable, kept)?,
@@ -143,12 +141,12 @@ pub fn park_claim(
 /// and a claim that is not parkable now is refused untouched.
 pub fn park(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
-    let comments = fleet.gh.comments(issue)?;
+    let comments = fleet.issues.comments(issue)?;
     let refused = |why: &str| anyhow!("issue #{issue} is not parkable: {why}; nothing was changed");
     let not_blocked = || refused("its worker's latest verdict is not `blocked`");
     // Repairs in a bound repo run outside its workflows, as they do in a tick.
     let labels = match &fleet.config.bound {
-        Some(_) => Some(fleet.gh.issue(issue)?.labels),
+        Some(_) => Some(fleet.issues.issue(issue)?.labels),
         None => None,
     };
     let named =

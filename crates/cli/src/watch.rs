@@ -18,7 +18,7 @@ use crate::claims::Me;
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::found::Found;
-use crate::gh::Comment;
+use crate::issues::Comment;
 use crate::judge::{
     Handed, Look, escalate_claim, mine, nudge_worker, own_background, progress, where_it_stopped,
 };
@@ -149,7 +149,7 @@ pub(crate) fn answer_turn(
     issue: u64,
     turn: Turn,
     start: bool,
-    dependencies: &[crate::gh::BlockedBy],
+    dependencies: &[crate::issues::BlockedBy],
 ) -> Result<Outcome> {
     let Turn { worktree, answered, handoff, reds } = turn;
     if answered == Answered::Asking {

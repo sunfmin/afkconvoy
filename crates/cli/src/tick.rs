@@ -524,7 +524,7 @@ impl Failure {
 struct Read<'r> {
     set: &'r WorkingSet,
     flows: &'r Flows,
-    issues: &'r crate::gh::OpenIssues,
+    issues: &'r crate::issues::OpenIssues,
 }
 
 /// Carries out `step` → how it ended, and what it found besides in `found`.
@@ -1725,7 +1725,11 @@ pub fn run(
                 // Wake routing is best effort, like a command's wake: a
                 // name this host cannot read never fails a completed tick.
                 if let Ok(tracker) = tracker {
-                    watching.saw(&tracker, ticked.blockers.iter().copied(), &fleet.gh.closed());
+                    watching.saw(
+                        &tracker,
+                        ticked.blockers.iter().copied(),
+                        &fleet.issues.seen_closed(),
+                    );
                 }
                 let panel = served.then(|| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))

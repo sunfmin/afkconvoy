@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::fleet::Fleet;
-use crate::gh::Comment;
+use crate::issues::Comment;
 use crate::orca::{Handed, Source, Worktree};
 
 /// What opens every note's comment.
@@ -114,11 +114,11 @@ fn comment(fleet: &Fleet, issue: u64, text: &str) -> Result<String> {
             .find(|comment| comment.body.trim() == body.trim())
             .map(|c| c.url.clone())
     };
-    if let Some(url) = posted(&fleet.gh.comments(issue)?) {
+    if let Some(url) = posted(&fleet.issues.comments(issue)?) {
         return Ok(url);
     }
-    fleet.gh.comment(issue, &body)?;
-    posted(&fleet.gh.comments(issue)?)
+    fleet.issues.comment(issue, &body)?;
+    posted(&fleet.issues.comments(issue)?)
         .with_context(|| format!("issue #{issue}: the note was posted and cannot be read back"))
 }
 

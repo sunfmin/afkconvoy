@@ -26,9 +26,10 @@ use serde_json::{Map, Value, json};
 use crate::claims::Scan;
 use crate::copies::Copies;
 use crate::fleet::Fleet;
-use crate::gh::{Comment, GitHub, Open, OpenIssues, Unreached, unreached};
+use crate::gh::{GitHub, Unreached, unreached};
 use crate::git::Repo;
 use crate::intake::came_in;
+use crate::issues::{Comment, Open, OpenIssues};
 use crate::team::{Kept, keep};
 use crate::workflow::position;
 
@@ -114,13 +115,14 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
         text,
     };
     let gh = GitHub::of(repo)?;
-    let comments = gh.comments(issue)?;
+    let issues = crate::issues::of(&gh);
+    let comments = issues.comments(issue)?;
     let standing = stage_records(comments.iter().map(|comment| comment.body.as_str()))
         .into_iter()
         .map(|(_, standing)| standing)
         .find(|standing| standing.stage == record.stage && standing.claim() == record.claim());
     if standing.is_none() {
-        gh.comment(issue, &record.comment())?;
+        issues.comment(issue, &record.comment())?;
     }
     let mut answer = json!({"issue": issue, "stage": record.stage,
         "verdict": record.stated.word(), "claim": claim.id,
@@ -162,14 +164,14 @@ pub fn put_to_consults(fleet: &Fleet, flows: &Flows, open: &OpenIssues) -> Resul
             // The comment of the escalation, but for its marker.
             let said = said.split_once("-->").map_or(said, |(_, said)| said).trim();
             let record = StageRecord::failed(&stage, Failure::Escalated, said);
-            fleet.gh.comment(issue.number, &record.comment())?;
+            fleet.issues.comment(issue.number, &record.comment())?;
         }
         let back = Relabel::back(&issue.labels, workflow.flow_label(), &team.escalate_label);
         if let Some(label) = &back.add {
-            fleet.gh.add_label(issue.number, label)?;
+            fleet.issues.add_label(issue.number, label)?;
         }
         for label in &back.remove {
-            fleet.gh.remove_label(issue.number, label)?;
+            fleet.issues.remove_label(issue.number, label)?;
         }
         put.push(issue.number);
     }
@@ -195,8 +197,9 @@ pub fn consult_send(
         bail!("a stage record carries why the issue is sent: there is none");
     }
     let gh = GitHub::of(repo)?;
-    let issue = gh.issue(number)?;
-    let comments = gh.comments(number)?;
+    let issues = crate::issues::of(&gh);
+    let issue = issues.issue(number)?;
+    let comments = issues.comments(number)?;
     let workflow = workflow_of(team, &issue.labels)
         .map_err(|why| anyhow!("issue #{number} cannot be sent to a stage: {why}"))?;
     if workflow.place_of(stage).is_none() {
@@ -233,7 +236,7 @@ pub fn consult_send(
     };
     let standing = read.records.iter().any(|standing| standing.claim() == record.claim());
     if !standing {
-        gh.comment(number, &record.comment())?;
+        issues.comment(number, &record.comment())?;
     }
     Ok(json!({"issue": number, "stage": stage, "verdict": "sent", "claim": claim,
         "declared": !standing}))
@@ -255,7 +258,8 @@ fn records_in(comments: &[Comment]) -> (Vec<StageRecord>, Vec<&Comment>) {
 /// The stage records of issue `number`, oldest first, each with the URL of
 /// its comment.
 pub(crate) fn records_of(gh: &GitHub, number: u64) -> Result<(Vec<StageRecord>, Vec<String>)> {
-    Ok(records_among(&gh.comments(number)?))
+    let issues = crate::issues::of(gh);
+    Ok(records_among(&issues.comments(number)?))
 }
 
 /// `afkconvoy show --issue`: where issue `number` is in the workflow of
@@ -272,8 +276,9 @@ pub(crate) fn records_of(gh: &GitHub, number: u64) -> Result<(Vec<StageRecord>, 
 /// the position a `pass` declared now leads to; null where none can be
 /// declared.
 pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
-    let issue = gh.issue(number)?;
-    let comments = gh.comments(number)?;
+    let issues = crate::issues::of(gh);
+    let issue = issues.issue(number)?;
+    let comments = issues.comments(number)?;
     let workflow = followed(team, &issue.labels, comments.iter().map(|c| c.body.as_str()))
         .map_err(|why| anyhow!("issue #{number} has no position: {why}"))?;
     let (records, urls) = records_among(&comments);
@@ -807,10 +812,10 @@ impl Flows {
         let position = history.place.position;
         let moves = label_moves(&issue.labels, position);
         if let Some(label) = &moves.add {
-            fleet.gh.add_label(issue.number, label)?;
+            fleet.issues.add_label(issue.number, label)?;
         }
         for label in &moves.remove {
-            fleet.gh.remove_label(issue.number, label)?;
+            fleet.issues.remove_label(issue.number, label)?;
         }
         let moved = moves.add.is_some() || !moves.remove.is_empty();
         Ok(if moved { Outcome::Done } else { Outcome::Nothing })

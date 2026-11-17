@@ -21,8 +21,9 @@ use crate::claims::{Me, Take, take};
 use crate::fleet::Fleet;
 use crate::forget::forget;
 use crate::found::Found;
-use crate::gh::{IssueRead, Tracker, gone};
+use crate::gh::Tracker;
 use crate::git::Repo;
+use crate::issues::{IssueRead, gone};
 use crate::launch::Launches;
 use crate::orca::{Source, Worktree};
 use crate::recovery::{Survey, own_heads, survey};
@@ -508,7 +509,7 @@ pub(crate) struct Continuing {
 
 /// Validate the successor before ending the old worker.
 pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) -> Result<Harness> {
-    let issue = fleet.gh.issue(number)?;
+    let issue = fleet.issues.issue(number)?;
     let harness = match fleet
         .config
         .bound
@@ -543,7 +544,7 @@ fn start(
     (from, continuing, fresh): (StartFrom, Option<&Continuing>, Option<&crate::fresh_look::Handed>),
     ready: Option<&str>,
 ) -> Result<Dispatched> {
-    let issue = fleet.gh.issue(number)?;
+    let issue = fleet.issues.issue(number)?;
     if issue.is_closed() {
         // before the claim: never lock a closed issue
         return Err(Closed(number).into());
@@ -613,8 +614,8 @@ fn start(
             DispatchStep::Claim => {
                 // A tick's rebuild can be minutes older than this: a blocker
                 // added since holds the issue back all the same.
-                let edges = fleet.gh.blocked_by(number)?;
-                let mut blockers = fleet.gh.blockers(edges.clone());
+                let edges = fleet.issues.blocked_by(number)?;
+                let mut blockers = fleet.issues.open_of(edges.clone());
                 if staged.as_ref().is_some_and(Staged::is_consult) {
                     let unworked = crate::blockers::unworked(
                         &fleet.repo,
@@ -670,10 +671,10 @@ fn start(
             }
             DispatchStep::RecordBranch => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
-                let comments = fleet.gh.comments(number)?;
+                let comments = fleet.issues.comments(number)?;
                 let recorded = recorded_branches(comments.iter().map(|c| c.body.as_str()));
                 if !recorded.contains(&cut.branch) {
-                    fleet.gh.comment(number, &branch_comment(&cut.branch))?;
+                    fleet.issues.comment(number, &branch_comment(&cut.branch))?;
                 }
             }
             DispatchStep::Brief => {
@@ -821,7 +822,7 @@ fn note_start(
     let claim = fleet.scan.claim_of(number)?;
     // A start already on record for this claim and harness is this worker.
     // Restarting it after it died does not open another row.
-    let comments = match fleet.gh.comments(number) {
+    let comments = match fleet.issues.comments(number) {
         Ok(comments) => comments,
         Err(error) => return Some(format!("{error:#}")),
     };
@@ -842,18 +843,18 @@ fn note_start(
         role: staged.map(Staged::role),
         consult: staged.is_some_and(Staged::is_consult),
     });
-    fleet.gh.comment(number, &body).err().map(|error| format!("{error:#}"))
+    fleet.issues.comment(number, &body).err().map(|error| format!("{error:#}"))
 }
 
 /// Tells issue `number` once that `name`, a model label it carries, is not
 /// followed, and that the worker runs the user's default (`casting::unmatched_told`).
 fn tell_unmatched(fleet: &Fleet, number: u64, name: &str, ran: &Cast) -> Result<()> {
-    let comments = fleet.gh.comments(number)?;
+    let comments = fleet.issues.comments(number)?;
     if casting::unmatched_told(comments.iter().map(|c| c.body.as_str()), name) {
         return Ok(());
     }
     let notice = ran.notice.as_deref().unwrap_or("");
-    fleet.gh.comment(number, &casting::unmatched_comment(name, ran, notice))
+    fleet.issues.comment(number, &casting::unmatched_comment(name, ran, notice))
 }
 
 /// Adds to the brief in `worktree` what of the work of the worker before is

@@ -62,14 +62,15 @@ fn workspace(
     issue: u64,
     head: &str,
 ) -> Result<crate::orca::Worktree> {
+    let issues = crate::issues::of(gh);
     let source = crate::orca::Source::of(repo)?;
     if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)? {
         return Ok(worktree);
     }
-    let read = gh.issue(issue)?;
+    let read = issues.issue(issue)?;
     let name = gh.tracker.worktree_name(issue, &read.title);
     let worktree = crate::orca::Worktree::cut(&source, &name, head, Some(issue))?;
-    gh.comment(issue, &afkconvoy_core::worker::branch_comment(&worktree.branch))?;
+    issues.comment(issue, &afkconvoy_core::worker::branch_comment(&worktree.branch))?;
     Ok(worktree)
 }
 
@@ -83,24 +84,25 @@ fn recovery(
     key: &str,
     head: &str,
 ) -> Result<(u64, afkconvoy_core::plan::PullRequest)> {
+    let issues = crate::issues::of(gh);
     use afkconvoy_core::plan::{REPAIR_LABEL, closing_pr};
     let marker = format!("<!--convoy:migration tip={old} part={key}-->");
     let mut issue = None;
-    for (number, _) in gh.carrying(REPAIR_LABEL)? {
-        if gh.issue(number)?.body.is_some_and(|body| body.starts_with(&marker)) {
+    for (number, _) in issues.carrying(REPAIR_LABEL)? {
+        if issues.issue(number)?.body.is_some_and(|body| body.starts_with(&marker)) {
             issue = Some(number);
             break;
         }
     }
-    let labels = gh.labels()?;
+    let labels = issues.labels()?;
     for label in [REPAIR_LABEL, &config.ready_label] {
         if !labels.iter().any(|known| known == label) {
-            gh.create_label(label, "afkconvoy: fleet repair")?;
+            issues.create_label(label, "afkconvoy: fleet repair")?;
         }
     }
     let issue = match issue {
         Some(issue) => issue,
-        None => gh.open_issue(&format!("Finish legacy landing {key}"), &format!("{marker}\nPreserve the work of an older release at {head}. Continue the existing PR and worktree; resolve its merge or red gate, commit, and land with `afkconvoy land --issue <n>`. Preserve both sides of a conflict. The legacy line stays until its history is on the base branch."), &[REPAIR_LABEL, &config.ready_label])?,
+        None => issues.open_issue(&format!("Finish legacy landing {key}"), &format!("{marker}\nPreserve the work of an older release at {head}. Continue the existing PR and worktree; resolve its merge or red gate, commit, and land with `afkconvoy land --issue <n>`. Preserve both sides of a conflict. The legacy line stays until its history is on the base branch."), &[REPAIR_LABEL, &config.ready_label])?,
     };
     let worktree = workspace(repo, gh, issue, head)?;
     let open = gh.open_prs()?;
@@ -169,6 +171,7 @@ pub fn migrate(
     host: &str,
     now: u64,
 ) -> Result<serde_json::Value> {
+    let issues = crate::issues::of(gh);
     use afkconvoy_core::gate::{GateCommand, Proven, Tree};
     use serde_json::json;
     let refs = train_refs(repo.layout(), &config.base_branch);
@@ -207,8 +210,8 @@ pub fn migrate(
             && crate::landing::push_base(repo, &config.base_branch, &legacy.tip, &proven)?
         {
             for issue in joins.iter().filter_map(|join| join.issue()) {
-                if !gh.issue(issue)?.is_closed() {
-                    gh.close_issue(issue)?;
+                if !issues.issue(issue)?.is_closed() {
+                    issues.close_issue(issue)?;
                 }
             }
             retire()?;
@@ -227,7 +230,7 @@ pub fn migrate(
             continue;
         }
         let (issue, pr) = match join.issue() {
-            Some(issue) if !gh.issue(issue)?.is_closed() => (issue, pr.clone()),
+            Some(issue) if !issues.issue(issue)?.is_closed() => (issue, pr.clone()),
             _ => recovery(repo, config, gh, &old, &pr.number.to_string(), &pr.head_sha)?,
         };
         let answer = attempt(repo, config, gh, issue, &pr, (host, now))?;

@@ -2071,7 +2071,7 @@ fn finish_state(
     now: u64,
     run: &mut Run,
     trust: bool,
-    opened: (Fleet, crate::gh::Open),
+    opened: (Fleet, crate::issues::Open),
     readings: &Readings,
 ) -> Result<(State, FleetReport)> {
     let (mut fleet, open) = opened;
@@ -2146,7 +2146,7 @@ fn finish_state(
         held,
         stage_baselines: if stood.iter().any(|issue| issue.stage.is_some() && issue.role.is_some())
         {
-            afkconvoy_core::accounts::stage_baselines(&fleet.gh.accounts()?)
+            afkconvoy_core::accounts::stage_baselines(&fleet.issues.accounts()?)
         } else {
             Default::default()
         },
@@ -2177,7 +2177,7 @@ fn finish_state(
 
 /// The open issues whose latest record says a PR carries theirs, where that
 /// PR is open no more and the base branch holds its landing.
-fn read_carried_landed(fleet: &Fleet, open: &crate::gh::Open) -> Result<Vec<CarriedLanded>> {
+fn read_carried_landed(fleet: &Fleet, open: &crate::issues::Open) -> Result<Vec<CarriedLanded>> {
     let mut found = vec![];
     let mut tip = None;
     for issue in &open.issues.rows {

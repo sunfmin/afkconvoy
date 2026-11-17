@@ -25,7 +25,8 @@ struct Change {
 pub fn run(repo: &Repo, backup: Option<&Path>, now: u64) -> Result<Value> {
     let tracker = checkout_list::tracker_of(repo)?;
     let gh = GitHub::new(repo.dir.clone(), tracker.clone());
-    let issues = gh.account_issues()?;
+    let tracked = crate::issues::of(&gh);
+    let issues = tracked.account_issues()?;
     let mut changes = Vec::new();
     let mut before = Vec::new();
     let mut after = Vec::new();
@@ -124,7 +125,7 @@ pub fn run(repo: &Repo, backup: Option<&Path>, now: u64) -> Result<Value> {
                     return Err(error).with_context(|| format!("write backup {}", path.display()));
                 }
             }
-            let comments = gh.comments(change.issue)?;
+            let comments = tracked.comments(change.issue)?;
             let current = comments
                 .iter()
                 .find(|comment| comment.id == change.comment)
@@ -136,7 +137,7 @@ pub fn run(repo: &Repo, backup: Option<&Path>, now: u64) -> Result<Value> {
                     change.comment
                 );
             }
-            gh.edit_comment(change.comment, new_body)?;
+            tracked.edit_comment(change.comment, new_body)?;
         }
     }
     Ok(

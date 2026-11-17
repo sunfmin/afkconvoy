@@ -1,27 +1,30 @@
 //! GitHub, through `gh` as a subprocess run in the checkout. Its PRs and the
 //! protection of its branches are the checkout's repo's, which `gh` works out
-//! from the checkout, so nothing here names it. Every issue — the open ones,
-//! their comments, blockers and labels, one opened or closed — is the
-//! tracker's (`Tracker`), which every issue call names. In a tracker that is
-//! not the checkout's own repo, the fleet's issues are those that carry its
-//! repo label: the open ones are read by it, and one opened carries it.
+//! from the checkout, so nothing here names it. The issues of a tracker that
+//! is a GitHub repo are read and written through the GitHub adapter of the
+//! fleet's issues (`issues::GitHubIssues`, the seam `crate::issues`), which
+//! makes its calls through this; the queries it makes are here, beside the
+//! others.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 
 use afkconvoy_core::config::RepoName;
 use afkconvoy_core::layout::{Guard, Protection};
-use afkconvoy_core::plan::{Issue, PullRequest};
+use afkconvoy_core::plan::PullRequest;
 use afkconvoy_core::tracker::Linked;
 pub use afkconvoy_core::tracker::Tracker;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::git::Repo;
+use crate::issues::{Comment, Gone, IssueRead, Went, gone};
 use crate::look::Reading;
+
+pub(crate) mod issues;
 
 /// The open issues, a page at a time, each with its labels, blockers and
 /// its first `COMMENTS_WITH` comments: one call a page,
@@ -163,16 +166,6 @@ pub const WATCH_PRS_JQ: &str = ".[] | {number, title, body, head_branch: .head.r
     fork: (.head.repo.full_name != .base.repo.full_name), of: .base.repo.full_name}";
 
 #[derive(Debug, Deserialize)]
-pub struct WatchIssue {
-    pub number: u64,
-    pub title: String,
-    pub closed: Option<u64>,
-    pub labels: Vec<String>,
-    pub more: bool,
-    pub comments: Vec<Comment>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct WatchPr {
     pub number: u64,
     pub title: String,
@@ -302,19 +295,45 @@ pub(crate) static HEADS: Reading<Result<String, HeadMiss>> = Reading::per_look("
 static VISIBILITY: Reading<Result<String, String>> = Reading::per_look("github visibility");
 
 /// `gh`, run in `dir`: the checkout a command is about, or where none is at
-/// hand the host's temporary directory (`in_no_checkout`). Every issue call
-/// is made of `tracker`.
+/// hand the host's temporary directory (`in_no_checkout`). The issues of
+/// `tracker` are read through `crate::issues::of`; the PRs a PR read finds
+/// name the issues of it they close.
 #[derive(Clone)]
 pub struct GitHub {
     pub dir: PathBuf,
     pub tracker: Tracker,
-    /// Closures this view read or made, shared with its clones. These only
-    /// route wakes; every woken tick reads GitHub for itself.
-    closed: Arc<Mutex<BTreeSet<u64>>>,
+    /// What the issue reads and writes of this view saw, shared with its
+    /// clones and so with every adapter made of one of them.
+    seen: Arc<Mutex<Seen>>,
     quota: Arc<Mutex<Option<crate::gh_quota::Scope>>>,
     /// The checkout's own repo, as its remote names it, where it does:
     /// asked once.
     own: Arc<OnceLock<Option<String>>>,
+}
+
+/// What a view's issue calls saw (`GitHub::seen`).
+#[derive(Default)]
+struct Seen {
+    /// Closures read or made. These only route wakes; every woken tick reads
+    /// GitHub for itself.
+    closed: BTreeSet<u64>,
+    /// issue → its database id, from a read of it: what an edge that names
+    /// it as a blocker is written with (`GitHubIssues::add_blocker`).
+    ids: HashMap<u64, u64>,
+}
+
+/// One issue as GitHub's REST read says it: its database id and API URL
+/// beside what any tracker says of it.
+#[derive(Deserialize)]
+struct IssueRow {
+    /// What a dependency edge names an issue by.
+    id: u64,
+    /// GitHub's API URL of it: of another repo, or another number, where
+    /// GitHub redirected the read because the issue moved.
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(flatten)]
+    read: IssueRead,
 }
 
 /// An open PR from another repo's own branch, with when it was opened.
@@ -337,30 +356,15 @@ impl GitHub {
     /// A new read of `tracker` from `dir`, with its closure observations
     /// shared only by this view and its clones.
     pub fn new(dir: PathBuf, tracker: Tracker) -> GitHub {
-        GitHub { dir, tracker, closed: Arc::default(), quota: Arc::default(), own: Arc::default() }
+        GitHub { dir, tracker, seen: Arc::default(), quota: Arc::default(), own: Arc::default() }
     }
 
-    /// The issues this view has seen closed, whatever read or write saw it.
-    pub fn closed(&self) -> Vec<u64> {
-        self.closed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-            .copied()
-            .collect()
+    fn seen(&self) -> MutexGuard<'_, Seen> {
+        self.seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn saw_closed(&self, number: u64) {
-        self.closed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(number);
-    }
-
-    pub(crate) fn blockers(&self, edges: Vec<BlockedBy>) -> Vec<u64> {
-        for edge in &edges {
-            if edge.state.eq_ignore_ascii_case("closed") {
-                self.saw_closed(edge.number);
-            }
-        }
-        open_blockers(edges)
+        self.seen().closed.insert(number);
     }
 
     /// `gh` for the calls that each name their repo, where no checkout is at
@@ -368,202 +372,6 @@ impl GitHub {
     pub fn in_no_checkout() -> GitHub {
         GitHub::new(std::env::temp_dir(), Tracker::Own)
     }
-}
-
-/// One issue, open or closed, as `GitHub::issue` reads it.
-#[derive(Debug, Clone, Deserialize)]
-pub struct IssueRead {
-    /// GitHub's database id: what a dependency edge names an issue by.
-    pub id: u64,
-    pub title: String,
-    pub state: String,
-    pub state_reason: Option<String>,
-    pub labels: Vec<String>,
-    pub pull_request: bool,
-    /// The login of whoever closed it, where GitHub says.
-    #[serde(default)]
-    pub closed_by: Option<String>,
-    /// What it says, where it says anything.
-    #[serde(default)]
-    pub body: Option<String>,
-    /// GitHub's API URL of it: of another repo, or another number, where
-    /// GitHub redirected the read because the issue moved.
-    #[serde(default)]
-    pub url: Option<String>,
-}
-
-/// One issue another is recorded as blocked by — a native dependency edge.
-#[derive(Debug, Clone, Deserialize)]
-pub struct BlockedBy {
-    pub number: u64,
-    pub state: String,
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub labels: Option<Vec<String>>,
-}
-
-/// The one answer to which blockers are open, for both paged rebuilds and
-/// the fresh read before a claim. REST and GraphQL spell state differently.
-fn open_blockers(edges: Vec<BlockedBy>) -> Vec<u64> {
-    let mut open: Vec<u64> = edges
-        .into_iter()
-        .filter(|edge| edge.state.eq_ignore_ascii_case("open"))
-        .map(|edge| edge.number)
-        .collect();
-    open.sort_unstable();
-    open.dedup();
-    open
-}
-
-/// One comment on an issue or a pull request.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Comment {
-    pub id: u64,
-    pub body: String,
-    pub url: String,
-    /// When it was written, in epoch seconds.
-    #[serde(default)]
-    pub at: Option<u64>,
-}
-
-/// A tracker issue and all its comments for account conversion.
-#[derive(Debug, Deserialize)]
-pub struct AccountIssue {
-    pub number: u64,
-    pub url: String,
-    pub closed: bool,
-    #[serde(default)]
-    pub landed: bool,
-    pub labels: Vec<String>,
-    pub more: bool,
-    pub comments: Vec<Comment>,
-}
-
-/// The latest verdict belongs to this claim only when its comment was written
-/// at or after the claim began. Missing timestamps cannot establish ownership.
-pub(crate) fn verdict_since(
-    comments: &[Comment],
-    since: Option<u64>,
-) -> Option<afkconvoy_core::verdict::Verdict> {
-    let verdict =
-        afkconvoy_core::verdict::latest_verdict(comments.iter().map(|c| c.body.as_str()))?;
-    comments.get(verdict.comment)?.at.zip(since).filter(|(at, since)| at >= since)?;
-    Some(verdict)
-}
-
-/// Every open issue, with the comments on each, as one read of GitHub saw
-/// them.
-#[derive(Debug, Default)]
-pub struct OpenIssues {
-    pub rows: Vec<Issue>,
-    /// Native edges retain repo identity: issue numbers alone are not unique.
-    pub blockers: HashMap<u64, Vec<BlockedBy>>,
-    /// issue → its comments, oldest first.
-    comments: HashMap<u64, Vec<Comment>>,
-    /// Failure reports written before reason comments were added still
-    /// carry their reason in the issue body.
-    reports: HashMap<u64, Comment>,
-    edited: HashMap<u64, u64>,
-}
-
-impl OpenIssues {
-    /// Explains the shared waiting list from the same paged read that made
-    /// it. A report's body is a fallback behind its reason comments.
-    pub fn explain(&self, waiting: &mut [afkconvoy_core::waiting::Waiting]) {
-        use afkconvoy_core::waiting::{Said, Waits};
-        for row in waiting {
-            let report = match row.waits {
-                Waits::PatrolFailed { .. } | Waits::CutFailed => self.reports.get(&row.issue),
-                _ => None,
-            };
-            let sources: Vec<Said<'_>> = report
-                .into_iter()
-                .chain(self.comments(row.issue))
-                .map(|comment| Said { body: &comment.body, url: &comment.url, at: comment.at })
-                .collect();
-            row.explain(&sources);
-        }
-    }
-
-    /// Every comment on the open issue `number`, oldest first; none of an
-    /// issue that is not among them.
-    pub fn comments(&self, number: u64) -> &[Comment] {
-        self.comments.get(&number).map_or(&[], Vec::as_slice)
-    }
-
-    /// When GitHub last recorded an edit of the issue, where it records one.
-    pub fn body_edited(&self, number: u64) -> Option<u64> {
-        self.edited.get(&number).copied()
-    }
-
-    /// The body and link from the same read as the comments.
-    pub fn body(&self, number: u64) -> Option<&Comment> {
-        self.reports.get(&number)
-    }
-}
-
-/// What is open on GitHub, as a rebuild reads it.
-#[derive(Debug, Default)]
-pub struct Open {
-    pub issues: OpenIssues,
-    pub prs: Vec<PullRequest>,
-}
-
-/// The open issues and the patrol landings of one day, from one issues query.
-/// `landings` is `None` when the closed page may be short of the day.
-struct OpenAndLanded {
-    issues: OpenIssues,
-    landings: Option<Vec<(String, u64)>>,
-}
-
-/// What is open, and the patrol landings read in that same query.
-pub(crate) struct Opened {
-    pub open: Open,
-    /// `None`: this read did not ask, or the closed page may be short of the day.
-    pub landings: Option<Vec<(String, u64)>>,
-}
-
-/// One open issue, as the issues query returns it.
-#[derive(Debug, Deserialize)]
-struct OpenRow {
-    #[serde(default)]
-    edited: Option<u64>,
-    number: u64,
-    title: String,
-    #[serde(default)]
-    body: String,
-    #[serde(default)]
-    url: String,
-    #[serde(default)]
-    at: Option<u64>,
-    labels: Vec<String>,
-    blockers: Vec<BlockedBy>,
-    blockers_more: bool,
-    more: bool,
-    comments: Vec<Comment>,
-}
-
-/// One completed issue, as a landings query returns it.
-#[derive(Debug, Deserialize)]
-struct LandingRow {
-    number: u64,
-    at: Option<u64>,
-    more: bool,
-    comments: Vec<Comment>,
-}
-
-/// One line of the open-and-landed query: an open issue, a landing, or how
-/// many closed issues the page held before the completed filter.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "part")]
-enum IssuePart {
-    #[serde(rename = "open")]
-    Open(OpenRow),
-    #[serde(rename = "landed")]
-    Landed(LandingRow),
-    #[serde(rename = "landed_count")]
-    Count { n: usize },
 }
 
 /// How many times a read is made before it is said that GitHub could not be
@@ -606,75 +414,6 @@ impl std::error::Error for PrimaryQuota {}
 /// The read `error` says got no answer, when that is why it was raised,
 /// whatever was said around it since.
 pub fn unreached(error: &anyhow::Error) -> Option<&Unreached> {
-    error.chain().find_map(|cause| cause.downcast_ref())
-}
-
-/// An issue GitHub has no more: deleted, transferred to another repo, or
-/// never issued. Like a closed one, it is never worked again, and it is
-/// nothing the rest of the fleet waits on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Gone {
-    pub issue: u64,
-    pub how: Went,
-}
-
-/// How GitHub says an issue is gone.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Went {
-    /// 410: it was deleted.
-    Deleted,
-    /// GitHub moved it: a read of it follows GitHub's redirect into another
-    /// repo, `to` — `owner/repo#n` — where GitHub says.
-    Transferred { to: Option<String> },
-    /// 404, and GitHub says nothing moved: there is no such issue.
-    Missing,
-}
-
-impl Gone {
-    /// What happened to it, as a tick's line says why it let go of it:
-    /// `released #231 (the issue was deleted)`.
-    pub fn said(&self) -> String {
-        match &self.how {
-            Went::Deleted => "the issue was deleted".to_string(),
-            Went::Transferred { to: Some(to) } => format!("the issue was transferred to {to}"),
-            Went::Transferred { to: None } => {
-                "the issue was transferred to another repo".to_string()
-            }
-            Went::Missing => "there is no such issue".to_string(),
-        }
-    }
-
-    /// The word a dispatch's `gone` answers with.
-    pub fn word(&self) -> &'static str {
-        match self.how {
-            Went::Deleted => "deleted",
-            Went::Transferred { .. } => "transferred",
-            Went::Missing => "missing",
-        }
-    }
-}
-
-impl std::fmt::Display for Gone {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let issue = self.issue;
-        match &self.how {
-            Went::Deleted => write!(f, "issue #{issue} was deleted (HTTP 410)"),
-            Went::Transferred { to: Some(to) } => {
-                write!(f, "issue #{issue} was transferred to {to}")
-            }
-            Went::Transferred { to: None } => {
-                write!(f, "issue #{issue} was transferred to another repo")
-            }
-            Went::Missing => write!(f, "no such issue: #{issue} (HTTP 404)"),
-        }
-    }
-}
-
-impl std::error::Error for Gone {}
-
-/// The issue `error` says is gone, when that is why it was raised, whatever
-/// was said around it since.
-pub fn gone(error: &anyhow::Error) -> Option<&Gone> {
     error.chain().find_map(|cause| cause.downcast_ref())
 }
 
@@ -721,17 +460,6 @@ pub(crate) fn in_transit_help() -> String {
         "`gh` said an HTTP 5xx, or named no HTTP status and said {}, in upper or lower case",
         crate::transient::listed(crate::transient::GH)
     )
-}
-
-/// What a read made beside another came to: a panic in it is this thread's.
-pub fn beside<T>(read: thread::ScopedJoinHandle<'_, T>) -> T {
-    read.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-}
-
-impl IssueRead {
-    pub fn is_closed(&self) -> bool {
-        self.state == "closed"
-    }
 }
 
 impl GitHub {
@@ -1115,174 +843,6 @@ impl GitHub {
         ))
     }
 
-    /// Every open issue with its comments — all of them, page after page:
-    /// the number of calls does not grow with the issues that have comments.
-    /// An issue whose comments or blockers go past the embedded page is
-    /// asked about again, for all of that connection.
-    pub fn open_issues(&self) -> Result<OpenIssues> {
-        let out = self.query(OPEN_ISSUES_QUERY, OPEN_ISSUES_JQ)?;
-        let mut open = OpenIssues::default();
-        for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: OpenRow =
-                serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
-            self.take_open(&mut open, row)?;
-        }
-        Ok(open)
-    }
-
-    fn take_open(&self, open: &mut OpenIssues, row: OpenRow) -> Result<()> {
-        // Another repo's issue in the tracker is none of the fleet's.
-        if !self.tracker.holds(&row.labels) {
-            return Ok(());
-        }
-        // Never infer an unblocked issue from the embedded page alone
-        // when GitHub says another page follows. A failed full read
-        // fails the rebuild instead of dispatching through a blocker.
-        let blockers = if row.blockers_more { self.blocked_by(row.number)? } else { row.blockers };
-        let comments = if row.more { self.comments(row.number)? } else { row.comments };
-        open.comments.insert(row.number, comments);
-        if let Some(edited) = row.edited {
-            open.edited.insert(row.number, edited);
-        }
-        open.blockers.insert(row.number, blockers.clone());
-        open.reports
-            .insert(row.number, Comment { id: 0, body: row.body, url: row.url, at: row.at });
-        open.rows.push(Issue {
-            number: row.number,
-            title: row.title,
-            labels: row.labels,
-            open_blockers: self.blockers(blockers),
-        });
-        Ok(())
-    }
-
-    /// The open issues, and the patrol landings of the day ending at `now`,
-    /// from one issues query. `None` for the landings when the closed page
-    /// may be short of the day: the caller then reads them on their own pages.
-    fn open_issues_and_landings(&self, now: u64) -> Result<OpenAndLanded> {
-        let since = now.saturating_sub(afkconvoy_core::patrol::DAY);
-        let since = format!("since={}", crate::log::stamp(since));
-        let out = self.query_with(OPEN_AND_LANDED_QUERY, OPEN_AND_LANDED_JQ, &[since])?;
-        let mut open = OpenIssues::default();
-        let mut landed_rows = vec![];
-        let mut truncated = false;
-        for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let part: IssuePart =
-                serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
-            match part {
-                IssuePart::Open(row) => self.take_open(&mut open, row)?,
-                IssuePart::Landed(row) => landed_rows.push(row),
-                IssuePart::Count { n } if n >= LANDED_PAGE => truncated = true,
-                IssuePart::Count { .. } => {}
-            }
-        }
-        if truncated {
-            return Ok(OpenAndLanded { issues: open, landings: None });
-        }
-        let mut seen = BTreeSet::new();
-        let mut landed = vec![];
-        for row in landed_rows {
-            if !seen.insert(row.number) {
-                continue;
-            }
-            landed.extend(self.take_landing(&row, now)?);
-        }
-        Ok(OpenAndLanded { issues: open, landings: Some(landed) })
-    }
-
-    /// The issues that may hold a closing or a stage/intake record since
-    /// `since`. This uses GitHub's update time, not a search index, and pages
-    /// through every result without a search result cap.
-    pub fn watching_issues(&self, since: u64) -> Result<Vec<WatchIssue>> {
-        let query = format!("query={WATCH_ISSUES_QUERY}");
-        let since = format!("since={}", crate::log::stamp(since));
-        let variables = variables(&self.tracker);
-        let mut args = vec!["api", "graphql", "--paginate"];
-        args.extend(variables.iter().map(String::as_str));
-        args.extend(["-f", &query, "-f", &since, "--jq", WATCH_ISSUES_JQ]);
-        let out = self.read(&args)?;
-        let mut issues = vec![];
-        for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let mut issue: WatchIssue = serde_json::from_str(line)
-                .context("gh api graphql: unexpected watching issues answer")?;
-            if !self.tracker.holds(&issue.labels)
-                || afkconvoy_core::tracker::repo_labels(&issue.labels).len() > 1
-            {
-                continue;
-            }
-            if issue.more {
-                issue.comments = self.comments(issue.number)?;
-            }
-            issues.push(issue);
-        }
-        Ok(issues)
-    }
-
-    /// Read every issue of this tracker, including the other code repos.
-    pub fn account_issues(&self) -> Result<Vec<AccountIssue>> {
-        let query = format!("query={REWRITE_ACCOUNTS_QUERY}");
-        let variables = variables(&self.tracker);
-        let mut args = vec!["api", "graphql", "--paginate"];
-        args.extend(variables.iter().take(4).map(String::as_str));
-        args.extend(["-f", &query, "--jq", REWRITE_ACCOUNTS_JQ]);
-        let out = self.read(&args)?;
-        let mut issues = Vec::new();
-        for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let mut issue: AccountIssue =
-                serde_json::from_str(line).context("gh api: invalid tracker accounts")?;
-            if issue.more {
-                issue.comments = self.comments(issue.number)?;
-            }
-            issues.push(issue);
-        }
-        Ok(issues)
-    }
-
-    /// Accounts on this repo's issues. A failed issue-comment read is data
-    /// for the report; a failed issue listing fails the command as a whole.
-    pub fn accounts(&self) -> Result<Vec<afkconvoy_core::accounts::Issue>> {
-        #[derive(Deserialize)]
-        struct Row {
-            number: u64,
-            #[serde(default)]
-            closed: bool,
-            url: String,
-            labels: Vec<String>,
-            more: bool,
-            comments: Vec<Comment>,
-        }
-        let out = self.query(ACCOUNTS_QUERY, ACCOUNTS_JQ)?;
-        let mut issues = vec![];
-        for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: Row = serde_json::from_str(line).context("gh api: invalid accounts answer")?;
-            if !self.tracker.holds(&row.labels)
-                || afkconvoy_core::tracker::repo_labels(&row.labels).len() > 1
-            {
-                continue;
-            }
-            let comments = if row.more { self.comments(row.number) } else { Ok(row.comments) };
-            let account = comments.map_err(|error| format!("{error:#}")).and_then(|comments| {
-                let mut accounts = comments.into_iter().filter(|comment| {
-                    // Include a damaged opening marker so it is not silently lost.
-                    comment.body.contains("<!--convoy:account ")
-                        || comment.body.contains("<!--convoy:account-->")
-                });
-                let body = accounts.next().map(|comment| comment.body);
-                if accounts.next().is_some() {
-                    return Err("issue has several work accounts".into());
-                }
-                Ok(body)
-            });
-            issues.push(afkconvoy_core::accounts::Issue {
-                number: row.number,
-                closed: row.closed,
-                url: row.url,
-                account,
-            });
-        }
-        Ok(issues)
-    }
-
     /// Recently updated PRs in the checkout's own repo, including ones
     /// which disappeared from the open list between looks. Forks are not
     /// fleet state, but still count toward pagination's lower boundary.
@@ -1314,140 +874,6 @@ impl GitHub {
             }
         }
         Ok(prs)
-    }
-
-    /// Patrol ownership and completion times in the rolling day. Read only
-    /// when a configured patrol has a landing bound. Ownership follows the
-    /// latest intake record, regardless of the issue's labels now.
-    pub fn patrol_landings(&self, now: u64) -> Result<Vec<(String, u64)>> {
-        let out = self.query(LANDED_ISSUES_QUERY, LANDED_ISSUES_JQ)?;
-        let mut landed = vec![];
-        for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: LandingRow =
-                serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
-            landed.extend(self.take_landing(&row, now)?);
-        }
-        Ok(landed)
-    }
-
-    /// `(patrol, closed at)` when `row` is a patrol's completed issue inside
-    /// the day ending at `now`. Comments past the embedded page are read.
-    fn take_landing(&self, row: &LandingRow, now: u64) -> Result<Option<(String, u64)>> {
-        let Some(at) = row.at else { return Ok(None) };
-        if now.saturating_sub(at) >= afkconvoy_core::patrol::DAY {
-            return Ok(None);
-        }
-        let rest = if row.more { Some(self.comments(row.number)?) } else { None };
-        let comments = rest.as_deref().unwrap_or(row.comments.as_slice());
-        let patrol = afkconvoy_core::intake::opened_by(comments.iter().map(|c| c.body.as_str()));
-        Ok(patrol.map(|patrol| (patrol, at)))
-    }
-
-    /// What is open: the issues and the PRs, asked for side by side.
-    pub fn open(&self) -> Result<Open> {
-        Ok(self.open_with_landings(None)?.open)
-    }
-
-    /// [`open`], and when `now` is set, the patrol landings of the day ending
-    /// then, from the same issues query. `None` for the landings means they
-    /// were not asked, or the closed page may be short of the day.
-    pub(crate) fn open_with_landings(&self, now: Option<u64>) -> Result<Opened> {
-        let (read, prs) = thread::scope(|scope| {
-            let prs = scope.spawn(|| self.open_prs());
-            let read = match now {
-                None => self.open_issues().map(|issues| OpenAndLanded { issues, landings: None }),
-                Some(now) => self.open_issues_and_landings(now),
-            };
-            (read, beside(prs))
-        });
-        let read = read?;
-        Ok(Opened { open: Open { issues: read.issues, prs: prs? }, landings: read.landings })
-    }
-
-    /// Every closed issue that carries `label`, each with when it closed, in
-    /// epoch seconds — but for one GitHub gives no time for.
-    pub fn closed_with(&self, label: &str) -> Result<Vec<(u64, u64)>> {
-        #[derive(Deserialize)]
-        struct Row {
-            number: u64,
-            at: Option<u64>,
-        }
-        let labels = carrying_labels(&self.tracker, label);
-        let endpoint =
-            endpoint(&self.tracker, &format!("issues?state=closed&labels={labels}&per_page=100"));
-        let out = self.read(&["api", "--paginate", &endpoint, "--jq", CLOSED_JQ])?;
-        let mut closed = vec![];
-        for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: Row =
-                serde_json::from_str(line).context("gh api issues: unexpected answer")?;
-            closed.extend(row.at.map(|at| (row.number, at)));
-        }
-        Ok(closed)
-    }
-
-    /// Every issue that carries `label`, open or closed, each with when it
-    /// closed, in epoch seconds — `None`: it is open, `Some(None)`: GitHub
-    /// gives no time for it.
-    pub fn carrying(&self, label: &str) -> Result<Vec<(u64, Option<Option<u64>>)>> {
-        #[derive(Deserialize)]
-        struct Row {
-            number: u64,
-            open: bool,
-            closed_at: Option<u64>,
-        }
-        let labels = carrying_labels(&self.tracker, label);
-        let endpoint =
-            endpoint(&self.tracker, &format!("issues?state=all&labels={labels}&per_page=100"));
-        let out = self.read(&["api", "--paginate", &endpoint, "--jq", CARRYING_JQ])?;
-        let mut carrying = vec![];
-        for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: Row =
-                serde_json::from_str(line).context("gh api issues: unexpected answer")?;
-            carrying.push((row.number, (!row.open).then_some(row.closed_at)));
-        }
-        Ok(carrying)
-    }
-
-    /// Open issues carrying `label` in this fleet's tracker scope, lowest
-    /// number first. Lock checks need only this REST listing, not a rebuild
-    /// with every comment and blocker, and remain available without GraphQL.
-    pub fn open_with(&self, label: &str) -> Result<Vec<u64>> {
-        self.open_with_read(label, |args| self.read(args))
-    }
-
-    /// `open_with`, as the processes of the host waiting on it share one
-    /// read of it an interval (`crate::shared_reading`): a `land` waiting for its
-    /// turn asks this of the fleet lock again and again.
-    pub fn open_with_shared(&self, label: &str) -> Result<Vec<u64>> {
-        let tracker = self.tracker.named().map(ToString::to_string).unwrap_or_default();
-        let what = format!("open {tracker} {label} {:?}", self.tracker.repo_label());
-        self.open_with_read(label, |args| crate::shared_reading::rest(self, &what, args))
-    }
-
-    fn open_with_read(
-        &self,
-        label: &str,
-        read: impl FnOnce(&[&str]) -> Result<String>,
-    ) -> Result<Vec<u64>> {
-        #[derive(Deserialize)]
-        struct Row {
-            number: u64,
-            labels: Vec<String>,
-        }
-        let labels = carrying_labels(&self.tracker, label);
-        let endpoint =
-            endpoint(&self.tracker, &format!("issues?state=open&labels={labels}&per_page=100"));
-        let out = read(&["api", "--paginate", &endpoint, "--jq", OPEN_LABELLED_JQ])?;
-        let mut numbers = vec![];
-        for line in out.lines().filter(|line| !line.trim().is_empty()) {
-            let row: Row =
-                serde_json::from_str(line).context("gh api issues: unexpected answer")?;
-            if self.tracker.holds(&row.labels) && row.labels.iter().any(|held| held == label) {
-                numbers.push(row.number);
-            }
-        }
-        numbers.sort_unstable();
-        Ok(numbers)
     }
 
     /// The same-repository open PR headed by `branch`, for a turn on no
@@ -1557,26 +983,31 @@ impl GitHub {
             .collect())
     }
 
-    /// One issue, open or closed. An error when it cannot be read: `Gone`
-    /// when GitHub says it was deleted or transferred, or has no such issue.
-    pub fn issue(&self, number: u64) -> Result<IssueRead> {
+    /// One issue of the tracker, open or closed. An error when it cannot be
+    /// read: `Gone` when GitHub says it was deleted or transferred, or has no
+    /// such issue.
+    fn read_issue(&self, number: u64) -> Result<IssueRow> {
         let endpoint = endpoint(&self.tracker, &format!("issues/{number}"));
         let out = answered(number, self.read(&["api", &endpoint, "--jq", ISSUE_JQ]))?;
-        let issue: IssueRead = serde_json::from_str(&out)
+        let issue: IssueRow = serde_json::from_str(&out)
             .with_context(|| format!("gh api issue {number}: unexpected answer"))?;
-        if let Some(to) = self.moved(number, &issue) {
+        if let Some(to) = self.moved(number, issue.url.as_deref()) {
             return Err(Gone { issue: number, how: Went::Transferred { to: Some(to) } }.into());
         }
-        if issue.is_closed() {
-            self.saw_closed(number);
+        let mut seen = self.seen();
+        if issue.read.is_closed() {
+            seen.closed.insert(number);
         }
+        seen.ids.insert(number, issue.id);
+        drop(seen);
         Ok(issue)
     }
 
-    /// Where issue `number` is, `owner/repo#n`, when its read `issue` is of
-    /// another repo or number: GitHub redirected the read because it moved.
-    fn moved(&self, number: u64, issue: &IssueRead) -> Option<String> {
-        let (repo, at) = located(issue.url.as_deref()?)?;
+    /// Where issue `number` is, `owner/repo#n`, when its read, GitHub's API
+    /// `url` of it, is of another repo or number: GitHub redirected the read
+    /// because it moved.
+    fn moved(&self, number: u64, url: Option<&str>) -> Option<String> {
+        let (repo, at) = located(url?)?;
         let here = match self.tracker.named() {
             Some(named) => Some(named.to_string()),
             None => self.own().map(str::to_string),
@@ -1603,18 +1034,12 @@ impl GitHub {
     fn about_issue<T>(&self, number: u64, made: Result<T>) -> Result<T> {
         made.map_err(|error| match status(&format!("{error}")) {
             Some(410) => Gone { issue: number, how: Went::Deleted }.into(),
-            Some(404) => match self.issue(number) {
+            Some(404) => match self.read_issue(number) {
                 Err(read) if gone(&read).is_some() => read,
                 _ => error,
             },
             _ => error,
         })
-    }
-
-    /// Every comment on an issue, oldest first: `Gone` of one GitHub says was
-    /// deleted or transferred.
-    pub fn comments(&self, number: u64) -> Result<Vec<Comment>> {
-        self.comments_in(path(&self.tracker), number)
     }
 
     /// Every comment on a PR, oldest first.
@@ -1633,12 +1058,6 @@ impl GitHub {
             .collect()
     }
 
-    /// Posts one comment on an issue: `Gone` of one GitHub says was deleted
-    /// or transferred.
-    pub fn comment(&self, number: u64, body: &str) -> Result<()> {
-        self.comment_in(path(&self.tracker), number, body)
-    }
-
     /// Posts one comment on a PR.
     pub fn comment_on_pr(&self, pr: u64, body: &str) -> Result<()> {
         self.comment_in(OWN, pr, body)
@@ -1652,27 +1071,6 @@ impl GitHub {
         Ok(())
     }
 
-    /// Opens a failure report and leaves its reason in a comment, so every
-    /// wait can link directly to the explanation. If commenting fails, the
-    /// report's body still explains the wait on the next rebuild.
-    pub fn open_report(
-        &self,
-        title: &str,
-        body: &str,
-        reason: &str,
-        labels: &[&str],
-    ) -> Result<u64> {
-        let issue = self.open_issue(title, body, labels)?;
-        let marker = body.lines().next().unwrap_or("");
-        self.comment(issue, &format!("{marker}\n{reason}"))?;
-        Ok(issue)
-    }
-
-    /// Replaces the body of one comment on an issue.
-    pub fn edit_comment(&self, id: u64, body: &str) -> Result<()> {
-        self.edit_comment_in(path(&self.tracker), id, body)
-    }
-
     /// Replaces the body of one comment on a PR.
     pub fn edit_pr_comment(&self, id: u64, body: &str) -> Result<()> {
         self.edit_comment_in(OWN, id, body)
@@ -1683,40 +1081,6 @@ impl GitHub {
         let endpoint = format!("repos/{repo}/issues/comments/{id}");
         let body = format!("body={body}");
         self.gh(&["api", "--method", "PATCH", &endpoint, "-f", &body, "--silent"])?;
-        Ok(())
-    }
-
-    /// Opens an issue carrying `labels` → its number. In a tracker that is
-    /// not the checkout's own repo it carries the repo label too: it is the
-    /// work of the checkout's repo.
-    pub fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
-        let (title, body) = (format!("title={title}"), format!("body={body}"));
-        let repo_label = self.tracker.repo_label();
-        let labels = labels.iter().copied().chain(repo_label.as_deref());
-        let labels: Vec<String> = labels.map(|label| format!("labels[]={label}")).collect();
-        let endpoint = endpoint(&self.tracker, "issues");
-        let mut args = vec!["api", "--method", "POST", &endpoint, "-f", &title, "-f", &body];
-        for label in &labels {
-            args.extend(["-f", label.as_str()]);
-        }
-        args.extend(["--jq", ".number"]);
-        let out = self.gh(&args)?;
-        out.trim().parse().with_context(|| format!("gh api issues: no number in {out:?}"))
-    }
-
-    /// Closes one issue as completed. A close GitHub refuses while it closes
-    /// the issue itself — a merged PR that says `Closes` it — is a close: what
-    /// is asked is that the issue be closed (sunfmin/control#247).
-    pub fn close_issue(&self, number: u64) -> Result<()> {
-        let endpoint = endpoint(&self.tracker, &format!("issues/{number}"));
-        let closed =
-            self.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=closed", "--silent"]);
-        if let Err(error) = closed
-            && !self.issue(number).is_ok_and(|issue| issue.is_closed())
-        {
-            return Err(error);
-        }
-        self.saw_closed(number);
         Ok(())
     }
 
@@ -1886,91 +1250,6 @@ impl GitHub {
             Err(error) => Err(error),
         }
     }
-
-    /// The issues GitHub records `number` as blocked by, open or closed:
-    /// `Gone` when `number` was deleted or transferred.
-    pub fn blocked_by(&self, number: u64) -> Result<Vec<BlockedBy>> {
-        let endpoint = endpoint(
-            &self.tracker,
-            &format!("issues/{number}/dependencies/blocked_by?per_page=100"),
-        );
-        let read = self.read(&["api", "--paginate", &endpoint, "--jq", BLOCKED_BY_JQ]);
-        let out = self.about_issue(number, read)?;
-        out.lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line).context("gh api blocked_by: unexpected answer"))
-            .collect()
-    }
-
-    /// The open issues among those `number` is blocked by.
-    pub fn open_blockers(&self, number: u64) -> Result<Vec<u64>> {
-        Ok(self.blockers(self.blocked_by(number)?))
-    }
-
-    /// Records `number` as blocked by the issue whose database id is `blocker_id`.
-    pub fn add_blocker(&self, number: u64, blocker_id: u64) -> Result<()> {
-        let endpoint = endpoint(&self.tracker, &format!("issues/{number}/dependencies/blocked_by"));
-        let field = format!("issue_id={blocker_id}");
-        self.gh(&["api", "--method", "POST", &endpoint, "-F", &field, "--silent"])?;
-        Ok(())
-    }
-
-    /// Every label the repo has, by name.
-    pub fn labels(&self) -> Result<Vec<String>> {
-        let endpoint = endpoint(&self.tracker, "labels?per_page=100");
-        let out = self.read(&["api", "--paginate", &endpoint, "--jq", LABELS_JQ])?;
-        Ok(out.lines().filter(|line| !line.is_empty()).map(str::to_string).collect())
-    }
-
-    /// Creates the label `name` on the repo, which has none of that name, to
-    /// be shown with `description`.
-    pub fn create_label(&self, name: &str, description: &str) -> Result<()> {
-        let (name, description) = (format!("name={name}"), format!("description={description}"));
-        let endpoint = endpoint(&self.tracker, "labels");
-        self.gh(&[
-            "api",
-            "--method",
-            "POST",
-            &endpoint,
-            "-f",
-            &name,
-            "-f",
-            &description,
-            "-f",
-            "color=1d76db",
-            "--silent",
-        ])?;
-        Ok(())
-    }
-
-    /// Puts one label on an issue; GitHub creates a label the repo lacks.
-    pub fn add_label(&self, number: u64, label: &str) -> Result<()> {
-        let endpoint = endpoint(&self.tracker, &format!("issues/{number}/labels"));
-        let field = format!("labels[]={label}");
-        self.gh(&["api", "--method", "POST", &endpoint, "-f", &field, "--silent"])?;
-        Ok(())
-    }
-
-    /// Makes issue `number`, carrying `labels`, the repo's in its tracker
-    /// before a command hands it to the fleet (`Tracker::to_take`): puts the
-    /// repo label on it, in a tracker that is another repo, where it carries
-    /// none. An error of one that is another repo's, which is left as it is.
-    pub fn take(&self, number: u64, labels: &[String]) -> Result<()> {
-        let issue = self.tracker.issue(number);
-        match self.tracker.to_take(labels) {
-            Ok(Some(label)) => self.add_label(number, &label),
-            Ok(None) => Ok(()),
-            Err(why) => bail!("issue {issue} {why}"),
-        }
-    }
-
-    /// Takes one label off an issue that carries it.
-    pub fn remove_label(&self, number: u64, label: &str) -> Result<()> {
-        let label = crate::judge::label_segment(label);
-        let endpoint = endpoint(&self.tracker, &format!("issues/{number}/labels/{label}"));
-        self.gh(&["api", "--method", "DELETE", &endpoint, "--silent"])?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -2090,24 +1369,13 @@ mod tests {
                 repo: RepoName::read("sunfmin/app").unwrap(),
             },
         );
-        let read = |url: Option<&str>| IssueRead {
-            id: 1,
-            title: String::new(),
-            state: "open".to_string(),
-            state_reason: None,
-            labels: vec![],
-            pull_request: false,
-            closed_by: None,
-            body: None,
-            url: url.map(str::to_string),
-        };
-        let here = read(Some("https://api.github.com/repos/sunfmin/hkj/issues/22"));
-        assert_eq!(gh.moved(22, &here), None);
-        assert_eq!(gh.moved(22, &read(None)), None);
-        let moved = read(Some("https://api.github.com/repos/sunfmin/control/issues/2"));
-        assert_eq!(gh.moved(22, &moved), Some("sunfmin/control#2".to_string()));
-        let same_number = read(Some("https://api.github.com/repos/sunfmin/control/issues/22"));
-        assert_eq!(gh.moved(22, &same_number), Some("sunfmin/control#22".to_string()));
+        let here = Some("https://api.github.com/repos/sunfmin/hkj/issues/22");
+        assert_eq!(gh.moved(22, here), None);
+        assert_eq!(gh.moved(22, None), None);
+        let moved = Some("https://api.github.com/repos/sunfmin/control/issues/2");
+        assert_eq!(gh.moved(22, moved), Some("sunfmin/control#2".to_string()));
+        let same_number = Some("https://api.github.com/repos/sunfmin/control/issues/22");
+        assert_eq!(gh.moved(22, same_number), Some("sunfmin/control#22".to_string()));
         let gone =
             Gone { issue: 22, how: Went::Transferred { to: Some("sunfmin/control#2".into()) } };
         assert_eq!(gone.to_string(), "issue #22 was transferred to sunfmin/control#2");

@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{Finding, Kind, finding};
-use crate::gh::{Comment, GitHub};
+use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::issues::Comment;
 use crate::log::{self, Entry, Log, What};
 
 /// A boundary accepted by `--since`. Restrict epoch values to the same civil
@@ -127,8 +128,9 @@ pub(super) fn read(repo: &Repo, host: &str, since: u64, until: u64) -> Result<Va
     let log = Log::of(repo)?;
     let entries = log.read().unwrap_or_default();
     let gh = GitHub::of(repo)?;
+    let tracked = crate::issues::of(&gh);
     let open = gh.open_prs()?;
-    let recent = gh.watching_issues(since)?;
+    let recent = tracked.watching_issues(since)?;
     let prs = gh.watching_prs(since)?;
     let mut issues: BTreeMap<u64, Issue> = BTreeMap::new();
     let mut read_comments = BTreeSet::new();
@@ -159,8 +161,8 @@ pub(super) fn read(repo: &Repo, host: &str, since: u64, until: u64) -> Result<Va
             // The last known step must still be available when the issue's
             // last GitHub update predates this interval.
             if read_comments.insert(number) {
-                found.title = Some(gh.issue(number)?.title);
-                found.steps.extend(gh.comments(number)?.iter().filter_map(record));
+                found.title = Some(tracked.issue(number)?.title);
+                found.steps.extend(tracked.comments(number)?.iter().filter_map(record));
             }
         }
     }

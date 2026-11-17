@@ -1185,7 +1185,7 @@ fn name_stall(repo: &Repo, taken: &Taken) -> anyhow::Result<()> {
          Nothing releases these locks: end the stalled processes (SIGTERM) so their \
          builds run again (docs/adr/0088)."
     );
-    crate::gh::GitHub::of(repo)?.comment(issue, &body)
+    crate::issues::of(&crate::gh::GitHub::of(repo)?).comment(issue, &body)
 }
 
 /// Names the process creation rate of a worker that turned hot for it, and
@@ -1209,7 +1209,7 @@ fn name_spawns(repo: &Repo, taken: &Taken) -> anyhow::Result<()> {
     for (command, made) in commands {
         body += &format!("\n- `{command}`: {made} found alive in the last two minutes of samples");
     }
-    crate::gh::GitHub::of(repo)?.comment(issue, &body)
+    crate::issues::of(&crate::gh::GitHub::of(repo)?).comment(issue, &body)
 }
 
 /// Names the processes a worker's commands left behind and that were told to
@@ -1224,7 +1224,7 @@ fn name_orphans(repo: &Repo, issue: Option<u64>, ended: &[String]) -> anyhow::Re
     for one in ended {
         body += &format!("\n- {one}");
     }
-    crate::gh::GitHub::of(repo)?.comment(issue, &body)
+    crate::issues::of(&crate::gh::GitHub::of(repo)?).comment(issue, &body)
 }
 
 /// Who hears what a watcher finds (`watch`): its fleet instance.

@@ -22,8 +22,8 @@ use crate::claims::{Ask, Me, drop_ask, drop_run, push_ask, take_run};
 use crate::copies::Copies;
 use crate::dispatch::{Agent, Continuing};
 use crate::fleet::Fleet;
-use crate::gh::OpenIssues;
 use crate::git::Repo;
+use crate::issues::OpenIssues;
 use crate::orca::{Source, Worktree};
 use crate::remote::{Fresh, Push};
 use crate::stage::Flows;
@@ -68,7 +68,7 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
     let landed = if named.iter().any(|patrol| patrol.max_landed_a_day.is_some()) {
         match &fleet.patrol_landings {
             Some(landed) => landed.clone(),
-            None => fleet.gh.patrol_landings(fleet.now)?,
+            None => fleet.issues.patrol_landings(fleet.now)?,
         }
     } else {
         vec![]
@@ -419,7 +419,7 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
         // One report stands for a patrol until a human closes it.
         if let Some(reason) = reason.as_ref().filter(|_| row.failure.is_none()) {
             let path = checkout.path.display().to_string();
-            fleet.gh.open_report(
+            fleet.issues.open_report(
                 &failure_title(&row.name),
                 &failure_report(&row.name, reason, &me.host, &path),
                 reason,

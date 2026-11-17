@@ -46,7 +46,7 @@ pub fn seen(
     fleet: &Fleet,
     read: &Flows,
     issues: &[Issue],
-    open: &crate::gh::OpenIssues,
+    open: &crate::issues::OpenIssues,
     base: &str,
 ) -> Result<Option<Seen>> {
     let claim = fleet.scan.runs.iter().find(|run| run.key == CLAIM_KEY).cloned();
@@ -542,11 +542,11 @@ pub fn end(fleet: &mut Fleet, found: &mut Found, me: &Me, row: &Row) -> Result<O
             // later one adds to it (docs/adr/0072).
             let issue = match row.failure {
                 Some(open) => {
-                    fleet.gh.comment(open, &report)?;
+                    fleet.issues.comment(open, &report)?;
                     ticket(fleet, open)?;
                     open
                 }
-                None => fleet.gh.open_report(
+                None => fleet.issues.open_report(
                     &cut::failure_title(&version),
                     &report,
                     &format!("the step `{}` failed: {}", failure.step.word(), failure.why.trim()),
@@ -576,16 +576,16 @@ pub fn end(fleet: &mut Fleet, found: &mut Found, me: &Me, row: &Row) -> Result<O
 /// row: an ordinary ticket, not a human's. One a watch handed to a human,
 /// under the escalate label, or already a ticket, is left as it is.
 fn ticket(fleet: &Fleet, issue: u64) -> Result<()> {
-    let read = fleet.gh.issue(issue)?;
+    let read = fleet.issues.issue(issue)?;
     let ready = &fleet.config.ready_label;
     if read.labels.iter().any(|label| label == ready || *label == fleet.config.escalate_label) {
         return Ok(());
     }
-    let comments = fleet.gh.comments(issue)?;
+    let comments = fleet.issues.comments(issue)?;
     let bodies = read.body.as_deref().into_iter().chain(comments.iter().map(|c| c.body.as_str()));
     let Some(run) = cut::repeats(bodies).filter(cut::Repeats::ticketed) else { return Ok(()) };
-    fleet.gh.add_label(issue, ready)?;
-    fleet.gh.comment(issue, &cut::ticket_said(run.times, &run.way))
+    fleet.issues.add_label(issue, ready)?;
+    fleet.issues.comment(issue, &cut::ticket_said(run.times, &run.way))
 }
 
 /// Takes the label that waits on the next cut (`cut::WAITING_LABEL`) off
@@ -593,8 +593,8 @@ fn ticket(fleet: &Fleet, issue: u64) -> Result<()> {
 /// cut since the rebuild returns too. Each returns to the frontier at the
 /// stage it left.
 fn release_waiting(fleet: &Fleet) -> Result<()> {
-    for issue in fleet.gh.open_with(cut::WAITING_LABEL)? {
-        fleet.gh.remove_label(issue, cut::WAITING_LABEL)?;
+    for issue in fleet.issues.open_with(cut::WAITING_LABEL)? {
+        fleet.issues.remove_label(issue, cut::WAITING_LABEL)?;
     }
     Ok(())
 }
@@ -658,7 +658,7 @@ fn branch_of(fleet: &Fleet, version: &str, base: &str) -> Result<Option<cut::Bra
 /// it pushed, the base branch at `base`. `None` where nothing is a report.
 pub fn failed(
     fleet: &Fleet,
-    open: &crate::gh::OpenIssues,
+    open: &crate::issues::OpenIssues,
     issue: u64,
     base: &str,
     held: bool,
@@ -809,6 +809,7 @@ pub fn run(
         )
     })?;
     let gh = GitHub::of(repo)?;
+    let issues = crate::issues::of(&gh);
     let mut cutting =
         Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout, red: None };
     let first = from.unwrap_or_else(|| record.step());
@@ -859,7 +860,7 @@ pub fn run(
         checkout.record_cut(&record)?;
         eprintln!("[afkconvoy] cut: {} passed after {seconds}s", step.word());
     }
-    let open = gh.open_issues()?;
+    let open = issues.open_issues(None)?.issues;
     let closed: Vec<u64> = open
         .rows
         .iter()
@@ -867,8 +868,8 @@ pub fn run(
         .map(|issue| issue.number)
         .collect();
     for issue in &closed {
-        gh.comment(*issue, &cut::published_said(&record.version))?;
-        gh.close_issue(*issue)?;
+        issues.comment(*issue, &cut::published_said(&record.version))?;
+        issues.close_issue(*issue)?;
     }
     Ok(json!({"version": record.version, "tag": format!("v{}", record.version),
         "prs": record.prs, "branch": record.branch, "commit": record.commit, "took": record.took,

@@ -548,6 +548,7 @@ fn retained_work(repo: &Repo, issue: u64, tip: &str) -> Result<Option<String>> {
 }
 
 fn assess(repo: &Repo, gh: &GitHub, delivery: &Delivery) -> Result<Snapshot> {
+    let issues = crate::issues::of(gh);
     let delivery_head = repo
         .remote()
         .fetched(&format!("refs/heads/{}", delivery.branch), Fresh::Process)?
@@ -570,7 +571,7 @@ fn assess(repo: &Repo, gh: &GitHub, delivery: &Delivery) -> Result<Snapshot> {
             format!("unreadable attached task {name}; restore its target record")
         })?;
         let mut blocking = vec![];
-        let read = gh.issue(number)?;
+        let read = issues.issue(number)?;
         let landed = joins.iter().any(|join| join.issue() == Some(number));
         match read.state_reason.as_deref() {
             Some("not_planned") => {
@@ -594,7 +595,7 @@ fn assess(repo: &Repo, gh: &GitHub, delivery: &Delivery) -> Result<Snapshot> {
         for pr in prs {
             blocking.push(format!("{name} has open internal PR #{pr}"));
         }
-        let mut blockers = gh.open_blockers(number)?;
+        let mut blockers = issues.open_blockers(number)?;
         blockers.sort_unstable();
         for blocker in blockers {
             blocking.push(format!("{name} is blocked by #{blocker}"));

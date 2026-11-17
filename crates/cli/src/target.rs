@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::delivery::Reference;
-use crate::gh::{Comment, GitHub};
+use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::issues::Comment;
 use crate::remote::{Fresh, Listing, Push, RemoteRecord};
 use afkconvoy_core::tracker::Tracker;
 
@@ -233,10 +234,11 @@ fn patterns(repo: &Repo, tracker: &Tracker, issue: u64) -> [String; 3] {
 }
 
 fn existing(repo: &Repo, gh: &GitHub, issue: u64) -> Result<Option<Target>> {
+    let issues = crate::issues::of(gh);
     let names = patterns(repo, &gh.tracker, issue);
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let listed = repo.remote().records(&names, Fresh::Process)?;
-    let target = decide(repo, &gh.tracker, issue, &listed, || gh.comments(issue))?;
+    let target = decide(repo, &gh.tracker, issue, &listed, || issues.comments(issue))?;
     if let Some(target) = &target {
         target.resolve(repo)?;
     }
@@ -260,6 +262,7 @@ pub struct Seen {
 /// writing a turn receipt.
 /// An unclaimed issue's comments are read without a quota probe.
 pub fn once(repo: &Repo, config: &Config, gh: &GitHub, issue: u64) -> Result<Seen> {
+    let issues = crate::issues::of(gh);
     let tracker = &gh.tracker;
     let base_ref = format!("refs/heads/{}", config.lands_on());
     let [claim_ref, legacy, members] = patterns(repo, tracker, issue);
@@ -269,7 +272,7 @@ pub fn once(repo: &Repo, config: &Config, gh: &GitHub, issue: u64) -> Result<See
     crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name(), Fresh::Process)?;
     let target = decide(repo, tracker, issue, &listed, || {
         gh.note_without_probe()?;
-        gh.comments(issue)
+        issues.comments(issue)
     })?;
     let branch = match target {
         None => config.lands_on().to_string(),
@@ -294,7 +297,7 @@ pub fn snapshot_branch(
 ) -> Result<String> {
     let read = || match comments {
         Some(comments) => Ok(comments.to_vec()),
-        None => GitHub::of(repo)?.comments(issue),
+        None => crate::issues::of(&GitHub::of(repo)?).comments(issue),
     };
     match decide(repo, tracker, issue, records, read)? {
         None => Ok(config.lands_on().to_string()),
@@ -349,11 +352,12 @@ pub fn branch(repo: &Repo, config: &Config, issue: u64) -> Result<String> {
 }
 
 fn selectable(gh: &GitHub, issue: u64) -> Result<()> {
+    let issues = crate::issues::of(gh);
     ensure!(
         !afkconvoy_core::tracker::is_public(&gh.visibility()?),
         "target selection requires a private tracker; configure one with afkconvoy run --tracker <owner/private-repo>"
     );
-    let read = gh.issue(issue)?;
+    let read = issues.issue(issue)?;
     ensure!(!read.pull_request && !read.is_closed(), "select a target for an open task issue");
     gh.tracker.to_take(&read.labels).map_err(anyhow::Error::msg)?;
     Ok(())
@@ -398,13 +402,14 @@ fn confirm(repo: &Repo, gh: &GitHub, issue: u64, target: &Target) -> Result<Stri
 /// Selects `branch` for issue `issue`, as its `convoy:target` comment.
 pub fn choose(repo: &Repo, issue: u64, branch: &str) -> Result<String> {
     let gh = GitHub::of(repo)?;
+    let issues = crate::issues::of(&gh);
     selectable(&gh, issue)?;
     let target = Target::Branch(branch.to_string());
     if may_select(repo, &gh, issue, &target)? {
         return target.resolve(repo);
     }
     target.resolve(repo)?;
-    gh.comment(issue, &selection_comment(branch))?;
+    issues.comment(issue, &selection_comment(branch))?;
     confirm(repo, &gh, issue, &target)
 }
 
@@ -447,6 +452,7 @@ fn join(repo: &Repo, reference: &Reference, task: &str) -> Result<()> {
 
 pub fn attach(repo: &Repo, issue: u64, id: &str) -> Result<String> {
     let gh = GitHub::of(repo)?;
+    let issues = crate::issues::of(&gh);
     selectable(&gh, issue)?;
     let target = Target::Delivery(crate::delivery::reference(repo, id)?);
     if may_select(repo, &gh, issue, &target)? {
@@ -455,7 +461,7 @@ pub fn attach(repo: &Repo, issue: u64, id: &str) -> Result<String> {
     let prs = gh.open_prs()?;
     let prs: Vec<_> =
         prs.iter().filter(|pr| pr.closes.contains(&issue)).map(|pr| pr.number).collect();
-    let comments = gh.comments(issue)?;
+    let comments = issues.comments(issue)?;
     let recorded =
         afkconvoy_core::worker::recorded_branches(comments.iter().map(|c| c.body.as_str()));
     let heads = repo.remote().heads(Fresh::Process)?;
@@ -526,7 +532,7 @@ pub fn listing(
     repo: &Repo,
     config: &Config,
     tracker: &Tracker,
-    open: &crate::gh::OpenIssues,
+    open: &crate::issues::OpenIssues,
     listing: &Listing,
 ) -> Result<Value> {
     let mut rows = vec![];
@@ -620,10 +626,10 @@ fn carry_one(
     match &target {
         Target::Delivery(reference) => join(repo, reference, &tracker.issue(issue))?,
         Target::Branch(branch) if *branch != fleet.config.base_branch => {
-            if !fleet.gh.issue(issue)?.is_closed()
-                && selected_in(&fleet.gh.comments(issue)?).is_none()
+            if !fleet.issues.issue(issue)?.is_closed()
+                && selected_in(&fleet.issues.comments(issue)?).is_none()
             {
-                fleet.gh.comment(issue, &selection_comment(branch))?;
+                fleet.issues.comment(issue, &selection_comment(branch))?;
             }
         }
         Target::Branch(_) => {}

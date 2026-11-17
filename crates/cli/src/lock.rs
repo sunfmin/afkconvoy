@@ -11,22 +11,25 @@ use crate::gh::GitHub;
 
 /// The fleet locks standing on GitHub now, lowest number first.
 pub fn standing_locks(gh: &GitHub, config: &Config) -> Result<Vec<u64>> {
-    gh.open_with(&config.lock_label)
+    let issues = crate::issues::of(gh);
+    issues.open_with(&config.lock_label)
 }
 
 /// The fleet locks standing, as a turn that waits asks again and again:
 /// read for every waiting process of the host once an interval
-/// (`GitHub::open_with_shared`), so a lock raised is seen within it.
+/// (`Issues::open_with_shared`), so a lock raised is seen within it.
 pub fn waited_locks(gh: &GitHub, config: &Config) -> Result<Vec<u64>> {
-    gh.open_with_shared(&config.lock_label)
+    let issues = crate::issues::of(gh);
+    issues.open_with_shared(&config.lock_label)
 }
 
 /// The closed lock that explains an `escalate` or a failure declared at `at`
 /// (`lock::explains`), from the locks GitHub says have closed. `None` of one
 /// declared at no known time: nothing is run again on a guess.
 pub fn explaining_lock(gh: &GitHub, config: &Config, at: Option<u64>) -> Result<Option<u64>> {
+    let issues = crate::issues::of(gh);
     let Some(at) = at else { return Ok(None) };
-    let closed = gh.closed_with(&config.lock_label)?;
+    let closed = issues.closed_with(&config.lock_label)?;
     let closed: Vec<Closed> =
         closed.into_iter().map(|(number, at)| Closed { number, at }).collect();
     Ok(explains(&closed, at))
@@ -44,7 +47,8 @@ pub fn explaining_lock(gh: &GitHub, config: &Config, at: Option<u64>) -> Result<
 ///
 /// The record goes first: a lock nobody is on record for never stands.
 pub fn lock(config: &Config, gh: &GitHub, issue: u64, role: Option<&str>) -> Result<Value> {
-    let read = gh.issue(issue)?;
+    let issues = crate::issues::of(gh);
+    let read = issues.issue(issue)?;
     if read.is_closed() {
         bail!("issue #{issue} is closed: a fleet lock is an open issue, and ends when it closes");
     }
@@ -54,11 +58,11 @@ pub fn lock(config: &Config, gh: &GitHub, issue: u64, role: Option<&str>) -> Res
     let label = &config.lock_label;
     let raised = !read.labels.contains(label);
     if raised {
-        gh.comment(issue, &raised_comment(role))?;
+        issues.comment(issue, &raised_comment(role))?;
     }
-    gh.take(issue, &read.labels)?;
+    issues.take(issue, &read.labels)?;
     if raised {
-        gh.add_label(issue, label)?;
+        issues.add_label(issue, label)?;
     }
     Ok(json!({"issue": issue, "label": label, "role": role, "raised": raised,
         "locks": standing_locks(gh, config)?}))

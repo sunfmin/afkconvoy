@@ -836,7 +836,7 @@ pub fn reconcile(
     found: &mut Found,
     me: &Me,
     agent: &Agent,
-    open: &crate::gh::Open,
+    open: &crate::issues::Open,
     flows: &crate::stage::Flows,
     set: &WorkingSet,
 ) -> Result<Vec<Value>> {
@@ -949,7 +949,7 @@ pub fn reconcile(
             book.observations_failed.retain(|failed| failed.path != worktree.path);
             continue;
         }
-        let verdict = crate::gh::verdict_since(comments, claim.since);
+        let verdict = crate::issues::verdict_since(comments, claim.since);
         let said = verdict.as_ref().and_then(|v| comments.get(v.comment)).map(|c| c.url.as_str());
         let answered = worktree.answered()?;
         let unbound_declared =

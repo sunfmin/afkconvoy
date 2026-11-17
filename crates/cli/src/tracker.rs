@@ -172,11 +172,12 @@ pub fn check(list: &List, repo: &Repo, to: To<RepoName>, host: &str) -> Result<C
 /// Makes in the tracker `gh` names, another repo than the checkout `repo`'s,
 /// each label the checkout's fleet puts on its issues there that it lacks.
 fn labelled(gh: &GitHub, repo: &Repo, config: &Config) -> Result<()> {
+    let issues = crate::issues::of(gh);
     let label = repo_label(&named_repo(repo)?);
-    create_missing(gh, &[label], REPO_LABEL_SAYS)?;
-    create_missing(gh, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;
-    create_missing(gh, std::slice::from_ref(&config.escalate_label), ESCALATE_LABEL_SAYS)?;
-    create_missing(gh, std::slice::from_ref(&config.lock_label), LOCK_LABEL_SAYS)?;
+    create_missing(&*issues, &[label], REPO_LABEL_SAYS)?;
+    create_missing(&*issues, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;
+    create_missing(&*issues, std::slice::from_ref(&config.escalate_label), ESCALATE_LABEL_SAYS)?;
+    create_missing(&*issues, std::slice::from_ref(&config.lock_label), LOCK_LABEL_SAYS)?;
     Ok(())
 }
 

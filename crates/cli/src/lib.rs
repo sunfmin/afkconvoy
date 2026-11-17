@@ -92,6 +92,7 @@ pub mod human_wait;
 pub mod instance;
 pub mod intake;
 pub mod issue_updates;
+pub mod issues;
 pub mod jev;
 pub mod judge;
 pub mod kept;

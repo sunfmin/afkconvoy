@@ -323,8 +323,8 @@ pub(crate) fn escalate_claim(
 ) -> Result<Option<Left>> {
     let issue = claim.number;
     let leaving = worktree.map(|worktree| leaving(fleet, claim.number, worktree)).transpose()?;
-    let labels = fleet.gh.issue(issue)?.labels;
-    let comments = fleet.gh.comments(issue)?;
+    let labels = fleet.issues.issue(issue)?.labels;
+    let comments = fleet.issues.comments(issue)?;
     let bodies = || comments.iter().map(|c| c.body.as_str());
     let said = escalation_begun(bodies(), &claim.id);
     // A bound repo's escalate label is its team's to name.
@@ -379,14 +379,14 @@ pub(crate) fn escalate_claim(
                     }
                     None => escalation_comment(&claim.id, flow.as_deref(), &reason),
                 };
-                fleet.gh.comment(issue, &comment)?
+                fleet.issues.comment(issue, &comment)?
             }
             EscalateStep::Relabel => {
                 if let Some(label) = &swap.add {
-                    fleet.gh.add_label(issue, label)?;
+                    fleet.issues.add_label(issue, label)?;
                 }
                 for label in &swap.remove {
-                    fleet.gh.remove_label(issue, label)?;
+                    fleet.issues.remove_label(issue, label)?;
                 }
             }
             EscalateStep::Board => {
@@ -457,7 +457,7 @@ pub(crate) fn close_claim(
     let issue = claim.number;
     transition::close(issue, workless, |step| {
         match step {
-            CloseStep::CloseIssue => fleet.gh.close_issue(issue)?,
+            CloseStep::CloseIssue => fleet.issues.close_issue(issue)?,
             CloseStep::Board => last_word(fleet, claim, Stage::Closed, None, &[])?,
             CloseStep::Account => {
                 crate::account::leave(&fleet.repo, &fleet.gh, issue, End::Closed, fleet.now)?
@@ -545,8 +545,8 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64, look: Look) -> Result<Option<As
     if look == Look::Reporting && !past_grace {
         return Ok(Some(Asked::Settled(Route::Leave)));
     }
-    let comments = fleet.gh.comments(issue)?;
-    let verdict = crate::gh::verdict_since(&comments, claim.since);
+    let comments = fleet.issues.comments(issue)?;
+    let verdict = crate::issues::verdict_since(&comments, claim.since);
     let said =
         verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
     let verdict = standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref());
@@ -566,8 +566,8 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64, look: Look) -> Result<Option<As
 /// claim's state and starts no turn.
 pub(crate) fn declared(fleet: &Fleet, me: &Me, issue: u64, worktree: &Worktree) -> Result<bool> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(false) };
-    let comments = fleet.gh.comments(issue)?;
-    let verdict = crate::gh::verdict_since(&comments, claim.since);
+    let comments = fleet.issues.comments(issue)?;
+    let verdict = crate::issues::verdict_since(&comments, claim.since);
     let said =
         verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
     Ok(standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref()).is_some())
@@ -586,8 +586,8 @@ fn end_goal_past_verdict(fleet: &Fleet, claim: &Claim, worktree: &Worktree) -> R
     if !crate::goal::continued(worktree, harness, since)? {
         return Ok(());
     }
-    let comments = fleet.gh.comments(claim.number)?;
-    let verdict = crate::gh::verdict_since(&comments, claim.since);
+    let comments = fleet.issues.comments(claim.number)?;
+    let verdict = crate::issues::verdict_since(&comments, claim.since);
     let said =
         verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
     if standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref()).is_some() {

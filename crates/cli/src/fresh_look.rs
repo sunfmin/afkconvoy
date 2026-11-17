@@ -98,7 +98,7 @@ pub(crate) fn said(issue: u64, pr: u64, reds: &[RedTurn], worktree: &str) -> Str
 
 /// The text of the last verdict declared on `issue`, where one was.
 fn last_verdict(fleet: &Fleet, issue: u64) -> Result<Option<String>> {
-    let comments = fleet.gh.comments(issue)?;
+    let comments = fleet.issues.comments(issue)?;
     let declared = comments
         .iter()
         .rev()

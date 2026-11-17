@@ -39,7 +39,7 @@ pub fn show(repo: &Repo, now: u64, number: u64) -> Result<Value> {
             json!({"is": if fleets { "landing" } else { "claimed" }})
         }
         None => {
-            let read = fleet.gh.issue(number)?;
+            let read = fleet.issues.issue(number)?;
             match read.is_closed() {
                 true => json!({"is": "closed", "state_reason": read.state_reason,
                     "closed_by": read.closed_by}),

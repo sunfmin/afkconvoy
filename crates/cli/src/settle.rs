@@ -317,10 +317,10 @@ fn look_again(
 /// instance id. The claim is deleted last, so a settling that failed on the
 /// way is the next tick's to finish.
 pub fn settle(fleet: &mut Fleet, found: &mut Found, me: &Me, issue: u64) -> Result<Option<u64>> {
-    let closed = fleet.gh.issue(issue)?.is_closed();
+    let closed = fleet.issues.issue(issue)?.is_closed();
     let base_tip = fleet.task_tip(issue)?;
     let landed = landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, issue)?.is_some();
-    let comments = fleet.gh.comments(issue)?;
+    let comments = fleet.issues.comments(issue)?;
     // Another open PR carries its PR: its work goes on there (docs/adr/0083).
     let by = carried_by(comments.iter().map(|c| c.body.as_str()));
     let carried = match by {
@@ -347,7 +347,7 @@ pub fn settle(fleet: &mut Fleet, found: &mut Found, me: &Me, issue: u64) -> Resu
                 if landed.is_none() {
                     bail!("issue #{issue} is open and nothing landed it under this claim");
                 }
-                fleet.gh.close_issue(issue)?;
+                fleet.issues.close_issue(issue)?;
             }
             SettleStep::ClosePr => {
                 // The base branch itself is asked: a PR whose join commit is not on it is left alone.

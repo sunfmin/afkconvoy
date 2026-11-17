@@ -599,6 +599,7 @@ impl Reports for GitReports {
         let tracker = RepoName::read(&seen.tracker).context("invalid tracker")?;
         let repo = RepoName::read(&seen.repo).context("invalid repo")?;
         let gh = GitHub::new(seen.checkout.clone(), Tracker::Other { tracker, repo });
+        let issues = crate::issues::of(&gh);
         let waits = report
             .waiting
             .iter()
@@ -614,11 +615,11 @@ impl Reports for GitReports {
         );
         // An untouched repo may not yet have created its escalate label.
         crate::flows::create_missing(
-            &gh,
+            &*issues,
             std::slice::from_ref(&seen.escalate),
             "afkconvoy: the fleet handed an issue that carries this to a human",
         )?;
-        gh.open_issue(
+        issues.open_issue(
             &format!("afkconvoy: no fleet has taken the ready issues of {}", seen.repo),
             &body,
             &[&seen.escalate],
@@ -633,11 +634,12 @@ impl Reports for GitReports {
                 repo: RepoName::read(&seen.repo).context("invalid repo")?,
             },
         );
+        let issues = crate::issues::of(&gh);
         let marker = "<!--convoy:unworked-taken-->";
-        if !gh.comments(issue)?.iter().any(|comment| comment.body.starts_with(marker)) {
-            gh.comment(issue, &format!("{marker}\nThe work was taken by host {host}: its claims or live heartbeat are on the repo's remote."))?;
+        if !issues.comments(issue)?.iter().any(|comment| comment.body.starts_with(marker)) {
+            issues.comment(issue, &format!("{marker}\nThe work was taken by host {host}: its claims or live heartbeat are on the repo's remote."))?;
         }
-        gh.close_issue(issue)
+        issues.close_issue(issue)
     }
 }
 
