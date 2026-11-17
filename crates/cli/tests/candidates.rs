@@ -173,23 +173,6 @@ fn gone(world: &World, name: &str) {
     }
 }
 
-/// A turn stopped by SIGSTOP until dropped, so a panic never leaves it frozen.
-struct Held(String);
-
-impl Held {
-    fn stop(turn: &Child) -> Held {
-        let pid = turn.id().to_string();
-        assert!(Command::new("kill").args(["-STOP", &pid]).status().unwrap().success());
-        Held(pid)
-    }
-}
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        let _ = Command::new("kill").args(["-CONT", &self.0]).status();
-    }
-}
-
 /// Starts the turns of `turns`, each a worker's checkout and its issue, into
 /// one round (docs/adr/0083): a turn of issue 5's worker, `e`, takes a round
 /// of its own first and holds it in its gate; the others ask during it and
@@ -502,7 +485,7 @@ fn interleaved_targets_and_default_publish_only_to_their_own_chains() {
                 "{target}: {files}"
             );
         }
-        let record = world.chain(&target);
+        let record = world.chain(target);
         assert_eq!(record["candidates"].as_array().unwrap().len(), 1);
     }
     assert!(world.gh()["issues"].as_array().unwrap().iter().all(|i| i["state"] == "closed"));
@@ -1800,19 +1783,6 @@ fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
     assert!(kept.iter().any(|c| c["issue"] == 2 && c["phase"] == "landed"), "{kept:?}");
 }
 
-/// `land --issue n` in `dir` with its clock at `now`.
-fn start_at(world: &World, dir: &Path, n: u64, now: u64) -> Child {
-    world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
-        .env("XDG_CACHE_HOME", world.cache())
-        .env("AFKCONVOY_ISSUE", n.to_string())
-        .args(["land", "--issue", &n.to_string(), "--now", &now.to_string()])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap()
-}
-
 fn candidate_of(world: &World, issue: u64) -> Value {
     let state = chain(world);
     let rows = state["candidates"].as_array().unwrap();
@@ -2150,8 +2120,8 @@ fn an_old_remote_chain_record_is_ignored_reported_and_removed() {
     let record = world.remote(&["commit-tree", &tree, "-m", "{\"candidates\":[],\"barriers\":[]}"]);
     world.remote(&["update-ref", "refs/convoy/candidates/main", &record]);
     let _runner = world.host_held();
-    let doctor = world.afk(&["doctor"]).json.to_string();
-    assert!(doctor.contains("of an older afkconvoy is left"), "{doctor}");
+    let doctor = world.afk(&["doctor"]).json["legacy_candidate_chains"].clone();
+    assert_eq!(doctor, json!([{"ref": "refs/convoy/candidates/main", "in_use": false}]));
     let (a, _) = worker(&world, 1, "a");
     release(&world, "a", false);
     let landed = world.afk_in(&a, &["land", "--issue", "1"]).ok();
@@ -2162,6 +2132,5 @@ fn an_old_remote_chain_record_is_ignored_reported_and_removed() {
         world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty(),
         "removed"
     );
-    let doctor = world.afk(&["doctor"]).json.to_string();
-    assert!(!doctor.contains("of an older afkconvoy is left"), "{doctor}");
+    assert_eq!(world.afk(&["doctor"]).json["legacy_candidate_chains"], json!([]));
 }

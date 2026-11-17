@@ -1,4 +1,4 @@
-//! A host's candidate chain (docs/adr/0090). Every write edits the chain of
+//! A host's candidate chain (ADR-0090). Every write edits the chain of
 //! this host (`chain_store`) at the revision it was read at; one made on a
 //! chain another turn moved is refused. Publishing is one atomic push of the
 //! base and the source heads, made while the chain is held, so invalidation
