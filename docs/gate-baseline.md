@@ -341,7 +341,7 @@ the processes' starts, not the CPU. Under a landing's own load the slow
 gate fills the host (load 116 at its end, above), and there less CPU is
 less time. What would take more off is starting fewer processes in a
 tick — the probe of a fresh world, the remote listings a write must be
-certain of (ADR 0043) — and is the fleet's behaviour, not the gate's.
+certain of (the `look` module) — and is the fleet's behaviour, not the gate's.
 
 ## A waiting turn polled the remote beside the gate (sunfmin/control#309)
 
@@ -519,7 +519,7 @@ help.
   (`Fleet::runnable`), once for the agent that starts it. 787 of the
   sample's 2,186 login-shell questions were asked again in the process that
   had asked them. From this change a question is asked once a look, in the
-  directory it is asked in (`launch::ANSWERED`, docs/adr/0043).
+  directory it is asked in (`launch::ANSWERED`, `look.rs`).
 - Each tick listed `refs/convoy/delivery/*` (`delivery::reconcile`) and
   `refs/convoy/base/red/*` (`repair::tend`) on the remote again, right after
   its own listing of `refs/convoy/*`: 2 of the 5.6 `ls-remote`s a tick made.
@@ -554,7 +554,7 @@ one process (523 of 903, cheap with the stand-in `gh`).
 ## The gate ran a test to each core it was given (sunfmin/control#965)
 
 `Studio64` (16 cores, 64 GiB; its host settings cap afkconvoy at 50% of its
-cores, 8, from 2026-11-14, ADR-0075) recorded five landings past the 600 s
+cores, 8, from 2026-11-14, ADR-0107) recorded five landings past the 600 s
 budget: 803, 756, 678, 729 and 693 seconds. The last, `c46574b2`, left its
 output: fast gate fmt 1, Flux 54–59, Clippy 14–26, build 25–32, fast tests
 73–74; slow gate 635 s. Its slow gates' records took 548 to 671 s; the slow
@@ -587,7 +587,7 @@ load 7–9 at the start of each:
 | 16 | 22.0 | 173 | 5.16 s |
 
 From this change `./gate.sh` runs two tests to each core it is given
-(ADR-0077), and says how many as its tests start.
+(ADR-0047), and says how many as its tests start.
 
 ### After
 

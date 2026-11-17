@@ -316,7 +316,7 @@ fn a_patrol_the_repo_names_runs_when_due_and_one_it_does_not_name_never_runs() {
 }
 
 /// A patrol's worker starts as a stage's does: in its role's directory alone,
-/// where the role is a subdirectory of its repo (docs/adr/0014).
+/// where the role is a subdirectory of its repo (docs/adr/0009).
 #[test]
 fn a_patrol_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let world = bound("[sweep]");

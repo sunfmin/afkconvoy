@@ -1,4 +1,4 @@
-//! pi is a harness (docs/adr/0013): a stage that names it gets a worker that
+//! pi is a harness (docs/adr/0020): a stage that names it gets a worker that
 //! is a pi session, started in its role's directory with what pi does not
 //! load from there added to its worker launch command — and a stage that
 //! names none is started as ever. The line is read off a stand-in orca, and

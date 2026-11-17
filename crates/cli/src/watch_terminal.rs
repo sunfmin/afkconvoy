@@ -296,7 +296,7 @@ fn reincarnated(saved: &Value, row: &Value) -> bool {
 /// survived, then its pane, which is ours by ptyId and would otherwise
 /// block the next creation by its title. The journal records the session
 /// ended, so its confirmed terminal is absent (None) and a fresh watch
-/// may start (ADR-0070). Nothing is adopted and nothing is resent.
+/// may start (ADR-0096). Nothing is adopted and nothing is resent.
 fn retire(worktree: &Worktree, mut record: Record, row: &Value) -> Result<Option<String>> {
     crate::host_watch::stop_marked(&crate::host_watch::session_identity(&record.watch))?;
     let handle = row["handle"].as_str().context("watch terminal has no handle")?;

@@ -81,7 +81,7 @@ pub enum LabelBar {
     /// the fleet.
     NoFlow,
     /// It carries these repo labels, of more than one repo: no repo's fleet
-    /// works it (docs/adr/0027).
+    /// works it (docs/adr/0091).
     Repos(Vec<String>),
 }
 
@@ -481,7 +481,7 @@ pub struct Observed<'a> {
     pub begun: &'a [u64],
     /// The open issues whose named files overlap those the claimed issues
     /// name (`apart::overlapping`): a pass starts them after the rest, so
-    /// that parallel work rarely conflicts (docs/adr/0076).
+    /// that parallel work rarely conflicts (docs/adr/0107).
     pub overlapping: &'a [u64],
     /// The patrols the repo names (`patrol::Seen`), in its order. Empty in
     /// an unbound repo.
@@ -637,7 +637,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         let failed_cut = set.cut.as_ref().is_some_and(|cut| cut.failure == Some(number));
         // Made a ticket of the fleet's after `cut::REPEATS` failures of the
         // same way, it carries the ready label and is worked as any other
-        // (docs/adr/0072).
+        // (docs/adr/0028).
         let ticket = issue.labels.contains(&config.ready_label);
         let reason = if failed_cut && cut::watched(&issue.labels) && !ticket {
             // The watch looks into it; nothing of the fleet's works it.

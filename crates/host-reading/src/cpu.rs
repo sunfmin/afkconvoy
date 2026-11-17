@@ -1,4 +1,4 @@
-//! How busy the host's cores are, as admission reads it (docs/adr/0084,
+//! How busy the host's cores are, as admission reads it (docs/adr/0107,
 //! sunfmin/control#1168): the share of all its cores' time not idle between
 //! two readings of the kernel's CPU ticks — `host_statistics`'
 //! `HOST_CPU_LOAD_INFO` on macOS, the first line of `/proc/stat` elsewhere.

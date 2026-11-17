@@ -7,7 +7,7 @@
 //!
 //! What a daybook is — the entry's shape and its lesson, the day's
 //! discussion and the lowest numbered winning two created at once, the
-//! lesson index — is the daybook crate's (`afkconvoy-daybook`, ADR-0071),
+//! lesson index — is the daybook crate's (`afkconvoy-daybook`, ADR-0058),
 //! which another program uses too. What is afkconvoy's own is here: the
 //! kind of session its environment tells, the repo and tracker a checkout
 //! and this host's checkout list name, `gh` as the fleet runs it, and the

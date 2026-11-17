@@ -87,7 +87,7 @@ fn a_new_checkout_starts_without_a_tracker_and_works_the_local_one() {
     refused(&world, &world.clone, &["--foreground"], &all);
     // Its watch directory given, a new host starts, with no tracker named:
     // its checkout works the host's local tracker. No fleet puts a host to
-    // sleep, so there is nothing of it to settle (docs/adr/0101). Its panel
+    // sleep, so there is nothing of it to settle. Its panel
     // is served on any free port: 7070 is the panel of the host the tests
     // run on.
     let first =

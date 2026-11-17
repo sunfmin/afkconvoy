@@ -35,7 +35,7 @@ pub enum Stated {
     /// stage runs again.
     LockClosed,
     /// The fleet saw the stage's worker fail so, and hands the issue on: to
-    /// the stage's consult, where it names one (docs/adr/0018).
+    /// the stage's consult, where it names one (docs/adr/0005).
     Failed(Failure),
 }
 
@@ -584,7 +584,7 @@ impl History<'_> {
 }
 
 /// What an issue already handed to a human calls for, where no consult saw
-/// what handed it over (docs/adr/0018).
+/// what handed it over (docs/adr/0005).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unconsulted {
     /// Its records have it with its stage's consult: it goes back to the

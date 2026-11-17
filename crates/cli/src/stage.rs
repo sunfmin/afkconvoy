@@ -182,7 +182,7 @@ pub fn put_to_consults(fleet: &Fleet, flows: &Flows, open: &OpenIssues) -> Resul
 /// consult, at the stage `stage` of its workflow, with `text` as why — a
 /// stage record under the claim the consult holds, as its ruling is, which
 /// moves no label: the issue never left the fleet. Its rework counts are
-/// not started over (docs/adr/0018).
+/// not started over (docs/adr/0005).
 ///
 ///   {"issue", "stage", "verdict": "sent", "claim", "declared", "woke"}
 pub fn consult_send(

@@ -491,7 +491,7 @@ or do so they can act in one reply.
 /// no order, and nothing here says which holds when two disagree: a team's
 /// rules and a role's that contradict each other are a defect of the team's
 /// files. The host user's skills and rules, which a harness may load beside
-/// them (docs/adr/0017), are the one exception: everything above them wins.
+/// them (docs/adr/0009), are the one exception: everything above them wins.
 const RULES: &str = "\
 - **The repo's rules:** the rules file at the top of the <place>, where it has one
 <team_rules>- **Your role's rules:** the rules file of the directory you were started in
@@ -1160,7 +1160,7 @@ pub fn fresh_look(look: &FreshLook) -> String {
 /// opens or looks for an issue of the repo, and `<repo_label>` where the
 /// brief says which labels that issue carries — `<only_repo_label>` where it
 /// carries no other the worker puts on. Of the checkout's own repo they say
-/// nothing more than they did before there were trackers (docs/adr/0027); of
+/// nothing more than they did before there were trackers (docs/adr/0091); of
 /// the host's local tracker, each is an `afkconvoy issue` command
 /// (docs/adr/0091). The one place a brief's, an escalation's or a
 /// consult's issue command is made for its tracker.

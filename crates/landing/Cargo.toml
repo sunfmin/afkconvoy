@@ -1,6 +1,6 @@
 [package]
 name = "afkconvoy-landing"
-description = "Candidates, candidate chains, rounds and landing, with the forge behind an interface and no fleet concept in their API (docs/adr/0060)"
+description = "Candidates, candidate chains, rounds and landing, with the forge behind an interface and no fleet concept in their API (docs/adr/0058)"
 version.workspace = true
 edition.workspace = true
 publish = false

@@ -10,10 +10,10 @@ pub enum Of {
     Issue(u64),
     /// An issue of another tracker, as the commit names it: the PR of a
     /// fleet of the repo that works another tracker, whose issue this fleet
-    /// leaves alone (docs/adr/0027).
+    /// leaves alone (docs/adr/0091).
     Elsewhere(String),
     /// The watch on the host so named, which made a change of the repo
-    /// itself, on no issue (docs/adr/0026).
+    /// itself, on no issue (docs/adr/0040).
     Watch(String),
     /// The cut on the host so named, whose PR sets the version it makes, on
     /// no issue (docs/adr/0028).

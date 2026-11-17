@@ -1,7 +1,7 @@
 //! The holder of a host's exclusive queue (docs/adr/0019, docs/adr/0023): the
 //! one process of a host that keeps every ticket waiting or running, grants
 //! each its lane in the order `exclusive` decides, and ends the hold of a
-//! command that held others up past the host's bound (docs/adr/0031). A
+//! command that held others up past the host's bound (docs/adr/0088). A
 //! command starts once the host has room for it (docs/adr/0088).
 //!
 //! A host process embeds it — afkconvoy's host runner, or another program's

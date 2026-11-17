@@ -30,7 +30,7 @@ pub enum Fresh {
     /// asked again until this process writes it.
     Process,
     /// Live: the remote is asked now. A check that another process may have
-    /// moved the ref, or a write that must be certain (ADR 0043), reads this.
+    /// moved the ref, or a write that must be certain (the `look` module), reads this.
     Live,
 }
 

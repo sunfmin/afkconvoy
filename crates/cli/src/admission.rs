@@ -177,7 +177,7 @@ pub struct Admission {
     pub memory: Option<u64>,
     /// What the checkout's candidate chain answered in the last
     /// `LANDING_WINDOW`, as this host's tick log of it says; `None`: it
-    /// could not be read (docs/adr/0076).
+    /// could not be read (docs/adr/0107).
     pub landing: Option<Landing>,
 }
 
@@ -250,7 +250,7 @@ impl Admission {
     }
 
     /// This admission, judging the candidate chain of the checkout at `dir`
-    /// too, as its tick log has it up to `now` (docs/adr/0076).
+    /// too, as its tick log has it up to `now` (docs/adr/0107).
     pub fn with_landing(self, dir: &Path, now: u64) -> Admission {
         Admission { landing: landing_of(dir, now), ..self }
     }
@@ -287,7 +287,7 @@ impl Admission {
     /// watch once held past its span: none, and none calls. The candidate
     /// chain is none of them: it drains as the workers already running land,
     /// and nothing of the host is the watch's to mend for it
-    /// (docs/adr/0076). Nor are the accounts of a harness with none left:
+    /// (docs/adr/0107). Nor are the accounts of a harness with none left:
     /// nothing on the host gives an account's use back before its window
     /// resets (sunfmin/control#1220).
     pub fn reasons(&self) -> Vec<Reason> {
@@ -540,7 +540,7 @@ fn own_of(procs: &[crate::hot::Proc], of: &std::collections::HashSet<u32>) -> Ow
 
 /// Attribute the one-minute load in proportion to the CPU the queue's work
 /// took over the same minute: `averaged`, the host runner's average of its
-/// share in ten-thousandths, where it keeps one (docs/adr/0078); else the
+/// share in ten-thousandths, where it keeps one (docs/adr/0107); else the
 /// CPU its running work uses now, as the exclusive queue finds it in one
 /// reading of the process table. This is an estimate: the kernel exposes no
 /// per-tree load average. On an unreadable queue or process table, subtract

@@ -1,4 +1,4 @@
-//! The fleet's side of the gate (docs/adr/0059): what a gate run records of
+//! The fleet's side of the gate (docs/adr/0058): what a gate run records of
 //! the issue it was run for, and the comment a red run leaves on a PR. The
 //! gate itself is the gate crate's, re-exported here.
 

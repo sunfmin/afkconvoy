@@ -1,11 +1,11 @@
-//! A harness (docs/adr/0013): the program a worker is a session of. What the
+//! A harness (docs/adr/0020): the program a worker is a session of. What the
 //! fleet adds to a worker launch command to start a worker in its role
 //! (docs/adr/0009), the question that asks a command whether it takes that,
 //! the report to the worker backend, and how a tool call reaches the guard
 //! and is answered are each one harness's own. What is one harness's is in
 //! its module here and nowhere else: nothing outside names a flag, a
 //! variable, a hook event or a path of it, nor where it keeps its session,
-//! nor which of its lines start or end a turn (docs/adr/0044).
+//! nor which of its lines start or end a turn (docs/adr/0042).
 
 use flux_rs::attrs::*;
 use serde::{Deserialize, Deserializer};
@@ -89,7 +89,7 @@ pub struct UserHooks {
 }
 
 /// A harness that keeps each session apart, and reads the user's own model
-/// for a start the issue does not name. Codex is the one (docs/adr/0013).
+/// for a start the issue does not name. Codex is the one (docs/adr/0020).
 /// The directory, the file and the note are named here; what they mean is
 /// that harness's module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,7 +495,7 @@ impl Harness {
     /// Whether its engine reports its account's usage windows at all
     /// ([`Harness::windows`]): a harness that reports none is judged by the
     /// host alone, and comes after those that do where the host kit chooses
-    /// (docs/adr/0112).
+    /// (docs/adr/0086).
     pub const fn reports_windows(self) -> bool {
         match self {
             Harness::ClaudeCode | Harness::Codex | Harness::Kimi => true,
@@ -915,7 +915,7 @@ impl Harness {
     /// rules. A harness that reads no user config ignores `user`.
     /// `role_skills` is the role's `.claude/skills` when this worker has one,
     /// and `role_skill_names` the directories in it. Grok names that directory
-    /// and ignores a host skill of the same name (ADR-0098). Every other
+    /// and ignores a host skill of the same name (ADR-0009). Every other
     /// harness ignores both.
     pub fn kept_configuration(
         self,
@@ -945,7 +945,7 @@ impl Harness {
     }
 
     /// Where a role's limits for it are written, in the role's directory, in
-    /// its own form (docs/adr/0013).
+    /// its own form (docs/adr/0020).
     pub const fn limits(self) -> &'static str {
         match self {
             Harness::ClaudeCode => claude_code::LIMITS,
@@ -1020,7 +1020,7 @@ impl Harness {
     /// The role file a worker is told, from the role's directory, beside the
     /// repo's and the team's. A harness that starts in the worktree names the
     /// file, because that file is how the role's rules reach the worker
-    /// (ADR-0098). `None`: it starts in the role and loads the file itself,
+    /// (ADR-0009). `None`: it starts in the role and loads the file itself,
     /// and is told no role file.
     pub const fn role_file(self) -> Option<&'static str> {
         match self {
@@ -1297,7 +1297,7 @@ impl Harness {
     /// How this harness keeps a session of its own. `None`: the worker launch
     /// command, the fleet's model and the directory the host keeps are the
     /// whole start. Codex names a fresh directory, the user's model unless
-    /// the issue names one, and its watch line (docs/adr/0013).
+    /// the issue names one, and its watch line (docs/adr/0020).
     pub const fn session(self) -> Option<Session> {
         match self {
             Harness::Codex => Some(codex::SESSION),
@@ -1452,7 +1452,7 @@ impl Harness {
     /// backend, the host user's skills and rules where the session is given
     /// them, and the model — each in this harness's way. Every harness but
     /// Grok starts in `start.dir`. Grok's session works only in its cwd, so it
-    /// starts in the worktree (ADR-0098).
+    /// starts in the worktree (ADR-0009).
     pub fn in_role(self, command: &str, start: &Start) -> String {
         self.role_line(command, start).done()
     }

@@ -744,7 +744,7 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     assert_eq!(plan["waiting_on_human"], json!([]), "answered: it waits for nobody");
 }
 
-// Every hand-off goes to the consult first (docs/adr/0018): a failure the fleet
+// Every hand-off goes to the consult first (docs/adr/0005): a failure the fleet
 // saw, a verdict the stage may not declare, a breaker, a `blocked` that cannot
 // clear, a changed workflow and an `already-satisfied` over work each start
 // the stage's consult and not a human. Its ruling starts no count over, the

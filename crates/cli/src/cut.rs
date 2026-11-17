@@ -41,7 +41,7 @@ use crate::stage::Flows;
 /// and a running cut's claim. Without declared steps only its claim remains.
 /// An open failure issue holds no cut back; the same failure `REPEATS` times
 /// in a row, with nothing landed past the last one's base, does
-/// (docs/adr/0072): what the issue and its comments, in `open`, record.
+/// (docs/adr/0028): what the issue and its comments, in `open`, record.
 pub fn seen(
     fleet: &Fleet,
     read: &Flows,
@@ -306,7 +306,7 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
 /// in a terminal of it, under the host kit's first harness's worker
 /// environment, as a caster is. A checkout an earlier cut left is removed
 /// first, and every branch an earlier cut pushed but the one this cut takes
-/// up is deleted: a failed cut's leftovers do not pile up (docs/adr/0072).
+/// up is deleted: a failed cut's leftovers do not pile up (docs/adr/0028).
 /// `Lost` when a peer claimed it, or nothing is left to cut.
 ///
 /// A step that fails after the claim gives the claim back and is an error:
@@ -448,7 +448,7 @@ fn clear_branches(fleet: &Fleet, version: &str, base: &str) -> Result<()> {
 /// it in a comment — and keeps its checkout until the next cut starts, its
 /// terminal closed. The issue holds no cut back; the `cut::REPEATS`th
 /// failure of the same way in a row makes it a ticket of the fleet's, under
-/// the ready label (docs/adr/0072). A cut whose checkout is gone from here,
+/// the ready label (docs/adr/0028). A cut whose checkout is gone from here,
 /// and a peer's presumed dead, ended short as well, out of sight: each opens
 /// that issue too, named by the version its branch says, and is unclaimed.
 /// Unclaimed without that issue, the next idle tick would start the same
@@ -539,7 +539,7 @@ pub fn end(fleet: &mut Fleet, found: &mut Found, me: &Me, row: &Row) -> Result<O
             }
             let report = cut::failure_report(&said, &failure, &me.host, kept, &line);
             // One issue stands for the failures until a cut publishes; each
-            // later one adds to it (docs/adr/0072).
+            // later one adds to it (docs/adr/0028).
             let issue = match row.failure {
                 Some(open) => {
                     fleet.issues.comment(open, &report)?;

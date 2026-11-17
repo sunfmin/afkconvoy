@@ -1,4 +1,4 @@
-//! The daybook crate as another program uses it (docs/adr/0071): through its
+//! The daybook crate as another program uses it (docs/adr/0058): through its
 //! public API alone, with no afkconvoy beside it, against a fake GitHub that
 //! keeps one repo's discussions in memory. A program appends entries to the
 //! day's discussion, a lesson is indexed in the day's body and listed back,

@@ -1,4 +1,4 @@
-//! The candidate chain as the fleet keeps it (docs/adr/0060): the chain's
+//! The candidate chain as the fleet keeps it (docs/adr/0058): the chain's
 //! rules are the landing crate's (`afkconvoy_landing::chain`); a fleet's
 //! candidate notes besides the issue its PR completes, which no rule reads,
 //! and a turn words what the chain decided as its ending.

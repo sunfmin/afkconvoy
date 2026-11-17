@@ -1,6 +1,6 @@
 //! A public tracker is refused: anyone can comment on its issues, and so
 //! write what the fleet reads as its state and what its workers read as
-//! their task (docs/adr/0027). A start's probe refuses one, so does `run
+//! their task (docs/adr/0091). A start's probe refuses one, so does `run
 //! --tracker`, and a running fleet instance whose tracker is made public
 //! ends as its next check finds it, within the hour one that found it
 //! private stands.

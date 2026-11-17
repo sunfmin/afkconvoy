@@ -1175,7 +1175,7 @@ pub fn command(
 
 /// Covers the crash window between task publication and final PR creation.
 /// Acting ticks alone call this; plans and inspection remain read-only. The
-/// deliveries are those of the tick's listing of the remote (docs/adr/0043):
+/// deliveries are those of the tick's listing of the remote (the `look` module):
 /// one written since is reconciled by the next tick.
 pub fn reconcile(fleet: &Fleet) -> Result<()> {
     let (repo, gh) = (&fleet.repo, &fleet.gh);

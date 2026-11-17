@@ -580,7 +580,7 @@ pub fn detached<T>(
 /// Puts the whole gate, `whole`, on record for `tree` from the records of its
 /// two parts there, `fast` and `slow` → why it is not on record, `None` when
 /// it is. `head` is the tested commit and the new record's parent. A round's
-/// tip whose slow gate passed is a tree the whole gate passed (docs/adr/0048):
+/// tip whose slow gate passed is a tree the whole gate passed (docs/adr/0083):
 /// the target tip it becomes needs no other run.
 pub(crate) fn record_whole(
     repo: &Repo,
@@ -701,7 +701,7 @@ pub fn recorded(
 }
 
 /// The green run of `command` on `tree` on record that answers for a run of
-/// it on this kind of machine at `now` (docs/adr/0069): one `recorded`
+/// it on this kind of machine at `now` (docs/adr/0037): one `recorded`
 /// believes, which ran on this kind.
 pub fn reusable(
     repo: &Repo,

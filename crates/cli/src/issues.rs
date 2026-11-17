@@ -1,5 +1,5 @@
 //! The fleet's issues: the one seam every read and write of a tracker's
-//! issues crosses (GLOSSARY: Tracker, docs/adr/0027, docs/adr/0091) — the
+//! issues crosses (GLOSSARY: Tracker, docs/adr/0091) — the
 //! open ones, one issue, its comments, blockers and labels, one opened,
 //! commented on or closed. What is the repo's — PRs, branches, the base
 //! branch — stays on `GitHub`.
@@ -14,7 +14,7 @@
 //! The operations are the reads and writes the fleet makes, not GitHub's
 //! calls: each read is shaped so one paged query can answer it (an open
 //! issue comes with its comments and blockers), which is what keeps a GitHub
-//! tracker's reads within its quota (docs/adr/0111).
+//! tracker's reads within its quota (the `shared_reading` module).
 
 use std::collections::HashMap;
 use std::sync::Arc;

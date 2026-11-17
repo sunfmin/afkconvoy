@@ -2,7 +2,7 @@
 //! flight: the files an issue names, against the files the issues already
 //! claimed name. Parallel work on the same files is what makes a landing
 //! candidate chain conflict, so a pass starts the issues apart from it first, where
-//! that is known (docs/adr/0076, sunfmin/control#914).
+//! that is known (docs/adr/0107, sunfmin/control#914).
 //!
 //! An issue names a file in backticks — `crates/core/src/plan.rs`,
 //! `docs/adr/`, `GLOSSARY.md` — as issues here do. What names none is

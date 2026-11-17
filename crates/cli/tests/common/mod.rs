@@ -2370,7 +2370,7 @@ exit 2
 "#;
 
 /// The stand-in `pmset`: what it is asked is written to `pmset.log`, and it
-/// puts nothing to sleep. No fleet asks it anything (docs/adr/0101).
+/// puts nothing to sleep. No fleet asks it anything.
 const PMSET: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../pmset.log"
 "#;

@@ -126,7 +126,7 @@ pub struct Panel {
     pub repo: String,
     pub base_branch: String,
     /// The repo its fleet reads and writes its issues in, where that is not
-    /// its own (docs/adr/0027).
+    /// its own (docs/adr/0091).
     pub tracker: Option<String>,
     /// The fleet instance whose view this is, and its host; `None` of nobody's:
     /// every claim is then another instance's.

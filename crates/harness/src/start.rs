@@ -10,7 +10,7 @@ pub const SKILLS: &str = ".claude/skills";
 /// The file of a skill's directory that says what the skill is.
 pub const SKILL_FILE: &str = "SKILL.md";
 /// A directory's rules: the file every harness loads them from, so that they
-/// are written once (docs/adr/0013).
+/// are written once (docs/adr/0020).
 pub const RULES: &str = "CLAUDE.md";
 
 /// The profile a DSH session loads, independent of host skills and rules:
@@ -100,6 +100,6 @@ pub struct Told<'a> {
     /// (`Start::dir`), from the file its harness names
     /// (`Harness::role_file`). `None` of a harness that names none: it loads
     /// them from that directory, which is where it starts. A harness that
-    /// starts in the worktree names the file (ADR-0098).
+    /// starts in the worktree names the file (ADR-0009).
     pub own: Option<Rules<'a>>,
 }

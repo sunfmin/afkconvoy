@@ -3,7 +3,7 @@
 //! and hooks from the directory it starts in (docs/adr/0009), so what the
 //! fleet adds is the rest: the directories beside the role's, the settings it
 //! may load, and the hooks that ask the guard and tell the worker backend.
-//! The host user's skills and rules (docs/adr/0017) are one more directory
+//! The host user's skills and rules (docs/adr/0009) are one more directory
 //! beside the role's: one the host keeps, which holds nothing else of the
 //! user's, so that leaving their settings out still leaves out their hooks.
 

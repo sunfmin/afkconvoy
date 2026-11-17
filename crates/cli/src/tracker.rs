@@ -1,6 +1,6 @@
 //! A checkout's tracker: the repo its fleet reads and writes its issues in,
 //! or its host's local tracker (docs/adr/0091), said on its host as its
-//! concurrency is (docs/adr/0027) — kept with its entry on the checkout list,
+//! concurrency is (docs/adr/0091) — kept with its entry on the checkout list,
 //! set by a `run` that names it, and read as each tick opens the fleet, so a
 //! change holds at the next tick. Until its checkout says one, it is its
 //! host's local tracker (`Said::DEFAULT`); the checkout's own repo is its

@@ -212,7 +212,7 @@ pub fn promote(repo: &Repo, host: &str, now: u64) -> Result<Value> {
 /// Gates the proving branch's tip `tip` whole, in a worktree of its own: a
 /// green run of the whole gate on record answers; else, where the fast
 /// gate's run of the tree is on record, its slow gate runs and the two are
-/// joined into a record of the whole gate (docs/adr/0048's join); else the
+/// joined into a record of the whole gate (docs/adr/0083's join); else the
 /// whole gate runs → what it answered, and which of those it was.
 fn gate(
     repo: &Repo,
@@ -354,7 +354,7 @@ The fleet, at its ticks, and the operator.
 In a repo with a proving branch, a round lands on the proving branch once its fast gate is green: its root merged onto the proving branch's tip and fast-gated only, each PR answering `merged` and its issue closing (`afkconvoy land --help`). The base branch moves only by a promotion, which is this command:
 
 1. It reads the base branch's tip and the proving branch's tip on the remote. The same commit: `current`, nothing to do. The base branch's tip not an ancestor of the proving branch's: `diverged`, and nothing moves — a promotion never moves the base branch to a commit that is not a fast-forward of it.
-2. It gates the proving branch's tip, in a worktree of its own detached at it, by the gate that tip's config declares. A green run of `gate_command` on record for its tree answers. Else, where the fast gate's green run of that tree is on record — the last round's landing put it there — it runs the slow gate alone and puts `gate_command` on record from the two runs, as at a round's tip (ADR-0048). Else it runs `gate_command` whole.
+2. It gates the proving branch's tip, in a worktree of its own detached at it, by the gate that tip's config declares. A green run of `gate_command` on record for its tree answers. Else, where the fast gate's green run of that tree is on record — the last round's landing put it there — it runs the slow gate alone and puts `gate_command` on record from the two runs, as at a round's tip (ADR-0083). Else it runs `gate_command` whole.
 3. Green: it pushes the proving branch's tip to the base branch, a plain push the remote refuses unless it is a fast-forward: `promoted`. Red: the base branch stays where it was, and the answer and the fleet's log say so: `gate_red`, with the failing tests and the run's whole output. A run red only on TIMEOUTs the gate cannot classify on an overloaded host: `gate_unsettled`, nothing recorded.
 
 One promotion of a checkout runs at a time: another answers `promoting`. A repo with no proving branch answers `none`.

@@ -1,8 +1,8 @@
 //! The host kit's agent setup (sunfmin/control#528, #529, #753, #758;
-//! docs/adr/0062), kept apart so that another program can
+//! docs/adr/0058), kept apart so that another program can
 //! give a machine the operator's agent setup with no afkconvoy installed
 //! there. Guild's `guild install` calls only its `tmux`: Guild's instances
-//! are not given the agent setup (docs/adr/0066, sunfmin/control#780).
+//! are not given the agent setup (docs/adr/0058, sunfmin/control#780).
 //!
 //! What it does is what afkconvoy's host kit does, and nothing else:
 //!

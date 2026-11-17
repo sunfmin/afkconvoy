@@ -1,7 +1,7 @@
 //! The tests against real Codex. Every other test starts a Codex worker in a
 //! stand-in orca and runs its line under a stand-in Codex, which proves the
 //! fleet builds the right line — not that Codex answers it as assumed
-//! (docs/adr/0013). These run that line for real, in a throwaway role with a
+//! (docs/adr/0020). These run that line for real, in a throwaway role with a
 //! throwaway project as its worktree, under a throwaway home that holds rules
 //! and skills of a host user's. One reads which rules and which skills Codex
 //! would show the model. The other starts the session a worker is, at a
@@ -180,7 +180,7 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_t
     let told = said(&shown, "developer");
     assert_eq!(told.matches(SKILL_WORD).count(), 1, "the role's skill: {told}");
     assert!(!all.contains("skills/.system"), "the skills Codex carries were shown: {all}");
-    // The known exception (docs/adr/0013): Codex has no way to be told to
+    // The known exception (docs/adr/0020): Codex has no way to be told to
     // leave out the skills of the host user's home, and loads them. Were
     // this to fail, Codex has learned one, and the fleet should use it.
     assert!(told.contains(HOME_SKILL_WORD), "the skills of the user's home: {told}");

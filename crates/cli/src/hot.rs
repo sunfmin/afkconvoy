@@ -274,7 +274,7 @@ pub(crate) struct Proc {
     /// The CPU it has taken since it started, in milliseconds.
     pub(crate) cpu_ms: u64,
     /// The share of a core it takes now, as `ps` says it, in hundredths of
-    /// a percent: what admission apportions the load by (docs/adr/0050).
+    /// a percent: what admission apportions the load by (docs/adr/0107).
     pub(crate) cpu_share: u64,
     /// The bytes it has written to disk since it started.
     pub(crate) written: u64,
@@ -1175,7 +1175,7 @@ fn cooled(worker: String, episode: &Episode, gone: bool) -> What {
 }
 
 /// Names a stalled worker's stall, with the holders of the locks it waits
-/// on, on its issue (docs/adr/0113): nothing else ends a deadlock, and its
+/// on, on its issue (docs/adr/0082): nothing else ends a deadlock, and its
 /// worker cannot see it. A worker turned hot for anything else, or linked to
 /// no issue, is named nowhere.
 fn name_stall(repo: &Repo, taken: &Taken) -> anyhow::Result<()> {
@@ -1183,7 +1183,7 @@ fn name_stall(repo: &Repo, taken: &Taken) -> anyhow::Result<()> {
     let body = format!(
         "**afkconvoy** — this worker's build is stalled: {stall}.\n\n\
          Nothing releases these locks: end the stalled processes (SIGTERM) so their \
-         builds run again (docs/adr/0113)."
+         builds run again (docs/adr/0082)."
     );
     crate::issues::of(&crate::gh::GitHub::of(repo)?).comment(issue, &body)
 }

@@ -178,7 +178,7 @@ impl Kit {
     /// the kit's order; then each other that reports none, in the kit's
     /// order — a harness whose account's use the host cannot see is spent
     /// only after those it can, unless the operator put it first
-    /// (docs/adr/0112).
+    /// (docs/adr/0086).
     fn choosing(&self) -> impl Iterator<Item = &Held> {
         let (first, rest) =
             self.harnesses.split_first().map_or((None, &[][..]), |(f, r)| (Some(f), r));

@@ -1,4 +1,4 @@
-//! afkconvoy's forge, as a landing asks it (docs/adr/0060): a GitHub pull
+//! afkconvoy's forge, as a landing asks it (docs/adr/0058): a GitHub pull
 //! request is the change that asks to land, the issue it closes what it
 //! completes, the issue's open blockers and pinned target what may keep it
 //! off, and closing that issue, with its work account, what follows once it

@@ -34,7 +34,7 @@ pub fn is_for(
 }
 
 /// Tends each base tip the tick's listing of the remote marks red
-/// (docs/adr/0043): a mark made since is tended by the next tick.
+/// (the `look` module): a mark made since is tended by the next tick.
 pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
     let prefix = red_ref(&fleet.repo, "");
     let mut outcome = Outcome::Nothing;

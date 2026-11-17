@@ -1,4 +1,4 @@
-//! A workflow ends in the landing train (docs/adr/0004, as amended): once the
+//! A workflow ends in the landing train (docs/adr/0047, as amended): once the
 //! last stage passes to `land`, a worker in the workflow's landing role gates
 //! the issue's PR and joins the train — and from there on the train, its
 //! worker and a joining worker's silences are what they are in an unbound repo.
@@ -417,7 +417,7 @@ fn a_faulted_landing_worker_continues_in_its_role_without_consuming_a_restart() 
     tick(&world, now + 90);
     let started = worker(&world, &dir);
     assert!(started.contains(" AFKCONVOY_STAGE='land' AFKCONVOY_ROLE='lander' "), "{started}");
-    // Codex reports its windows: it comes before pi (docs/adr/0112).
+    // Codex reports its windows: it comes before pi (docs/adr/0086).
     assert!(started.contains(" && codex "), "{started}");
     assert_eq!(world.claims(), claims);
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);

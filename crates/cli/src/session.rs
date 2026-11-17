@@ -3,7 +3,7 @@
 //! screen are not a turn.
 //!
 //! The harness names where the session is and what its text says
-//! (docs/adr/0044). This module only opens files. A missing session is no
+//! (docs/adr/0042). This module only opens files. A missing session is no
 //! turn. A file that is there and cannot be read is an error, so a tick
 //! does not treat it as idle.
 

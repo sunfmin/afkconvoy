@@ -4,7 +4,7 @@ status: accepted
 
 # An issue that needs the next version waits on the cut
 
-sunfmin/control#551 (mytokens) could be done only once the next mytokens version was installed: it checks the released build on the host. On 2026-11-03 18:24 JST it was handed back to the fleet while a cut was due (`"cut":{"busy_in_seconds":12204,"newest_tag":"v0.1.5",…,"standing":"due"}`). A worker claimed it at once, found no new version, and settled into polling the installed version for up to four hours. Its claim kept the fleet from being **idle**, and a due **cut** starts only when the fleet is idle or the oldest landing reaches `busy_after_seconds` (ADR-0028). The worker waited for the cut and the cut for the worker: nothing moved for about 3.4 hours, and the worker held a lane the whole time (sunfmin/control#566).
+Some issues can be done only once the next version is installed, for instance one that checks the released build on the host. A worker that claims one while a cut is due finds no new version and polls for it. Its claim keeps the fleet from being **idle**, and a due **cut** starts only when the fleet is idle or the oldest landing reaches its age bound (ADR-0028). The worker waits for the cut and the cut for the worker, and the worker holds a lane the whole time.
 
 ## Decision
 
@@ -12,7 +12,7 @@ A `blocked` verdict can name the next cut of its own repo in place of issues, or
 
 The fleet parks such a claim as it parks one on issues: it puts the label `convoy-waits-on-cut` on the issue — and an edge to each open issue named beside it — before it releases the claim, so the issue is held off the frontier from the moment no claim holds it. Off the frontier and unclaimed, it leaves the fleet idle, and the due cut starts at that tick's end.
 
-When the tick ends a cut that took every step — its version tagged, published and installed — it takes the label off every open issue that carries it, read then and not at the rebuild, so an issue parked during that tick returns too. Each returns at the stage it left: a bound repo's position is `Parked` at that stage, an unbound issue keeps its ready label. A failed cut takes the label off nothing: the issues come back once a later cut installs a version, never on the old one — the next due cut cuts again from the base tip (ADR-0072). A patch a minor landing overtook installs nothing, and the minor cut releases them.
+When the tick ends a cut that took every step — its version tagged, published and installed — it takes the label off every open issue that carries it, read then and not at the rebuild, so an issue parked during that tick returns too. Each returns at the stage it left: a bound repo's position is `Parked` at that stage, an unbound issue keeps its ready label. A failed cut takes the label off nothing: the issues come back once a later cut installs a version, never on the old one — the next due cut cuts again from the base tip (ADR-0028). A patch a minor landing overtook installs nothing, and the minor cut releases them.
 
 A verdict on the cut escalates instead of parking where no cut will come: the repo names no cut steps, or nothing has landed past its newest version tag and no cut is running. A worker's need for a version that holds nothing new is not for a cut to answer.
 
@@ -20,7 +20,7 @@ A verdict on the cut escalates instead of parking where no cut will come: the re
 
 ## Considered options
 
-- **Keep the worker polling, and let the age bound cut.** Refused: it holds a lane for hours, and the bound is five hours by default.
+- **Keep the worker polling, and let the age bound cut.** Refused: it holds a lane for hours, until the age bound.
 - **Count a worker that waits on the cut as idle.** Refused: the claim still stands, and the frontier, admission and every other reader of claims would each need the exception.
 - **A tracker issue for the next cut, blocked-by edges to it, closed by the cut.** Refused: an issue no fleet works reads as an unmet blocker, so a blocker standing would need the exception anyway, and the issue would be a second home for the cut's state.
 - **Record the newest tag in the verdict and compare it with the tags.** Refused: a tag says a version was tagged, not that it was published and installed — a cut that failed at `publish` leaves its tag (ADR-0028). The cut's own end is where that is known.

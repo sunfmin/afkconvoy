@@ -3,10 +3,10 @@
 //! one, so a push is the only way a change to a role reaches a worker, and
 //! the checkout a human edits is another. A repo is fetched once per commit,
 //! and each directory is taken out of that fetch on its own: a worker is
-//! given its role's directory and nothing else of its repo (docs/adr/0014).
+//! given its role's directory and nothing else of its repo (docs/adr/0009).
 //! What a harness needs in the directory it starts in, and a role does not
 //! hold for it, is in the copy that harness's workers start in: the fleet's,
-//! and never the role's repo's (docs/adr/0013).
+//! and never the role's repo's (docs/adr/0020).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

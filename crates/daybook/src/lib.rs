@@ -1,5 +1,5 @@
 //! The **daybook**: the operator's one place to read, after the fact, what
-//! agents did and decided outside any issue (docs/adr/0071). Its home is a
+//! agents did and decided outside any issue (docs/adr/0058). Its home is a
 //! GitHub repo's Discussions, category `Daybook`: one discussion a day,
 //! titled with the host's local date, one comment an entry.
 //!
