@@ -117,32 +117,81 @@ pub struct Owner {
 const CLAIM: &str = "convoy:claim";
 const HEARTBEAT: &str = "convoy:heartbeat";
 
+/// Where the task a claim is on lands, as its claim record carries it
+/// (sunfmin/control#1327): the target travels with the claim, a takeover
+/// keeps it, and it ends with the claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pin {
+    /// A branch of the repo.
+    Branch(String),
+    /// A Jira delivery: its identity and the record it was attached at.
+    Delivery { identity: String, record: String },
+    /// A claim made before the target travelled with it: the sha of the
+    /// separate target record it names, read once and carried into a pin.
+    Legacy(String),
+}
+
+impl Pin {
+    /// The claim record's fields that carry this pin.
+    fn fields(&self) -> Vec<(&'static str, &str)> {
+        match self {
+            Pin::Branch(branch) => vec![("target_branch", branch)],
+            Pin::Delivery { identity, record } => {
+                vec![("target_delivery", identity), ("target_record", record)]
+            }
+            Pin::Legacy(sha) => vec![("target", sha)],
+        }
+    }
+
+    /// The pin a claim record's fields carry; `None` when they carry none.
+    fn read(fields: &Fields) -> Option<Pin> {
+        if let Some(branch) = fields.get("target_branch") {
+            return Some(Pin::Branch(branch.to_string()));
+        }
+        if let (Some(identity), Some(record)) =
+            (fields.get("target_delivery"), fields.get("target_record"))
+        {
+            let (identity, record) = (identity.to_string(), record.to_string());
+            return Some(Pin::Delivery { identity, record });
+        }
+        fields.get("target").map(|sha| Pin::Legacy(sha.to_string()))
+    }
+}
+
 impl Owner {
     /// The record of a claim created in this owner's name.
     pub fn write(&self) -> String {
-        self.record("", "")
+        self.record("", "", None)
+    }
+
+    /// The record of a claim created in this owner's name on a task pinned
+    /// to `pin`.
+    pub fn write_pinned(&self, pin: &Pin) -> String {
+        self.record("", "", Some(pin))
     }
 
     /// The record of the claim `taken` once it is this owner's: it is still
-    /// the claim it was created as.
-    pub fn write_over(&self, taken: &Claim) -> String {
+    /// the claim it was created as, pinned where `pin` says — the pin it
+    /// carries, or what its legacy pin was read as.
+    pub fn write_over(&self, taken: &Claim, pin: Option<&Pin>) -> String {
         let since = taken.since.map(|since| since.to_string()).unwrap_or_default();
-        self.record(&taken.id, &since)
+        self.record(&taken.id, &since, pin.or(taken.pin.as_ref()))
     }
 
-    fn record(&self, first: &str, since: &str) -> String {
+    fn record(&self, first: &str, since: &str, pin: Option<&Pin>) -> String {
         let ts = self.ts.to_string();
         let (instance, host) = (self.instance.as_str(), self.host.as_str());
-        record::write(
-            CLAIM,
-            &[
-                ("instance", instance),
-                ("host", host),
-                ("ts", &ts),
-                ("first", first),
-                ("since", since),
-            ],
-        )
+        let mut fields = vec![
+            ("instance", instance),
+            ("host", host),
+            ("ts", ts.as_str()),
+            ("first", first),
+            ("since", since),
+        ];
+        if let Some(pin) = pin {
+            fields.extend(pin.fields());
+        }
+        record::write(CLAIM, &fields)
     }
 
     /// A commit subject → the owner it names; `None` when it names nobody.
@@ -196,6 +245,8 @@ pub struct Claim {
     pub id: String,
     /// When it was created, where its record says.
     pub since: Option<u64>,
+    /// Where its task lands, where its record says.
+    pub pin: Option<Pin>,
 }
 
 /// The claim on a run: work a fleet instance does for no issue — a patrol's
@@ -254,7 +305,8 @@ impl Claim {
         let fields = record::read(CLAIM, subject).unwrap_or_default();
         let id = fields.get("first").map_or_else(|| sha.clone(), str::to_string);
         let since = fields.number("since").or(owner.as_ref().map(|owner| owner.ts));
-        Claim { number, owner, sha, id, since }
+        let pin = Pin::read(&fields);
+        Claim { number, owner, sha, id, since, pin }
     }
 
     pub fn is_held_by(&self, instance: &InstanceId) -> bool {
@@ -401,7 +453,7 @@ mod tests {
         let mut taken = claim;
         for (sha, ts) in [("def", 500), ("ghi", 900)] {
             let peer = Owner { instance: "fleet-2".into(), host: "h".into(), ts };
-            taken = Claim::read(7, &peer.write_over(&taken), sha.into());
+            taken = Claim::read(7, &peer.write_over(&taken, None), sha.into());
             assert_eq!(
                 (taken.sha.as_str(), taken.id.as_str(), taken.since),
                 (sha, "abc", Some(99))
@@ -416,6 +468,27 @@ mod tests {
         // One stamped before a heartbeat named its host is nobody's host's.
         let hostless = read_heartbeat("convoy:heartbeat instance=a ts=5", "abc".into());
         assert_eq!(hostless.map(|beat| beat.host), Some(String::new()));
+    }
+
+    #[test]
+    fn a_pin_travels_with_its_claim_and_a_legacy_one_is_carried_into_a_pin() {
+        let owner = Owner { instance: "fleet-1".into(), host: "h".into(), ts: 9 };
+        for pin in [
+            Pin::Branch("delivery/ABC 1".into()),
+            Pin::Delivery { identity: "jira-x".into(), record: "abc".into() },
+        ] {
+            let claim = Claim::read(7, &owner.write_pinned(&pin), "s1".into());
+            assert_eq!(claim.pin.as_ref(), Some(&pin));
+            let peer = Owner { instance: "fleet-2".into(), host: "h".into(), ts: 10 };
+            let taken = Claim::read(7, &peer.write_over(&claim, None), "s2".into());
+            assert_eq!((taken.pin, taken.id.as_str()), (Some(pin), "s1"));
+        }
+        let legacy = Claim::read(7, "convoy:claim instance=a target=abc", "s".into());
+        assert_eq!(legacy.pin, Some(Pin::Legacy("abc".into())));
+        let carried = Pin::Branch("main".into());
+        let taken = Claim::read(7, &owner.write_over(&legacy, Some(&carried)), "t".into());
+        assert_eq!(taken.pin, Some(carried));
+        assert_eq!(Claim::read(7, &owner.write(), "u".into()).pin, None);
     }
 
     #[test]

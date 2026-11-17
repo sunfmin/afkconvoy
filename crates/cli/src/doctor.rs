@@ -226,6 +226,7 @@ kinds! {
     WaitTaken: Info, "human wait is taken by";
     NotOurs: Warning, "is held off by a PR not the fleet's";
     CarriedLanded: Warning, "is open though the PR that carried it landed";
+    LegacyTargets: Info, "separate target records an earlier release left";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
@@ -609,6 +610,9 @@ pub struct State {
     /// The open issues whose PR a PR carried that has landed
     /// (sunfmin/control#1248).
     pub carried_landed: Vec<CarriedLanded>,
+    /// The separate `target/<n>` records an earlier release left, which the
+    /// acting tick carries and removes (`target::carry_legacy`).
+    pub legacy_targets: Vec<String>,
     /// Candidate state from the same remote listing as the working set.
     pub candidates: Value,
     /// The pending places live lands of this host hold on its chains, from
@@ -1527,6 +1531,19 @@ fn carried_landed_finding(tracker: &Tracker, carried: &CarriedLanded) -> Finding
     )
 }
 
+/// The separate target records still left: the acting tick carries each and
+/// removes it, so this says only that one has not run since, or failed.
+fn legacy_targets_finding(left: &[String]) -> Option<Finding> {
+    let first = left.first()?;
+    Some(finding(
+        Kind::LegacyTargets,
+        json!(["legacy-targets"]),
+        format!("{} separate target records an earlier release left are on the remote", left.len()),
+        format!("the remote holds {first} and {} more", left.len() - 1),
+        "afkconvoy run".into(),
+    ))
+}
+
 /// A claim on an issue that is gone: the line that deletes it, for a holder
 /// whose ticks do not.
 fn on_gone_finding(on: &OnGone) -> Finding {
@@ -1790,6 +1807,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(
                 state.carried_landed.iter().map(|c| carried_landed_finding(&state.tracker, c)),
             );
+            found.extend(legacy_targets_finding(&state.legacy_targets));
             found.extend(pending_finding(&state.pending));
         }
         Err(why) => found.push(finding(
@@ -2136,6 +2154,7 @@ fn finish_state(
         not_ours,
         on_gone,
         carried_landed,
+        legacy_targets: crate::target::legacy_left(&fleet).into_iter().map(|r| r.name).collect(),
         candidates,
         pending,
         base_moved,
@@ -3459,6 +3478,7 @@ mod tests {
             not_ours: vec![],
             on_gone: vec![],
             carried_landed: vec![],
+            legacy_targets: vec![],
             candidates: json!([]),
             pending: vec![],
             base_moved: None,

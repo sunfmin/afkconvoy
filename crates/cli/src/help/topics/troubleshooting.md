@@ -92,6 +92,7 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 ## What `doctor` finds — info: nothing is held up
 
 - `which is ignored`: A concurrency is still named — kept with this checkout on the checkout list by a `run --concurrency`, or named by the repo config — and nothing reads it: no number bounds a fleet's workers, and admission alone decides each start (`afkconvoy run --help`, ADMISSION). Nothing is held up. `fix` is `afkconvoy run <checkout> --concurrency default` for the checkout's, or deleting the key for the config's.
+- `separate target records an earlier release left`: The remote still holds `target/<n>` records, one per issue, from before a task's target travelled with its claim (`afkconvoy target --help`). Each acting tick reads every one once, carries what an open task needs into its claim, its `convoy:target` comment or its delivery's tasks, and removes it; one it could not carry is a `warning:` line of the tick and is tried again. `fix` starts the fleet, whose ticks carry them.
 - `moved since the stage`: A role or the team was pushed after a stage started: that worker goes by the older one, the next stage by the head. `afkconvoy doctor --help` says what moved is.
 - `declares no gate limit`: The config sets no `gate_seconds`: the gate may run {const:GATE_SECONDS} seconds before anything ends it. Set it to the most the gate should take: `fix` names the file and key.
 - `human wait is taken by`: Another host's watch holds this wait on the repo's remote and its heartbeat is within the lease. Leave it to that host. It starts no watch round, sending through `--notify-command` or asking-session question here; the next look can take it over once its holder is past the lease.
@@ -109,8 +110,7 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 - `that push would be refused`: The base branch's protection requires a PR, checks or a named pusher, and a landing turn ends by pushing. Lift the rule, or pick another base branch.
 - `the remote rejects the fleet's refs under both`: The remote takes neither hidden refs nor `convoy-*` branches, so no claim can be kept. A push rule of the remote's is what refuses: lift it for one of the two.
 - A missing worker launch command is discovered automatically for a known harness in the worker's login shell and merged into the latest host kit. If resolution fails, install the named program or fix that shell's PATH. If login or required flags fail, follow the named harness's login command or update its explicit command in the host kit. An explicit command is never replaced by a default; running fleets read kit edits at their next worker launch.
-- `cannot read the host kit`: Run `afkconvoy kit` on this host, or `run`, which writes it where there is none.
-- `--worker-command is gone`: Run `afkconvoy kit` to edit this host's worker launch commands.
+- `cannot read the host kit`: Run `afkconvoy kit` on this host, or `run`, which writes it where there is none. `--worker-command is gone`: run `afkconvoy kit` to edit this host's worker launch commands.
 - `is no harness`: Use claude-code, pi, codex, dsh, kimi or grok.
 
 ## What neither says

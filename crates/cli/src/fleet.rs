@@ -548,13 +548,7 @@ impl Fleet {
 
     /// Destinations derived from this view's GitHub and remote snapshots.
     pub fn targets(&self, open: &OpenIssues) -> Result<serde_json::Value> {
-        crate::target::listing(
-            &self.repo,
-            &self.config,
-            &self.gh.tracker,
-            &open.rows,
-            self.listing(),
-        )
+        crate::target::listing(&self.repo, &self.config, &self.gh.tracker, open, self.listing())
     }
 
     /// The branch is this process's last listing, or a later exact read. A push
@@ -584,6 +578,7 @@ impl Fleet {
             &self.gh.tracker,
             issue,
             &self.listing().records,
+            None,
         )?;
         let name = format!("refs/heads/{branch}");
         self.remote.fetched(&name, Fresh::Opened)?.ok_or_else(|| {

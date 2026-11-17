@@ -276,7 +276,6 @@ fn a_tick_reclaims_stale_claims_ahead_of_the_frontier() {
             "refs/convoy/claim/3",
             "refs/convoy/claim/4",
             "refs/convoy/claim/6",
-            "refs/convoy/target/2",
             "refs/convoy/claim/2"
         ]
     );

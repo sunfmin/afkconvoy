@@ -37,7 +37,7 @@ struct Receipt {
 }
 
 /// A task pins the definition's object identity, not copies of its policy.
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Reference {
     pub identity: String,

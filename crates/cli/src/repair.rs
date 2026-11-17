@@ -117,7 +117,7 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
             &body,
             &[],
         )?;
-        crate::target::pin(&fleet.repo, config, issue, Some(branch))?;
+        crate::target::choose(&fleet.repo, issue, branch)?;
         for label in [label.as_str(), &config.lock_label, afkconvoy_core::plan::REPAIR_LABEL] {
             fleet.gh.add_label(issue, label)?;
         }

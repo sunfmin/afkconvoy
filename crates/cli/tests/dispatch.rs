@@ -284,10 +284,8 @@ fn the_steps_run_in_order() {
     let world = ready_world();
     world.watch_pushes(None);
     dispatch(&world, "7").ok();
-    assert_eq!(
-        world.pushes(),
-        ["refs/convoy/target/7", "refs/convoy/heartbeat/alpha", "refs/convoy/claim/7"]
-    );
+    // the claim carries its target: no ref of its own is pushed
+    assert_eq!(world.pushes(), ["refs/convoy/heartbeat/alpha", "refs/convoy/claim/7"]);
     let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(
         calls,
