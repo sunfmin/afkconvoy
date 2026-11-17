@@ -467,3 +467,148 @@ fn a_second_host_s_promotion_of_a_tip_ahead_of_the_first_s_fast_forwards_onto_it
     assert_eq!(tip(&world, "main"), newer);
     assert_ne!(older, base);
 }
+
+/// A command of issue `n` in the exclusive queue of `world`'s host, which
+/// writes `$CACHE/held-<n>` once it runs and holds its place until the test
+/// writes `$CACHE/release`.
+fn held(world: &World, cache: &Path, n: u64) -> std::process::Child {
+    let script = format!(
+        "touch \"$CACHE/held-{n}\"; while test ! -f \"$CACHE/release\"; do sleep 0.02; done"
+    );
+    world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("XDG_CACHE_HOME", cache)
+        .env("XDG_DATA_HOME", crate::common::data_beside(cache))
+        .env("CACHE", cache)
+        .env("AFKCONVOY_ISSUE", n.to_string())
+        .args(["exclusive", "--", "sh", "-c", &script])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+/// How many commands the exclusive queue of `world`'s host holds, running
+/// or waiting, as `doctor` says it.
+fn queued(world: &World) -> usize {
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let exclusive = &doctor["host"]["exclusive"];
+    ["running", "waiting"].iter().map(|group| exclusive[group].as_array().map_or(0, Vec::len)).sum()
+}
+
+fn until(what: &str, done: impl Fn() -> bool) {
+    afkconvoy_patience::until_true(what, done);
+}
+
+/// A tick of the fleet of `world`'s checkout, at the clock's time.
+fn tick(world: &World) -> serde_json::Value {
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1"]).ok()
+}
+
+#[test]
+fn a_promotion_waits_while_a_worker_command_waits_and_starts_once_the_queue_empties() {
+    let world = proving_world();
+    let base = land_two(&world);
+    let proving = tip(&world, PROVING);
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    let running = held(&world, &cache, 11);
+    until("the first command runs", || cache.join("held-11").exists());
+    let waiting = held(&world, &cache, 12);
+    until("the second command waits", || queued(&world) == 2);
+
+    let ticked = tick(&world);
+    let said = ticked["promotion"].as_str().unwrap_or_default();
+    assert!(said.contains("host busy: 1 worker commands waiting"), "{ticked}");
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["proving"]["promotion"]["due"], "host_busy", "{}", plan["proving"]);
+    let doctor = world.afk(&["doctor"]).ok();
+    let line = doctor["fleet"]["proving"]["said"].as_str().unwrap_or_default();
+    assert!(line.contains("host busy: 1 worker commands waiting"), "{}", doctor["fleet"]);
+    assert_eq!(tip(&world, "main"), base, "no promotion starts while the host is busy");
+    assert!(ran(&world, "slow").is_empty());
+
+    std::fs::write(cache.join("release"), "").unwrap();
+    assert!(running.wait_with_output().unwrap().status.success());
+    assert!(waiting.wait_with_output().unwrap().status.success());
+    until("the queue empties", || queued(&world) == 0);
+    let ticked = tick(&world);
+    assert!(ticked["promotion"].as_str().unwrap_or_default().contains("idle"), "{ticked}");
+    until("the promotion moves the base branch", || tip(&world, "main") == proving);
+    assert_eq!(ran(&world, "slow"), std::slice::from_ref(&proving));
+}
+
+#[test]
+fn a_promotion_starts_at_the_bound_though_the_queue_never_empties() {
+    let world = proving_world();
+    land_two(&world);
+    let proving = tip(&world, PROVING);
+    world.say_host_settings(json!({"promotion_seconds": 1}));
+    let _host_runner = world.host_held();
+    let cache = world.cache();
+    let running = held(&world, &cache, 11);
+    until("the command runs", || cache.join("held-11").exists());
+    // The oldest change landed a second or more before.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    let ticked = tick(&world);
+    let said = ticked["promotion"].as_str().unwrap_or_default();
+    assert!(said.contains("starts anyway") && said.contains("host busy"), "{ticked}");
+    // Its slow gate is queued behind the command, as any heavy command.
+    until("the promotion's slow gate waits in the queue", || queued(&world) == 2);
+    std::fs::write(cache.join("release"), "").unwrap();
+    assert!(running.wait_with_output().unwrap().status.success());
+    until("the promotion moves the base branch", || tip(&world, "main") == proving);
+}
+
+/// The repair issues of the proving branch the fake tracker holds, by number.
+fn repairs(world: &World) -> Vec<serde_json::Value> {
+    let gh = world.gh();
+    let rows = gh["issues"].as_array().unwrap().clone();
+    rows.into_iter()
+        .filter(|i| i["title"].as_str().unwrap_or("").starts_with("Repair the red promotion"))
+        .collect()
+}
+
+#[test]
+fn a_red_promotion_gets_one_repair_issue_and_the_next_green_promotion_closes_it() {
+    let world = proving_world();
+    land_two(&world);
+    std::fs::write(world.root.join("fail-slow"), "").unwrap();
+    let red = world.afk(&["promote"]).ok();
+    assert_eq!(red["outcome"], "gate_red", "{red}");
+    let found = repairs(&world);
+    assert_eq!(found.len(), 1, "one red promotion has one repair issue: {found:?}");
+    let issue = found[0]["number"].as_u64().unwrap();
+    assert_eq!(red["repair_issue"], issue);
+    let labels: Vec<&str> =
+        found[0]["labels"].as_array().unwrap().iter().filter_map(|l| l.as_str()).collect();
+    assert!(labels.contains(&"convoy-repair") && labels.contains(&"ready-for-agent"), "{labels:?}");
+    assert!(!labels.contains(&"fleet-lock"), "a red proving branch holds no ordinary turn");
+    let body = found[0]["body"].as_str().unwrap();
+    assert!(body.contains("Failing tests") && body.contains("Gate output"), "{body}");
+    assert!(body.contains("#1, PR #") && body.contains("#2, PR #"), "{body}");
+
+    // A second red while it is open adds to it and opens no other.
+    let again = world.afk(&["promote"]).ok();
+    assert_eq!(again["repair_issue"], issue, "{again}");
+    assert_eq!(repairs(&world).len(), 1);
+    assert!(
+        world.comments(issue).iter().any(|c| c.contains("the promotion is red again")),
+        "{:?}",
+        world.comments(issue)
+    );
+
+    // A fast-green PR lands on the red proving branch, which holds nothing back.
+    let dir = worker(&world, 50, "c");
+    let landed = world.afk_in(&dir, &["land", "--issue", "50"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+
+    // The fix lands; the next promotion is green and closes the issue.
+    std::fs::remove_file(world.root.join("fail-slow")).unwrap();
+    assert_eq!(world.state(issue), "open");
+    let promoted = world.afk(&["promote"]).ok();
+    assert_eq!(promoted["outcome"], "promoted", "{promoted}");
+    assert_eq!(promoted["repair_closed"], issue);
+    assert_eq!(world.state(issue), "closed");
+}

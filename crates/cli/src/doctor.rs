@@ -2681,7 +2681,10 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         fleet["proving"] = match read {
             Ok(Some(standing)) => {
                 let mut said = standing.json(now);
-                said["said"] = json!(standing.line(now));
+                let due = crate::promote::due(&standing, now);
+                said["promotion"] = due.json();
+                let line = [Some(standing.line(now)), due.said()].into_iter().flatten();
+                said["said"] = json!(line.collect::<Vec<_>>().join("; "));
                 said
             }
             Ok(None) => Value::Null,

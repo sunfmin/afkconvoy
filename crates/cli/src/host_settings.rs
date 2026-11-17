@@ -70,6 +70,10 @@ pub struct Settings {
     /// `--busy-share`: the share of the host's cores, a whole percent, under
     /// which the exclusive queue starts a command (docs/adr/0088).
     pub busy_share: Option<u64>,
+    /// `--promotion-seconds`: how long the oldest change on a proving branch
+    /// waits for an idle host before its promotion starts anyway
+    /// (docs/adr/0090).
+    pub promotion_seconds: Option<u64>,
     /// An old checkout list may still name `train_lanes`, `gate_lanes`,
     /// `slow_gate_lanes` and `fast_lanes`: the queue's counts of places,
     /// which the host's room replaced (docs/adr/0088). None is a setting:
@@ -136,6 +140,7 @@ pub struct Named {
     pub account_limit: Option<To<u64>>,
     pub exclusive_seconds: Option<To<u64>>,
     pub busy_share: Option<To<u64>>,
+    pub promotion_seconds: Option<To<u64>>,
     pub panel: Option<To<u16>>,
     pub watch_dir: Option<To<PathBuf>>,
     pub watch_every: Option<To<u64>>,
@@ -292,6 +297,7 @@ impl Settings {
         lay(&mut self.account_limit, named.account_limit.as_ref());
         lay(&mut self.exclusive_seconds, named.exclusive_seconds.as_ref());
         lay(&mut self.busy_share, named.busy_share.as_ref());
+        lay(&mut self.promotion_seconds, named.promotion_seconds.as_ref());
         lay(&mut self.panel, named.panel.as_ref());
         lay(&mut self.watch_dir, named.watch_dir.as_ref());
         lay(&mut self.watch_every, named.watch_every.as_ref());
@@ -345,6 +351,12 @@ impl Settings {
     /// (docs/adr/0088).
     pub fn busy_share(&self) -> u64 {
         self.busy_share.unwrap_or(afkconvoy_core::exclusive::BUSY_SHARE)
+    }
+
+    /// How long the oldest unpromoted change waits for an idle host before
+    /// its promotion starts anyway (docs/adr/0090).
+    pub fn promotion_seconds(&self) -> u64 {
+        self.promotion_seconds.unwrap_or(crate::promote::BOUND_SECONDS)
     }
 
     /// The share of this host's cores one gate's tests are given, where
@@ -414,6 +426,7 @@ impl Settings {
             "account_limit": self.account_limit.unwrap_or(afkconvoy_core::engine_account::LIMIT),
             "exclusive_seconds": self.exclusive_seconds(),
             "busy_share": self.busy_share(),
+            "promotion_seconds": self.promotion_seconds(),
             "panel": self.panel_port(),
             "watch_dir": crate::host_watch::directory(self).ok(),
             "watch_every": self.watch_every(),
@@ -536,6 +549,7 @@ pub const GITHUB_SHARE_ENV: &str = "AFKCONVOY_GITHUB_SHARE";
 pub const ACCOUNT_LIMIT_ENV: &str = "AFKCONVOY_ACCOUNT_LIMIT";
 pub const EXCLUSIVE_SECONDS_ENV: &str = "AFKCONVOY_EXCLUSIVE_SECONDS";
 pub const BUSY_SHARE_ENV: &str = "AFKCONVOY_BUSY_SHARE";
+pub const PROMOTION_SECONDS_ENV: &str = "AFKCONVOY_PROMOTION_SECONDS";
 pub const WATCH_DIR_ENV: &str = "AFKCONVOY_WATCH_DIR";
 pub const WATCH_EVERY_ENV: &str = "AFKCONVOY_WATCH_EVERY";
 pub const JEV_KEY_COMMAND_ENV: &str = "AFKCONVOY_JEV_KEY_COMMAND";

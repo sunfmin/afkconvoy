@@ -68,10 +68,17 @@ impl Standing {
             false => vec![],
         };
         let hosts = hosts_of(repo, &landed)?;
+        // The oldest change the base branch does not hold: the first PR
+        // landed past it, or, where none is known as one, the first commit
+        // the proving branch took past it.
         let mut oldest = None;
         if let Some(first) = landed.first() {
             let at = repo.git(&["show", "-s", "--format=%ct", &first.commit])?;
             oldest = at.trim().parse().ok();
+        } else if fast_forward && base != tip {
+            let range = format!("{base}..{tip}");
+            let times = repo.git(&["log", "--first-parent", "--format=%ct", &range])?;
+            oldest = times.lines().filter_map(|at| at.trim().parse().ok()).min();
         }
         Ok(Some(Standing {
             base_branch: config.base_branch.clone(),
@@ -123,6 +130,143 @@ impl Standing {
             said.push_str(&format!(", the oldest waiting {}s", now.saturating_sub(at)));
         }
         said
+    }
+}
+
+/// How long the oldest change on the proving branch, not yet on the base
+/// branch, waits for an idle host before its promotion starts anyway, where
+/// the host says none (`afkconvoy run --promotion-seconds`).
+pub const BOUND_SECONDS: u64 = 3600;
+
+/// The host as a promotion reads it whether to start: as the exclusive queue
+/// and admission read it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Host {
+    /// The commands of any repo waiting in the exclusive queue.
+    pub waiting: usize,
+    /// Those running there.
+    pub running: usize,
+    /// How busy the cores count as, in percent; `None`: no reading.
+    pub busy: Option<u64>,
+    /// The busy share the queue starts a command under.
+    pub share: u64,
+    /// Why the host could not be read; it then counts as busy.
+    pub unread: Option<String>,
+}
+
+impl Host {
+    /// This host now, as its host runner says it; with none running, its
+    /// queue is empty and its cores unread.
+    pub fn read() -> Host {
+        let share = crate::host_settings::of_host().unwrap_or_default().busy_share();
+        match crate::host_runner::shared() {
+            Ok(Some(shared)) => Host::of(&shared.exclusive, shared.exclusive_room, share),
+            Ok(None) => Host { share, ..Host::default() },
+            Err(error) => Host { share, unread: Some(format!("{error:#}")), ..Host::default() },
+        }
+    }
+
+    /// The host whose queue holds `queue`, its room `room`, the busy share
+    /// `share` where the room says none.
+    pub fn of(
+        queue: &[afkconvoy_core::exclusive::Ticket],
+        room: Option<afkconvoy_core::exclusive::Room>,
+        share: u64,
+    ) -> Host {
+        let running = queue.iter().filter(|ticket| ticket.ran.is_some()).count();
+        Host {
+            waiting: queue.len() - running,
+            running,
+            busy: room.and_then(|room| room.busy()),
+            share: room.map_or(share, |room| room.share),
+            unread: None,
+        }
+    }
+
+    /// Why the host is not idle; `None`: it is — no command of any repo
+    /// waits or runs in its exclusive queue, and its cores are under the busy
+    /// share.
+    pub fn busy_because(&self) -> Option<String> {
+        if let Some(why) = &self.unread {
+            return Some(format!("host unread: {why}"));
+        }
+        if self.waiting + self.running > 0 {
+            return Some(format!(
+                "host busy: {} worker commands waiting, {} running in the exclusive queue",
+                self.waiting, self.running
+            ));
+        }
+        match self.busy {
+            Some(busy) if busy >= self.share => Some(format!(
+                "host busy: its cores {busy}% busy, at or over the busy share {}%",
+                self.share
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a promotion of a proving branch starts now (docs/adr/0090): one
+/// is due while the branch holds what the base branch does not, and starts
+/// while the host is idle, or once the oldest of it has waited the bound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Due {
+    /// Nothing to promote, or nothing a promotion could move.
+    Not,
+    /// Due, and the host is idle.
+    Idle,
+    /// Due, the host busy, and the oldest change waited `waited` seconds,
+    /// the bound `bound` or more: it starts anyway.
+    Past { waited: u64, bound: u64, busy: String },
+    /// Due, and the host busy: it waits for it to be idle, `left` seconds
+    /// more at most.
+    Busy { busy: String, left: u64 },
+}
+
+impl Due {
+    /// Of `standing` on `host`, the bound `bound`, at `now`.
+    pub fn of(standing: &Standing, host: &Host, bound: u64, now: u64) -> Due {
+        if !standing.ahead() || !standing.fast_forward {
+            return Due::Not;
+        }
+        let Some(busy) = host.busy_because() else { return Due::Idle };
+        let waited = standing.oldest.map_or(0, |at| now.saturating_sub(at));
+        match waited >= bound {
+            true => Due::Past { waited, bound, busy },
+            false => Due::Busy { busy, left: bound - waited },
+        }
+    }
+
+    /// Whether it starts a promotion.
+    pub fn starts(&self) -> bool {
+        matches!(self, Due::Idle | Due::Past { .. })
+    }
+
+    /// What the tick, `plan` and `doctor` say of it; `None`: nothing is due.
+    pub fn said(&self) -> Option<String> {
+        Some(match self {
+            Due::Not => return None,
+            Due::Idle => "the promotion starts: the host is idle".to_string(),
+            Due::Past { waited, bound, busy } => format!(
+                "the promotion starts anyway: the oldest unpromoted change waited {waited}s, \
+                 past the bound of {bound}s ({busy})"
+            ),
+            Due::Busy { busy, left } => format!(
+                "a due promotion has not started: {busy}; it starts once the host is idle, or \
+                 in {left}s at the bound"
+            ),
+        })
+    }
+
+    /// The same as `plan` and `doctor` answer it: {"due", "said"}.
+    pub fn json(&self) -> Value {
+        let due = match self {
+            Due::Not => "not",
+            Due::Idle => "idle",
+            Due::Past { .. } => "past_bound",
+            Due::Busy { .. } => "host_busy",
+        };
+        json!({"due": due, "said": self.said()})
     }
 }
 
@@ -192,11 +336,43 @@ pub fn promote(repo: &Repo, host: &str, now: u64) -> Result<Value> {
             let proven = Proven::by(&tree, &whole, &run, now)
                 .ok_or_else(|| anyhow!("the whole gate's record of {tip} does not stand"))?;
             publish(repo, &standing, &proven, &mut answer)?;
+            // The gated tip is in the base branch, by this promotion or
+            // another host's: a repair of a red promotion is done.
+            if matches!(answer["outcome"].as_str(), Some("promoted" | "already_promoted"))
+                && let Some(issue) =
+                    crate::promotion_repair::green(repo, &standing.proving_branch, &tip)?
+            {
+                answer["repair_closed"] = json!(issue);
+            }
         }
         Gated::Red { red, .. } => {
             answer["outcome"] = json!("gate_red");
             answer["failing"] = json!(red.tests);
             answer["gate_output"] = json!(output);
+            let said = red.said(&format!("the proving branch's tip {tip}"));
+            let landed: Vec<(Option<u64>, u64)> =
+                crate::landing::joins_in(repo, &tracker, &[&format!("{}..{tip}", standing.base)])?
+                    .iter()
+                    .map(|landed| (landed.issue(), landed.pr))
+                    .collect();
+            let text = std::fs::read_to_string(&output).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            let excerpt = lines[lines.len().saturating_sub(80)..].join("\n");
+            let issue = crate::promotion_repair::red(
+                repo,
+                &declared,
+                &crate::promotion_repair::Red {
+                    proving: &standing.proving_branch,
+                    tip: &tip,
+                    said: &said,
+                    failing: &red.tests,
+                    output: &output,
+                    excerpt: &excerpt,
+                    landed: &landed,
+                    gate_command: &declared.gate_command,
+                },
+            )?;
+            answer["repair_issue"] = json!(issue);
             answer["detail"] = json!(format!(
                 "{}; the base branch {} stays at {}",
                 red.said(&format!("the proving branch's tip {tip}")),
@@ -449,18 +625,35 @@ impl Lock {
     }
 }
 
+/// Whether a promotion of `standing` starts now, on this host as it is now,
+/// by the host's bound: what the tick does and `plan` and `doctor` say.
+pub fn due(standing: &Standing, now: u64) -> Due {
+    let bound = crate::host_settings::of_host().unwrap_or_default().promotion_seconds();
+    match standing.ahead() && standing.fast_forward {
+        true => Due::of(standing, &Host::read(), bound, now),
+        false => Due::Not,
+    }
+}
+
 /// What a tick does of the proving branch (docs/adr/0090): where it is ahead
-/// of the base branch, the tick starts a promotion of its own, detached from
-/// it, unless one runs → whether it started one. Its answer goes to the
-/// checkout's promotion log; how it ended is said in the fleet's log.
+/// of the base branch and the host is idle, or the oldest change it holds
+/// past the base branch has waited the bound, the tick starts a promotion of
+/// its own, detached from it, unless one runs → what the tick's line says of
+/// it; `None`: nothing. Its answer goes to the checkout's promotion log; how
+/// it ended is said in the fleet's log.
 pub fn tend(
     repo: &Repo,
     config: &Config,
     tracker: &afkconvoy_core::tracker::Tracker,
-) -> Result<bool> {
-    let Some(standing) = Standing::read(repo, config, tracker)? else { return Ok(false) };
+    now: u64,
+) -> Result<Option<String>> {
+    let Some(standing) = Standing::read(repo, config, tracker)? else { return Ok(None) };
     if !standing.ahead() || !standing.fast_forward || Lock::held(repo) {
-        return Ok(false);
+        return Ok(None);
+    }
+    let due = due(&standing, now);
+    if !due.starts() {
+        return Ok(due.said());
     }
     let log = repo.common_dir()?.join("convoy-promotion.log");
     let log = std::fs::OpenOptions::new()
@@ -481,14 +674,14 @@ pub fn tend(
     .context("cannot start a promotion")?;
     // Reaped once it ends; nothing waits on its answer here.
     std::thread::spawn(move || child.wait());
-    Ok(true)
+    Ok(due.said())
 }
 
 /// What `afkconvoy promote --help` says after its one line, which
 /// lib.rs's `Command` holds.
 pub(crate) const HELP: &str = r#"## When to run it
 
-Any time, in a checkout of a repo whose config names a `proving_branch` (`afkconvoy config --help`). A tick runs it by itself, detached from the tick, whenever the proving branch is ahead of the base branch and no promotion of the checkout runs; run it by hand to promote now.
+Any time, in a checkout of a repo whose config names a `proving_branch` (`afkconvoy config --help`). A tick runs it by itself, detached from the tick, where the proving branch is ahead of the base branch and no promotion of the checkout runs, while the host is idle: no command of any repo waits or runs in the exclusive queue, and the host's CPU reading is under the busy share (`afkconvoy exclusive --help`). Once the oldest change the proving branch holds past the base branch has waited the promotion bound, {const:PROMOTION_SECONDS}s or what `afkconvoy run --promotion-seconds N` says, the tick starts it anyway, its slow gate queued as any heavy command. A promotion started on an idle host is not ended when a command then waits. The tick's line, `plan` and `doctor` (`proving.promotion`: `due` — `idle`, `host_busy`, `past_bound` or `not` — and `said`) say why a due promotion has not started, as `host busy: N worker commands waiting, M running in the exclusive queue`, and, past the bound, that it starts anyway. Run it by hand to promote now, whatever the host.
 
 ## Who runs it
 
@@ -515,5 +708,46 @@ It reads the remote's base branch and proving branch and the gate records, and w
 
 ## What trips you up
 
-- A red promotion is not repaired in this version: fast-green PRs keep landing on the proving branch, and the base branch waits until a promotion of a later tip is green.
+- A red promotion opens one repair issue (`repair_issue`), labelled as the fleet's repairs are, naming the failing tests, the gate output and every issue landed since the last promotion; a second red while it is open is a comment on it. The fleet starts a repair worker on it; its fix lands on the proving branch by an ordinary turn, and the next green promotion closes the issue (`repair_closed`). Fast-green PRs keep landing meanwhile.
 - A repo that moves its base branch by hand, past the proving branch, is `diverged` until the proving branch holds the base branch's tip again."#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn standing(oldest: u64) -> Standing {
+        Standing {
+            base_branch: "main".into(),
+            proving_branch: "proving".into(),
+            base: "a".into(),
+            tip: "b".into(),
+            unpromoted: 1,
+            oldest: Some(oldest),
+            hosts: BTreeMap::new(),
+            fast_forward: true,
+        }
+    }
+
+    fn host(waiting: usize, running: usize, busy: Option<u64>) -> Host {
+        Host { waiting, running, busy, share: 90, unread: None }
+    }
+
+    #[test]
+    fn a_promotion_starts_while_the_host_is_idle_or_once_the_oldest_change_waited_the_bound() {
+        let idle = Due::of(&standing(1000), &host(0, 0, Some(10)), 3600, 1010);
+        assert_eq!(idle, Due::Idle);
+        let busy = Due::of(&standing(1000), &host(2, 1, Some(10)), 3600, 1010);
+        assert!(!busy.starts());
+        let said = busy.said().unwrap();
+        assert!(said.contains("host busy: 2 worker commands waiting, 1 running"), "{said}");
+        assert!(said.contains("in 3590s at the bound"), "{said}");
+        let cores = Due::of(&standing(1000), &host(0, 0, Some(95)), 3600, 1010);
+        assert!(cores.said().unwrap().contains("cores 95% busy"), "{cores:?}");
+        let past = Due::of(&standing(1000), &host(1, 0, None), 3600, 4600);
+        assert!(past.starts() && past.said().unwrap().contains("starts anyway"), "{past:?}");
+        let unread = Host { unread: Some("no answer".into()), ..host(0, 0, None) };
+        assert!(!Due::of(&standing(1000), &unread, 3600, 1010).starts());
+        let current = Standing { tip: "a".into(), ..standing(1000) };
+        assert_eq!(Due::of(&current, &host(0, 0, None), 3600, 1010), Due::Not);
+    }
+}
