@@ -117,7 +117,7 @@ The branch a repo with a fast and a slow gate may name (`proving_branch`) for it
 _Avoid_: integration branch, staging branch
 
 **Promotion**:
-Moving the base branch to the proving branch's tip once the slow gate passed there (ADR-0090): the slow gate's run joined with the fast run on record of that tree into a record of the whole gate, or the whole gate where no fast run is on record, then a fast-forward of the base branch, never anything else. Red, the base branch stays where it was. `afkconvoy promote` makes one, and a tick does whenever the proving branch is ahead.
+Moving the base branch to the proving branch's tip once the slow gate passed there (ADR-0090): the slow gate's run joined with the fast run on record of that tree into a record of the whole gate, or the whole gate where no fast run is on record, then a fast-forward of the base branch, never anything else. Red, the base branch stays where it was. `afkconvoy promote` makes one, and a tick does where the proving branch is ahead, while the host is idle — nothing waits or runs in the exclusive queue, and its cores are under the busy share — or once the oldest change not yet on the base branch has waited the promotion bound (1 h by default, `run --promotion-seconds`).
 _Avoid_: merge to main, deploy (of a product)
 
 **Target branch**:
