@@ -537,7 +537,7 @@ fn carry_out(
             _ => Ok(None),
         };
         let incomplete = crate::dispatch::incomplete(fleet, issue);
-        let held = held(fleet, issue);
+        let held = held(fleet, me, issue);
         let seen = Seen {
             answered: fact(turn.as_ref().map(Option::is_some)),
             incomplete: fact(incomplete.as_ref().copied()),
@@ -743,12 +743,16 @@ fn fact(read: Result<bool, &anyhow::Error>) -> Fact {
 }
 
 /// The worktree of `issue` on this host and the state of its worker, where
-/// that worker, not gone, is on a harness worker health holds. Reads only.
-fn held(fleet: &Fleet, issue: u64) -> Result<Option<(Worktree, WorkerState)>> {
+/// that worker, not gone, is on a harness worker health holds, and has
+/// declared nothing the tick has yet to carry out: what a worker waits on
+/// holds no verdict of its own back. Reads only.
+fn held(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<(Worktree, WorkerState)>> {
     let source = crate::orca::Source::of(&fleet.repo)?;
     let Some(worktree) = Worktree::of_issue(&source, issue)? else { return Ok(None) };
     let state = worktree.state(fleet.now)?;
-    let held = state != WorkerState::Gone && crate::health::holding(&worktree);
+    let held = state != WorkerState::Gone
+        && crate::health::holding(&worktree)
+        && (state == WorkerState::Busy || !crate::judge::declared(fleet, me, issue, &worktree)?);
     Ok(held.then_some((worktree, state)))
 }
 
