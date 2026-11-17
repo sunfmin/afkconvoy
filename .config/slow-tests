@@ -1057,11 +1057,18 @@ afkconvoy::cli cutting::a_dead_cut_s_hold_is_taken_over
 afkconvoy::cli cutting::the_next_due_cut_starts_nothing_in_a_checkout_a_cut_by_hand_holds_and_says_so
 afkconvoy::cli gate::a_gate_runs_two_tests_to_each_core_it_is_given
 afkconvoy::cli joining::a_landing_stopped_at_a_fleet_lock_is_asked_again_by_the_tick_once_the_lock_closes
-# Proving branch (sunfmin/control#1308): each lands two PRs through real turns, as candidates' tests do.
+# Proving branch (sunfmin/control#1308, #1334): each lands PRs through real turns, as candidates' tests do; the two-host ones start 480-610 processes, 7.5-8.7s on a loaded host.
 afkconvoy::cli proving::two_fast_green_prs_land_on_the_proving_branch_and_a_promotion_moves_the_base_to_it
 afkconvoy::cli proving::a_worker_started_after_a_landing_on_the_proving_branch_branches_from_it
 afkconvoy::cli proving::a_promotion_whose_slow_gate_is_red_leaves_the_base_branch_and_says_so
 afkconvoy::cli proving::a_promotion_never_moves_the_base_branch_to_what_is_no_fast_forward_of_it
+afkconvoy::cli proving::two_hosts_land_on_one_proving_branch_and_the_refused_one_is_built_again_on_the_new_tip
+afkconvoy::cli proving::a_promotion_gates_what_another_host_landed_while_it_waited_for_its_lane
+afkconvoy::cli proving::a_second_host_s_promotion_of_a_tip_the_base_already_holds_pushes_nothing
+afkconvoy::cli proving::a_second_host_s_promotion_of_a_tip_ahead_of_the_first_s_fast_forwards_onto_it
+afkconvoy::cli proving::a_promotion_waits_while_a_worker_command_waits_and_starts_once_the_queue_empties
+afkconvoy::cli proving::a_promotion_starts_at_the_bound_though_the_queue_never_empties
+afkconvoy::cli proving::a_red_promotion_gets_one_repair_issue_and_the_next_green_promotion_closes_it
 afkconvoy::cli candidates::a_host_runner_restarted_mid_round_finds_its_round_in_the_database
 afkconvoy::cli candidates::an_old_remote_chain_record_is_ignored_reported_and_removed
 afkconvoy::cli candidates::ten_turns_waiting_on_one_round_start_no_git_process_for_the_chain

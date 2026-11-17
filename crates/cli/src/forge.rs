@@ -8,7 +8,7 @@
 use afkconvoy_core::account::End;
 use afkconvoy_core::candidate::Note;
 use afkconvoy_core::config::Config;
-use afkconvoy_core::landing::{Of, merge_message};
+use afkconvoy_core::landing::{Of, landed_on, merge_message};
 use afkconvoy_core::plan::PullRequest;
 use afkconvoy_core::worker::{carried, carried_comment};
 use afkconvoy_landing::forge::{Change, Forge};
@@ -27,6 +27,8 @@ pub(crate) struct Pulls<'a> {
     pub gh: &'a GitHub,
     pub tracker: &'a Tracker,
     pub of: &'a Of,
+    /// The host whose turn this is: each landing commit names it.
+    pub host: &'a str,
     /// The time now, in epoch seconds: a turn's clock.
     pub clock: &'a dyn Fn() -> u64,
 }
@@ -104,7 +106,11 @@ impl Forge for Pulls<'_> {
     }
 
     fn message(&self, change: &Change) -> String {
-        merge_message(&change.title, change.number, self.of, self.tracker)
+        landed_on(
+            &merge_message(&change.title, change.number, self.of, self.tracker),
+            self.of,
+            self.host,
+        )
     }
 
     fn may_land(&self, _: &Change) -> Result<Result<(), Refusal>> {

@@ -302,6 +302,14 @@ impl Permit {
         Self::acquire(repo, command, heavy, true, true, heavy.then_some(Gate::Slow))
     }
 
+    /// A promotion's gate of the proving branch's tip (docs/adr/0090), in
+    /// the host's slow lanes, as a round's slow gate: no turn, a candidate's
+    /// commit nothing moves while it runs. Taken before the tip it gates is
+    /// read the last time, so that it gates every landing up to its lane.
+    pub(crate) fn promotion(repo: &Repo, command: &str, heavy: bool) -> Result<Self> {
+        Self::acquire(repo, command, heavy, false, true, heavy.then_some(Gate::Slow))
+    }
+
     /// One of the two gates a worker runs alone, `gate --fast` or `--slow`,
     /// in its lane (docs/adr/0047): the fast lane, or the slow lanes. Taken
     /// before the gate's command starts, so that the wait for it uses none
