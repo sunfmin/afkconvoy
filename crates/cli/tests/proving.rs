@@ -154,3 +154,55 @@ fn a_promotion_never_moves_the_base_branch_to_what_is_no_fast_forward_of_it() {
     assert_eq!(tip(&world, "main"), moved);
     assert!(ran(&world, "slow").is_empty(), "nothing is gated for a move it cannot make");
 }
+
+/// The repair issues of the proving branch the fake tracker holds, by number.
+fn repairs(world: &World) -> Vec<serde_json::Value> {
+    let gh = world.gh();
+    let rows = gh["issues"].as_array().unwrap().clone();
+    rows.into_iter()
+        .filter(|i| i["title"].as_str().unwrap_or("").starts_with("Repair the red promotion"))
+        .collect()
+}
+
+#[test]
+fn a_red_promotion_gets_one_repair_issue_and_the_next_green_promotion_closes_it() {
+    let world = proving_world();
+    land_two(&world);
+    std::fs::write(world.root.join("fail-slow"), "").unwrap();
+    let red = world.afk(&["promote"]).ok();
+    assert_eq!(red["outcome"], "gate_red", "{red}");
+    let found = repairs(&world);
+    assert_eq!(found.len(), 1, "one red promotion has one repair issue: {found:?}");
+    let issue = found[0]["number"].as_u64().unwrap();
+    assert_eq!(red["repair_issue"], issue);
+    let labels: Vec<&str> =
+        found[0]["labels"].as_array().unwrap().iter().filter_map(|l| l.as_str()).collect();
+    assert!(labels.contains(&"convoy-repair") && labels.contains(&"ready-for-agent"), "{labels:?}");
+    assert!(!labels.contains(&"fleet-lock"), "a red proving branch holds no ordinary turn");
+    let body = found[0]["body"].as_str().unwrap();
+    assert!(body.contains("Failing tests") && body.contains("Gate output"), "{body}");
+    assert!(body.contains("#1, PR #") && body.contains("#2, PR #"), "{body}");
+
+    // A second red while it is open adds to it and opens no other.
+    let again = world.afk(&["promote"]).ok();
+    assert_eq!(again["repair_issue"], issue, "{again}");
+    assert_eq!(repairs(&world).len(), 1);
+    assert!(
+        world.comments(issue).iter().any(|c| c.contains("the promotion is red again")),
+        "{:?}",
+        world.comments(issue)
+    );
+
+    // A fast-green PR lands on the red proving branch, which holds nothing back.
+    let dir = worker(&world, 50, "c");
+    let landed = world.afk_in(&dir, &["land", "--issue", "50"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+
+    // The fix lands; the next promotion is green and closes the issue.
+    std::fs::remove_file(world.root.join("fail-slow")).unwrap();
+    assert_eq!(world.state(issue), "open");
+    let promoted = world.afk(&["promote"]).ok();
+    assert_eq!(promoted["outcome"], "promoted", "{promoted}");
+    assert_eq!(promoted["repair_closed"], issue);
+    assert_eq!(world.state(issue), "closed");
+}

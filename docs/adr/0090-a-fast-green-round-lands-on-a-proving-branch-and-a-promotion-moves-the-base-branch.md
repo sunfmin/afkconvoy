@@ -17,7 +17,19 @@ That branch is the **proving branch**; moving the base branch to the proving bra
 - A promotion is started by `afkconvoy promote` and by a tick whenever the proving branch is ahead of the base branch, detached from the tick, one per checkout at a time.
 - `doctor` and `plan` show, per repo with a proving branch: its tip, the base tip, how many landed PRs are not yet promoted, and how long the oldest has waited.
 
-Decided but not built yet: the slow gate on the proving branch runs only while the host is idle, but at most an hour after the oldest change not yet on the base branch; and a red promotion is fixed forward by a worker of the proving branch's own. Today a red promotion is not repaired: the base branch waits until a promotion of a later tip is green.
+Decided but not built yet: the slow gate on the proving branch runs only while the host is idle, but at most an hour after the oldest change not yet on the base branch.
+
+## A red promotion is fixed forward by a repair worker
+
+Decided in #1308 (item 2), built in #1310. The PRs' workers have ended and their issues are closed, so nobody owns a red promotion. The fleet gives it an owner:
+
+- A red promotion opens **one repair issue**, labelled `convoy-repair` and the ready label as the fleet's repair issues are, and not the lock label: a red proving branch holds no ordinary turn back, and fast-green PRs keep landing on it. The issue names the failing tests, the gate output and every issue whose PR landed on the proving branch since the last promotion, with its PR. A second red while it is open is a comment on it; no other issue opens.
+- The fleet starts a repair worker on that issue, as it starts one for a red base tip (`repair.rs`). It fixes on a branch from the proving tip, passes the fast gate and lands its fix on the proving branch by an ordinary turn. The next promotion gates the new tip; a green one closes the issue.
+- Its worktree is kept: settling does not remove the worktree of a promotion repair issue while the repo declares a proving branch.
+
+ADR-0048 and ADR-0083 refused a separate repair worker for a red round, because the round's own workers were still there to fix it. That reason gives way here: a promotion's red belongs to rounds whose workers have ended and whose issues are closed, so only a worker of the proving branch's own can fix it forward.
+
+Not built yet: reusing one worktree across repairs, rather than keeping each repair issue's.
 
 ## Considered options
 

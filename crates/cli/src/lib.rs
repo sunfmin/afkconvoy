@@ -124,6 +124,7 @@ pub mod probe;
 mod process;
 mod process_scope;
 mod promote;
+mod promotion_repair;
 pub mod published;
 pub mod queue;
 pub mod queue_share;

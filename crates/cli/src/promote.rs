@@ -175,6 +175,11 @@ pub fn promote(repo: &Repo, host: &str, now: u64) -> Result<Value> {
                     standing.base_branch
                 ));
             } else {
+                if let Some(issue) =
+                    crate::promotion_repair::green(repo, &standing.proving_branch, &tip)?
+                {
+                    answer["repair_closed"] = json!(issue);
+                }
                 answer["outcome"] = json!("promoted");
                 answer["detail"] = json!(format!(
                     "fast-forwarded {} from {} to {tip}, {} landed PR(s)",
@@ -186,6 +191,30 @@ pub fn promote(repo: &Repo, host: &str, now: u64) -> Result<Value> {
             answer["outcome"] = json!("gate_red");
             answer["failing"] = json!(red.tests);
             answer["gate_output"] = json!(output);
+            let said = red.said(&format!("the proving branch's tip {tip}"));
+            let landed: Vec<(Option<u64>, u64)> =
+                crate::landing::joins_in(repo, &tracker, &[&format!("{}..{tip}", standing.base)])?
+                    .iter()
+                    .map(|landed| (landed.issue(), landed.pr))
+                    .collect();
+            let text = std::fs::read_to_string(&output).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            let excerpt = lines[lines.len().saturating_sub(80)..].join("\n");
+            let issue = crate::promotion_repair::red(
+                repo,
+                &declared,
+                &crate::promotion_repair::Red {
+                    proving: &standing.proving_branch,
+                    tip: &tip,
+                    said: &said,
+                    failing: &red.tests,
+                    output: &output,
+                    excerpt: &excerpt,
+                    landed: &landed,
+                    gate_command: &declared.gate_command,
+                },
+            )?;
+            answer["repair_issue"] = json!(issue);
             answer["detail"] = json!(format!(
                 "{}; the base branch {} stays at {}",
                 red.said(&format!("the proving branch's tip {tip}")),
@@ -369,5 +398,5 @@ It reads the remote's base branch and proving branch and the gate records, and w
 
 ## What trips you up
 
-- A red promotion is not repaired in this version: fast-green PRs keep landing on the proving branch, and the base branch waits until a promotion of a later tip is green.
+- A red promotion opens one repair issue (`repair_issue`), labelled as the fleet's repairs are, naming the failing tests, the gate output and every issue landed since the last promotion; a second red while it is open is a comment on it. The fleet starts a repair worker on it; its fix lands on the proving branch by an ordinary turn, and the next green promotion closes the issue (`repair_closed`). Fast-green PRs keep landing meanwhile.
 - A repo that moves its base branch by hand, past the proving branch, is `diverged` until the proving branch holds the base branch's tip again."#;
