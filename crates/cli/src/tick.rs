@@ -259,7 +259,7 @@ pub fn tick(
         Cleanup::Candidates.failures(crate::candidates::remove_listed(repo, &records));
     // A removal orca already answered success for, while the directory remains.
     // No claim is required: the settle that met it has already released its own.
-    let base = &fleet.config.base_branch;
+    let base = fleet.config.lands_on();
     cleanup_failures.extend(
         Cleanup::FailedRemovals.failures(crate::orca::finish_failed_removals(&fleet.repo, base)),
     );
@@ -305,6 +305,12 @@ pub fn tick(
     }
     if crate::repair::tend(&mut fleet, me)? == Outcome::Done {
         (fleet, open) = Fleet::read(repo, me.now)?;
+    }
+    // A proving branch ahead of the base branch is promoted, by a process
+    // of its own, detached from the tick (docs/adr/0090). One that cannot
+    // be started costs the tick nothing: the next tries again.
+    if let Err(error) = crate::promote::tend(&fleet.repo, &fleet.config, &fleet.gh.tracker) {
+        eprintln!("warning: the promotion will retry: {error:#}");
     }
     let mut updates = crate::issue_updates::reconcile(&fleet, &me.host, &open.issues);
     for issue in &open.issues.rows {

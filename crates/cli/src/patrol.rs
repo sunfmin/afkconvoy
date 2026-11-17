@@ -204,7 +204,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         drop_run(&fleet.repo, &mut fleet.scan, &claim)?;
         return Ok(Outcome::Lost);
     }
-    let base = fleet.base_tip()?;
+    let base = fleet.landing_tip()?;
     let source = Source::of(&fleet.repo)?;
     let created_as = checkout_name(name);
     if let Some(left) = Worktree::named(&source, &created_as)? {
@@ -223,7 +223,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         role: &role.name,
         skill: &patrol.work.skill,
         worktree: &path,
-        base_branch: &fleet.config.base_branch,
+        base_branch: fleet.config.lands_on(),
         team_rules: team_rules.as_deref(),
         workflows: &workflows,
         room: row.max_open.saturating_sub(row.open),
@@ -306,7 +306,7 @@ fn in_role(
             skill: &patrol.work.skill,
             writes: false,
             consult: false,
-            base_branch: &fleet.config.base_branch,
+            base_branch: fleet.config.lands_on(),
             target_branch: None,
             escalate_label: &kept.team.escalate_label,
             lock_label: &fleet.config.lock_label,
@@ -403,7 +403,7 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
             .collect();
         let repo = Repo::new(checkout.path.clone());
         let tip = checkout.tip()?;
-        let base = fleet.base_tip()?;
+        let base = fleet.landing_tip()?;
         let left = (!repo.within(&tip, &base)?).then_some(tip.as_str());
         let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
         let reason = broke(left, dirty, &prs);

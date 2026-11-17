@@ -187,7 +187,7 @@ fn settled_keeps(
     let listed = crate::orca::listed_head(&worktree.path)?;
     let on_remote = crate::orca::commit_is_on_remote(
         &fleet.repo,
-        &fleet.config.base_branch,
+        fleet.config.lands_on(),
         &worktree.branch,
         &listed,
     );

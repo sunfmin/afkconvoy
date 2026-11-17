@@ -546,6 +546,19 @@ impl Fleet {
         Ok(tip.clone())
     }
 
+    /// The tip of the branch work is cut from and lands on (`Config::lands_on`):
+    /// the proving branch's where the repo declares one (docs/adr/0090), else
+    /// the base branch's.
+    pub fn landing_tip(&self) -> Result<String> {
+        let branch = self.config.lands_on();
+        if branch == self.config.base_branch {
+            return self.base_tip();
+        }
+        self.remote
+            .fetched(&format!("refs/heads/{branch}"), Fresh::Process)?
+            .ok_or_else(|| anyhow!("the remote has no proving branch {branch:?}; push it"))
+    }
+
     /// Destinations derived from this view's GitHub and remote snapshots.
     pub fn targets(&self, open: &OpenIssues) -> Result<serde_json::Value> {
         crate::target::listing(

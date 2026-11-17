@@ -23,3 +23,7 @@ A command holds a turn through merge, gate and join, and train gates use an inde
 ## Replaced by ADR-0037
 
 A turn now lands its gated merge commit directly on the base branch. The landing train, its worker and its lane have been removed; ADR-0037 describes certification, repair and migration of an older line.
+
+## Amended by ADR-0090
+
+In a repo that names a proving branch, a turn lands on the proving branch with its fast gate only, and a promotion slow-gates the proving branch's tip before the base branch moves (sunfmin/control#1308). The reason the train was removed, that it added no verification after a recorded turn, no longer holds there: the promotion is that verification. A repo without a proving branch lands as this ADR says.

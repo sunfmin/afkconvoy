@@ -110,13 +110,13 @@ pub struct Seen {
 pub fn once(repo: &Repo, config: &Config, tracker: &Tracker, issue: u64) -> Result<Seen> {
     let name = refname(repo, tracker, issue);
     let claim_ref = afkconvoy_core::claims::claim_ref(repo.layout(), tracker, issue);
-    let base_ref = format!("refs/heads/{}", config.base_branch);
+    let base_ref = format!("refs/heads/{}", config.lands_on());
     let asked_refs = [name.as_str(), claim_ref.as_str(), base_ref.as_str()];
     let listed = repo.remote().refs(&asked_refs, Fresh::Live)?;
     crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name(), Fresh::Process)?;
     let target = from_listing(repo, tracker, issue, &listed)?;
     let branch = match target {
-        None => config.base_branch.clone(),
+        None => config.lands_on().to_string(),
         Some(target) => target.resolve_known(repo, &asked_refs, &listed)?,
     };
     let tip_ref = format!("refs/heads/{branch}");
@@ -173,7 +173,7 @@ pub fn snapshot_branch(
         records.iter().find(|r| r.name == claim_ref),
     )?;
     match target {
-        None => Ok(config.base_branch.clone()),
+        None => Ok(config.lands_on().to_string()),
         Some(Target { delivery: Some(reference), .. }) => {
             crate::delivery::resolve(repo, &reference, Some(records))
         }
@@ -239,7 +239,7 @@ fn validate_known(
 pub fn branch(repo: &Repo, config: &Config, issue: u64) -> Result<String> {
     match existing(repo, &GitHub::of(repo)?, issue)? {
         Some(target) => target.resolve(repo),
-        None => Ok(config.base_branch.clone()),
+        None => Ok(config.lands_on().to_string()),
     }
 }
 
@@ -314,7 +314,7 @@ pub fn pin(repo: &Repo, config: &Config, issue: u64, selected: Option<&str>) -> 
         issue,
         Target {
             issue: gh.tracker.issue(issue),
-            branch: Some(selected.unwrap_or(&config.base_branch).to_string()),
+            branch: Some(selected.unwrap_or(config.lands_on()).to_string()),
             delivery: None,
         },
         selected.is_some(),

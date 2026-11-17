@@ -13,3 +13,7 @@ The config key remains the repo's ordinary destination and the sole destination 
 Selection writes a parentless remote record under `target/<tracker claim key>` in the settled ref layout. A first claim pins the configured base if none was selected. Competing parentless records cannot fast-forward one another; the winning record is immutable, including between stages and after a claim is released. A different destination requires another task. This deliberately gives up editing a selection after it has been recorded, in exchange for no selection/claim race or second routing authority. Claims retain the target record's identity, and takeover preserves that reference. Legacy tasks lacking a target retain the configured destination until their next claim or turn resolves it.
 
 Dispatch, stage briefs, guard settings, switches, continuation, landing and settlement read that destination. A missing branch, unreadable record or a target that contradicts its claim is a refusal with a repair diagnostic, never permission to use the configured base. The branch identity is pinned; its tip continues moving through ordinary gated turns.
+
+## Amended by ADR-0090
+
+A repo that names a proving branch has two branches in play (sunfmin/control#1308): a task's target branch is the proving branch, and the base branch moves only by promotion. Versions are still cut from the base branch.

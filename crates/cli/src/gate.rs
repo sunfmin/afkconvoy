@@ -491,15 +491,18 @@ pub enum Detached {
     BaseTip,
     /// A delivery's aggregate gate.
     Delivery,
+    /// The proving branch's tip, slow-gated by a promotion (docs/adr/0090).
+    Promotion,
 }
 
 impl Detached {
-    const ALL: [Detached; 2] = [Detached::BaseTip, Detached::Delivery];
+    const ALL: [Detached; 3] = [Detached::BaseTip, Detached::Delivery, Detached::Promotion];
 
     fn name(self) -> &'static str {
         match self {
             Detached::BaseTip => "base-tip",
             Detached::Delivery => "delivery",
+            Detached::Promotion => "promotion",
         }
     }
 

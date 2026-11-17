@@ -368,7 +368,7 @@ fn end_run_worker(
     checkout: Option<Worktree>,
 ) -> Result<Option<(Worktree, Option<String>)>> {
     let Some(checkout) = checkout else { return Ok(None) };
-    let kept = kept_why(&checkout, &fleet.base_tip()?)?;
+    let kept = kept_why(&checkout, &fleet.landing_tip()?)?;
     match kept {
         Some(_) => checkout.close_terminals()?,
         None => {

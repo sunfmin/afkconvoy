@@ -1680,7 +1680,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let root = prepare_worktree_root(repo)?;
     let barrier = !locks.is_empty() || !matches!(of, Of::Issue(_));
     let starting = read(repo, config, Read::Live)?;
-    let base_config = crate::turn::tip_config(repo, &starting.base)?;
+    let base_config = crate::turn::tip_config(repo, &starting.base, &config.base_branch)?;
     let heavy = crate::config::heavy_gate(&config.gate_command)
         || crate::config::heavy_gate(&base_config.gate_command)
         || starting
@@ -1900,7 +1900,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 );
                 return Ok(answer);
             }
-            let declared = crate::turn::tip_config(repo, &current)?;
+            let declared = crate::turn::tip_config(repo, &current, &config.base_branch)?;
             let base_command = GateCommand::new(&declared.gate_command);
             let base_tree = Tree::named(&repo.git(&["rev-parse", &format!("{current}^{{tree}}")])?);
             let repairing = match issue.filter(|n| locks.contains(n)) {
@@ -1958,7 +1958,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 );
                 return Ok(answer);
             };
-            let declared = crate::turn::tip_config(repo, &commit)?;
+            let declared = crate::turn::tip_config(repo, &commit, &config.base_branch)?;
             if crate::config::heavy_gate(&declared.gate_command) && !heavy {
                 answer["outcome"] = json!(Ending::GateLaneChanged);
                 answer["detail"] = json!(
@@ -2525,7 +2525,7 @@ fn pair_level(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
     })?;
     let mut built = vec![];
     for (at, commit) in made.groups {
-        let declared = crate::turn::tip_config(repo, &commit)?;
+        let declared = crate::turn::tip_config(repo, &commit, &config.base_branch)?;
         let own = Declared {
             whole: declared.gate_command.clone(),
             seconds: declared.gate_seconds(),
@@ -2567,7 +2567,7 @@ fn stack_root(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
     }
     let made = match merged {
         Some(commit) => {
-            let declared = crate::turn::tip_config(repo, &commit)?;
+            let declared = crate::turn::tip_config(repo, &commit, &config.base_branch)?;
             let own = Declared {
                 whole: declared.gate_command.clone(),
                 seconds: declared.gate_seconds(),
@@ -2654,7 +2654,7 @@ fn assign_rooted(turn: &InRound<'_>, mut answer: Value) -> Result<Option<Rounded
         *turn;
     let mut snapshot = read(repo, config, Read::Known)?;
     let current = snapshot.base.clone();
-    let declared = crate::turn::tip_config(repo, &current)?;
+    let declared = crate::turn::tip_config(repo, &current, &config.base_branch)?;
     let base_command = GateCommand::new(&declared.gate_command);
     let base_tree = Tree::named(&repo.git(&["rev-parse", &format!("{current}^{{tree}}")])?);
     if crate::gate::recorded(repo, &base_tree, &base_command, clock())?.is_none() {
@@ -2703,7 +2703,7 @@ fn assign_rooted(turn: &InRound<'_>, mut answer: Value) -> Result<Option<Rounded
             json!("resolve every file, git add it, COMMIT the merge, and ask for a turn again");
         return Ok(Some(Rounded::Answer(answer)));
     };
-    let declared = crate::turn::tip_config(repo, &commit)?;
+    let declared = crate::turn::tip_config(repo, &commit, &config.base_branch)?;
     if crate::config::heavy_gate(&declared.gate_command) && !heavy {
         answer["outcome"] = json!(Ending::GateLaneChanged);
         answer["detail"] = json!(

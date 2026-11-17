@@ -114,6 +114,7 @@ pub mod paused;
 mod plan;
 pub mod probe;
 mod process;
+mod promote;
 mod process_scope;
 pub mod published;
 pub mod queue;
@@ -1041,6 +1042,15 @@ enum Command {
         /// The clock's `--now <seconds>` shares the flag, so it is read from there.
         #[arg(skip)]
         now: bool,
+        #[command(flatten)]
+        at: At,
+    },
+    /// Promote the proving branch: slow-gate its tip, then fast-forward the base branch to it (the fleet's and the operator's command)
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = promote::HELP)]
+    Promote {
+        /// The host its gate runs and is recorded as on [default: this machine's name]
+        #[arg(long)]
+        host: Option<String>,
         #[command(flatten)]
         at: At,
     },
@@ -2852,6 +2862,9 @@ fn run(
         }
         // `Acting::end` sends it, as it does for every command that acts.
         Command::Wake { .. } => Ok(json!({})),
+        Command::Promote { host, .. } => {
+            promote::promote(&checkout?, &host.unwrap_or_else(this_host), now)
+        }
         Command::Scan { .. } => Ok(Scan::read_said(&checkout?)?.json()),
         Command::Claim { issue, who, .. } => {
             let repo = checkout?;

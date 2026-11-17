@@ -54,7 +54,7 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
     if fleet.remote.sha(&red_ref(&fleet.repo, branch), Fresh::Process)?.as_deref() != Some(&base) {
         return Ok(Outcome::Nothing);
     }
-    let declared = crate::turn::tip_config(&fleet.repo, &base)?;
+    let declared = crate::turn::tip_config(&fleet.repo, &base, branch)?;
     let key = if branch == fleet.config.base_branch {
         "base-repair".to_string()
     } else {

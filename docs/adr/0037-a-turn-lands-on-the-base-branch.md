@@ -83,3 +83,7 @@ Amended by ADR-0048, and replaced within a round by ADR-0083: a round's PRs are 
 ## Fast gates (sunfmin/control#237)
 
 Amended by ADR-0049. Same-repo isolation holds for ordinary heavy commands, but not between fast gates: a worker's fast gate runs in the fast lane, beside the other fast gates of its repo up to the host's `fast_lanes`, each in its own worktree, and takes no repo lease. A landing turn's fast gate is part of the turn and keeps the turn's worker lane.
+
+## Amended by ADR-0090
+
+In a repo that names a proving branch, a turn lands on the proving branch with its fast gate only, and a promotion slow-gates the proving branch's tip before the base branch moves (sunfmin/control#1308). The reason the train was removed, that it added no verification after a recorded turn, no longer holds there: the promotion is that verification. A repo without a proving branch lands as this ADR says.
