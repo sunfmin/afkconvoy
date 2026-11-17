@@ -371,7 +371,10 @@ fn every_issue_is_the_trackers_and_every_pr_branch_and_ref_the_checkouts() {
     let file = format!("{}:seven.txt", world.remote(&["rev-parse", "refs/heads/main"]));
     assert_eq!(world.remote(&["show", &file]), "7");
     let joined = world.remote(&["log", "--format=%s%n%b", "--merges", "-1", "main"]);
-    assert_eq!(joined, "pr 70 (#70)\nCloses acme/tracker#7", "the join names the tracker's issue");
+    assert_eq!(
+        joined, "pr 70 (#70)\nCloses acme/tracker#7\nLanded on h1",
+        "the join names the tracker's issue"
+    );
 
     // The checkout's repo's issues are as they were, with no comment.
     assert_eq!(world.gh()["issues"], own);
@@ -783,7 +786,7 @@ fn a_bound_repos_tracker_issue_goes_through_its_stages_and_lands_in_a_turn() {
     assert_eq!(joined["outcome"], "merged", "{joined}");
     assert_eq!(world.remote(&["show", "refs/heads/main:seven.txt"]), "7");
     let joined = world.remote(&["log", "--format=%s%n%b", "--merges", "-1", "main"]);
-    assert_eq!(joined, "pr 70 (#70)\nCloses acme/tracker#7");
+    assert_eq!(joined, "pr 70 (#70)\nCloses acme/tracker#7\nLanded on h1");
     assert_eq!(issue_of(&world.tracker(), 7)["state"], "closed");
     // The landing worker woke the fleet and stopped at its prompt.
     world.with_orca(|orca| {

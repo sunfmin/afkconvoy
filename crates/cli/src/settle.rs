@@ -373,6 +373,14 @@ pub fn settle(fleet: &mut Fleet, found: &mut Found, me: &Me, issue: u64) -> Resu
                 }
             }
             SettleStep::RemoveWorktree => {
+                // The proving branch's repair worker keeps its worktree
+                // while the repo declares a proving branch (docs/adr/0090).
+                let read = fleet.issues.issue(issue)?;
+                if fleet.config.proving_branch.is_some()
+                    && crate::promotion_repair::is_any(&read.labels, read.body.as_deref())
+                {
+                    continue;
+                }
                 let carrier = match by.filter(|_| carried) {
                     Some(by) => fleet.gh.open_prs()?.into_iter().find(|pr| pr.number == by),
                     None => None,

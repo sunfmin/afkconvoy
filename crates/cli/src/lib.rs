@@ -124,6 +124,7 @@ pub mod probe;
 mod process;
 mod process_scope;
 mod promote;
+mod promotion_repair;
 pub mod published;
 pub mod queue;
 pub mod queue_share;
@@ -188,9 +189,10 @@ use host_settings::{
     AGENT_GUARDS_ENV, AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, BUSY_SHARE_ENV,
     EXCLUSIVE_SECONDS_ENV, GITHUB_SHARE_ENV, HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV,
     HOT_SPAWNS_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, MAX_SHARE_OF_CORES_ENV,
-    MAX_SHARE_OF_MEMORY_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
-    jev_key_command_or_default, notify_command_or_default, percent_or_default, port_or_default,
-    thousandths_or_default, watch_dir_or_default, watch_every_or_default, whole_or_default,
+    MAX_SHARE_OF_MEMORY_ENV, NOTIFY_COMMAND_ENV, PROMOTION_SECONDS_ENV, To, WATCH_DIR_ENV,
+    WATCH_EVERY_ENV, jev_key_command_or_default, notify_command_or_default, percent_or_default,
+    port_or_default, thousandths_or_default, watch_dir_or_default, watch_every_or_default,
+    whole_or_default,
 };
 use launch::Launches;
 
@@ -713,6 +715,11 @@ enum Command {
         /// `default` changes it back [default: {const:BUSY_SHARE}%]
         #[arg(long, env = BUSY_SHARE_ENV, value_name = "PERCENT", value_parser = boxed_percent)]
         busy_share: Option<Box<To<u64>>>,
+        /// Seconds the oldest change landed on a proving branch, not yet on its base branch,
+        /// waits for this host to be idle before its promotion starts anyway: a host setting;
+        /// `default` changes it back [default: {const:PROMOTION_SECONDS}]
+        #[arg(long, env = PROMOTION_SECONDS_ENV, value_name = "SECONDS", value_parser = boxed_whole)]
+        promotion_seconds: Option<Box<To<u64>>>,
         /// Removed: the exclusive queue has no count of places
         #[arg(long, hide = true, value_parser = removed_lanes)]
         gate_lanes: Option<()>,
@@ -1731,6 +1738,7 @@ pub fn manual() -> agent_help::Help {
         .constant("FIRST_START_QUESTIONS", first_start::help())
         .constant("EXCLUSIVE_SECONDS", exclusive::SECONDS)
         .constant("BUSY_SHARE", afkconvoy_core::exclusive::BUSY_SHARE)
+        .constant("PROMOTION_SECONDS", promote::BOUND_SECONDS)
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("NOTIFY_SECONDS", watch_notify::SECONDS)
         .constant("NOTIFY_FAILURES", watch_notify::FAILURES)
@@ -1979,6 +1987,11 @@ fn boxed_percent(said: &str) -> Result<Box<To<u64>>, String> {
     percent_or_default(said).map(Box::new)
 }
 
+/// `--promotion-seconds`, boxed as `boxed_percent` is.
+fn boxed_whole(said: &str) -> Result<Box<To<u64>>, String> {
+    whole_or_default(said).map(Box::new)
+}
+
 /// What `--gate-lanes`, `--slow-gate-lanes` and `--fast-lanes` say now.
 const REMOVED_LANES: &str = "is removed: the exclusive queue has no count of places, and starts \
      a command once the host has room for it, by its CPU reading; \
@@ -2116,6 +2129,7 @@ fn start_of(
         agent_guards,
         host_name,
         busy_share,
+        promotion_seconds,
         ticks,
         second_ms,
         panic_at_tick,
@@ -2145,6 +2159,7 @@ fn start_of(
         account_limit: account_limit.map(|limit| *limit),
         exclusive_seconds,
         busy_share: busy_share.map(|share| *share),
+        promotion_seconds: promotion_seconds.map(|seconds| *seconds),
         panel,
         watch_dir,
         watch_every,
