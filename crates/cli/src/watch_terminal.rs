@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{copies::cache, host_watch::Watch, orca::Worktree};
+use crate::{host_watch::Watch, orca::Worktree};
 
 pub(crate) const TITLE: &str = "afkconvoy watch";
 const FILE: &str = "watch/terminal.json";
@@ -46,28 +46,21 @@ pub(crate) struct Record {
     pub execution_evidence: Option<Value>,
 }
 
-fn file() -> Result<PathBuf> {
-    Ok(cache()?.join(FILE))
-}
+/// The watch's launch and delivery journal, whole, in the host's database:
+/// the one row of `watch_terminal`. It was `watch/terminal.json` in the
+/// cache directory.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: FILE,
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("watch_terminal"),
+};
 
 pub(crate) fn read() -> Result<Option<Record>> {
-    let path = file()?;
-    match std::fs::read(&path) {
-        Ok(bytes) => Ok(Some(
-            serde_json::from_slice(&bytes)
-                .with_context(|| format!("cannot read watch association {}", path.display()))?,
-        )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
+    crate::host_db::read(&STORE).context("cannot read the watch association")
 }
 
 pub(crate) fn save(record: &Record) -> Result<()> {
-    let path = file()?;
-    std::fs::create_dir_all(path.parent().expect("association parent"))?;
-    let temporary = path.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(record)?)?;
-    std::fs::rename(temporary, path)?;
+    crate::host_db::put(&STORE, record)?;
     // Keep each round's delivery evidence after the resident journal moves
     // to another round. This is an archive of the journal, never a second
     // source from which the scheduler sends input.
@@ -431,7 +424,7 @@ mod tests {
             .unwrap()
             .to_path_buf();
         let mut watch = watch(directory.clone());
-        watch.transcript = cache().unwrap().join("smoke-session.log");
+        watch.transcript = crate::copies::cache().unwrap().join("smoke-session.log");
         let worktree = Worktree::at(directory, String::new());
         let marker = format!("afkconvoy-watch-session-{}-1", watch.id);
         let command = afkconvoy_core::host_watch::session(

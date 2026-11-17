@@ -51,6 +51,37 @@ fn cache_home() -> Result<PathBuf> {
     Ok(OWN.with(|own| own.path().to_path_buf()))
 }
 
+/// Where on this host this user's fleets keep what nothing else can give
+/// back: their data directory (`afkconvoy help data`), beside the cache
+/// directory and never in it. The host's database is in it (`host_db`).
+pub fn data() -> Result<PathBuf> {
+    Ok(data_home()?.join("afkconvoy"))
+}
+
+/// The directory the data directory is in: this user's, as XDG_DATA_HOME
+/// or HOME says it.
+#[cfg(not(test))]
+fn data_home() -> Result<PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    Ok(match (set("XDG_DATA_HOME"), set("HOME")) {
+        (Some(data), _) => PathBuf::from(data),
+        (None, Some(home)) => PathBuf::from(home).join(".local/share"),
+        (None, None) => bail!(
+            "neither XDG_DATA_HOME nor HOME says where the fleet's data directory is: \
+             `afkconvoy help data`"
+        ),
+    })
+}
+
+/// The same, of a unit test: one of its own, as its cache directory is.
+#[cfg(test)]
+fn data_home() -> Result<PathBuf> {
+    thread_local! {
+        static OWN: tempfile::TempDir = tempfile::tempdir().expect("a unit test's own data");
+    }
+    Ok(OWN.with(|own| own.path().to_path_buf()))
+}
+
 /// Where on this host the copies are kept.
 #[derive(Clone)]
 pub struct Copies {

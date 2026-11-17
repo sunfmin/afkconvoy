@@ -1,11 +1,10 @@
-//! The checkout list: which checkouts this host's runner works. One file on
-//! the host, never pushed, which holds the host settings beside them
-//! (`host_settings`, docs/adr/0023).
+//! The checkout list: which checkouts this host's runner works, kept in the
+//! host's database (`host_db`, docs/adr/0119), never pushed, with the host
+//! settings beside them (`host_settings`, docs/adr/0023).
 //!
-//! It is read whole by anyone, never under its lock: a change is written
-//! whole beside it and moved over it, so a reader sees one list or the
-//! next. Changes take the lock beside it, which keeps out a change made by
-//! another thread of the same process as well as by another process.
+//! It is read whole by anyone, and a reader sees one list or the next. A
+//! change is one transaction of the database, which keeps out a change made
+//! by another thread of the same process as well as by another process.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -20,17 +19,111 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::copies::cache;
 use crate::gh::Tracker;
 use crate::git::{REMOTE, Repo};
+use crate::host_db::{Host, Layout, Old, Store};
 use crate::host_settings::Settings;
 use crate::instance::Named;
 use crate::orca::Worktree;
 
-/// The file's name in the cache directory.
-const FILE: &str = "checkouts.json";
+/// The checkout list in the host's database: each checkout a row of
+/// `checkouts`, by its root, in the list's order; and what the list holds
+/// beside them, the host settings and what another afkconvoy kept there,
+/// the one row of `checkout_list`. It was `checkouts.json` in the cache
+/// directory, with `checkouts.lock` beside it.
+pub(crate) static STORE: Store = Store {
+    file: "checkouts.json",
+    old: Old::Meant(pinned),
+    layout: Layout::Tables { export, import },
+};
 
-/// What the checkout list's file holds: the checkouts, and the host settings
+/// What an older release's list `listed` meant: there, an entry that says
+/// no tracker worked its checkout's own repo, which this release's says
+/// by naming it — no tracker said is the host's local tracker here. Each
+/// such entry names the repo its checkout's remote names; one whose repo
+/// cannot be read says none still, and is named in `UNPINNED` beside the
+/// checkouts, which `doctor` finds (`findings`).
+fn pinned(mut listed: Value) -> Value {
+    let mut unpinned = vec![];
+    for entry in listed["checkouts"].as_array_mut().into_iter().flatten() {
+        if !entry["tracker"].is_null() {
+            continue;
+        }
+        let Some(root) = entry["checkout"].as_str().map(PathBuf::from) else { continue };
+        match Repo::at(&root).and_then(|repo| named_repo(&repo)) {
+            Ok(own) => entry["tracker"] = Value::from(own.to_string()),
+            Err(_) => unpinned.push(Value::from(root.display().to_string())),
+        }
+    }
+    if !unpinned.is_empty()
+        && let Some(listed) = listed.as_object_mut()
+    {
+        listed.insert(UNPINNED.into(), Value::Array(unpinned));
+    }
+    listed
+}
+
+/// Beside the checkouts: those an older release's list said no tracker of,
+/// whose own repo could not be read as it was taken in (`pinned`).
+const UNPINNED: &str = "tracker_unpinned";
+
+/// What `doctor` finds of the checkouts whose tracker an older release's
+/// list meant to be their own repo, which could not be read as it was taken
+/// in: one finding each that still says none.
+pub fn findings() -> Vec<crate::doctor::Finding> {
+    let Ok(listed) = List::of_host().and_then(|list| list.read()) else { return vec![] };
+    let unpinned = listed.rest.get(UNPINNED).and_then(Value::as_array).cloned().unwrap_or_default();
+    let says_none = |root: &str| {
+        listed
+            .checkouts
+            .iter()
+            .any(|entry| entry.checkout == Path::new(root) && entry.tracker.is_none())
+    };
+    unpinned
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|root| says_none(root))
+        .map(|root| {
+            crate::doctor::finding(
+                crate::doctor::Kind::HostDatabase,
+                serde_json::json!(["tracker-unpinned", root]),
+                format!(
+                    "the checkout {root} says no tracker since it was taken into the host database"
+                ),
+                "an older release worked its own repo's issues there, and its repo could not be \
+                 read from its remote `origin` as the list was taken in: it now works the \
+                 host's local tracker"
+                    .to_string(),
+                format!("afkconvoy run --tracker <owner>/<repo>   # in {root}"),
+            )
+        })
+        .collect()
+}
+
+fn export(db: &rusqlite::Connection) -> Result<Option<Value>> {
+    let beside = crate::host_db::rows(db, "checkout_list")?;
+    let Some((_, mut listed)) = beside.into_iter().next() else { return Ok(None) };
+    let checkouts = crate::host_db::rows(db, "checkouts")?;
+    let checkouts = checkouts.into_iter().map(|(_, entry)| entry).collect();
+    let object = listed.as_object_mut().context("the checkout list is no object")?;
+    object.insert("checkouts".into(), Value::Array(checkouts));
+    Ok(Some(listed))
+}
+
+fn import(db: &rusqlite::Connection, listed: &Value) -> Result<()> {
+    let mut beside = listed.as_object().context("the checkout list is no object")?.clone();
+    let checkouts = match beside.remove("checkouts") {
+        Some(Value::Array(checkouts)) => checkouts,
+        None => vec![],
+        Some(_) => bail!("the checkout list's `checkouts` is no list"),
+    };
+    let root = |entry: &Value| entry["checkout"].as_str().unwrap_or_default().to_string();
+    crate::host_db::put_rows(db, "checkouts", checkouts.iter().map(|entry| (root(entry), entry)))?;
+    let beside = Value::Object(beside);
+    crate::host_db::put_rows(db, "checkout_list", [(String::new(), &beside)])
+}
+
+/// What the checkout list holds: the checkouts, and the host settings
 /// beside them.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Listed {
@@ -108,26 +201,26 @@ pub fn forget(root: &Path) {
     asked().remove(root);
 }
 
-/// A host's checkout list: its file, and the lock beside it.
+/// A host's checkout list: the database it is kept in.
 #[derive(Clone)]
 pub struct List {
-    file: PathBuf,
+    host: Host,
 }
 
 impl List {
-    /// This host's: `checkouts.json` in the cache directory.
+    /// This host's: in its database (`host_db`).
     pub fn of_host() -> Result<List> {
-        Ok(List::at(cache()?.join(FILE)))
+        Ok(List { host: Host::of_host()? })
     }
 
-    /// The list kept in `file`.
+    /// The list kept in the host database `file`.
     pub fn at(file: PathBuf) -> List {
-        List { file }
+        List { host: Host::at(file) }
     }
 
-    /// The file it is kept in.
+    /// The database file it is kept in.
     pub fn file(&self) -> &Path {
-        &self.file
+        self.host.file()
     }
 
     /// What it lists. None yet is an empty list; a file that cannot be read
@@ -136,61 +229,45 @@ impl List {
         self.read_with_settings().map(|(listed, _)| listed)
     }
 
-    /// The list, and whether its file holds host settings, even defaults.
-    /// A first `run` must distinguish settings never said from defaults
-    /// already accepted; reading this makes no file or lock.
+    /// The list, and whether it holds host settings, even defaults. A first
+    /// `run` must distinguish settings never said from defaults already
+    /// accepted.
     pub fn read_with_settings(&self) -> Result<(Listed, bool)> {
-        let bytes = match std::fs::read(&self.file) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok((Listed::default(), false));
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("cannot read {}", self.file.display()));
-            }
-        };
-        let read = || -> serde_json::Result<(Listed, bool)> {
-            let listed = serde_json::from_slice(&bytes)?;
-            let value: Value = serde_json::from_slice(&bytes)?;
-            let settings = value.get("settings").is_some();
-            Ok((listed, settings))
-        };
-        read().with_context(|| {
+        let unread = || {
             format!(
-                "{} cannot be read as the checkout list: mend it, or remove it and run \
+                "the checkout list in {} cannot be read: mend it, or remove it and run \
                  `afkconvoy run` again in each checkout to be worked",
-                self.file.display()
+                self.file().display()
             )
-        })
+        };
+        let Some(value) = self.host.value(&STORE).with_context(unread)? else {
+            return Ok((Listed::default(), false));
+        };
+        let settings = value.get("settings").is_some();
+        Ok((serde_json::from_value(value).with_context(unread)?, settings))
     }
 
-    /// Changes it under its lock → what `change` answered: read, `change`d,
-    /// written whole beside it (`checkouts.json.<unique()>.tmp`) and moved
-    /// over it. A reader sees the old list or the new one, whole.
+    /// Changes it in one transaction → what `change` answered: read,
+    /// `change`d and written whole. A reader sees the old list or the new
+    /// one, whole.
     pub fn change<T>(&self, change: impl FnOnce(&mut Listed) -> T) -> Result<T> {
-        let unwritten = || format!("the checkout list {} cannot be written", self.file.display());
-        if let Some(dir) = self.file.parent() {
-            std::fs::create_dir_all(dir).with_context(unwritten)?;
-        }
-        let lock = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(self.file.with_extension("lock"))
-            .with_context(unwritten)?;
-        lock.lock().with_context(unwritten)?;
-        let mut listed = self.read()?;
-        let changed = change(&mut listed);
-        let temporary = self.file.with_extension(format!("json.{}.tmp", crate::unique()));
-        let written = serde_json::to_vec_pretty(&listed)
-            .map_err(std::io::Error::other)
-            .and_then(|text| std::fs::write(&temporary, text))
-            .and_then(|()| std::fs::rename(&temporary, &self.file));
-        if written.is_err() {
-            let _ = std::fs::remove_file(&temporary);
-        }
-        written.with_context(unwritten)?;
-        Ok(changed)
+        let unchanged =
+            || format!("the checkout list in {} cannot be changed", self.file().display());
+        self.host.change(&STORE, change).with_context(unchanged)
+    }
+
+    /// What it holds as its file held it, `None` where nothing: what a test
+    /// reads, as another afkconvoy would.
+    #[cfg(test)]
+    pub(crate) fn kept(&self) -> Option<Value> {
+        self.host.value(&STORE).unwrap()
+    }
+
+    /// Makes it hold `value`, as its file held it: what a test writes, as
+    /// another afkconvoy would.
+    #[cfg(test)]
+    pub(crate) fn keep(&self, value: Value) {
+        self.host.replace(&STORE, &value).unwrap()
     }
 }
 
@@ -328,16 +405,92 @@ mod tests {
         }
     }
 
+    /// The host database a test keeps its list in.
+    const FILE: &str = crate::host_db::FILE;
+
     #[test]
     fn none_yet_is_an_empty_list_and_one_that_cannot_be_read_is_an_error_naming_it() {
         let dir = tempfile::tempdir().unwrap();
         let list = List::at(dir.path().join(FILE));
         assert!(list.read().unwrap().checkouts.is_empty());
-        std::fs::write(list.file(), "{\"checkouts\": [").unwrap();
+        assert!(!list.read_with_settings().unwrap().1, "nothing read, nothing said");
+        let unreadable = serde_json::json!({"checkouts": [{"checkout": "/a", "concurrency": 0}]});
+        list.keep(unreadable.clone());
         let error = format!("{:#}", list.read().unwrap_err());
         assert!(error.contains(&list.file().display().to_string()), "{error}");
         assert!(list.change(|_| ()).is_err(), "a list that cannot be read is not written over");
-        assert_eq!(std::fs::read_to_string(list.file()).unwrap(), "{\"checkouts\": [");
+        assert_eq!(list.kept(), Some(unreadable));
+    }
+
+    #[test]
+    fn an_older_hosts_checkouts_json_is_taken_in_and_moved_aside_and_taken_in_once() {
+        use crate::host_db::tests::{host, runner};
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let old = cache.join("checkouts.json");
+        let list = List { host: host(dir.path()) };
+        let older = runner(&cache, "0.0.1");
+        std::fs::write(
+            &old,
+            r#"{"settings": {"admit_load": 400}, "kept": 1,
+            "checkouts": [{"checkout": "/a"}]}"#,
+        )
+        .unwrap();
+        let (listed, settings) = list.read_with_settings().unwrap();
+        assert_eq!((listed.checkouts, settings), (vec![entry("/a")], true));
+        assert_eq!(listed.settings.admit_load, Some(400));
+        assert!(old.exists(), "the older host runner reads it still");
+        // what that runner writes there is taken in again
+        std::fs::write(&old, r#"{"checkouts": [{"checkout": "/a"}, {"checkout": "/b"}]}"#).unwrap();
+        assert_eq!(list.read().unwrap().checkouts.len(), 2);
+        drop(older);
+        list.change(|listed| listed.checkouts.push(entry("/c"))).unwrap();
+        assert!(!old.exists(), "moved aside once no older runner holds the host");
+        let migrated = std::fs::read_to_string(cache.join("checkouts.json.migrated")).unwrap();
+        assert!(migrated.contains("/b") && !migrated.contains("/c"), "{migrated}");
+        assert_eq!(list.read().unwrap().checkouts, [entry("/a"), entry("/b"), entry("/c")]);
+        assert_eq!(list.read().unwrap().checkouts.len(), 3, "a second read takes in nothing");
+        // one that cannot be read is no list: an error naming it, and left
+        std::fs::write(&old, "{\"checkouts\": [").unwrap();
+        let error = format!("{:#}", list.read().unwrap_err());
+        assert!(error.contains("checkouts.json cannot be read"), "{error}");
+        assert!(old.exists(), "{error}");
+    }
+
+    #[test]
+    fn an_older_hosts_entry_saying_no_tracker_is_taken_in_naming_its_own_repo() {
+        use crate::host_db::tests::host;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let ran =
+                crate::process::output(crate::census::command("git").args(args).current_dir(&root))
+                    .unwrap();
+            assert!(ran.status.success(), "{ran:?}");
+        };
+        git(&["init", "--quiet", "w"]);
+        git(&["-C", "w", "remote", "add", "origin", "git@github.com:Acme/Dev.git"]);
+        git(&["init", "--quiet", "nameless"]);
+        let (own, nameless) = (root.join("w"), root.join("nameless"));
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let old = serde_json::json!({"checkouts": [
+            {"checkout": own}, {"checkout": "/elsewhere", "tracker": "acme/tracker"},
+            {"checkout": nameless}]});
+        std::fs::write(cache.join("checkouts.json"), old.to_string()).unwrap();
+        let list = List { host: host(&root) };
+        let listed = list.read().unwrap();
+        let trackers: Vec<_> = listed.checkouts.iter().map(|entry| entry.tracker.clone()).collect();
+        assert_eq!(
+            trackers,
+            [Said::read("acme/dev"), Said::read("acme/tracker"), None],
+            "its own repo named; a tracker named as it was; one unread says none"
+        );
+        let unpinned = &list.kept().unwrap()[UNPINNED];
+        assert_eq!(*unpinned, serde_json::json!([nameless]), "named for doctor");
+        // taken in once: an entry said with no tracker from now on stays so
+        list.change(|listed| listed.checkouts.push(entry("/new"))).unwrap();
+        assert_eq!(list.read().unwrap().checkouts[3].tracker, None);
     }
 
     #[test]
@@ -346,7 +499,7 @@ mod tests {
         let list = List::at(dir.path().join(FILE));
         let kept = r#"{"settings": {"no_host_sleep": true}, "kept_by_another": {"a": 1},
             "checkouts": [{"checkout": "/a"}]}"#;
-        std::fs::write(list.file(), kept).unwrap();
+        list.keep(serde_json::from_str(kept).unwrap());
         let named = Named { host: Some("h1".into()), ..Named::default() };
         let concurrency = NonZeroUsize::new(6);
         let added = list.change(|listed| {
@@ -363,8 +516,7 @@ mod tests {
             listed.checkouts.len()
         });
         assert_eq!(added.unwrap(), 2);
-        let text: Value =
-            serde_json::from_str(&std::fs::read_to_string(list.file()).unwrap()).unwrap();
+        let text = list.kept().unwrap();
         assert_eq!(text["kept_by_another"], serde_json::json!({"a": 1}), "{text}");
         assert_eq!(text["settings"]["no_host_sleep"], true, "{text}");
         assert_eq!(text["settings"]["hot_cores"], Value::Null, "every setting, said or not");
@@ -387,14 +539,48 @@ mod tests {
                 }
             ]
         );
-        // a concurrency of no slot is none: the list cannot be read
-        std::fs::write(list.file(), r#"{"checkouts": [{"checkout": "/a", "concurrency": 0}]}"#)
-            .unwrap();
-        assert!(list.read().is_err());
         // nothing is left beside it
         let left: Vec<_> =
             std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
-        assert_eq!(left.len(), 2, "the list and its lock: {left:?}");
+        assert_eq!(left, [FILE], "the database alone: {left:?}");
+    }
+
+    /// A process's changes, as `two_processes_changing_the_list_at_once_each_keep_theirs`
+    /// starts it: none where it is not started so.
+    #[test]
+    #[ignore = "a process of another test"]
+    fn a_process_changing_the_list() {
+        let Some(file) = std::env::var_os("AFKCONVOY_TEST_LIST") else { return };
+        let list = List::at(PathBuf::from(file));
+        let me = std::process::id();
+        for m in 0..20 {
+            let checkout = format!("/{me}/{m}");
+            list.change(|listed| listed.checkouts.push(entry(&checkout))).unwrap();
+            assert!(list.read().is_ok(), "a reader never sees half a list");
+        }
+    }
+
+    #[test]
+    fn two_processes_changing_the_list_at_once_each_keep_theirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE);
+        let me = std::env::current_exe().unwrap();
+        let name = "checkout_list::tests::a_process_changing_the_list";
+        let children: Vec<_> = (0..4)
+            .map(|_| {
+                std::process::Command::new(&me)
+                    .args([name, "--exact", "--ignored", "--test-threads=1"])
+                    .env("AFKCONVOY_TEST_LIST", &file)
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for mut child in children {
+            assert!(child.wait().unwrap().success());
+        }
+        let listed = List::at(file).read().unwrap();
+        assert_eq!(listed.checkouts.len(), 80, "each process's twenty");
     }
 
     #[test]
@@ -457,8 +643,8 @@ mod tests {
             other,
             "a worktree goes by its checkout's"
         );
-        let text = std::fs::read_to_string(list.file()).unwrap();
-        assert!(text.contains("\"tracker\": \"acme/tracker\""), "{text}");
+        let text = list.kept().unwrap();
+        assert_eq!(text["checkouts"][0]["tracker"], "acme/tracker", "{text}");
 
         // the host's local tracker, named for the host
         list.change(|listed| listed.checkouts[0].tracker = Some(Said::Local)).unwrap();
@@ -467,12 +653,15 @@ mod tests {
             repo: RepoName::read("acme/dev").unwrap(),
         };
         assert_eq!(tracker_on(&list, &worktree).unwrap(), local);
-        let text = std::fs::read_to_string(list.file()).unwrap();
-        assert!(text.contains("\"tracker\": \"local\""), "{text}");
+        let text = list.kept().unwrap();
+        assert_eq!(text["checkouts"][0]["tracker"], "local", "{text}");
+
+        // its own repo named — as an older release's list is taken in — is its own
+        list.change(|listed| listed.checkouts[0].tracker = Said::read("acme/dev")).unwrap();
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), Tracker::Own);
 
         // a tracker that is no repo's name nor `local`: the list cannot be read
-        std::fs::write(list.file(), r#"{"checkouts": [{"checkout": "/a", "tracker": "acme"}]}"#)
-            .unwrap();
+        list.keep(serde_json::json!({"checkouts": [{"checkout": "/a", "tracker": "acme"}]}));
         let error = format!("{:#}", list.read().unwrap_err());
         assert!(error.contains("`acme` is no tracker"), "{error}");
     }

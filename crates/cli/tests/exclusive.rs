@@ -202,6 +202,7 @@ fn exclusive(world: &World, cache: &Path, issue: u64, script: &str) -> Child {
     world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .env("XDG_CACHE_HOME", cache)
+        .env("XDG_DATA_HOME", crate::common::data_beside(cache))
         .env("CACHE", cache)
         .env("AFKCONVOY_ISSUE", issue.to_string())
         .args(["exclusive", "--", "sh", "-c", script])
@@ -614,6 +615,7 @@ fn fast_gate(world: &World, cache: &Path, issue: u64, script: &str) -> Child {
     world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .env("XDG_CACHE_HOME", cache)
+        .env("XDG_DATA_HOME", crate::common::data_beside(cache))
         .env("CACHE", cache)
         .env("AFKCONVOY_ISSUE", issue.to_string())
         .env("AFKCONVOY_GATE", "fast")

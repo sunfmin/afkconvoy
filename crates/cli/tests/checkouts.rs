@@ -31,12 +31,10 @@ fn row<'a>(answer: &'a Value, checkout: &Path) -> &'a Value {
 /// Puts `checkouts` on this world's checkout list, as `run` would have,
 /// with no host runner started.
 fn list(world: &World, checkouts: &[&Path]) {
-    let file = world.cache().join("afkconvoy/checkouts.json");
     let mut listed = world.checkout_list();
     let rows = checkouts.iter().map(|checkout| json!({"checkout": checkout}));
     listed["checkouts"] = Value::Array(rows.collect());
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(file, listed.to_string()).unwrap();
+    world.write_checkout_list(&listed);
 }
 
 #[test]

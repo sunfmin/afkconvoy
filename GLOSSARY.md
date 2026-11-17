@@ -8,6 +8,10 @@ Every term afkconvoy's help uses, each with its one definition and the words to 
 One user account on one machine, and what the fleet keeps for it there: its host runner, its checkout list and host settings, its host kit, its exclusive queue and its panel. A machine shared by several accounts holds a host of each, each working its own checkouts and seeing nothing of the others' but their processes: `doctor` names the host runners of the other accounts on its machine, read from the process table alone.
 _Avoid_: machine (the hardware every host on it shares)
 
+**Host database**:
+A host's one afkconvoy database, `host.db` in its data directory: the host's own state that nothing else gives back — its checkout list and host settings, its candidate chains and landing holds, worker health, the account book, the watch's and the asking session's state — read and written by every process of the host, each change one transaction, and copied once a day into its backups. The cache directory holds only what can be made again, or need not be (ADR-0117, ADR-0119).
+_Avoid_: state file, cache (what can be made again)
+
 **Fleet**:
 One repo's workers under afkconvoy: those its fleet instances start on that repo's checkouts, working the issues of its tracker that carry the repo's label (`repo:<owner>/<repo>`). A repo whose truth is GitHub is the fleet's; one whose truth is Guild's Forgejo is Guild's, and a repo belongs to one of them alone (sunfmin/guild's ADR, sunfmin/control#764).
 _Avoid_: Guild (the other agent system of this host's user), convoy

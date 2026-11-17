@@ -730,6 +730,7 @@ fn hook_answers(
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("XDG_CACHE_HOME", world.cache())
+        .env("XDG_DATA_HOME", world.data())
         .env("STAND_IN_HOOK", hook);
     if let Some(home) = home {
         hook_run.env("HOME", home);

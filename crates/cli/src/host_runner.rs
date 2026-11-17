@@ -80,6 +80,10 @@ use crate::{VERSION, concurrency, host_settings, kit, launch, probe, tracker};
 /// holds the holder's {pid, version, started}.
 pub(crate) const LOCK: &str = "host-runner.lock";
 
+/// How often the host runner looks whether the day's backup of the host's
+/// database is made (`host_db::back_up`).
+const BACKUP_LOOK_EVERY: Duration = Duration::from_secs(3600);
+
 /// The host runner's log, in the cache directory: its stdout and stderr.
 const LOG: &str = "host-runner.log";
 
@@ -1041,6 +1045,7 @@ fn held_host(
     let mut queue_noted = Instant::now();
     let mut keeper = crate::disk::Keeper::default();
     let mut disk_looked: Option<Instant> = None;
+    let mut backup_looked: Option<Instant> = None;
     while !stop.told() && left.is_none() {
         std::thread::sleep(WATCHED_EVERY);
         runner.shared.own_cpu.note();
@@ -1055,6 +1060,16 @@ fn held_host(
         if disk_looked.is_none_or(|looked| looked.elapsed() >= crate::disk::LOOK_EVERY) {
             disk_looked = Some(Instant::now());
             runner.look_at_disk(&mut keeper);
+        }
+        // Once a day, the first look of the day makes it; a failure is
+        // `doctor`'s, and tried again at the next look.
+        if backup_looked.is_none_or(|looked| looked.elapsed() >= BACKUP_LOOK_EVERY) {
+            backup_looked = Some(Instant::now());
+            match crate::host_db::back_up(&crate::daybook::today(), crate::clock()) {
+                Ok(true) => runner.log.say("host database backed up"),
+                Ok(false) => {}
+                Err(error) => runner.log.say(&format!("host database not backed up: {error:#}")),
+            }
         }
         if !stop.told() && !still_ours() {
             runner.log.say(
@@ -2814,15 +2829,16 @@ pub(crate) fn host_environment() -> Result<Vec<(OsString, OsString)>> {
     let env = launch::login_environment()?;
     let kit = kit::path()?;
     let config = kit.parent().and_then(Path::parent).unwrap_or(Path::new("/"));
-    Ok(pinned(env, &cache()?, config))
+    Ok(pinned(env, &cache()?, &crate::copies::data()?, config))
 }
 
-/// `env` where it gives the cache directory `cache` and the config
-/// directory `config` of this `run`, and otherwise with XDG_CACHE_HOME and
-/// XDG_CONFIG_HOME set to them: the host runner reads the list, binds the
-/// socket and reads the host kit exactly where the `run` that started it
-/// does. A login shell that sets neither, under the HOME whose `.cache` and
-/// `.config` they are, is given neither: every gate the host runner runs,
+/// `env` where it gives the cache directory `cache`, the data directory
+/// `data` and the config directory `config` of this `run`, and otherwise
+/// with XDG_CACHE_HOME, XDG_DATA_HOME and XDG_CONFIG_HOME set to them: the
+/// host runner binds the socket, reads the list and the host's database and
+/// reads the host kit exactly where the `run` that started it does. A login
+/// shell that sets none, under the HOME whose `.cache`, `.local/share` and
+/// `.config` they are, is given none: every gate the host runner runs,
 /// and every tool a gate calls, reads its config where the host user's own
 /// shell does (sunfmin/control#765) — Homebrew reads `trust.json` from
 /// `$XDG_CONFIG_HOME/homebrew` once the variable is set, and from
@@ -2830,9 +2846,11 @@ pub(crate) fn host_environment() -> Result<Vec<(OsString, OsString)>> {
 fn pinned(
     env: Vec<(OsString, OsString)>,
     cache: &Path,
+    data: &Path,
     config: &Path,
 ) -> Vec<(OsString, OsString)> {
     let cache = cache.parent().unwrap_or(cache);
+    let data = data.parent().unwrap_or(data);
     let given = |name: &str, under: &str| {
         let set = env.iter().find(|(set, _)| set == name).map(|(_, value)| PathBuf::from(value));
         set.or_else(|| {
@@ -2840,12 +2858,15 @@ fn pinned(
             home.map(|(_, home)| Path::new(home).join(under))
         })
     };
-    let pins: Vec<(&str, &Path)> =
-        [("XDG_CACHE_HOME", cache, ".cache"), ("XDG_CONFIG_HOME", config, ".config")]
-            .into_iter()
-            .filter(|(name, wanted, under)| given(name, under).as_deref() != Some(*wanted))
-            .map(|(name, wanted, _)| (name, wanted))
-            .collect();
+    let pins: Vec<(&str, &Path)> = [
+        ("XDG_CACHE_HOME", cache, ".cache"),
+        ("XDG_DATA_HOME", data, ".local/share"),
+        ("XDG_CONFIG_HOME", config, ".config"),
+    ]
+    .into_iter()
+    .filter(|(name, wanted, under)| given(name, under).as_deref() != Some(*wanted))
+    .map(|(name, wanted, _)| (name, wanted))
+    .collect();
     let unpinned = env.into_iter().filter(|(name, _)| !pins.iter().any(|(pin, _)| name == pin));
     let pinned = pins.iter().map(|(name, value)| ((*name).into(), value.as_os_str().into()));
     unpinned.chain(pinned).collect()
@@ -2896,7 +2917,7 @@ The operator, in a checkout on the list or naming one; with `--all`, anywhere on
 
 ## What it reads and writes
 
-The checkout list: checkouts.json in the cache directory. `stop` takes the checkout off it; `--all` leaves it as it is.
+The checkout list: in the host's database (`afkconvoy help data` says where it is). `stop` takes the checkout off it; `--all` leaves it as it is.
 
 The host runner, spoken to on its socket in the cache directory (host-runner.sock), naming the checkout. Its fleet instance of the checkout — every one, with `--all` — stops as SIGTERM has it stop: it finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps. No claim is released and no worker is stopped: the workers work on. Holding no claim, it takes its heartbeat off the remote; holding one, it leaves it with the claims, and the next start on this host takes them back. Its tick log keeps its `stop:` line, as ever. With `--all`, the host runner ends once every fleet instance has, and `stop` answers once it has ended.
 
@@ -2978,7 +2999,7 @@ The operator, in a checkout of the repo or naming one. It returns once that chec
 
 ## What it reads and writes
 
-The checkout list: checkouts.json in the cache directory, kept on this host and never pushed. A checkout goes on it once its fleet instance's first tick ended, with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; one refused before its first tick is not put there, and one there already stays there, broken (below). A `run` of a checkout on the list whose fleet instance does not run starts it with those, but for each that `run` names itself.
+The checkout list: in the host's database (`afkconvoy help data` says where it is), kept on this host and never pushed. A checkout goes on it once its fleet instance's first tick ended, with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; one refused before its first tick is not put there, and one there already stays there, broken (below). A `run` of a checkout on the list whose fleet instance does not run starts it with those, but for each that `run` names itself.
 
 `--concurrency` is ignored, and accepted for one release: no number bounds how many workers a checkout's fleet instance holds at work at once. Admission alone decides each start (`afkconvoy run --help`, ADMISSION), with one reading per start. A `run` that names `--concurrency 6` keeps it with the checkout's entry, where it changes nothing, and `afkconvoy doctor` reports it as `info`, with `--concurrency default`, which drops it. A repo config's `concurrency` is read no more either, and `doctor` reports it with the key to delete.
 
@@ -3036,7 +3057,7 @@ A repo nobody works is reported across hosts: every look reads the trackers its 
 
 WATCH RECOVERY. The fixed Terminal name is "{const:WATCH_TITLE}". The host runner records a launch intent before creation and the exact Terminal handle and public pane identity before sending its brief. Normal checks use that exact ID first; a restarted or upgraded runner reuses the confirmed session, its input and unfinished progress. If the ID is missing or stale, it queries Orca's public Terminal list and accepts only a unique candidate proven by its saved pane identity or its own startup acknowledgement. The name alone proves no ownership or uniqueness. Uncertain creation is never repeated. Each round's prompt intent saves a UUID request key before delivery; recovery replays the exact Terminal submission with Orca's supported --retry-request protocol and retains its receipt. An unproven or unsupported delivery pauses rather than sending fresh input; another harness or runner restart cannot bypass that pause. The existing command, model, directory rules and watch guard remain in force. A confirmed missing Terminal ends its watch after the marked executor is confirmed stopped; the next look may start eligible work as usual.
 
-`doctor.host.watch.association` shows {title, status, session, watch, directory, terminal, identity, request, receipt, problem}: the fixed name, launch status, watch ID, starting directory, exact handle, public Orca metadata and recovery problem. status is unassociated, creating, ready, sending, running, idle, ended or uncertain; absent fields mean no association has been saved. The association record is `watch/terminal.json` under the cache directory; briefs, exit logs, startup acknowledgements and execution claims remain beside each watch. For an unverified or ambiguous candidate, inspect `orca terminal list --worktree path:<watch-directory> --json` and `orca terminal show --terminal <handle> --json`. Rename unrelated same-name sessions with `orca terminal rename --terminal <handle> --title <title> --json` and let the runner check again; those sessions stay open and unassociated. For an uncertain creation or first prompt, inspect the retained session and record a complete report with `afkconvoy watched --watch <id> --text-file <report.json>` (see its help). State what remains pending; this settles only the named round. The healthy executor stays; unresolved association still pauses further delivery. Keep its files and execution claim. A live Terminal, an idle Agent and printed output do not finish a watch; its explicit report does. The resident session is shown separately as host.watch.session with its id, Terminal, status (active, standby or unavailable) and current round. host.watch.pending lists queued episode/item pairs; host.watch.rounds lists retained rounds and their reports; each round includes delivery (its archived request, receipt and execution evidence) and deadline (null before execution); looked and until retain the look interval. An idle resident is never nudged for an absent report.
+`doctor.host.watch.association` shows {title, status, session, watch, directory, terminal, identity, request, receipt, problem}: the fixed name, launch status, watch ID, starting directory, exact handle, public Orca metadata and recovery problem. status is unassociated, creating, ready, sending, running, idle, ended or uncertain; absent fields mean no association has been saved. The association record is in the host's database; briefs, exit logs, startup acknowledgements and execution claims remain beside each watch. For an unverified or ambiguous candidate, inspect `orca terminal list --worktree path:<watch-directory> --json` and `orca terminal show --terminal <handle> --json`. Rename unrelated same-name sessions with `orca terminal rename --terminal <handle> --title <title> --json` and let the runner check again; those sessions stay open and unassociated. For an uncertain creation or first prompt, inspect the retained session and record a complete report with `afkconvoy watched --watch <id> --text-file <report.json>` (see its help). State what remains pending; this settles only the named round. The healthy executor stays; unresolved association still pauses further delivery. Keep its files and execution claim. A live Terminal, an idle Agent and printed output do not finish a watch; its explicit report does. The resident session is shown separately as host.watch.session with its id, Terminal, status (active, standby or unavailable) and current round. host.watch.pending lists queued episode/item pairs; host.watch.rounds lists retained rounds and their reports; each round includes delivery (its archived request, receipt and execution evidence) and deadline (null before execution); looked and until retain the look interval. An idle resident is never nudged for an absent report.
 
 The watch operates for every repo on the checkout list (`afkconvoy checkouts`), bound or unbound. It may trust a worktree for a harness, restart, nudge, continue or switch a worker and change host settings. Once the cause of a fleet fault is gone it hands the escalated issue back with its current `doctor.waiting_on_human.answer` line, naming that repo's tracker, wakes the checkout after a `gh` change and checks that the next tick dispatches or continues it and its worker takes its brief. The watch answers escalations with `rule`, handing back, `send`, closing or changing blocked-by, using the same commands as a human and starting rework counts over. Both watch directories leave only spending money to a human, listing each question and answer line in the watch's record, decide everything else by the recommended answer, recording each decision and its undo, and list a step that needs a person's hands without holding the rest back; `doctor` lists what it did.
 
@@ -3212,7 +3233,7 @@ mod tests {
         seen.stage().instance = Some("alpha".into());
         let stop = Stop::never();
         let runner = Runner {
-            list: List::at(dir.path().join("checkouts.json")),
+            list: List::at(dir.path().join(crate::host_db::FILE)),
             log: Arc::default(),
             stop: stop.clone(),
             moving: AtomicBool::new(false),
@@ -3256,13 +3277,14 @@ mod tests {
     }
 
     #[test]
-    fn the_host_runner_keeps_the_cache_and_config_directories_of_the_run_that_started_it() {
+    fn the_host_runner_keeps_the_cache_data_and_config_directories_of_the_run_that_started_it() {
         let env = vec![
             ("PATH".into(), "/usr/bin".into()),
             ("XDG_CACHE_HOME".into(), "/elsewhere".into()),
             ("HOME".into(), "/Users/me".into()),
         ];
-        let pinned = pinned(env, Path::new("/c/afkconvoy"), Path::new("/conf"));
+        let pinned =
+            pinned(env, Path::new("/c/afkconvoy"), Path::new("/d/afkconvoy"), Path::new("/conf"));
         let pinned: Vec<(&str, &str)> = pinned
             .iter()
             .map(|(name, value)| (name.to_str().unwrap(), value.to_str().unwrap()))
@@ -3273,6 +3295,7 @@ mod tests {
                 ("PATH", "/usr/bin"),
                 ("HOME", "/Users/me"),
                 ("XDG_CACHE_HOME", "/c"),
+                ("XDG_DATA_HOME", "/d"),
                 ("XDG_CONFIG_HOME", "/conf")
             ]
         );
@@ -3286,25 +3309,25 @@ mod tests {
                 .collect()
         };
         let cache = Path::new("/Users/me/.cache/afkconvoy");
+        let data = Path::new("/Users/me/.local/share/afkconvoy");
         let config = Path::new("/Users/me/.config");
         // no XDG_CONFIG_HOME in the login shell: none in the host runner,
         // so none in a gate it runs (sunfmin/control#765)
         let login = vec![("PATH".into(), "/usr/bin".into()), ("HOME".into(), "/Users/me".into())];
-        assert_eq!(named(pinned(login.clone(), cache, config)), named(login));
+        assert_eq!(named(pinned(login.clone(), cache, data, config)), named(login));
         // the login shell's own, where they are this run's, stay as it says them
         let login = vec![
             ("XDG_CONFIG_HOME".into(), "/conf".into()),
             ("HOME".into(), "/Users/me".into()),
             ("XDG_CACHE_HOME".into(), "/c".into()),
+            ("XDG_DATA_HOME".into(), "/d".into()),
         ];
-        assert_eq!(
-            named(pinned(login.clone(), Path::new("/c/afkconvoy"), Path::new("/conf"))),
-            named(login)
-        );
+        let (c, d) = (Path::new("/c/afkconvoy"), Path::new("/d/afkconvoy"));
+        assert_eq!(named(pinned(login.clone(), c, d, Path::new("/conf"))), named(login));
         // a run whose config is elsewhere than the login shell's still pins it
         let login = vec![("HOME".into(), "/Users/me".into())];
         assert_eq!(
-            named(pinned(login, cache, Path::new("/conf"))),
+            named(pinned(login, cache, data, Path::new("/conf"))),
             [
                 ("HOME".to_string(), "/Users/me".to_string()),
                 ("XDG_CONFIG_HOME".to_string(), "/conf".to_string())

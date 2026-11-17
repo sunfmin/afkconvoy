@@ -34,39 +34,9 @@ const FILE: &str = "issues.db";
 /// Where this host keeps its local tracker: `issues.db` in afkconvoy's data
 /// directory — not its cache: it holds what nothing else can give back.
 pub fn store_path() -> Result<PathBuf> {
-    Ok(data_dir()?.join(FILE))
+    Ok(crate::copies::data()?.join(FILE))
 }
 
-/// afkconvoy's data directory on this host: `afkconvoy` in this user's
-/// XDG_DATA_HOME, else in `~/.local/share` — what it holds that nothing else
-/// can give back (`issues.db`, `daybook.db`).
-pub fn data_dir() -> Result<PathBuf> {
-    Ok(data_home()?.join("afkconvoy"))
-}
-
-/// The directory the data directory is in: this user's, as XDG_DATA_HOME or
-/// HOME says it.
-#[cfg(not(test))]
-fn data_home() -> Result<PathBuf> {
-    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
-    Ok(match (set("XDG_DATA_HOME"), set("HOME")) {
-        (Some(data), _) => PathBuf::from(data),
-        (None, Some(home)) => PathBuf::from(home).join(".local/share"),
-        (None, None) => {
-            bail!("neither XDG_DATA_HOME nor HOME says where this host's data directory is")
-        }
-    })
-}
-
-/// The same, of a unit test: one of its own, made as it first asks and gone
-/// once it ends — no test reads or writes the tracker of whoever runs it.
-#[cfg(test)]
-fn data_home() -> Result<PathBuf> {
-    thread_local! {
-        static OWN: tempfile::TempDir = tempfile::tempdir().expect("a unit test's own data");
-    }
-    Ok(OWN.with(|own| own.path().to_path_buf()))
-}
 
 /// The host's local tracker at `path`, made with its directory where there
 /// is none.

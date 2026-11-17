@@ -177,6 +177,7 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    HostDatabase: Warning, "the host database";
     HotWorker: Warning, "hot worker is past its limits";
     AdmissionHeld: Warning, "admission has held back new workers";
     MemoryPressure: Warning, "the host has been under memory pressure";
@@ -259,6 +260,7 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::HostDatabase
                 | Kind::HotWorker
                 | Kind::AdmissionHeld
                 | Kind::MemoryPressure
@@ -2620,6 +2622,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     }
     found.extend(look.trackers.findings(repo));
     found.extend(crate::paused::findings(now));
+    found.extend(crate::checkout_list::findings());
+    found.extend(crate::host_db::findings());
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
     found.extend(look.findings.clone());
@@ -3237,7 +3241,7 @@ It reads this host (the commands the fleet needs, in a login shell; orca), the l
 
 A harness whose first login answer reads logged out is asked once more in that same login shell setting before `tools` reports `logged_out`; ready on the second answer is ready. A ready harness is still started at most once per doctor. A tool finding's evidence carries the last answer's exit status and the first 500 characters it printed, with credential-shaped text redacted.
 
-With `--all` it reads the checkout list (checkouts.json in the cache directory) and the same of each checkout on it, all at once.
+With `--all` it reads the checkout list (in the host's database) and the same of each checkout on it, all at once.
 It also reads every tracker that list names once for repo-labelled work, including repos absent from this host. A repo nobody works has an open ready issue with no open blocker or claim, ready for more than an hour since the later of its dispatch label being applied and its last blocker closing, and no remote heartbeat within the 1800-second lease. Ready means the repo's ready label, or its team's flow labels. Only an old enough unblocked issue, or an existing report, asks that repo's heartbeat remote. `host.unworked_repos` holds the waiting issues and their seconds, newest heartbeat's host and time (or null), report and opening host, recovery host, and read error. An unreadable remote proves nothing about whether a fleet works it. Where the login's REST core quota is spent, no tracker is read before its reset, and no repo is said unread for want of it: `host.github_quota` holds {host, login, api, reset} and one finding says it, which calls no watch. Doctor opens and closes nothing; the host runner reconciles these reports at its look.
 
 ## What it answers

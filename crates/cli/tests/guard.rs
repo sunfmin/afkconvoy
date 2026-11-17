@@ -39,7 +39,12 @@ fn guard_at(
     terminal_only: bool,
 ) -> Answered {
     let mut command = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"));
-    command.arg("guard").env_clear().env("HOME", home).env("XDG_CACHE_HOME", home);
+    command
+        .arg("guard")
+        .env_clear()
+        .env("HOME", home)
+        .env("XDG_CACHE_HOME", home)
+        .env("XDG_DATA_HOME", crate::common::data_beside(home));
     if terminal_only {
         command.arg("--terminal-input-only");
     }

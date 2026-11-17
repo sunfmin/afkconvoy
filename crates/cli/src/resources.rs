@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::admission::Admission;
-use crate::copies::cache;
 use crate::hot::HotNow;
 
 const FILE: &str = "watch/resources.json";
@@ -48,14 +47,17 @@ struct Left {
     watch: String,
 }
 
+/// The resource episodes, whole, in the host's database: the one row of
+/// `resources`. It was `watch/resources.json` in the cache directory, with
+/// `watch/resources.lock` beside it.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: FILE,
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("resources"),
+};
+
 fn read() -> Result<State> {
-    let file = cache()?.join(FILE);
-    match std::fs::read(&file) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("cannot read resource episodes in {}", file.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-        Err(error) => Err(error.into()),
-    }
+    crate::host_db::read(&STORE).context("cannot read the resource episodes")
 }
 
 /// The host's kernel pressure signal, independent of admission's memory share.
@@ -115,20 +117,9 @@ impl Shared {
 
     fn change(&self, change: impl FnOnce(&mut State)) -> Result<()> {
         let _held = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        // The watch and the asking session change it too, outside this mutex.
-        let lock = cache()?.join("watch/resources.lock");
-        std::fs::create_dir_all(lock.parent().context("resource record has no directory")?)?;
-        let lock =
-            std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(lock)?;
-        lock.lock()?;
-        let mut state = read()?;
-        change(&mut state);
-        let file = cache()?.join(FILE);
-        std::fs::create_dir_all(file.parent().context("resource record has no directory")?)?;
-        let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-        std::fs::write(&temporary, serde_json::to_vec(&state)?)?;
-        std::fs::rename(temporary, file)?;
-        Ok(())
+        // The watch and the asking session change it too, outside this
+        // mutex: each change is one transaction of the host's database.
+        crate::host_db::change(&STORE, change)
     }
 }
 

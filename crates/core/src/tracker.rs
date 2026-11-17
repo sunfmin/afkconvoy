@@ -64,9 +64,11 @@ impl Said {
     }
 
     /// The tracker of a checkout of `repo` on the host named `host` that
-    /// says this.
+    /// says this. Its own repo named — as an older release's list, which
+    /// said none for it, is taken in — is its own.
     pub fn tracker(self, host: &str, repo: RepoName) -> Tracker {
         match self {
+            Said::Repo(tracker) if tracker == repo => Tracker::Own,
             Said::Repo(tracker) => Tracker::Other { tracker, repo },
             Said::Local => Tracker::Local { tracker: local_name(host), repo },
         }

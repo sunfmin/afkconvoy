@@ -89,11 +89,11 @@ pub(super) fn check_launch(
         }
     };
     assert_eq!(guard.contains("--terminal-input-only"), outside_role, "{guard}");
-    write(&world.cache(), "afkconvoy/asking/terminal.json", &json!({
+    world.keep("asking/terminal.json", &json!({
         "session": {"id":"asking", "directory":dir, "stock":false, "harness":"codex", "model":null,
             "terminal":"asks", "transcript":dir.join("asking.log"), "session_started":1},
         "status":"running", "question":null, "terminal":null, "problem":null, "command":""
-    }).to_string());
+    }));
     for (terminal, expected) in [("asks", 2), ("other", 0)] {
         let line = format!("orca terminal send --terminal {terminal} --text yes --enter");
         let described = match harness {

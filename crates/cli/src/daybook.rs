@@ -85,7 +85,7 @@ pub fn today() -> String {
 /// Where this host keeps its daybook: `daybook.db` in afkconvoy's data
 /// directory, beside its local tracker.
 pub fn store_path() -> Result<PathBuf> {
-    Ok(crate::issues::local::data_dir()?.join(FILE))
+    Ok(crate::copies::data()?.join(FILE))
 }
 
 /// This host's daybook, made where there is none.

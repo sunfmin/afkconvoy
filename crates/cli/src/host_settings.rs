@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn a_run_keeps_the_host_s_name_once_and_a_name_said_holds_over_it() {
         let dir = tempfile::tempdir().unwrap();
-        let list = List::at(dir.path().join("checkouts.json"));
+        let list = List::at(dir.path().join(crate::host_db::FILE));
         pin_host_name(&list).unwrap();
         assert_eq!(list.read().unwrap().settings.host_name, Some(system_host_name()));
         let named = Named {
@@ -694,9 +694,9 @@ mod tests {
     #[test]
     fn a_change_is_written_beside_the_checkouts_and_one_that_names_nothing_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let list = List::at(dir.path().join("checkouts.json"));
+        let list = List::at(dir.path().join(crate::host_db::FILE));
         assert!(change(&list, &Named::default()).unwrap().is_empty());
-        assert!(!list.file().exists(), "nothing named, nothing written");
+        assert_eq!(list.kept(), None, "nothing named, nothing written");
         let named = Named { admit_load: Some(To::Value(400)), ..Named::default() };
         let changed = change(&list, &named).unwrap();
         assert_eq!(Value::Object(changed), json!({"admit_load": {"from": null, "to": 400}}));
@@ -727,10 +727,10 @@ mod tests {
     #[test]
     fn old_lane_keys_load_and_the_next_write_drops_them() {
         let dir = tempfile::tempdir().unwrap();
-        let list = List::at(dir.path().join("checkouts.json"));
+        let list = List::at(dir.path().join(crate::host_db::FILE));
         assert_eq!(Settings::default().busy_share(), 90);
         let kept = r#"{"settings": {"train_lanes": 0, "gate_lanes": 2, "fast_lanes": 3, "slow_gate_lanes": 1, "said_by_another": 1}}"#;
-        std::fs::write(list.file(), kept).unwrap();
+        list.keep(serde_json::from_str(kept).unwrap());
         let read = list.read().unwrap();
         assert_eq!(read.settings.gate_lanes, Some(2), "an old file still loads");
         assert_eq!(read.settings.train_lanes, Some(0));
@@ -748,8 +748,7 @@ mod tests {
             ..Named::default()
         };
         change(&list, &named).unwrap();
-        let text: Value =
-            serde_json::from_str(&std::fs::read_to_string(list.file()).unwrap()).unwrap();
+        let text = list.kept().unwrap();
         for key in ["train_lanes", "gate_lanes", "fast_lanes", "slow_gate_lanes"] {
             assert!(text["settings"].get(key).is_none(), "{key}: {text}");
         }

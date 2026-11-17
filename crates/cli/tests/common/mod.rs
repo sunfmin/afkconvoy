@@ -408,15 +408,17 @@ impl World {
         std::fs::write(self.root.join("probes-answer"), "").unwrap();
     }
 
-    /// Where this host keeps the harnesses paused on it.
-    pub fn paused_path(&self) -> PathBuf {
-        self.cache().join("afkconvoy/paused.json")
-    }
-
     /// The harnesses paused on this host, as it keeps them.
     pub fn paused(&self) -> Value {
-        std::fs::read(self.paused_path())
-            .map_or(json!([]), |bytes| serde_json::from_slice(&bytes).unwrap())
+        match self.kept("paused.json") {
+            Value::Null => json!([]),
+            paused => paused,
+        }
+    }
+
+    /// Makes the harnesses paused on this host `paused`, through their store.
+    pub fn write_paused(&self, paused: &Value) {
+        self.keep("paused.json", paused);
     }
 
     /// Pauses `harness` on this host since `since`, for `why`, as a fleet
@@ -427,8 +429,7 @@ impl World {
             .as_array_mut()
             .unwrap()
             .push(json!({"harness": harness, "since": since, "why": why}));
-        std::fs::create_dir_all(self.paused_path().parent().unwrap()).unwrap();
-        std::fs::write(self.paused_path(), serde_json::to_vec(&paused).unwrap()).unwrap();
+        self.write_paused(&paused);
     }
 
     /// The last prompt a caster sent; empty when none was.
@@ -468,6 +469,7 @@ impl World {
             .envs(self.login_env())
             .env("SHELL", self.bin.join("shell"))
             .env("XDG_CACHE_HOME", self.cache())
+            .env("XDG_DATA_HOME", self.data())
             .env_remove("XDG_CONFIG_HOME")
             .env("HOME", self.home())
             .env_remove("ANTHROPIC_BASE_URL");
@@ -541,6 +543,45 @@ impl World {
         self.root.join("cache")
     }
 
+    /// Where this world's fleet keeps what nothing else gives back: the
+    /// host's database is in it.
+    pub fn data(&self) -> PathBuf {
+        data_beside(self.cache())
+    }
+
+    /// This world's host database (docs/adr/0119).
+    pub fn host_db(&self) -> PathBuf {
+        self.data().join("afkconvoy/host.db")
+    }
+
+    /// Makes the store of the host database whose old file in the cache
+    /// directory was `file` hold `value`, as that file held it: through the
+    /// store itself, as afkconvoy keeps it.
+    pub fn keep(&self, file: &str, value: &Value) {
+        afkconvoy::host_db::keep(&self.host_db(), file, value).unwrap();
+    }
+
+    /// What the store of the host database whose old file in the cache
+    /// directory was `file` holds, as that file held it; `Null` where it
+    /// holds nothing.
+    pub fn kept(&self, file: &str) -> Value {
+        afkconvoy::host_db::kept(&self.host_db(), file).unwrap().unwrap_or(Value::Null)
+    }
+
+    /// The same, `{}` where the store holds nothing.
+    pub fn kept_object(&self, file: &str) -> Value {
+        match self.kept(file) {
+            Value::Null => json!({}),
+            kept => kept,
+        }
+    }
+
+    /// Makes the store of the host database whose old file in the cache
+    /// directory was `file` hold nothing, as that file removed did.
+    pub fn forget(&self, file: &str) {
+        afkconvoy::host_db::forget(&self.host_db(), file).unwrap();
+    }
+
     /// Puts a Claude Code account of each of `names` in the world's
     /// mytokens, each holding the token `sk-ant-<name>`.
     pub fn claude_accounts(&self, names: &[&str]) {
@@ -557,8 +598,6 @@ impl World {
     /// `accounts` last recorded its `five_hour` window: `used` percent,
     /// resetting at `resets_at`.
     pub fn account_book(&self, accounts: &[(&str, u64, u64)]) {
-        let dir = self.cache().join("afkconvoy/accounts");
-        std::fs::create_dir_all(&dir).unwrap();
         let mut book = serde_json::Map::new();
         for (name, used, resets_at) in accounts {
             book.insert(
@@ -567,7 +606,7 @@ impl World {
                     "resets_at": resets_at}]}),
             );
         }
-        std::fs::write(dir.join("book.json"), json!({"accounts": book}).to_string()).unwrap();
+        self.keep("accounts/book.json", &json!({"accounts": book}));
     }
 
     /// Puts the engine account `name` in the world's mytokens, holding
@@ -623,11 +662,9 @@ impl World {
 
     /// Set the Jev key command directly in the host's checkout-list settings.
     pub fn jev_key_command(&self, command: &str) {
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut listed = self.checkout_list();
         listed["settings"]["jev_key_command"] = json!(command);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, serde_json::to_vec(&listed).unwrap()).unwrap();
+        self.write_checkout_list(&listed);
     }
 
     /// Has the host name a Jev key command, and Jev answer the next check: no
@@ -1339,7 +1376,7 @@ impl World {
     /// The candidate chain of `branch` as this world's host holds it
     /// (docs/adr/0117), `Null` where it holds none.
     pub fn chain(&self, branch: &str) -> Value {
-        let path = self.cache().join("afkconvoy/host.db");
+        let path = self.host_db();
         if !path.exists() {
             return Value::Null;
         }
@@ -1358,7 +1395,7 @@ impl World {
     /// holds `fragment`, with `reason`: what a remote hook refused a record
     /// with, before the chain was the host's.
     pub fn refuse_chain_writes(&self, fragment: &str, reason: &str) {
-        let db = rusqlite::Connection::open(self.cache().join("afkconvoy/host.db")).unwrap();
+        let db = rusqlite::Connection::open(self.host_db()).unwrap();
         db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
         let like = fragment.replace('\'', "''");
         let reason = reason.replace('\'', "''");
@@ -1373,9 +1410,8 @@ impl World {
     /// `edit`, which is given `Null` where the host holds none, one revision
     /// later, in one transaction as another process of the host would.
     pub fn edit_chain(&self, branch: &str, edit: impl FnOnce(&mut Value)) {
-        let dir = self.cache().join("afkconvoy");
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = rusqlite::Connection::open(dir.join("host.db")).unwrap();
+        std::fs::create_dir_all(self.host_db().parent().unwrap()).unwrap();
+        let db = rusqlite::Connection::open(self.host_db()).unwrap();
         db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
         assert!(version > 0, "the host database is made by afkconvoy first");
@@ -1852,24 +1888,16 @@ impl World {
         again
     }
 
-    /// This world's host's data directory (`XDG_DATA_HOME`): where its local
-    /// tracker is kept.
-    pub fn data(&self) -> PathBuf {
-        self.root.join("data")
-    }
-
     /// Has `checkout` say its tracker is this host's local tracker, with its
     /// entry on this world's checkout list, as `run --tracker local` keeps it.
     pub fn say_local_tracker(&self, checkout: &Path) {
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         let entries = list["checkouts"].as_array_mut().unwrap();
         match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
             Some(entry) => entry["tracker"] = json!("local"),
             None => entries.push(json!({"checkout": checkout, "tracker": "local"})),
         }
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, list.to_string()).unwrap();
+        self.write_checkout_list(&list);
     }
 
     /// This world's host's local tracker, as every command of the world
@@ -1882,9 +1910,16 @@ impl World {
     /// This host's checkout list, as the host runner keeps it: none yet is
     /// an empty one.
     pub fn checkout_list(&self) -> Value {
-        let file = self.cache().join("afkconvoy/checkouts.json");
-        std::fs::read(file)
-            .map_or(json!({"checkouts": []}), |bytes| serde_json::from_slice(&bytes).unwrap())
+        match self.kept("checkouts.json") {
+            Value::Null => json!({"checkouts": []}),
+            list => list,
+        }
+    }
+
+    /// Makes this host's checkout list `list`, as the host runner keeps it:
+    /// through its store in the host database.
+    pub fn write_checkout_list(&self, list: &Value) {
+        self.keep("checkouts.json", list);
     }
 
     /// Has this world's host say `settings`, as a `run` that named them would
@@ -1894,43 +1929,37 @@ impl World {
     /// other: never on the host's own default, 7070, where the real host
     /// runner of the host the tests run on serves it (sunfmin/control#820).
     pub fn say_host_settings(&self, mut settings: Value) {
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         if let Some(said) = settings.as_object_mut() {
             said.entry("panel").or_insert(json!(0));
         }
         assert_ne!(settings["panel"], PANEL_PORT, "no test serves the panel on {PANEL_PORT}");
         list["settings"] = settings;
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, list.to_string()).unwrap();
+        self.write_checkout_list(&list);
     }
 
     /// Has `checkout` say `claims` of its concurrency on this world's host,
     /// as a `run` that named `--concurrency` keeps it: with its entry on the
     /// checkout list, which it puts there where the list holds none of it.
     pub fn say_concurrency(&self, checkout: &Path, claims: u64) {
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         let entries = list["checkouts"].as_array_mut().unwrap();
         match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
             Some(entry) => entry["concurrency"] = json!(claims),
             None => entries.push(json!({"checkout": checkout, "concurrency": claims})),
         }
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, list.to_string()).unwrap();
+        self.write_checkout_list(&list);
     }
 
     /// Puts `checkout` on this world's checkout list, as a `run` of it does,
     /// saying nothing of it: its tracker is its own repo.
     pub fn list_checkout(&self, checkout: &Path) {
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         let entries = list["checkouts"].as_array_mut().unwrap();
         if !entries.iter().any(|entry| entry["checkout"] == json!(checkout)) {
             entries.push(json!({"checkout": checkout}));
         }
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, list.to_string()).unwrap();
+        self.write_checkout_list(&list);
     }
 
     /// Has the remote of `checkout` be named as the repo `repo` (`owner/repo`)
@@ -1949,15 +1978,13 @@ impl World {
     /// checkout list.
     pub fn say_tracker(&self, checkout: &Path, tracker: &str) {
         self.put_tracker(tracker);
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         let entries = list["checkouts"].as_array_mut().unwrap();
         match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
             Some(entry) => entry["tracker"] = json!(tracker),
             None => entries.push(json!({"checkout": checkout, "tracker": tracker})),
         }
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, list.to_string()).unwrap();
+        self.write_checkout_list(&list);
     }
 
     /// Puts the repo `tracker` (`owner/repo`) on the stand-in GitHub, its
@@ -2872,4 +2899,13 @@ pub fn niced(world: &World, dir: &Path, line: &str) -> String {
 pub fn unniced(command: &str) -> &str {
     let at = command.find(" >/dev/null && ").unwrap_or_else(|| panic!("not niced: {command}"));
     &command[at + " >/dev/null && ".len()..]
+}
+
+/// The data directory of a world whose cache directory is `cache`: beside
+/// it, `<cache>-data`, so a world of another cache is a host of its own.
+pub fn data_beside(cache: impl AsRef<Path>) -> PathBuf {
+    let cache = cache.as_ref();
+    let mut name = cache.file_name().unwrap_or_default().to_os_string();
+    name.push("-data");
+    cache.with_file_name(name)
 }

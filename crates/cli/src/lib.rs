@@ -48,7 +48,7 @@ mod codex_launch;
 pub mod concurrency;
 pub mod config;
 pub mod copies;
-mod host_db;
+pub mod host_db;
 pub use afkconvoy_host_reading::cpu;
 pub mod cut;
 pub mod cut_holder;
@@ -1692,6 +1692,7 @@ pub fn manual() -> agent_help::Help {
         .topic::<Example>()
         .topic::<ExampleRun>()
         .topic::<Cache>()
+        .topic::<Data>()
         .topic::<TickLog>()
         .topic::<WorkerLaunch>()
         .topic::<WorkerCodex>()
@@ -1707,6 +1708,7 @@ pub fn manual() -> agent_help::Help {
         .constant("REMOTE_READS", remote::reads_help())
         .constant("GH_IN_TRANSIT", gh::in_transit_help())
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
+        .constant("BACKUPS_KEPT", host_db::BACKUPS_KEPT)
         .constant("FIRST_START_SETTINGS", first_start::settings_help())
         .constant("FIRST_START_QUESTIONS", first_start::help())
         .constant("EXCLUSIVE_SECONDS", exclusive::SECONDS)

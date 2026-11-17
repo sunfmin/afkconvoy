@@ -389,15 +389,10 @@ fn terminal_create(st: &mut State) -> ! {
     // the same lost-create-receipt recovery path without starting a model.
     if matches!(title.as_deref(), Some("afkconvoy watch" | "afkconvoy asks")) {
         let asking = title.as_deref() == Some("afkconvoy asks");
-        let journal = std::env::var_os("XDG_CACHE_HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap()
-            .join(if asking {
-                "afkconvoy/asking/terminal.json"
-            } else {
-                "afkconvoy/watch/terminal.json"
-            });
-        let record: Value = serde_json::from_slice(&std::fs::read(journal).unwrap()).unwrap();
+        // The launch record, as the host's database keeps it.
+        let db = afkconvoy::host_db::path().unwrap();
+        let store = if asking { "asking/terminal.json" } else { "watch/terminal.json" };
+        let record = afkconvoy::host_db::kept(&db, store).unwrap().unwrap();
         let owner = if asking { "session" } else { "watch" };
         let transcript = Path::new(record[owner]["transcript"].as_str().unwrap());
         std::fs::create_dir(transcript.with_extension("claim")).unwrap();
