@@ -9,7 +9,7 @@ One user account on one machine, and what the fleet keeps for it there: its host
 _Avoid_: machine (the hardware every host on it shares)
 
 **Host database**:
-A host's one afkconvoy database, `host.db` in its data directory: the host's own state that nothing else gives back — its checkout list and host settings, its candidate chains and landing holds, worker health, the account book, the watch's and the asking session's state — read and written by every process of the host, each change one transaction, and copied once a day into its backups. The cache directory holds only what can be made again, or need not be (ADR-0117).
+A host's one afkconvoy database, `host.db` in its data directory, its user's alone: the host's own settings and state — its checkout list and host settings, its host kit, its candidate chains and landing holds, worker health, the account book, the watch's and the asking session's state, its GitHub quota observations and what its needs' checks left — read and written by every process of the host, each change one transaction, its schema versioned and migrated forward, and copied once a day into its backups. No file holds any of it: a human changes it through commands. The cache directory holds only what can be made again, or need not be, and the kernel locks that say a process still holds something (ADR-0117, ADR-0119).
 _Avoid_: state file, cache (what can be made again)
 
 **Fleet**:

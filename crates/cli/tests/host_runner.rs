@@ -718,6 +718,60 @@ fn a_host_setting_a_run_names_holds_for_every_fleet_instance_at_once() {
 }
 
 #[test]
+fn two_runs_at_once_naming_different_settings_both_land() {
+    let world = World::new();
+    world.afk(&RUN).ok();
+    for (share, seconds) in [("80", "1500"), ("70", "1600"), ("60", "1700")] {
+        let share_args = [&RUN[..], &["--busy-share", share]].concat();
+        let seconds_args = [&RUN[..], &["--exclusive-seconds", seconds]].concat();
+        std::thread::scope(|scope| {
+            let one = scope.spawn(|| world.afk(&share_args));
+            let other = scope.spawn(|| world.afk(&seconds_args));
+            one.join().unwrap().ok();
+            other.join().unwrap().ok();
+        });
+        let settings = &world.checkout_list()["settings"];
+        assert_eq!(settings["busy_share"], share.parse::<u64>().unwrap(), "{settings}");
+        assert_eq!(settings["exclusive_seconds"], seconds.parse::<u64>().unwrap(), "{settings}");
+    }
+}
+
+#[test]
+fn an_older_releases_checkout_list_and_host_kit_files_answer_as_the_database_does() {
+    let world = World::new();
+    world.afk(&[&RUN[..], &["--busy-share", "80"]].concat()).ok();
+    world.afk(&["stop", "--all"]).ok();
+    let answers = |world: &World| {
+        let checkouts = world.afk(&["checkouts"]).ok();
+        let mut kit = world.afk(&["doctor", "--host", "h1"]).json["host"]["host_kit"].clone();
+        kit.as_object_mut().unwrap().remove("refreshed");
+        let settings =
+            world.afk(&["doctor", "--host", "h1"]).json["host"]["settings"]["said"].clone();
+        (checkouts, kit, settings)
+    };
+    let kept = answers(&world);
+    // The same, as the files an older release kept them in: its checkout
+    // list in the cache directory, its host kit in the config directory.
+    let (list, kit) = (world.checkout_list(), world.kit());
+    std::fs::remove_file(world.host_db()).unwrap();
+    let old_list = world.cache().join("afkconvoy/checkouts.json");
+    std::fs::write(&old_list, list.to_string()).unwrap();
+    let old_kit = world.home().join(".config/afkconvoy/kit.json");
+    std::fs::create_dir_all(old_kit.parent().unwrap()).unwrap();
+    std::fs::write(&old_kit, kit.to_string()).unwrap();
+    std::fs::write(old_kit.with_extension("lock"), "").unwrap();
+    assert_eq!(answers(&world), kept);
+    // Taken in once, and kept beside where they were.
+    for old in [&old_list, &old_kit, &old_kit.with_extension("lock")] {
+        assert!(!old.exists(), "{}", old.display());
+        let mut migrated = old.as_os_str().to_owned();
+        migrated.push(".migrated");
+        assert!(std::path::Path::new(&migrated).exists(), "{}", old.display());
+    }
+    assert_eq!(answers(&world), kept);
+}
+
+#[test]
 fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
     let world = World::new();
     let named = [
