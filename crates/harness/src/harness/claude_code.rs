@@ -943,6 +943,20 @@ pub(super) fn said(value: &serde_json::Value) -> Vec<Said> {
 pub(super) const STATUS_LINE: StatusLine =
     StatusLine { settings: USER_HOOKS.settings, key: "statusLine" };
 
+/// How Claude Code is asked for its account's windows now. Its account usage
+/// (`/api/oauth/usage`) answers only a login with the `user:profile` scope,
+/// which a `claude setup-token` token lacks: Claude Code 2.1.326 itself reads
+/// such a token's windows from a one-token "quota" request. Its smallest such
+/// request a person can make is one turn on its smallest model, with no
+/// tools, settings, servers or kept session, whose stream says the windows
+/// in its `rate_limit_event` (recorded on this host: 3 s, under $0.0002).
+pub(super) const WINDOWS_QUESTION: super::WindowsQuestion = super::WindowsQuestion {
+    line: "claude -p --model haiku --output-format stream-json --verbose --tools '' \
+           --strict-mcp-config --no-session-persistence --setting-sources '' \
+           --system-prompt 'Answer with one word.' quota",
+    spends_turn: true,
+};
+
 /// The windows one record of Claude Code's says: the `rate_limits` of the
 /// input it hands its status line (`used_percentage`, `resets_at`), or the
 /// `rate_limit_info` of a `rate_limit_event` in its stream, whose
