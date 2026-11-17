@@ -416,8 +416,9 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
-    /// Append one after-the-fact entry to the daybook: what an agent did or decided outside any issue
+    /// Append one after-the-fact entry to this host's daybook: what an agent did or decided outside any issue
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = daybook::HELP)]
+    #[command(group(clap::ArgGroup::new("span").args(["lessons", "read"]).multiple(false)))]
     Daybook {
         /// What was done, put under `Did`; or say each heading with its flag
         #[arg(conflicts_with = "did")]
@@ -438,26 +439,29 @@ enum Command {
         #[arg(long = "link", value_name = "URL")]
         links: Vec<String>,
         /// List the lessons of a span of days instead of writing an entry
-        #[arg(long, requires = "since", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links"])]
+        #[arg(long, requires = "since", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "repo", "read"])]
         lessons: bool,
+        /// Print the entries of a day or a span of days [default: today's] instead of writing one
+        #[arg(long, conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "repo"])]
+        read: bool,
+        /// The one day `--read` prints
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "read", conflicts_with_all = ["since", "until"], value_parser = daybook::day_named)]
+        day: Option<String>,
         /// Record a distillation said in this JSON file: check it carries each lesson of its span once, then write its one entry
-        #[arg(long, value_name = "FILE", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "distill"])]
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "read", "distill"])]
         distilled: Option<PathBuf>,
         /// Ask the host's watch to distill the daybook at its next look, without waiting out its week
-        #[arg(long, conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "repo", "tracker"])]
+        #[arg(long, conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "read", "repo"])]
         distill: bool,
-        /// The first day of the span `--lessons` lists
-        #[arg(long, value_name = "YYYY-MM-DD", requires = "lessons", value_parser = daybook::day_named)]
+        /// The first day of the span `--lessons` or `--read` lists
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "span", value_parser = daybook::day_named)]
         since: Option<String>,
-        /// The last day of the span `--lessons` lists [default: none, to today]
-        #[arg(long, value_name = "YYYY-MM-DD", requires = "lessons", value_parser = daybook::day_named)]
+        /// The last day of the span `--lessons` or `--read` lists [default: none, to today]
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "since", value_parser = daybook::day_named)]
         until: Option<String>,
         /// The repo the entry is of [default: the one the checkout's remote names]
         #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_named)]
         repo: Option<RepoName>,
-        /// The tracker whose daybook it is [default: the checkout's tracker on this host's checkout list]
-        #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_named)]
-        tracker: Option<RepoName>,
         #[command(flatten)]
         at: AtFlag,
     },
@@ -2521,18 +2525,18 @@ fn run(
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
         }
         Command::Daybook { distill: true, .. } => host_watch::ask_distillation(now),
-        Command::Daybook { distilled: Some(file), repo, tracker, .. } => {
-            daybook::distilled(checkout, repo, tracker, &file)
+        Command::Daybook { distilled: Some(file), repo, .. } => {
+            daybook::distilled(checkout, repo, &file)
         }
-        Command::Daybook { lessons: true, since, until, tracker, .. } => daybook::lessons(
-            checkout,
-            tracker,
-            since.as_deref().unwrap_or_default(),
-            until.as_deref(),
-        ),
-        Command::Daybook { text, did, why, undo, lesson, links, repo, tracker, .. } => {
+        Command::Daybook { lessons: true, since, until, .. } => {
+            daybook::lessons(since.as_deref().unwrap_or_default(), until.as_deref())
+        }
+        Command::Daybook { read: true, day, since, until, .. } => {
+            daybook::read(day.as_deref(), since.as_deref(), until.as_deref())
+        }
+        Command::Daybook { text, did, why, undo, lesson, links, repo, .. } => {
             let said = daybook::Said { did: did.or(text), why, undo, lesson, links };
-            daybook::daybook(checkout, daybook::Asked { said, repo, tracker })
+            daybook::daybook(checkout, daybook::Asked { said, repo })
         }
         Command::Skill => Ok(Value::String(skill::SKILL.to_string())),
         Command::Draft { dir, team, yes } => draft::draft(dir, team, yes),

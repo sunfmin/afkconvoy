@@ -51,7 +51,6 @@ use serde_json::{Value, json};
 const REPO: &str = "repos/{owner}/{repo}/";
 
 fn main() {
-    daybook_race_waits();
     let mut st = State::open_routed("CONVOY_FAKE_GH", "convoy-fake-gh");
     st.argv.retain(|a| a != "--include");
     let line = st.argv.join(" ");
@@ -273,7 +272,6 @@ fn main() {
             let visibility = st.doc["visibility"].as_str().unwrap_or("private").to_string();
             st.finish(&visibility, 0, "")
         }
-        ["api", "graphql", ..] if line.contains("ConvoyDaybook") => daybook(&mut st),
         ["api", "graphql", ..] => open_issues(&st),
         ["api", "--paginate", endpoint]
             if endpoint.starts_with("repos/") && !endpoint.starts_with(REPO) =>
@@ -1571,139 +1569,4 @@ fn identity_login(st: &State) -> String {
         .and_then(|token| st.doc["identity_by_token"][&token].as_str().map(str::to_string))
         .or_else(|| st.doc["login"].as_str().map(str::to_string))
         .unwrap_or_else(|| "fixture-user".into())
-}
-
-/// `CONVOY_FAKE_GH_RACE` `<dir>:<n>`: a daybook's creation of a discussion
-/// waits, before it takes the state, until `n` first looks for the day have
-/// been answered — each marks `dir` as it is — so `n` runs racing for the
-/// first entry of a day all find none.
-fn daybook_race() -> Option<(PathBuf, usize)> {
-    let said = std::env::var("CONVOY_FAKE_GH_RACE").ok()?;
-    let (dir, n) = said.rsplit_once(':')?;
-    Some((PathBuf::from(dir), n.parse().ok()?))
-}
-
-fn daybook_race_waits() {
-    let creates = std::env::args().any(|arg| arg.contains("mutation ConvoyDaybookOpen"));
-    let Some((dir, n)) = daybook_race().filter(|_| creates) else { return };
-    let began = std::time::Instant::now();
-    while std::fs::read_dir(&dir).map_or(0, |entries| entries.count()) < n {
-        assert!(began.elapsed().as_secs() < 30, "fake gh: the daybook race never met");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-}
-
-/// `gh api graphql` of the daybook. State: `discussions_enabled` (true
-/// where unsaid), `discussion_categories` [name…], `discussions` [{id,
-/// number, title, body, category, url, comments: [{body, url}]}], each
-/// listing answering one page; `discussions_indexed` counts the bodies the
-/// lesson index rewrote.
-fn daybook(st: &mut State) -> ! {
-    let fields: Vec<(String, String)> = st
-        .opts("-f")
-        .into_iter()
-        .chain(st.opts("-F"))
-        .filter_map(|field| field.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
-        .collect();
-    let field = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
-    let query = field("query").unwrap_or_default();
-    let category_id = |name: &str| format!("category-{name}");
-    let answer = if query.contains("ConvoyDaybookPlace") {
-        let categories: Vec<Value> = st.doc["discussion_categories"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|name| json!({"id": category_id(name.as_str().unwrap()), "name": name}))
-            .collect();
-        json!({"data": {"repository": {"id": "repository-1",
-            "hasDiscussionsEnabled": st.doc["discussions_enabled"].as_bool().unwrap_or(true),
-            "discussionCategories": {"nodes": categories}}}})
-    } else if query.contains("ConvoyDaybookDay") || query.contains("ConvoyDaybookSettle") {
-        let category = field("category").unwrap();
-        let mut nodes: Vec<Value> = st.list("discussions").iter()
-            .filter(|d| d["category"].as_str().map(category_id) == Some(category.clone()))
-            .map(|d| json!({"id": d["id"], "number": d["number"], "title": d["title"], "url": d["url"]}))
-            .collect();
-        nodes.reverse();
-        if query.contains("ConvoyDaybookDay")
-            && let Some((dir, _)) = daybook_race()
-        {
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join(std::process::id().to_string()), "").unwrap();
-        }
-        json!({"data": {"repository": {"discussions": {"nodes": nodes}}}})
-    } else if query.contains("ConvoyDaybookRead") {
-        let number: u64 = field("number").unwrap().parse().unwrap();
-        let found = st.list("discussions").iter().find(|d| d["number"] == json!(number)).cloned();
-        let Some(found) = found else { st.finish("", 1, "gh: no such discussion\n") };
-        json!({"data": {"repository": {"discussion": {"body": found["body"],
-            "comments": {"nodes": found["comments"],
-                "pageInfo": {"hasNextPage": false, "endCursor": null}}}}}})
-    } else if query.contains("ConvoyDaybookIndex") {
-        let id = field("discussion").unwrap();
-        let body = field("body").unwrap();
-        let discussions = st.list("discussions");
-        let Some(found) = discussions.iter_mut().find(|d| d["id"] == json!(id)) else {
-            st.finish("", 1, "gh: Could not resolve to a node with the global id\n")
-        };
-        found["body"] = json!(body);
-        let indexed = st.doc["discussions_indexed"].as_u64().unwrap_or(0) + 1;
-        st.doc["discussions_indexed"] = json!(indexed);
-        json!({"data": {"updateDiscussion": {"discussion": {"id": id}}}})
-    } else if query.contains("ConvoyDaybookLessons") || query.contains("ConvoyDaybookSpan") {
-        let category = field("category").unwrap();
-        let counted = query.contains("ConvoyDaybookSpan");
-        let mut nodes: Vec<Value> = st
-            .list("discussions")
-            .iter()
-            .filter(|d| d["category"].as_str().map(category_id) == Some(category.clone()))
-            .map(|d| {
-                let mut node =
-                    json!({"number": d["number"], "title": d["title"], "body": d["body"]});
-                if counted {
-                    let entries = d["comments"].as_array().map_or(0, Vec::len);
-                    node["comments"] = json!({"totalCount": entries});
-                }
-                node
-            })
-            .collect();
-        nodes.reverse();
-        json!({"data": {"repository": {"discussions": {"nodes": nodes,
-            "pageInfo": {"hasNextPage": false, "endCursor": null}}}}})
-    } else if query.contains("ConvoyDaybookOpen") {
-        let category = field("category").unwrap();
-        let name = category.trim_start_matches("category-").to_string();
-        let number = st
-            .list("discussions")
-            .iter()
-            .filter_map(|d| d["number"].as_u64())
-            .max()
-            .unwrap_or(0)
-            .max(st.doc["discussions_made"].as_u64().unwrap_or(0))
-            + 1;
-        st.doc["discussions_made"] = json!(number);
-        let made = json!({"id": format!("discussion-{number}"), "number": number,
-            "title": field("title").unwrap(), "body": field("body").unwrap(), "category": name,
-            "url": format!("https://gh/discussions/{number}"), "comments": []});
-        st.list("discussions").push(made.clone());
-        json!({"data": {"createDiscussion": {"discussion": made}}})
-    } else if query.contains("ConvoyDaybookDrop") {
-        let id = field("id").unwrap();
-        st.list("discussions").retain(|d| d["id"] != json!(id));
-        json!({"data": {"deleteDiscussion": {"discussion": {"id": id}}}})
-    } else if query.contains("ConvoyDaybookEntry") {
-        let id = field("discussion").unwrap();
-        let discussions = st.list("discussions");
-        let Some(discussion) = discussions.iter_mut().find(|d| d["id"] == json!(id)) else {
-            st.finish("", 1, "gh: Could not resolve to a node with the global id\n")
-        };
-        let at = discussion["comments"].as_array().map_or(0, Vec::len) + 1;
-        let url = format!("{}#discussioncomment-{at}", discussion["url"].as_str().unwrap());
-        let comments = discussion["comments"].as_array_mut().unwrap();
-        comments.push(json!({"body": field("body").unwrap(), "url": url}));
-        json!({"data": {"addDiscussionComment": {"comment": {"url": url}}}})
-    } else {
-        unsupported(st)
-    };
-    st.finish(&answer.to_string(), 0, "")
 }

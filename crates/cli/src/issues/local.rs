@@ -34,7 +34,14 @@ const FILE: &str = "issues.db";
 /// Where this host keeps its local tracker: `issues.db` in afkconvoy's data
 /// directory — not its cache: it holds what nothing else can give back.
 pub fn store_path() -> Result<PathBuf> {
-    Ok(data_home()?.join("afkconvoy").join(FILE))
+    Ok(data_dir()?.join(FILE))
+}
+
+/// afkconvoy's data directory on this host: `afkconvoy` in this user's
+/// XDG_DATA_HOME, else in `~/.local/share` — what it holds that nothing else
+/// can give back (`issues.db`, `daybook.db`).
+pub fn data_dir() -> Result<PathBuf> {
+    Ok(data_home()?.join("afkconvoy"))
 }
 
 /// The directory the data directory is in: this user's, as XDG_DATA_HOME or
@@ -46,7 +53,7 @@ fn data_home() -> Result<PathBuf> {
         (Some(data), _) => PathBuf::from(data),
         (None, Some(home)) => PathBuf::from(home).join(".local/share"),
         (None, None) => {
-            bail!("neither XDG_DATA_HOME nor HOME says where this host's local tracker is kept")
+            bail!("neither XDG_DATA_HOME nor HOME says where this host's data directory is")
         }
     })
 }

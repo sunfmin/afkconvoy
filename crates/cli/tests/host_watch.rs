@@ -803,7 +803,6 @@ fn a_refused_registration_says_orcas_error() {
 #[test]
 fn a_watch_decides_what_cannot_be_undone_and_leaves_only_money_to_a_human() {
     let world = World::new();
-    world.with_gh(|gh| gh["discussion_categories"] = json!(["Daybook"]));
     world.name_origin(&world.clone, "acme/dev");
     world.list_checkout(&world.clone);
     world.issue(7, &["ready-for-human"]);
@@ -884,15 +883,21 @@ fn a_watch_decides_what_cannot_be_undone_and_leaves_only_money_to_a_human() {
             file.to_str().unwrap(),
         ])
         .ok();
+    // The entry lands in the host's own daybook, `daybook.db` in its data
+    // directory: GitHub is asked nothing of it.
     let entry = until(&world, "the round's daybook entry", || {
-        world.gh()["discussions"]
+        let read =
+            world.afk(&["daybook", "--read", "--since", "2000-01-01", "--until", "2999-12-31"]);
+        read.json["entries"]
             .as_array()
             .into_iter()
             .flatten()
-            .flat_map(|discussion| discussion["comments"].as_array().cloned().unwrap_or_default())
-            .map(|comment| comment["body"].as_str().unwrap_or_default().to_string())
-            .find(|body| body.contains(watch["id"].as_str().unwrap()))
+            .map(|entry| entry["text"].as_str().unwrap_or_default().to_string())
+            .find(|text| text.contains(watch["id"].as_str().unwrap()))
     });
+    assert!(world.data().join("afkconvoy/daybook.db").is_file());
+    let asked: Vec<String> = world.gh_calls().iter().map(|call| call.join(" ")).collect();
+    assert!(!asked.iter().any(|call| call.contains("iscussion")), "{asked:?}");
     for said in [
         "**Decided by the recommended answer**\n\n- dropped the old `runs` table (issue 7) — \
          because its recommended answer: nothing reads it",
@@ -2969,14 +2974,22 @@ fn a_week_s_daybook_lessons_start_one_distillation_round_that_covers_its_span() 
     let world = World::new();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let yesterday = afkconvoy::daybook::day_at(now - 24 * 60 * 60);
-    let lesson = "https://gh/discussions/1#c-1";
-    world.with_gh(|gh| {
-        gh["discussion_categories"] = json!(["Daybook"]);
-        gh["discussions"] = json!([{"id": "discussion-1", "number": 1, "title": yesterday,
-            "category": "Daybook", "url": "https://gh/discussions/1",
-            "comments": [{"url": lesson, "body": "fixed the gate"}],
-            "body": format!("Intro.\n\n<!--convoy:lessons-->\n## Lessons\n\n- [entry]({lesson}): the gate needs jq\n")}]);
-    });
+    // A lesson written yesterday to the host's own daybook.
+    let then = (now - 24 * 60 * 60).to_string();
+    let wrote = world
+        .afk(&[
+            "daybook",
+            "--did",
+            "fixed the gate",
+            "--lesson",
+            "the gate needs jq",
+            "--repo",
+            "acme/dev",
+            "--now",
+            &then,
+        ])
+        .ok();
+    assert_eq!(wrote["day"], yesterday.as_str(), "{wrote}");
     world.name_origin(&world.clone, "acme/dev");
     world.list_checkout(&world.clone);
     let dir = operator(&world);
