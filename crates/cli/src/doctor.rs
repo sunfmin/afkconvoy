@@ -226,7 +226,7 @@ kinds! {
     WaitTaken: Info, "human wait is taken by";
     NotOurs: Warning, "is held off by a PR not the fleet's";
     CarriedLanded: Warning, "is open though the PR that carried it landed";
-    LegacyTargets: Info, "separate target records an older afkconvoy left";
+    LegacyTargets: Info, "separate target records an earlier release left";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
@@ -610,7 +610,7 @@ pub struct State {
     /// The open issues whose PR a PR carried that has landed
     /// (sunfmin/control#1248).
     pub carried_landed: Vec<CarriedLanded>,
-    /// The separate `target/<n>` records an older afkconvoy left, which the
+    /// The separate `target/<n>` records an earlier release left, which the
     /// acting tick carries and removes (`target::carry_legacy`).
     pub legacy_targets: Vec<String>,
     /// Candidate state from the same remote listing as the working set.
@@ -1538,7 +1538,7 @@ fn legacy_targets_finding(left: &[String]) -> Option<Finding> {
     Some(finding(
         Kind::LegacyTargets,
         json!(["legacy-targets"]),
-        format!("{} separate target records an older afkconvoy left are on the remote", left.len()),
+        format!("{} separate target records an earlier release left are on the remote", left.len()),
         format!("the remote holds {first} and {} more", left.len() - 1),
         "afkconvoy run".into(),
     ))

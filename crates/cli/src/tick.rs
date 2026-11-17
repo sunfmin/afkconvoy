@@ -279,7 +279,7 @@ pub fn tick(
     if let Err(error) = crate::legacy::retire_proposals(&mut fleet, me) {
         eprintln!("warning: legacy proposal retirement will retry: {error:#}");
     }
-    // Separate target records an older afkconvoy left: each is carried into
+    // Separate target records an earlier release left: each is carried into
     // where a target lives now and removed (sunfmin/control#1327).
     if let Err(error) = crate::target::carry_legacy(&mut fleet, &me.instance) {
         eprintln!("warning: carrying legacy target records will retry: {error:#}");

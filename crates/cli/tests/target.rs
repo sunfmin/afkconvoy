@@ -192,7 +192,7 @@ fn a_takeover_by_another_host_keeps_the_claims_target_and_lands_on_it() {
     assert!(!left.contains("/target/") && !left.contains("/claim/7"), "{left}");
 }
 
-/// Separate target records an older afkconvoy left are read once: an open
+/// Separate target records an earlier release left are read once: an open
 /// claimed task's becomes its claim's pin, an open unclaimed task's selected
 /// branch its selection comment, and a closed task's is removed. `doctor`
 /// says while any are left.

@@ -560,13 +560,13 @@ pub fn listing(
     Ok(json!(rows))
 }
 
-/// The separate target records an older afkconvoy left, as the fleet's
+/// The separate target records an earlier release left, as the fleet's
 /// listing of the remote has them.
 pub fn legacy_left(fleet: &crate::fleet::Fleet) -> Vec<RemoteRecord> {
     fleet.records_at_open(&fleet.repo.layout().every("target/"))
 }
 
-/// Reads each separate target record an older afkconvoy left once, carries
+/// Reads each separate target record an earlier release left once, carries
 /// what an open task still needs into where a target lives now, and removes
 /// it (sunfmin/control#1327): a claim's legacy pin becomes its own pin; a
 /// selected branch other than the configured base becomes the issue's
@@ -648,7 +648,7 @@ Without --branch, reads the target, or the configured base for a task with none.
 
 Where the target lives: a selection is the issue's `<!--convoy:target branch=…-->` comment; the first one stands. A task attached to a Jira delivery is named in that delivery's one task record (`afkconvoy delivery --help`). Each claim carries its task's target in its own record: a claim pins the selection, or the configured base when there is none, and a later config change cannot move it. A takeover by another host keeps the claim's target, and it ends with the claim — nothing of it is left per issue on the remote. A selection outlives a released claim, so the next claim pins it again. Reading a malformed record or a missing branch refuses; it never falls back to the configured base.
 
-An older afkconvoy kept a separate `target/<n>` record per issue. The acting tick reads each once, carries what an open task needs into a claim, a selection comment or a delivery's tasks, and removes it; `doctor` reports any still left.
+Releases before this one wrote a separate `target/<n>` record per issue. The acting tick reads each once, carries what an open task needs into a claim, a selection comment or a delivery's tasks, and removes it; `doctor` reports any still left.
 
 ## What it answers
 
