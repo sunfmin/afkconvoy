@@ -335,6 +335,72 @@ fn a_settled_worktree_s_files_are_deleted_by_a_child_and_its_path_is_free_at_onc
     }
 }
 
+/// A gate its worker ran was ended before it removed its own worktree,
+/// nested under the worker's `.afkconvoy-tmp`, and tests there left
+/// read-only fixtures in both (sunfmin/control#1276). Settling removes the
+/// nested worktree, unregisters it, and removes the worker's.
+#[test]
+fn a_settled_worktree_goes_with_a_nested_worktree_and_read_only_fixtures_left_in_it() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world).canonicalize().unwrap();
+    let tmp = worktree.join(".afkconvoy-tmp");
+    let nested = tmp.join("left-tree");
+    std::fs::create_dir_all(&tmp).unwrap();
+    git(&world.clone, &["worktree", "add", "-q", "--detach", nested.to_str().unwrap(), "HEAD"]);
+    let fixtures = [
+        nested.join(".afkconvoy-tmp/.tmpA/home/.agents/skills/fake"),
+        tmp.join("the-tests/.tmpB/home/.claude/skills/fake"),
+        tmp.join("the-tests/.tmpB/cache/afkconvoy/copies/acme/reviewer/abc"),
+    ];
+    for fixture in &fixtures {
+        std::fs::create_dir_all(fixture).unwrap();
+        std::fs::write(fixture.join("SKILL.md"), "skill").unwrap();
+        std::fs::set_permissions(fixture, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(!worktree.exists(), "the worktree is removed");
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!common::worktree_listed(&listed, &worktree), "{listed}");
+    assert!(!listed.contains(nested.to_str().unwrap()), "the nested one is unregistered: {listed}");
+    assert_eq!(world.claims(), []);
+}
+
+/// A base tip's gate ended from outside — at the exclusive bound, by a
+/// signal — leaves its worktree (sunfmin/control#1276). A tick removes and
+/// unregisters it once the process that made it is gone, read-only fixtures
+/// and all, and leaves one whose process still runs.
+#[test]
+fn a_tick_removes_a_gate_worktree_whose_process_is_gone() {
+    let world = backlog(&[]);
+    let mut ended = Command::new("true").spawn().unwrap();
+    ended.wait().unwrap();
+    let tmp = world.root.join("gate-tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let orphan = tmp.join(format!("afkconvoy-base-tip-{}-0", ended.id()));
+    let running = tmp.join(format!("afkconvoy-delivery-{}-1", std::process::id()));
+    for tree in [&orphan, &running] {
+        git(&world.clone, &["worktree", "add", "-q", "--detach", tree.to_str().unwrap(), "HEAD"]);
+        let fixture = tree.join(".afkconvoy-tmp/.tmpA/home/.agents/skills/fake");
+        std::fs::create_dir_all(&fixture).unwrap();
+        std::fs::write(fixture.join("SKILL.md"), "skill").unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    let ticked = tick(&world, "1000");
+    assert!(ticked["errors"].as_array().unwrap().is_empty(), "{ticked}");
+    assert!(!orphan.exists(), "the orphan's worktree is removed");
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!common::worktree_listed(&listed, &orphan), "{listed}");
+    assert!(!listed.contains(orphan.to_str().unwrap()), "{listed}");
+    assert!(running.is_dir(), "a running gate's worktree stays");
+    assert!(common::worktree_listed(&listed, &running), "{listed}");
+}
+
 #[test]
 fn a_settled_worktree_goes_when_the_gate_left_a_directory_the_owner_cannot_write() {
     let world = backlog(&[3]);

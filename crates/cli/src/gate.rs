@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::io::{BufRead, BufReader};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -130,11 +130,11 @@ fn run_command(
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
         // Five cold builds at once on eight cores passed the fast gate's
         // limit before their tests began (2026-10-29). It only warms the
-        // build: what reads the build's output asks cargo where it is, as
-        // huacnlee/cargo ignores this and builds into the candidate's own
-        // `./target`, warm from the crates it shares (sunfmin/control#1127).
+        // build, which goes into the candidate's own `./target`
+        // (sunfmin/control#1262); a target the environment names is the
+        // environment's.
         if std::env::var_os("CARGO_TARGET_DIR").is_none() {
-            shell.env("CARGO_TARGET_DIR", candidate.target());
+            candidate.seed(&repo.dir);
         }
     }
     let scope = candidate
@@ -458,7 +458,13 @@ pub(crate) fn candidate_gate(
         });
         return Ok((evidence, Judged::Green));
     }
-    let run = controlled_run(repo, command, host, now, limit, issue, Some(candidate), None)?;
+    // Its whole output is kept where the turn that answers red names it.
+    let output = candidate.output().ok();
+    if let Some(file) = &output {
+        crate::candidates::room_for_output(file);
+    }
+    let run =
+        controlled_run(repo, command, host, now, limit, issue, Some(candidate), output.as_deref())?;
     let evidence = Evidence::of(Observed {
         command: command.text(),
         ran: run.ran,
@@ -475,18 +481,88 @@ pub(crate) fn candidate_gate(
     Ok((evidence, run.judged))
 }
 
+/// What a gate run in a worktree of its own (`detached`) is for. Its
+/// worktree is named `afkconvoy-<name>-<pid>-<n>`, `pid` the process that
+/// made it: how a later tick finds one whose process is gone
+/// (`remove_orphans`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detached {
+    /// The base branch's tip, gated alone.
+    BaseTip,
+    /// A delivery's aggregate gate.
+    Delivery,
+}
+
+impl Detached {
+    const ALL: [Detached; 2] = [Detached::BaseTip, Detached::Delivery];
+
+    fn name(self) -> &'static str {
+        match self {
+            Detached::BaseTip => "base-tip",
+            Detached::Delivery => "delivery",
+        }
+    }
+
+    /// The pid of the process that made the detached worktree at `path`,
+    /// as its name says; None for a path no detached gate names.
+    fn maker(path: &Path) -> Option<u32> {
+        let name = path.file_name()?.to_str()?.strip_prefix("afkconvoy-")?;
+        Detached::ALL.iter().find_map(|gated| {
+            let rest = name.strip_prefix(gated.name())?.strip_prefix('-')?;
+            let (pid, made) = rest.split_once('-')?;
+            made.parse::<u64>().ok()?;
+            pid.parse().ok()
+        })
+    }
+}
+
+/// Removes every detached gate's worktree registered in `repo` whose maker
+/// no longer runs: a gate ended from outside — at the exclusive bound, by a
+/// signal — never removes its own, and it holds gigabytes and a
+/// registration, under a worker's worktree where that worker's `TMPDIR` put
+/// it (sunfmin/control#1276). One whose maker still runs, or that a process
+/// still works in, is left; a process listing that fails removes nothing.
+/// One that cannot be removed is named, with why.
+pub(crate) fn remove_orphans(repo: &Repo) -> Result<Vec<crate::orca::Unremoved>> {
+    let listed = repo.git(&["worktree", "list", "--porcelain"])?;
+    let found: Vec<(PathBuf, u32)> = listed
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .filter_map(|path| Detached::maker(&path).map(|pid| (path, pid)))
+        .collect();
+    if found.is_empty() {
+        return Ok(vec![]);
+    }
+    let pids: Vec<u32> = found.iter().map(|(_, pid)| *pid).collect();
+    let running = crate::exits::running(&pids);
+    let busy = crate::hot::working_directories()?;
+    let mut unremoved = vec![];
+    for (path, pid) in found {
+        if running.contains(&pid) || crate::hot::occupies(&busy, &path) {
+            continue;
+        }
+        if let Err(error) = repo.remove_worktree(&path) {
+            unremoved.push(crate::orca::Unremoved { path, issue: None, error });
+        }
+    }
+    Ok(unremoved)
+}
+
 /// Runs `gate` in a worktree of its own, detached at `commit` beside
-/// `repo`'s and named for `name`, for a gate that no worker's changes may
-/// reach: a base tip's, a delivery's. The worktree is removed after
+/// `repo`'s and named for what it gates, `gated`, for a gate that no
+/// worker's changes may reach. The worktree is removed after
 /// (`Repo::remove_worktree`), whatever the run → what `gate` answered, and
 /// why the worktree is still there, where it is: the caller says whether
-/// that hides its answer.
+/// that hides its answer. One whose run is ended from outside is a later
+/// tick's to remove (`remove_orphans`).
 pub fn detached<T>(
     repo: &Repo,
     commit: &str,
-    name: &str,
+    gated: Detached,
     gate: impl FnOnce(&Repo) -> Result<T>,
 ) -> Result<(Result<T>, Option<anyhow::Error>)> {
+    let name = gated.name();
     let path = std::env::temp_dir().join(format!("afkconvoy-{name}-{}", crate::unique()));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -894,6 +970,19 @@ Errors are {"error": …} with non-zero exit: an unreadable config, an uncommitt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_detached_gate_s_worktree_is_known_by_its_maker_s_pid() {
+        let maker =
+            |name: &str| Detached::maker(Path::new("/w/.afkconvoy-tmp").join(name).as_path());
+        assert_eq!(maker("afkconvoy-base-tip-81121-5"), Some(81121));
+        assert_eq!(maker("afkconvoy-delivery-7-0"), Some(7));
+        for other in
+            ["afkconvoy-cut-4", "afkconvoy-watch-12", "afkconvoy-base-tip-x-1", "base-tip-1-2"]
+        {
+            assert_eq!(maker(other), None, "{other}");
+        }
+    }
 
     /// Runs `script` as a gate in a directory of its own, under `limit`,
     /// keeping its whole output in `output` where one is named there.

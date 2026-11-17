@@ -766,7 +766,8 @@ fn aggregate(repo: &Repo, delivery: &Delivery, host: &str, now: u64) -> Result<A
             }
         }
     };
-    let (result, removal) = crate::gate::detached(repo, &commit, "delivery", checked)?;
+    let (result, removal) =
+        crate::gate::detached(repo, &commit, crate::gate::Detached::Delivery, checked)?;
     // A failed removal must not hide a red gate, and a green result must not
     // leave the temporary worktree behind.
     if let Some(error) = removal

@@ -265,6 +265,20 @@ impl Repo {
         run(&self.dir, args, env)
     }
 
+    /// `git commit-tree tree -p parent…` given `message` on stdin (`-F -`),
+    /// under extra environment, whose failure the caller reads: no message is
+    /// too long for git to start, as one in its arguments can be
+    /// (sunfmin/control#1267).
+    pub fn commit_tree(
+        &self,
+        tree: &str,
+        parents: &[&str],
+        message: &str,
+        env: &[(&str, &str)],
+    ) -> Result<Ran> {
+        commit_tree(&self.dir, tree, parents, message, env)
+    }
+
     /// Removes the linked worktree at `path`, its directory and its
     /// registration, including when a directory in it is not writable by its
     /// owner, as a cancelled test leaves one (sunfmin/control#610).
@@ -292,6 +306,22 @@ impl Repo {
             );
         }
         Ok(())
+    }
+
+    /// The worktrees registered here that are under `dir`, `dir` itself not
+    /// among them, as their real paths say: one registered through a link,
+    /// as a worker's `TMPDIR` is, is found under the directory the link
+    /// names. One no longer on disk is none: `git worktree prune` drops it.
+    pub fn worktrees_under(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        let dir = std::fs::canonicalize(dir)
+            .with_context(|| format!("cannot resolve {}", dir.display()))?;
+        let listed = self.git(&["worktree", "list", "--porcelain"])?;
+        Ok(listed
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .filter_map(|path| std::fs::canonicalize(path).ok())
+            .filter(|path| *path != dir && path.starts_with(&dir))
+            .collect())
     }
 
     /// Deletes the local branch `name` where nothing is lost with it: no
@@ -477,7 +507,7 @@ impl Repo {
     /// A parentless commit of `tree` whose subject is `record`: a record that
     /// is about a tree, and keeps it.
     pub fn record_commit_of(&self, tree: &str, record: &str) -> Result<String> {
-        let ran = run(&self.dir, &["commit-tree", tree, "-m", record], &RECORD_IDENTITY)?;
+        let ran = commit_tree(&self.dir, tree, &[], record, &RECORD_IDENTITY)?;
         if !ran.ok {
             bail!("git commit-tree failed: {}", ran.stderr.trim());
         }
@@ -488,8 +518,7 @@ impl Repo {
     /// gives a push the edge of the tested commit, so a remote holding it is
     /// sent only the record and objects it still lacks.
     pub fn record_commit_on(&self, tree: &str, parent: &str, record: &str) -> Result<String> {
-        let ran =
-            run(&self.dir, &["commit-tree", tree, "-p", parent, "-m", record], &RECORD_IDENTITY)?;
+        let ran = commit_tree(&self.dir, tree, &[parent], record, &RECORD_IDENTITY)?;
         if !ran.ok {
             bail!("git commit-tree failed: {}", ran.stderr.trim());
         }
@@ -647,6 +676,32 @@ pub(crate) fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran
             .envs(env.iter().copied()),
     )
     .with_context(|| could_not_run(args, dir))?;
+    Ok(ran(out))
+}
+
+/// `git commit-tree` of `tree` on `parents`, its `message` on stdin and
+/// ended by a newline, as `-m` ends it: the commit is the one `-m` made.
+fn commit_tree(
+    dir: &Path,
+    tree: &str,
+    parents: &[&str],
+    message: &str,
+    env: &[(&str, &str)],
+) -> Result<Ran> {
+    let mut args = vec!["commit-tree", tree];
+    for parent in parents {
+        args.extend(["-p", parent]);
+    }
+    args.extend(["-F", "-"]);
+    let out = crate::process::output_with_input(
+        Command::new("git")
+            .current_dir(dir)
+            .args(&args)
+            .env("LC_ALL", "C")
+            .envs(env.iter().copied()),
+        format!("{message}\n").as_bytes(),
+    )
+    .with_context(|| could_not_run(&args, dir))?;
     Ok(ran(out))
 }
 

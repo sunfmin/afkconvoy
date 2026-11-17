@@ -528,10 +528,11 @@ impl Asked {
                 .unwrap_or("agent_prompt_blocked");
             return PromptBlocked(reason.to_string()).into();
         }
-        let said = match self.answer["error"]["code"].as_str() {
-            Some(code) => code,
-            None if self.stderr.is_empty() => &self.stdout,
-            None => &self.stderr,
+        let error = &self.answer["error"];
+        let said = match error["code"].as_str() {
+            Some(code) => refusal(code, error),
+            None if self.stderr.is_empty() => self.stdout.clone(),
+            None => self.stderr.clone(),
         };
         anyhow!("orca {} failed: {said}", self.what)
     }
@@ -544,6 +545,22 @@ impl Asked {
             self.exited_ok, self.stdout, self.stderr
         ))
     }
+}
+
+/// What orca said refusing a call: its error `code`, then its `message`
+/// and `data.nextSteps` where it gave them — the words that say what to do,
+/// not the code alone (sunfmin/control#1255). A message that only repeats
+/// the code is not said twice.
+fn refusal(code: &str, error: &Value) -> String {
+    let message =
+        error["message"].as_str().filter(|message| !message.is_empty() && *message != code);
+    let steps =
+        error["data"]["nextSteps"].as_array().into_iter().flatten().filter_map(Value::as_str);
+    let said = message
+        .into_iter()
+        .chain(steps)
+        .fold(code.to_string(), |said, part| format!("{said}: {}", part.trim()));
+    startup_redacted(&said)
 }
 
 /// A startup screen or command may echo a provider credential. Compare only
@@ -881,9 +898,18 @@ fn discarded(path: &Path) -> Result<()> {
 /// Keeps the stock watch's own directory known to orca, so its terminal can
 /// start there without the operator registering it. An operator's directory
 /// is never added or changed here.
+///
+/// A directory that is itself a git repository is added as one; any other —
+/// the stock watch's, under the host's cache — as a folder, which is the
+/// only kind orca takes a directory that is not a git repository as.
 pub fn watch_directory(directory: &Path) -> Result<()> {
     if Source::at(directory)?.is_none() {
-        orca(&["repo", "add", "--path", &directory.display().to_string()])?;
+        let path = directory.display().to_string();
+        let mut add = vec!["repo", "add", "--path", &path];
+        if !directory.join(".git").exists() {
+            add.extend(["--kind", "folder"]);
+        }
+        orca(&add)?;
     }
     Ok(())
 }
@@ -1712,11 +1738,23 @@ impl Worktree {
     /// tip and no worktree uses it (`Repo::delete_held_branch`): left, each
     /// one takes a name orca numbers, and it gives up past a hundred
     /// (sunfmin/control#1044).
+    ///
+    /// Before orca is asked, a worktree registered under this one — a gate
+    /// its worker ran, ended before it removed its own — is removed and
+    /// unregistered, and the directories under its `.afkconvoy-tmp` that
+    /// tests left read-only are opened (sunfmin/control#1276). A nested one
+    /// that cannot be removed fails the removal, naming it.
     pub fn remove(&self) -> Result<()> {
+        let shared = self.shared_git_dir();
+        // Before the worker's `TMPDIR` is turned away: a nested worktree is
+        // registered through it.
+        if let Some(shared) = &shared {
+            self.remove_nested(shared)?;
+        }
+        crate::copies::removable(&self.path.join(worker_tmp::TMP_DIR));
         // One that cannot be turned costs a server the worker started its
         // directory, and no worktree is kept for that.
         let _ = worker_tmp::retire(&self.path);
-        let shared = self.shared_git_dir();
         let aside = self.set_files_aside();
         if aside.is_none() {
             crate::copies::removable(&self.path);
@@ -1725,7 +1763,9 @@ impl Worktree {
             if let Some(entry) = &aside {
                 self.put_files_back(entry);
             }
-            return Err(error);
+            return Err(
+                error.context(format!("cannot remove the worktree {}", self.path.display()))
+            );
         }
         if let Some(entry) = &aside {
             crate::trash::delete_detached(entry);
@@ -1746,6 +1786,20 @@ impl Worktree {
             && !self.branch.is_empty()
         {
             let _ = Repo::new(shared).delete_held_branch(&self.branch);
+        }
+        Ok(())
+    }
+
+    /// Removes and unregisters every worktree of `shared` under this one.
+    /// A finished worker's `.git` pointer need not name a repo still there:
+    /// one whose worktrees cannot be listed has none registered to remove.
+    fn remove_nested(&self, shared: &Path) -> Result<()> {
+        let repo = Repo::new(shared.to_path_buf());
+        let Ok(nested) = repo.worktrees_under(&self.path) else { return Ok(()) };
+        for nested in nested {
+            repo.remove_worktree(&nested).with_context(|| {
+                format!("cannot remove the worktree nested in {}", self.path.display())
+            })?;
         }
         Ok(())
     }

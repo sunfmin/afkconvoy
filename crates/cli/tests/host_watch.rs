@@ -202,6 +202,20 @@ fn state(world: &World) -> Value {
     std::fs::read(file).map_or(json!({}), |bytes| serde_json::from_slice(&bytes).unwrap())
 }
 
+/// Waits for a look and a check of the watch begun after now: whatever
+/// either would have done once nothing more changes, it has done.
+fn passed(world: &World) {
+    let counts = || {
+        let state = state(world);
+        (state["looks"].as_u64().unwrap_or(0), state["checks"].as_u64().unwrap_or(0))
+    };
+    let (looks, checks) = world.holding("afkconvoy/watch/state.lock", counts);
+    until(world, "a look and a check begun after now", || {
+        let (looked, checked) = counts();
+        (looked > looks && checked > checks).then_some(())
+    });
+}
+
 fn running(world: &World) -> Option<Value> {
     Some(state(world)["running"].clone()).filter(|running| !running.is_null())
 }
@@ -704,8 +718,16 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     assert_eq!(doctor["host"]["watch"]["last"]["did"], json!(left));
     assert_eq!(doctor["host"]["watch"]["last"]["stock"], true);
     assert_eq!(starts(&world).len(), 1, "one stock watch per episode");
-    let adds = world.orca_called_with().into_iter().filter(|(call, _)| asked(call) == "repo add");
-    assert_eq!(adds.count(), 1, "the stock directory is registered by the fleet");
+    let adds: Vec<Vec<String>> = world
+        .orca_called_with()
+        .into_iter()
+        .map(|(call, _)| call)
+        .filter(|call| asked(call) == "repo add")
+        .collect();
+    assert_eq!(adds.len(), 1, "the stock directory is registered by the fleet");
+    // Orca refuses a directory that is not a git repository unless it is a
+    // folder (sunfmin/control#1255): the stand-in refuses it so too.
+    assert!(adds[0].windows(2).any(|pair| pair == ["--kind", "folder"]), "{adds:?}");
     let help = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(["run", "--help"])
@@ -714,6 +736,64 @@ fn a_host_with_no_operator_directory_runs_the_stock_watch_and_records_what_stays
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("stock watch"), "{help}");
     assert!(help.contains("stock-watch"), "{help}");
+}
+
+/// A stock watch directory that is itself a git repository is registered as
+/// one, as before: with no `--kind folder` (sunfmin/control#1255).
+#[test]
+fn a_git_watch_directory_is_registered_as_a_git_repository() {
+    let world = World::new();
+    let dir = world.cache().join("afkconvoy/stock-watch");
+    std::fs::create_dir_all(&dir).unwrap();
+    let init = world.command("git", &dir).args(["init", "-q"]).output().unwrap();
+    assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
+    world.issue(7, &["ready-for-human"]);
+    world.comment(7, "<!--convoy:escalation claim=old-->\nChoose the schema.");
+    paused(&world, "pi", "it refused every prompt");
+    world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
+    let watch = until(&world, "the stock watch", || running(&world));
+    assert_eq!(watch["directory"], json!(dir));
+    let adds: Vec<Vec<String>> = world
+        .orca_called_with()
+        .into_iter()
+        .map(|(call, _)| call)
+        .filter(|call| asked(call) == "repo add")
+        .collect();
+    assert_eq!(adds.len(), 1, "{adds:?}");
+    assert!(!adds[0].contains(&"--kind".to_string()), "{adds:?}");
+    world.afk(&["stop", "--all"]).ok();
+}
+
+/// A registration orca refuses says what orca said — its message and next
+/// step — in the watch's `unavailable` and doctor's finding, not its error
+/// code alone (sunfmin/control#1255).
+#[test]
+fn a_refused_registration_says_orcas_error() {
+    let world = World::new();
+    world.with_orca(|orca| orca["refuse_add"] = json!(true));
+    world.issue(7, &["ready-for-human"]);
+    world.comment(7, "<!--convoy:escalation claim=old-->\nChoose the schema.");
+    paused(&world, "pi", "it refused every prompt");
+    world.afk(&["run", "--host", "h1", "--second-ms", "100", "--watch-every", "1"]).ok();
+    let why = until(&world, "the refused registration", || {
+        state(&world)["unavailable"].as_str().map(str::to_string)
+    });
+    for said in
+        ["orca repo add failed: runtime_error", "Not a valid git repository", "--kind folder"]
+    {
+        assert!(why.contains(said), "unavailable lacks {said:?}: {why}");
+    }
+    assert!(running(&world).is_none());
+    let doctor = world.afk(&["doctor", "--all"]).json;
+    let finding = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["what"] == "no harness can start this host's watch")
+        .unwrap_or_else(|| panic!("no watch_unavailable finding: {doctor}"))
+        .to_string();
+    assert!(finding.contains("Not a valid git repository"), "{finding}");
+    world.afk(&["stop", "--all"]).ok();
 }
 
 /// Only money is a human's (docs/adr/0073): a watch given a decision that
@@ -1291,13 +1371,13 @@ fn one_watch_covers_an_episode_is_kept_across_a_restart_and_is_recorded() {
 
     // What a look would find while it runs waits for it to end.
     paused(&world, "dsh", "it refused every prompt");
-    std::thread::sleep(Duration::from_millis(2500));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "no second watch beside the first");
 
     world.kill_host_runner("KILL");
     let again = run(&world, &dir);
     assert_ne!(again["host_runner"]["pid"], first["host_runner"]["pid"]);
-    std::thread::sleep(Duration::from_millis(2500));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "the running watch is kept, and none started beside it");
     assert_eq!(running(&world).unwrap()["id"], watch["id"]);
 
@@ -1884,11 +1964,11 @@ fn a_hot_worker_starts_the_host_watch_with_its_reading_and_evidence() {
     );
     printed(&world, &watch, &["told #7 to end its runaway process"], Some(0));
     until(&world, "watch record", || ended(&world, "ended"));
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "the same hot episode starts nothing again");
     world.kill_host_runner("KILL");
     run(&world, &dir);
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "a runner replacement keeps the hot episode");
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert!(
@@ -1960,11 +2040,11 @@ fn admission_held_ten_minutes_starts_a_watch_with_the_host_reading() {
     until(&world, "watch end", || ended(&world, "ended"));
     let second = world.second_repo();
     world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "a new fleet shares the host's admission episode");
     world.kill_host_runner("KILL");
     run(&world, &dir);
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "episode coverage survives a runner replacement");
 }
 
@@ -2062,7 +2142,7 @@ fn pressure_starts_one_watch_across_fleets_and_no_worker_turns_hot() {
     world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
     printed(&world, &watch, &["checked the outside memory holder"], Some(0));
     until(&world, "watch end", || ended(&world, "ended"));
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "one pressure episode across fleets");
     let doctor = world.afk(&["doctor", "--all"]).json;
     for checkout in doctor["checkouts"].as_array().unwrap() {
@@ -2168,9 +2248,7 @@ fn pressure_another_account_holds_with_no_fleet_worker_starts_no_watch_and_docto
     held_since(&world, true);
     let dir = operator(&world);
     run(&world, &dir);
-    let first = until(&world, "a look", || state(&world)["looked"].as_u64());
-    until(&world, "a later look", || state(&world)["looked"].as_u64().filter(|at| *at > first));
-    std::thread::sleep(Duration::from_secs(2));
+    passed(&world);
     assert!(starts(&world).is_empty(), "no watch: {}", state(&world));
     let doctor = world.afk(&["doctor", "--all"]).json;
     let found = pressure_finding(&doctor);
@@ -2236,11 +2314,7 @@ fn two_pressure_episodes_from_the_same_other_account_start_one_watch_until_the_c
     let mut saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     assert_eq!(saved["left"]["account"], "simulators", "{saved}");
     run(&world, &dir);
-    let looked = now();
-    until(&world, "a look of the new episode", || {
-        state(&world)["looked"].as_u64().filter(|at| *at > looked)
-    });
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(rounds(&world), vec![first.clone()], "the same cause starts no second watch");
     let doctor = world.afk(&["doctor", "--all"]).json;
     let found = pressure_finding(&doctor);
@@ -2329,7 +2403,7 @@ fn a_lost_creation_receipt_recovers_the_acknowledged_terminal_without_another_ag
     std::fs::remove_file(world.cache().join("afkconvoy/watch/state.json")).unwrap();
     run(&world, &dir);
     until(&world, "the retained watch", || running(&world).filter(|w| w["terminal"] == handle));
-    std::thread::sleep(Duration::from_millis(2200));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "restart/repeated checks never create another agent");
     let terminal = world.orca()["terminals"]
         .as_array()
@@ -2362,7 +2436,7 @@ fn same_name_operator_terminals_block_discovery_without_being_adopted_or_closed(
     assert_eq!(open(&world, &dir).len(), 2);
     // A unique title still proves no ownership.
     world.with_orca(|orca| orca["terminals"][1]["title"] = json!("operator's work"));
-    std::thread::sleep(Duration::from_millis(2200));
+    passed(&world);
     assert!(starts(&world).is_empty());
     world.with_orca(|orca| orca["terminals"][0]["title"] = json!("operator"));
     until(&world, "start after unrelated titles are renamed", || running(&world));
@@ -2507,7 +2581,7 @@ fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_ex
                 .filter(|why| why.contains("No replacement is started"))
                 .map(str::to_string)
         });
-        std::thread::sleep(Duration::from_millis(2200));
+        passed(&world);
         assert_eq!(starts(&world).len(), 1, "{status}");
         assert!(open(&world, &dir).contains(&watch["terminal"].as_str().unwrap().into()));
         let doctor = world.afk(&["doctor"]).json;

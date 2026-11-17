@@ -461,6 +461,8 @@ impl World {
             "NEXTEST_TEST_THREADS",
             // as are the threads of its rustc (sunfmin/control#1127)
             "CARGO_RUSTC_THREADS",
+            // as is where it builds (sunfmin/control#1262)
+            "CARGO_TARGET_DIR",
         ] {
             cmd.env_remove(name);
         }
@@ -1136,6 +1138,24 @@ impl World {
         log.lines().map(str::to_string).collect()
     }
 
+    /// What `read` reads while this test holds the lock file `lock`, under
+    /// the cache. A loop that holds that lock throughout each pass and counts
+    /// the pass under it began every pass it counts after `read`, after it:
+    /// a test waits for such a count to pass what `read` read to know the
+    /// loop has looked again since (sunfmin/control#1280).
+    pub fn holding<T>(&self, lock: &str, read: impl FnOnce() -> T) -> T {
+        let path = self.cache().join(lock);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .unwrap();
+        file.lock().unwrap();
+        read()
+    }
+
     /// Has every `git` call afkconvoy makes from here on logged (`git_calls`).
     pub fn watch_git(&self) {
         let (git, log) = (git_program(), self.root.join("git.log"));
@@ -1551,8 +1571,8 @@ fn copy_repository(from: &Path, to: &Path) {
 
 /// A host runner this world started ends with it: killed, so that none is
 /// left ticking against a world that is gone. The copies a fleet kept are
-/// read-only, directories included: they are opened again so that the world's
-/// directory can be removed.
+/// read-only, directories included, and so is what a test seals: every
+/// directory under the world is opened again so that it can be removed.
 impl Drop for World {
     fn drop(&mut self) {
         // No test's host runner serves the panel on the host's own port, nor
@@ -1575,9 +1595,10 @@ impl Drop for World {
             std::thread::sleep(Duration::from_millis(50));
         }
         end_left_behind(&self.root);
-        if self.cache().exists() {
-            let _ = Command::new("chmod").arg("-R").arg("u+w").arg(self.cache()).status();
-        }
+        // Every directory under it, not the cache's alone: a fixture's skill
+        // under its home, a test's own sealed directory, passing or panicking
+        // (sunfmin/control#1276).
+        afkconvoy::copies::removable(&self.root);
     }
 }
 

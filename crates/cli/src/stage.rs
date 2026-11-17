@@ -19,6 +19,7 @@ use afkconvoy_core::team::{FlowLabels, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{Relabel, escalated_at, skips_consult};
 use afkconvoy_core::waiting::{Back, Waits, back, waits};
+use afkconvoy_core::worker::carried_by;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
 
@@ -749,7 +750,13 @@ impl Flows {
         let mut found = vec![];
         let team = self.team().ok();
         for issue in self.issues() {
-            let pr = closing_pr(&open.prs, issue.number).map(|pr| pr.number);
+            // An issue whose PR an open PR carries waits on that PR to land
+            // its change (docs/adr/0083), not on a human: its own PR is
+            // closed, and its worker left after the carry.
+            let comments = open.issues.comments(issue.number);
+            let carrier = carried_by(comments.iter().map(|comment| comment.body.as_str()))
+                .filter(|by| open.prs.iter().any(|pr| pr.number == *by));
+            let pr = closing_pr(&open.prs, issue.number).map(|pr| pr.number).or(carrier);
             let records = issue.stages.records();
             let waits = team.and_then(|team| waits(team, &issue.labels, records, pr));
             if let Some(waits) = waits {

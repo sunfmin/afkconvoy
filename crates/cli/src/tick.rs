@@ -74,6 +74,9 @@ enum Cleanup {
     Kept,
     /// The watch's checkouts a watch left (`watch_checkout::remove_left`).
     WatchLeft,
+    /// The worktrees of detached gates whose process is gone
+    /// (`gate::remove_orphans`).
+    GatesLeft,
 }
 
 impl Cleanup {
@@ -84,6 +87,7 @@ impl Cleanup {
             Cleanup::FailedRemovals => "finish_removals",
             Cleanup::Kept => "remove_kept",
             Cleanup::WatchLeft => "remove_watch_left",
+            Cleanup::GatesLeft => "remove_gates_left",
         }
     }
 
@@ -266,6 +270,9 @@ pub fn tick(
     // grace (sunfmin/control#1063).
     let left = crate::watch_checkout::remove_left(&fleet.repo, base, fleet.now);
     cleanup_failures.extend(Cleanup::WatchLeft.failures(left));
+    // A base tip's or delivery's gate worktree whose gate was ended from
+    // outside, before it could remove it (sunfmin/control#1276).
+    cleanup_failures.extend(Cleanup::GatesLeft.failures(crate::gate::remove_orphans(&fleet.repo)));
     // Cover interruption after an internal task landed but before final review.
     // A bad delivery does not prevent unrelated task reconciliation.
     let delivery_failure = crate::delivery::reconcile(&fleet).err();
@@ -510,6 +517,15 @@ fn carry_out(
     read: &Read,
     step: TickStep,
 ) -> Result<Outcome> {
+    // A landing hold on this host leaves a claim it keeps off alone, before
+    // anything: no turn is asked for, no stopped worker judged or nudged. Its
+    // worktree and worker wait as they are; the first tick after it is
+    // lifted takes them up where they stood (`afkconvoy hold --help`).
+    if let TickStep::Judge { issue, .. } | TickStep::Watch { issue, .. } = step
+        && crate::landing_hold::keeping_off(&fleet.repo, issue).is_some()
+    {
+        return Ok(Outcome::Nothing);
+    }
     // What a step on a claim of mine sees to first is the core's to say
     // (`tick::first`), by what is read of the claim now.
     if let TickStep::Judge { issue, .. }
@@ -1176,6 +1192,8 @@ impl Ticked {
         if !escalated.is_empty() {
             parts.push(format!("escalated {}", escalated.join(", ")));
         }
+        // A PR handed to a new worker after its red turns says so, and where.
+        parts.extend(self.found.handed_on.iter().map(|(_, line)| line.clone()));
         // An issue that is gone says so, whichever step found it.
         for (gone, released) in &self.found.forgotten {
             let verb = if *released { "released" } else { "skipped" };
@@ -1791,7 +1809,7 @@ Settling a claim removes that worker's worktree. Directories the gate left under
 {"did", "errors", "held", "frontier_remaining", "idle", "locks"} — and "held_back_by" when admission held back a worker it would have started
 
 - `did`: each step taken: {do, issue, outcome}. do is settle, forget, judge, watch, advance, escalate, end_patrol, patrol, end_cut, unlock, reclaim, dispatch, slow_gate, cut, board, stage_label or heartbeat; outcome is done, nudged, waiting, continued, restarted, nothing, lost, blocked, gone or failed. A step whose worker waits on its own background work says since when it was first seen to (epoch seconds): {do, issue, outcome, waiting_since}. A step on a patrol has a null issue and names it: {do, issue, patrol, outcome}. An `advance` that read a verdict and left the issue at a stage names it: {do, issue, outcome, stage} — `land` once the last stage passed to a landing turn. A step that escalated its issue says why, in a few words: {do, issue, outcome, escalated}. A `slow_gate` step also has `evidence`, naming the warning threshold, termination limit, host and recorded run durations; the tick log retains it and prints the same evidence when opening the issue. A `dispatch` that found an open blocker says which: {do, issue, outcome: "blocked", blocked_by}. A `settle` that kept its worktree says which and why, so the reason outlives the worktree: {do, issue, outcome, kept: {worktree, kept_because, unpushed}}, `kept_because` being `dirty`, `unpushed` or `unread`
-- `errors`: each step that failed: {do, issue, error}, with `patrol` as in `did` — and `see`, where a help topic explains what refused it: the command that prints the topic. A claimed issue the rebuild could not read is {do: "read", issue, error}: the rest of the tick is made, with it taken for open. Each tick first cleans up the worktrees nothing claims; a cleanup that failed is {do, issue, worktree, error}, do being `remove_candidates` (a stopped candidate's worktree), `finish_removals` (a removal orca answered success for that left the directory), `remove_kept` (a worktree a settle kept) or `remove_watch_left` (a watch's checkout a watch left), `worktree` the one it failed on and `issue` its issue, where it knows them. One worktree that fails does not stop the cleanup from the others, and the next tick tries it again
+- `errors`: each step that failed: {do, issue, error}, with `patrol` as in `did` — and `see`, where a help topic explains what refused it: the command that prints the topic. A claimed issue the rebuild could not read is {do: "read", issue, error}: the rest of the tick is made, with it taken for open. Each tick first cleans up the worktrees nothing claims; a cleanup that failed is {do, issue, worktree, error}, do being `remove_candidates` (a stopped candidate's worktree), `finish_removals` (a removal orca answered success for that left the directory), `remove_kept` (a worktree a settle kept), `remove_watch_left` (a watch's checkout a watch left) or `remove_gates_left` (a base tip's or delivery's gate worktree whose gate was ended from outside), `worktree` the one it failed on and `issue` its issue, where it knows them. One worktree that fails does not stop the cleanup from the others, and the next tick tries it again
 - `held`: the claims the instance holds after the pass, a patrol's run still going among them
 - `frontier_remaining`: the frontier issues it left undispatched
 - `idle`: whether the fleet instance is idle after the pass: it holds nothing, nothing of its is on the base branch, its frontier is empty, and no cut it started is going. `afkconvoy checkouts` answers it of each checkout's last tick
@@ -1832,7 +1850,7 @@ Errors: a command the fleet needs is missing or logged out, or orca is not runni
 - With a fleet lock standing a tick works lock issues only (`afkconvoy lock --help`). It dispatches nothing else, runs no patrol, takes no stale claim of another issue, hands no other issue to a human, and leaves alone every claim of its own on another issue whose PR is not on the base branch: no judge, no watch, no advance, no nudge. What those workers declared is acted on by the first tick after the last lock issue closed. Their claims take no slot meanwhile; the line of `run` shows them apart, as `left alone`.
 - A claim whose worker declared a verdict under it takes no slot either: the slot is free the tick it is read, though the claim is held until the verdict is acted on — once its worker has been quiet the grace period, as ever. A verdict on the issue from before the claim was created is not one declared under it. The line of `run` shows them apart, as `taking no slot`.
 - Admission holds only new workers. While it holds for the disk — the disk under the checkout below its floor — each worker of this fleet at work is told once, in its terminal, to stop writing: no build, test, gate or download; commit, push and end its turn. Once the disk is over its floor again, each worker told is told to go on. Each telling is a `did` step, {do: "disk_floor", issue, outcome, comment}, and its line says `told #7: the disk floor, stop` (sunfmin/control#1112). A tick never waits for a worker to take its line: it types the line once, looks once whether the harness gave it to its model, and goes on; a line still queued is a `queued` step, with `since`, looked at again at the next tick and not typed twice, and one queued past the note bound is typed again at the next tick, under the same mark (sunfmin/control#1230).
-- A landing claim — its PR open and not on the base branch — takes a slot while its worker is changing the tree: resolving a `conflict` or `speculative_conflict`, fixing a `gate_red`, or still preparing the branch for the turn. While its worker is gone or idle, or its turn is being asked for, or the last turn answered a wait (`afkconvoy land --help`), it takes none, and is still held until the PR lands. Its worker stops on a wait; the tick asks for the turn again itself (`asked for a turn again for #7` in its line), in the worktree, with no harness started. Before it asks, it drops the worktree's build output — each directory git ignores at the worktree's top that is not hidden, `target/`, `node_modules/` — which the next build makes again; a file git ignores and a hidden directory stay (sunfmin/control#1112). If that turn answers `conflict`, `speculative_conflict` or `gate_red`, the next tick hands its worker the answer, including the files or failing output, the ending's instructions and the worktree's full `convoy-turn.log` path. Its line says `told its turn's answer to #7`. A worker gone is continued onto its land step with that answer in its brief. Giving the worker this answer waits for a free slot; once the worker takes it, the claim takes that slot until it asks for a turn again, even while its harness still reports idle. Changes the fleet's turn made in the worktree count as no worker sign of life.
+- A landing claim — its PR open and not on the base branch — takes a slot while its worker is changing the tree: resolving a `conflict` or `speculative_conflict`, fixing a `gate_red`, or still preparing the branch for the turn. While its worker is gone or idle, or its turn is being asked for, or the last turn answered a wait (`afkconvoy land --help`), it takes none, and is still held until the PR lands. Its worker stops on a wait; the tick asks for the turn again itself (`asked for a turn again for #7` in its line), in the worktree, with no harness started. Before it asks, it drops the worktree's build output — each directory git ignores at the worktree's top that is not hidden, `target/`, `node_modules/` — which the next build makes again; a file git ignores and a hidden directory stay (sunfmin/control#1112). If that turn answers `conflict`, `speculative_conflict` or `gate_red`, the next tick hands its worker the answer, including the files or failing output, the ending's instructions and the worktree's full `convoy-turn.log` path. Its line says `told its turn's answer to #7`. A worker gone is continued onto its land step with that answer in its brief. Giving the worker this answer waits for a free slot; once the worker takes it, the claim takes that slot until it asks for a turn again, even while its harness still reports idle. Changes the fleet's turn made in the worktree count as no worker sign of life. A PR whose turns answered `gate_red` twice in a row — its gate red, with no green, `conflict` or `speculative_conflict` turn between them; a wait, `round_red` and a turn that failed leave the row as it was — is not handed back: with a slot free, the tick ends its worker, confirmed stopped, saves what its worktree holds that the PR's branch on the remote does not as a patch in the checkout's git dir (`convoy-salvage/<issue>-<seconds>.patch`), removes the worktree, and starts a worker of the issue in a new one on the PR's branch merged up to the base tip, its brief naming each red run's failing tests and gate output file, the earlier worker's last verdict and the patch, and that it may change the approach. Its line says `handed #7's PR #70 to a new worker in a new worktree …`, and so does the issue's status board. The claim, the PR, the branch and the issue's rework counts stay. A worker that cannot be confirmed stopped is given no successor: the step fails, and the worktree is kept.
 - What a closed lock explains is run again, not carried out. In a bound repo, a stage whose own worker declared `escalate` before the lock closed and was not acted on since — and one whose worker stayed silent past a nudge sent before it closed — is not handed to its consult or to a human: the fleet leaves a stage record (`verdict=lock-closed by=fleet`), the claim is released (`advance`, `done`), and the next tick starts a worker on that stage, whose brief says a lock stood. It is no rework. A `pass`, a `blocked` and an `already-satisfied` stand as they are. What landed is still settled.
 - A step that failed is not a failed command: the exit is 0 and the failure is in `errors`. Read `errors`, not the exit code.
 - A read of GitHub that failed in transit — {const:GH_IN_TRANSIT} — is made again, twice more and a second apart, before anything is said. One that still fails is `GitHub could not be reached: <the call>: <what gh said>`. A 404 or a 403 is GitHub's answer, and is not asked for again.

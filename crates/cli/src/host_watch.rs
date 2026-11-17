@@ -205,6 +205,12 @@ struct State {
     pending: Vec<Queued>,
     look: Value,
     looked: Option<u64>,
+    /// How many looks and checks have run to their end, each counted under
+    /// the state lock it held throughout: one counted after a reader held
+    /// that lock began after it. `looked` is in whole seconds and cannot
+    /// tell two looks a second apart; these can (sunfmin/control#1280).
+    looks: u64,
+    checks: u64,
     running: Option<Watch>,
     last: Option<Watch>,
     history: Vec<Watch>,
@@ -625,6 +631,7 @@ impl Watcher {
                 self.start(&mut state, &directory, settings.watch_dir.is_none(), look, items)?;
             }
         }
+        state.looks = state.looks.wrapping_add(1);
         self.save(&mut state)
     }
 
@@ -802,6 +809,15 @@ impl Watcher {
     /// is over, its harness gave out or its hour is up.
     fn check(&self) -> Result<()> {
         let _lock = state_lock()?;
+        let checked = self.check_held();
+        let mut state = read()?;
+        state.checks = state.checks.wrapping_add(1);
+        write(&mut state)?;
+        checked
+    }
+
+    /// `check`, with the state lock held.
+    fn check_held(&self) -> Result<()> {
         let mut state = read()?;
         let kept = state.running.take();
         let record = watch_terminal::read()?;

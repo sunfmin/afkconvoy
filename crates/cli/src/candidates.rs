@@ -1177,11 +1177,35 @@ pub(crate) struct Gate<'a> {
 }
 
 impl Gate<'_> {
-    /// Where the candidate's gate builds: the target directory of the
-    /// worktree its turn runs in, which that worker's own gate has just
-    /// built. A candidate's worktree is new, and a build there is cold.
-    pub fn target(&self) -> std::path::PathBuf {
-        self.repo.dir.join("target")
+    /// Warms the candidate's own build: its `checkout`'s `target/`, where it
+    /// has none yet, becomes a copy-on-write clone of the target directory
+    /// of the worktree its turn runs in, which that worker's own gate has
+    /// just built. A candidate's worktree is new, and a build there is cold.
+    ///
+    /// It never builds in the worker's target itself: what it builds there
+    /// has the candidate's checkout compiled in (`CARGO_MANIFEST_DIR`), and
+    /// cargo, which keys a unit by its path in the workspace, takes it up
+    /// for the worker's next gate, whose tests then read a candidate
+    /// checkout that is gone (sunfmin/control#1262). A clone that cannot be
+    /// made leaves the build cold.
+    pub fn seed(&self, checkout: &Path) {
+        let worker = self.repo.dir.join("target");
+        let own = checkout.join("target");
+        if own.exists() || !worker.is_dir() {
+            return;
+        }
+        if let Err(error) = clone_tree(&worker, &own) {
+            let _ = std::fs::remove_dir_all(&own);
+            eprintln!(
+                "[afkconvoy] gate: {} could not be cloned for the candidate, which builds cold: {error:#}",
+                worker.display()
+            );
+        }
+    }
+
+    /// Where the candidate's gate writes its whole output (`gate_output`).
+    pub fn output(&self) -> Result<PathBuf> {
+        gate_output(self.repo, self.id, self.slow)
     }
 
     pub fn scope(&self) -> Result<std::path::PathBuf> {
@@ -1262,6 +1286,84 @@ fn answered(evidence: &Evidence, answer: &Value) -> Value {
         result[key] = value.clone();
     }
     result
+}
+
+/// How many of a checkout's candidate gate outputs are kept: the newest.
+const GATE_OUTPUTS_KEPT: usize = 40;
+
+/// Where a candidate's gate, fast or `slow`, writes its whole output: a file
+/// of its own in the checkout's shared git dir, named for the candidate, so
+/// it outlasts the candidate's worktree and the worker's, and whichever turn
+/// answers red for it names it (`red_told`).
+pub(crate) fn gate_output(repo: &Repo, id: &str, slow: bool) -> Result<PathBuf> {
+    let id: String =
+        id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    let gate = if slow { "slow" } else { "fast" };
+    Ok(repo.common_dir()?.join(format!("convoy-gate-{id}-{gate}.log")))
+}
+
+/// Makes room for the gate output `file` is to be: an earlier one of the same
+/// name is removed, and only the newest of the others are kept
+/// (`GATE_OUTPUTS_KEPT`). Soft: what cannot be removed stays.
+pub(crate) fn room_for_output(file: &Path) {
+    let _ = std::fs::remove_file(file);
+    let Some(dir) = file.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut kept: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("convoy-gate-") && name.ends_with(".log")
+        })
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    kept.sort();
+    let over = kept.len().saturating_sub(GATE_OUTPUTS_KEPT - 1);
+    for (_, old) in kept.into_iter().take(over) {
+        let _ = std::fs::remove_file(old);
+    }
+}
+
+/// A turn's `answer` with what a red one says of its gate besides: the tests
+/// its output names as failing (nextest's `FAIL`, `TIMEOUT` and signal
+/// lines), as `failing`, and the file that keeps the whole output, as
+/// `gate_output` — its candidate's, or its group's (`pair`), where this
+/// host kept one; the newest, a round's slow gate's before its fast one's.
+/// Where none is kept, the tests are read from its excerpt. Any other answer
+/// is as it was.
+pub(crate) fn red_told(repo: &Repo, mut answer: Value) -> Value {
+    if answer["outcome"] != json!(Ending::GateRed) {
+        return answer;
+    }
+    let ids = [&answer["pair"]["candidate"], &answer["candidate"]];
+    let output = ids
+        .iter()
+        .filter_map(|id| id.as_str())
+        .flat_map(|id| [true, false].map(|slow| gate_output(repo, id, slow).ok()))
+        .flatten()
+        .filter_map(|file| Some((std::fs::metadata(&file).ok()?.modified().ok()?, file)))
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, file)| file);
+    let excerpt = || -> Vec<String> {
+        let lines = answer["excerpt"].as_array().into_iter().flatten();
+        lines.filter_map(Value::as_str).map(str::to_string).collect()
+    };
+    let mut failing = output
+        .as_ref()
+        .and_then(|file| std::fs::read_to_string(file).ok())
+        .map(|text| {
+            afkconvoy_gate::gate::failing_tests(
+                &text.lines().map(str::to_string).collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default();
+    if failing.is_empty() {
+        failing = afkconvoy_gate::gate::failing_tests(&excerpt());
+    }
+    answer["failing"] = json!(failing);
+    answer["gate_output"] = json!(output);
+    answer
 }
 
 /// Says in `answer` the ending the chain decided for `c`
@@ -1478,11 +1580,28 @@ fn candidate_directory(root: &Path, path: &Path, id: &str) -> bool {
     }
 }
 
+/// Clones the directory tree `from` to `to`, which is not there yet, file
+/// by file copy-on-write, keeping each file's times, which cargo judges a
+/// build fresh by: on APFS a 3.6 GiB target took 2.7 s and no disk
+/// (macnoMac-Studio). A file system that cannot clone refuses it rather
+/// than copying it whole.
+fn clone_tree(from: &Path, to: &Path) -> Result<()> {
+    let mut cp = std::process::Command::new("cp");
+    if cfg!(target_os = "macos") {
+        cp.arg("-c");
+    } else {
+        cp.arg("--reflink=always");
+    }
+    let out = crate::process::output(cp.arg("-pR").arg(from).arg(to))?;
+    ensure!(out.status.success(), "cp: {}", String::from_utf8_lossy(&out.stderr).trim());
+    Ok(())
+}
+
 /// Adds the candidate's worktree at `path`, detached at `commit`, where it
 /// is not there yet: each gate run of the candidate, its fast gate or a
 /// round's slow gate, runs in one, which goes as that run ends
-/// (sunfmin/control#1063). It builds in its turn's worker's target
-/// directory (`Gate::target`), so a worktree added again builds warm.
+/// (sunfmin/control#1063). Its gate builds warm in a clone of its turn's
+/// worker's target directory (`Gate::seed`).
 fn add_candidate_worktree(repo: &Repo, path: &Path, commit: &str) -> Result<()> {
     if path.exists() {
         return Ok(());
@@ -1996,6 +2115,11 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             invalidate(repo, config, &id, "fleet_lock")?;
             return Ok(crate::turn::locked(result, &locks));
         }
+        // A landing hold raised while this turn waits ends it as a lock does.
+        if let Some(hold) = issue.and_then(|n| crate::landing_hold::keeping_off(repo, n)) {
+            invalidate(repo, config, &id, "landing_hold")?;
+            return Ok(crate::turn::held(result, &hold));
+        }
         if next == Next::Whole {
             if let Some(red) = whole(Round { turn: &turn, tracker })? {
                 for (key, value) in red.as_object().into_iter().flatten() {
@@ -2178,6 +2302,9 @@ fn in_round(
         let locks = crate::lock::waited_locks(gh, config)?;
         if issue.map_or(!locks.is_empty(), |n| keeps_off(&locks, n)) {
             return Ok(Rounded::Answer(crate::turn::locked(answer, &locks)));
+        }
+        if let Some(hold) = issue.and_then(|n| crate::landing_hold::keeping_off(repo, n)) {
+            return Ok(Rounded::Answer(crate::turn::held(answer, &hold)));
         }
         let next = chain.round_next(id);
         match next {

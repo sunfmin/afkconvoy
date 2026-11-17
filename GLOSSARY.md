@@ -240,6 +240,10 @@ _Avoid_: cron, job, scheduled worker
 An open issue carrying the lock label, in a bound repo or an unbound one — of a tracker that is another repo, and the repo label of the repo whose fleet it holds: no other repo's fleet that works the same tracker. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue lands, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it. A stage's `escalate` or failure the lock explains — declared before it closed, and not acted on since — is then not carried out: the stage runs again, which is no rework.
 _Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill switch
 
+**Landing hold**:
+An operator's hold on a repo's landings on one host, raised with `afkconvoy hold` and lifted with `hold --lift`: a note in the repo's git dir that every worktree of it on the host reads. While it stands no `land` turn of an issue it does not let through starts (it answers `held`), no worker's `gate` runs, and the tick leaves those claims alone — no turn asked for, no stopped worker judged — keeping their claims, worktrees and branches; a watch's `land --watch`, and the one issue it names, are let through, so one PR lands alone. Lifting it lets the held workers go on with no restart. Unlike `stop`, which leaves the workers landing, and `stop --release`, which ends them and releases their claims, it keeps the work and pauses it; unlike a **fleet lock**, it is this host's alone and stops running workers' gates (ADR-0089).
+_Avoid_: freeze, SIGSTOP
+
 ### Workers
 
 **Harness**:
@@ -280,7 +284,7 @@ _Avoid_: casting (the removed automatic choice, as in "automatic casting is gone
 The one decision of what a worker runs: its harness, its model, whether a model label named that model, and what an unfollowed label is told — or why nothing is safe, as the user is told it. It is made from facts gathered once for the start: the host kit whole, what of it can start now and why the rest cannot, the checkout's named harness, the pauses, the role, the issue's labels and the harness's **default model** where the user's Codex config names one. Dispatch, switch, a patrol, plan and the panel each ask it, and it says how the model goes on the start line of every harness.
 
 **Worker**:
-A session of one harness, started in one role to perform one stage of one issue — or, after its last stage, to land its PR in a turn — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run.
+A session of one harness, started in one role to perform one stage of one issue — or, after its last stage, to land its PR in a turn — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run. A landing worker whose PR's turns went red twice in a row is ended too. It is confirmed stopped, what it left is saved as a patch and its worktree is removed. A new worker of the issue then starts in a new worktree, on the PR's branch merged up to the base tip, briefed with both red runs. The claim, the PR, the branch and every rework count stay. One that cannot be confirmed stopped is given no successor (ADR-0088, Felix: https://github.com/sunfmin/control/issues/1254#issuecomment-6916832809).
 _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
 
 **Switch**:
@@ -490,7 +494,7 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Turn**:
-One command's construction, validation and ordered landing of an open PR's candidate. Red, a conflict, invalidation or a rejected push ends it with nothing landed. Its waits on the candidate chain are bounded: a turn that holds a pending place and no candidate frees it past a fixed bound, and one whose green candidate waits for the candidates ahead or its round past its gate limit leaves that candidate stopped for the next turn of its PR; either ends `waited_past_bound`, and the fleet asks for the turn again.
+One command's construction, validation and ordered landing of an open PR's candidate. Red, a conflict, invalidation or a rejected push ends it with nothing landed. Its waits on the candidate chain are bounded: a turn that holds a pending place and no candidate frees it past a fixed bound, and one whose green candidate waits for the candidates ahead or its round past its gate limit leaves that candidate stopped for the next turn of its PR; either ends `waited_past_bound`, and the fleet asks for the turn again. A red one answers the tests its gate's output names as failing, `failing`, and the file that keeps that output, `gate_output`, and its tick-log line names both. Two of one PR in a row are red when both end `gate_red` with no green or conflicting turn between them, and that PR is not handed back to the same worker in the same worktree: it goes to a new worker in a new worktree (Worker; ADR-0088).
 _Avoid_: landing slot, merge queue
 
 **Candidate**:

@@ -444,8 +444,13 @@ pub struct Failed {
 
 /// The cleanups every tick makes before its pass (sunfmin/control#1204):
 /// each tick tries them again, so one that no longer fails is recovered.
-const CLEANUPS: [&str; 4] =
-    ["remove_candidates", "finish_removals", "remove_kept", "remove_watch_left"];
+const CLEANUPS: [&str; 5] = [
+    "remove_candidates",
+    "finish_removals",
+    "remove_kept",
+    "remove_watch_left",
+    "remove_gates_left",
+];
 
 impl Failed {
     /// Whether `other` is the same step on the same thing, whatever it said.
