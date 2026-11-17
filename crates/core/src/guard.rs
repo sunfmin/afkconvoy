@@ -696,25 +696,10 @@ pub fn asking_input(
 ) -> Result<Option<String>, String> {
     let Call::Shell(line) = call else { return Ok(None) };
     for command in commands(line) {
-        let mut rest = command.iter().map(String::as_str);
-        let mut wrapped = false;
-        let program = loop {
-            let Some(word) = rest.next() else { break "" };
-            if WRAPPERS.contains(&word) {
-                wrapped = true;
-            } else if !(is_assignment(word) || wrapped && word.starts_with('-')) {
-                break word.rsplit('/').next().unwrap_or(word);
-            }
-        };
-        let args: Vec<_> = rest.collect();
+        let (program, args) = program_of(&command);
         if matches!(program, "sh" | "bash" | "zsh" | "dash" | "ksh") {
-            for (at, arg) in args.iter().enumerate() {
-                if arg.starts_with('-')
-                    && !arg.starts_with("--")
-                    && arg.contains('c')
-                    && let Some(line) = args.get(at + 1)
-                    && let Some(why) = asking_input(&Call::shell(line), protected, current)?
-                {
+            for line in shell_lines(&args) {
+                if let Some(why) = asking_input(&Call::shell(line), protected, current)? {
                     return Ok(Some(why));
                 }
             }
@@ -722,39 +707,7 @@ pub fn asking_input(
         if program != "orca" {
             continue;
         }
-        // Consume option values, so text which happens to say --terminal or
-        // terminal send is data, never another target or command.
-        let mut words = vec![];
-        let mut terminal = None;
-        let mut routing = vec![];
-        let mut help = false;
-        let mut args = args.into_iter();
-        while let Some(arg) = args.next() {
-            if arg == "--terminal" {
-                terminal = args.next();
-            } else if let Some(value) = arg.strip_prefix("--terminal=") {
-                terminal = Some(value);
-            } else if ["--environment", "--pairing-code", "--worktree"].contains(&arg) {
-                routing.push(arg.to_string());
-                if let Some(value) = args.next() {
-                    routing.push(value.to_string());
-                }
-            } else if ["--environment=", "--pairing-code=", "--worktree="]
-                .iter()
-                .any(|flag| arg.starts_with(flag))
-            {
-                routing.push(arg.to_string());
-            } else if arg == "--help" {
-                help = true;
-            } else if ["--text", "--text-file", "--wait-submit", "--retry-request"].contains(&arg) {
-                args.next();
-            } else if !arg.starts_with('-') {
-                words.push(arg);
-            }
-        }
-        if help || words.get(..2) != Some(&["terminal", "send"]) {
-            continue;
-        }
+        let Some((terminal, routing)) = terminal_send(args) else { continue };
         let target = match terminal {
             Some(terminal) => Some(terminal.to_string()),
             None => current(&routing)?,
@@ -764,6 +717,75 @@ pub fn asking_input(
         }
     }
     Ok(None)
+}
+
+/// The name of the program the simple command `command` runs, past its
+/// wrappers and assignments, and its words after it; `""` when it runs none.
+fn program_of(command: &Command) -> (&str, Vec<&str>) {
+    let mut rest = command.iter().map(String::as_str);
+    let mut wrapped = false;
+    let program = loop {
+        let Some(word) = rest.next() else { break "" };
+        if WRAPPERS.contains(&word) {
+            wrapped = true;
+        } else if !(is_assignment(word) || wrapped && word.starts_with('-')) {
+            break word.rsplit('/').next().unwrap_or(word);
+        }
+    };
+    (program, rest.collect())
+}
+
+/// The lines a shell given `args` runs: each word after a short option that
+/// holds `c`.
+fn shell_lines<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut lines = vec![];
+    for pair in args.windows(2) {
+        if let [arg, line] = pair
+            && arg.starts_with('-')
+            && !arg.starts_with("--")
+            && arg.contains('c')
+        {
+            lines.push(*line);
+        }
+    }
+    lines
+}
+
+/// The Terminal `orca` with `args` sends input to, when it sends any: the
+/// one its `--terminal` names, or `None` for the one its routing options
+/// resolve to, with those options. Option values are consumed, so text which
+/// happens to say --terminal or terminal send is data, never another target
+/// or command.
+fn terminal_send(args: Vec<&str>) -> Option<(Option<&str>, Vec<String>)> {
+    let mut words = vec![];
+    let mut terminal = None;
+    let mut routing = vec![];
+    let mut help = false;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if arg == "--terminal" {
+            terminal = args.next();
+        } else if let Some(value) = arg.strip_prefix("--terminal=") {
+            terminal = Some(value);
+        } else if ["--environment", "--pairing-code", "--worktree"].contains(&arg) {
+            routing.push(arg.to_string());
+            if let Some(value) = args.next() {
+                routing.push(value.to_string());
+            }
+        } else if ["--environment=", "--pairing-code=", "--worktree="]
+            .iter()
+            .any(|flag| arg.starts_with(flag))
+        {
+            routing.push(arg.to_string());
+        } else if arg == "--help" {
+            help = true;
+        } else if ["--text", "--text-file", "--wait-submit", "--retry-request"].contains(&arg) {
+            args.next();
+        } else if !arg.starts_with('-') {
+            words.push(arg);
+        }
+    }
+    (!help && words.get(..2) == Some(&["terminal", "send"])).then_some((terminal, routing))
 }
 
 /// Where a stage that writes nothing started: what the fleet keeps of it to
