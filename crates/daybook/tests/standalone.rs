@@ -272,7 +272,7 @@ fn gh_is_asked_each_variable_as_a_field_an_int_typed() {
     );
 }
 
-/// What the crate depends on: anyhow, libc and serde — never afkconvoy-core
+/// What the crate depends on: anyhow, libc, rusqlite and serde — never afkconvoy-core
 /// or the cli, whose fleet concepts its API is to stay free of.
 #[test]
 fn the_crate_depends_on_nothing_of_the_fleet() {
@@ -286,7 +286,7 @@ fn the_crate_depends_on_nothing_of_the_fleet() {
         .collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names, ["anyhow", "libc", "serde", "serde_json"]);
+    assert_eq!(names, ["anyhow", "libc", "rusqlite", "serde", "serde_json"]);
 }
 
 /// The crate's public API names no fleet concept: none of its public items
@@ -301,6 +301,8 @@ fn its_public_api_names_no_fleet_concept() {
         include_str!("../src/book.rs"),
         include_str!("../src/day.rs"),
         include_str!("../src/entry.rs"),
+        include_str!("../src/local.rs"),
+        include_str!("../src/store.rs"),
     ];
     for source in sources {
         let public = source.split("#[cfg(test)]").next().unwrap();

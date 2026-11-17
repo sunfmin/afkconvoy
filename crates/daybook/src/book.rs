@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::CATEGORY;
 use crate::entry::{Indexed, index_of, indexed, lesson_of};
+use crate::store::Store;
 
 /// One variable of a GraphQL call: text, or an `Int`, sent typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,5 +448,22 @@ impl<G: GraphQl> Daybook<G> {
             held.unlessoned += entries.saturating_sub(lessons);
         }
         Ok(held)
+    }
+}
+
+/// The Discussions as a `Store`: an entry is a comment on the day's
+/// discussion, which GitHub stamps with its own time, and a span's lessons
+/// and entries are read from the days' indexes, as `Daybook`'s own methods.
+impl<G: GraphQl> Store for Daybook<G> {
+    fn write(&self, day: &str, _at: u64, entry: &str) -> Result<String> {
+        Ok(Daybook::append(self, day, entry)?.url)
+    }
+
+    fn lessons(&self, since: &str, until: Option<&str>) -> Result<Vec<Lesson>> {
+        Daybook::lessons(self, since, until)
+    }
+
+    fn held(&self, since: &str, until: &str) -> Result<Held> {
+        Daybook::held(self, since, until)
     }
 }
