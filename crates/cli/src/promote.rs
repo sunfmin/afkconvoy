@@ -255,12 +255,7 @@ const PUBLISH_TRIES: u32 = 3;
 /// where the base branch holds the tip already, nothing is pushed
 /// (`already_promoted`); where it is still an ancestor of the tip, the tip
 /// is pushed onto it. The base branch never takes a merge.
-fn publish(
-    repo: &Repo,
-    standing: &Standing,
-    proven: &Proven,
-    answer: &mut Value,
-) -> Result<()> {
+fn publish(repo: &Repo, standing: &Standing, proven: &Proven, answer: &mut Value) -> Result<()> {
     let tip = &standing.tip;
     let branch = &standing.base_branch;
     let base_ref = format!("refs/heads/{branch}");
