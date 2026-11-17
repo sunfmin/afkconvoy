@@ -113,7 +113,7 @@ pub(crate) fn every(repo: &Repo) -> Result<Vec<String>> {
 }
 
 /// The green records of `command` in the repo, each with its tree: what the
-/// gate gone slow reads of the landings (docs/adr/0024).
+/// gate gone slow reads of the landings (docs/adr/0047).
 pub(crate) fn of_command(repo: &Repo, command: &GateCommand) -> Result<Vec<(String, String)>> {
     let key = crate::host_db::repo_key(repo)?;
     let db = crate::host_db::open()?;
