@@ -136,7 +136,7 @@ fn a_paused_harness_falls_through_and_the_label_stays() {
     assert_eq!(commands.len(), 1);
     assert!(commands[0].contains(Harness::Codex.stock()), "{}", commands[0]);
     assert_eq!(world.labels(7), ["ready-for-agent", "model:haiku"]);
-    std::fs::remove_file(world.paused_path()).unwrap();
+    world.write_paused(&json!([]));
     let planned = world.afk(&PLAN).ok();
     assert_eq!(planned["casting"][0]["stages"][0]["model"], "haiku");
     assert!(planned["casting"][0]["running"]["model"].is_null());

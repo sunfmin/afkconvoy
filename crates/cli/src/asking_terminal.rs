@@ -43,20 +43,17 @@ pub(crate) struct Record {
     pub execution_evidence: Option<Value>,
 }
 
-fn file() -> Result<PathBuf> {
-    Ok(cache()?.join(FILE))
-}
+/// The asking session's launch and delivery journal, whole, in the host's
+/// database: the one row of `asking_terminal`. It was `asking/terminal.json`
+/// in the cache directory.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: FILE,
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("asking_terminal"),
+};
 
 pub(crate) fn read() -> Result<Option<Record>> {
-    let path = file()?;
-    match std::fs::read(&path) {
-        Ok(bytes) => Ok(Some(
-            serde_json::from_slice(&bytes)
-                .with_context(|| format!("cannot read asking association {}", path.display()))?,
-        )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
+    crate::host_db::read(&STORE).context("cannot read the asking association")
 }
 
 /// The current asking Terminal, also during the creation-reply window. An
@@ -77,11 +74,8 @@ pub(crate) fn protected() -> Result<Option<String>> {
 }
 
 pub(crate) fn save(record: &Record) -> Result<()> {
-    let path = file()?;
-    std::fs::create_dir_all(path.parent().expect("asking association parent"))?;
-    let temporary = path.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(record)?)?;
-    std::fs::rename(temporary, path)?;
+    crate::host_db::put(&STORE, record)?;
+    // The delivery's record, for a human: a document, never read back.
     if let Some(question) = &record.question {
         let directory = cache()?.join("asking/questions").join(&question.question.id);
         std::fs::create_dir_all(&directory)?;

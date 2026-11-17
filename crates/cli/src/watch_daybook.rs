@@ -62,34 +62,22 @@ struct Outbox {
     last: Option<Value>,
 }
 
-fn directory() -> Result<PathBuf> {
-    let directory = crate::copies::cache()?.join("watch");
-    std::fs::create_dir_all(&directory)?;
-    Ok(directory)
-}
+/// The outbox of daybook entries, whole, in the host's database: the one
+/// row of `daybook_outbox`. It was `watch/daybook.json` in the cache
+/// directory, with `watch/daybook.lock` beside it.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: "watch/daybook.json",
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("daybook_outbox"),
+};
 
+/// Changes the outbox by `f`, in one transaction of the host's database.
 fn change<T>(f: impl FnOnce(&mut Outbox) -> T) -> Result<T> {
-    let directory = directory()?;
-    let lock = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.join("daybook.lock"))?;
-    lock.lock()?;
-    let mut outbox = read()?;
-    let answer = f(&mut outbox);
-    let temporary = directory.join(format!("daybook-{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(&outbox)?)?;
-    std::fs::rename(temporary, directory.join("daybook.json"))?;
-    Ok(answer)
+    crate::host_db::change(&STORE, f)
 }
 
 fn read() -> Result<Outbox> {
-    match std::fs::read(crate::copies::cache()?.join("watch/daybook.json")) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Outbox::default()),
-        Err(error) => Err(error.into()),
-    }
+    crate::host_db::read(&STORE)
 }
 
 /// Queues the entry of the round `watch` reported as `report`, once: a

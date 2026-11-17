@@ -408,15 +408,17 @@ impl World {
         std::fs::write(self.root.join("probes-answer"), "").unwrap();
     }
 
-    /// Where this host keeps the harnesses paused on it.
-    pub fn paused_path(&self) -> PathBuf {
-        self.cache().join("afkconvoy/paused.json")
-    }
-
     /// The harnesses paused on this host, as it keeps them.
     pub fn paused(&self) -> Value {
-        std::fs::read(self.paused_path())
-            .map_or(json!([]), |bytes| serde_json::from_slice(&bytes).unwrap())
+        match self.kept("paused.json") {
+            Value::Null => json!([]),
+            paused => paused,
+        }
+    }
+
+    /// Makes the harnesses paused on this host `paused`, through their store.
+    pub fn write_paused(&self, paused: &Value) {
+        self.keep("paused.json", paused);
     }
 
     /// Pauses `harness` on this host since `since`, for `why`, as a fleet
@@ -427,8 +429,7 @@ impl World {
             .as_array_mut()
             .unwrap()
             .push(json!({"harness": harness, "since": since, "why": why}));
-        std::fs::create_dir_all(self.paused_path().parent().unwrap()).unwrap();
-        std::fs::write(self.paused_path(), serde_json::to_vec(&paused).unwrap()).unwrap();
+        self.write_paused(&paused);
     }
 
     /// The last prompt a caster sent; empty when none was.
@@ -564,6 +565,20 @@ impl World {
         afkconvoy::host_db::kept(&self.host_db(), file).unwrap().unwrap_or(Value::Null)
     }
 
+    /// The same, `{}` where the store holds nothing.
+    pub fn kept_object(&self, file: &str) -> Value {
+        match self.kept(file) {
+            Value::Null => json!({}),
+            kept => kept,
+        }
+    }
+
+    /// Makes the store of the host database whose old file in the cache
+    /// directory was `file` hold nothing, as that file removed did.
+    pub fn forget(&self, file: &str) {
+        afkconvoy::host_db::forget(&self.host_db(), file).unwrap();
+    }
+
     /// Puts a Claude Code account of each of `names` in the world's
     /// mytokens, each holding the token `sk-ant-<name>`.
     pub fn claude_accounts(&self, names: &[&str]) {
@@ -580,8 +595,6 @@ impl World {
     /// `accounts` last recorded its `five_hour` window: `used` percent,
     /// resetting at `resets_at`.
     pub fn account_book(&self, accounts: &[(&str, u64, u64)]) {
-        let dir = self.cache().join("afkconvoy/accounts");
-        std::fs::create_dir_all(&dir).unwrap();
         let mut book = serde_json::Map::new();
         for (name, used, resets_at) in accounts {
             book.insert(
@@ -590,7 +603,7 @@ impl World {
                     "resets_at": resets_at}]}),
             );
         }
-        std::fs::write(dir.join("book.json"), json!({"accounts": book}).to_string()).unwrap();
+        self.keep("accounts/book.json", &json!({"accounts": book}));
     }
 
     /// Puts the engine account `name` in the world's mytokens, holding

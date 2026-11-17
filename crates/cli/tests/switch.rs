@@ -572,15 +572,14 @@ fn structured_rate_limits_wait_for_retry_after_before_a_bounded_session_fallback
     tick(&world, 800);
     tick(&world, 919);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
-    let path = world.cache().join("afkconvoy/worker-health.json");
-    let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let book = world.kept("worker-health.json");
     assert_eq!(book["workers"][0]["rate_retries"], 1);
     assert_eq!(book["workers"][0]["next_check"], 920);
     tick(&world, 920);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     tick(&world, 1040);
     assert_guarded_harness(&world, &dir, afkconvoy_core::harness::Harness::Codex);
-    let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let book = world.kept("worker-health.json");
     assert_eq!(book["faults"], json!([]), "a rate limit never pauses the entire account");
     assert!(!world.asked_a_harness_about(DISABLED), "classified runtime errors need no model");
     assert!(!world.root.join("typesafe-request").exists(), "the structured rule runs first");
@@ -796,10 +795,7 @@ fn capacity_turn(world: &World, dir: &Path, state: &str, at: u64) {
 }
 
 fn health_book(world: &World) -> Value {
-    serde_json::from_slice(
-        &std::fs::read(world.cache().join("afkconvoy/worker-health.json")).unwrap(),
-    )
-    .unwrap()
+    world.kept("worker-health.json")
 }
 
 fn capacity_nudges(world: &World, dir: &Path) -> usize {
@@ -1044,7 +1040,7 @@ fn codex_task_refusal_continues_immediately_and_only_excludes_this_issue() {
     let kit = std::fs::read(world.kit_path()).unwrap();
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
     codex_refusal(&world, &dir);
-    std::fs::write(world.cache().join("afkconvoy/worker-health.json"), json!({"workers":[], "faults":[], "observations_failed":[[dir,"a previous failed observation",2000]]}).to_string()).unwrap();
+    world.keep("worker-health.json", &json!({"workers":[], "faults":[], "observations_failed":[[dir,"a previous failed observation",2000]]}));
 
     tick(&world, 800);
 
@@ -1073,7 +1069,7 @@ fn codex_task_refusal_continues_immediately_and_only_excludes_this_issue() {
     assert_eq!(doctor.json["refusals"]["7"][0]["evidence"], CODEX_REFUSAL.trim());
 
     // A fresh CLI process has no health observation left to lean on.
-    std::fs::remove_file(world.cache().join("afkconvoy/worker-health.json")).unwrap();
+    world.keep("worker-health.json", &json!({"workers": [], "faults": []}));
     let moved = switch(&world, "802", &["7", "--harness", "codex"]).ok();
     assert_eq!(moved["switched"][0]["to"], "claude-code");
     assert!(
@@ -1554,8 +1550,7 @@ fn a_failed_typesafe_call_waits_for_the_operator_and_is_logged() {
 
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
     assert!(!world.asked_a_harness_about(DISABLED));
-    let path = world.cache().join("afkconvoy/worker-health.json");
-    let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let book = world.kept("worker-health.json");
     let worker = &book["workers"][0];
     assert_eq!(worker["action"], "waiting for operator");
     assert!(worker["error"].as_str().unwrap().contains("TypeSafe request failed"));
@@ -1671,11 +1666,7 @@ fn the_live_runners_tick_and_served_panel_share_one_orca_observation() {
     // separate thread with this same parent PID. Keep its independent look
     // within its interval so the count measures only the tick and panel.
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    common::write(
-        &world.cache(),
-        "afkconvoy/watch/state.json",
-        &json!({"looked": now}).to_string(),
-    );
+    world.keep("watch/state.json", &json!({"looked": now}));
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
             terminal["agent"] = json!({"state":"working", "agentType":"claude",

@@ -309,7 +309,7 @@ fn a_role_with_nothing_it_can_run_safely_waits_and_goes_on_once_it_has() {
     assert!(doctor.to_string().contains("reviewer has no harness on this host"), "{doctor}");
 
     // Claude Code back: its stage is dispatched, with no one doing anything.
-    std::fs::remove_file(world.paused_path()).unwrap();
+    world.write_paused(&json!([]));
     let planned = world.afk(&PLAN).ok();
     assert_eq!(
         said(&planned, 8),

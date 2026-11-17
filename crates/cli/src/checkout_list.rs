@@ -20,7 +20,7 @@ use serde_json::{Map, Value};
 
 use crate::gh::Tracker;
 use crate::git::{REMOTE, Repo};
-use crate::host_db::{Host, Layout, Store};
+use crate::host_db::{Host, Layout, Old, Store};
 use crate::host_settings::Settings;
 use crate::instance::Named;
 use crate::orca::Worktree;
@@ -30,8 +30,74 @@ use crate::orca::Worktree;
 /// beside them, the host settings and what another afkconvoy kept there,
 /// the one row of `checkout_list`. It was `checkouts.json` in the cache
 /// directory, with `checkouts.lock` beside it.
-pub(crate) static STORE: Store =
-    Store { file: "checkouts.json", layout: Layout::Tables { export, import } };
+pub(crate) static STORE: Store = Store {
+    file: "checkouts.json",
+    old: Old::Meant(pinned),
+    layout: Layout::Tables { export, import },
+};
+
+/// What an older release's list `listed` meant: there, an entry that says
+/// no tracker worked its checkout's own repo, which this release's says
+/// by naming it — no tracker said is the host's local tracker here. Each
+/// such entry names the repo its checkout's remote names; one whose repo
+/// cannot be read says none still, and is named in `UNPINNED` beside the
+/// checkouts, which `doctor` finds (`findings`).
+fn pinned(mut listed: Value) -> Value {
+    let mut unpinned = vec![];
+    for entry in listed["checkouts"].as_array_mut().into_iter().flatten() {
+        if !entry["tracker"].is_null() {
+            continue;
+        }
+        let Some(root) = entry["checkout"].as_str().map(PathBuf::from) else { continue };
+        match Repo::at(&root).and_then(|repo| named_repo(&repo)) {
+            Ok(own) => entry["tracker"] = Value::from(own.to_string()),
+            Err(_) => unpinned.push(Value::from(root.display().to_string())),
+        }
+    }
+    if !unpinned.is_empty()
+        && let Some(listed) = listed.as_object_mut()
+    {
+        listed.insert(UNPINNED.into(), Value::Array(unpinned));
+    }
+    listed
+}
+
+/// Beside the checkouts: those an older release's list said no tracker of,
+/// whose own repo could not be read as it was taken in (`pinned`).
+const UNPINNED: &str = "tracker_unpinned";
+
+/// What `doctor` finds of the checkouts whose tracker an older release's
+/// list meant to be their own repo, which could not be read as it was taken
+/// in: one finding each that still says none.
+pub fn findings() -> Vec<crate::doctor::Finding> {
+    let Ok(listed) = List::of_host().and_then(|list| list.read()) else { return vec![] };
+    let unpinned = listed.rest.get(UNPINNED).and_then(Value::as_array).cloned().unwrap_or_default();
+    let says_none = |root: &str| {
+        listed
+            .checkouts
+            .iter()
+            .any(|entry| entry.checkout == Path::new(root) && entry.tracker.is_none())
+    };
+    unpinned
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|root| says_none(root))
+        .map(|root| {
+            crate::doctor::finding(
+                crate::doctor::Kind::HostDatabase,
+                serde_json::json!(["tracker-unpinned", root]),
+                format!(
+                    "the checkout {root} says no tracker since it was taken into the host database"
+                ),
+                "an older release worked its own repo's issues there, and its repo could not be \
+                 read from its remote `origin` as the list was taken in: it now works the \
+                 host's local tracker"
+                    .to_string(),
+                format!("afkconvoy run --tracker <owner>/<repo>   # in {root}"),
+            )
+        })
+        .collect()
+}
 
 fn export(db: &rusqlite::Connection) -> Result<Option<Value>> {
     let beside = crate::host_db::rows(db, "checkout_list")?;
@@ -218,7 +284,16 @@ pub fn tracker_of(repo: &Repo) -> Result<Tracker> {
 pub fn tracker_on(list: &List, repo: &Repo) -> Result<Tracker> {
     match said_tracker(list, repo)? {
         None => Ok(Tracker::Own),
-        Some(tracker) => Ok(Tracker::Other { tracker, repo: named_repo(repo)? }),
+        Some(tracker) => {
+            let named = named_repo(repo)?;
+            // Its own repo named — as an older release's list is taken in
+            // (`pinned`) — is its own.
+            Ok(if tracker == named {
+                Tracker::Own
+            } else {
+                Tracker::Other { tracker, repo: named }
+            })
+        }
     }
 }
 
@@ -378,6 +453,42 @@ mod tests {
         let error = format!("{:#}", list.read().unwrap_err());
         assert!(error.contains("checkouts.json cannot be read"), "{error}");
         assert!(old.exists(), "{error}");
+    }
+
+    #[test]
+    fn an_older_hosts_entry_saying_no_tracker_is_taken_in_naming_its_own_repo() {
+        use crate::host_db::tests::host;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let ran =
+                crate::process::output(crate::census::command("git").args(args).current_dir(&root))
+                    .unwrap();
+            assert!(ran.status.success(), "{ran:?}");
+        };
+        git(&["init", "--quiet", "w"]);
+        git(&["-C", "w", "remote", "add", "origin", "git@github.com:Acme/Dev.git"]);
+        git(&["init", "--quiet", "nameless"]);
+        let (own, nameless) = (root.join("w"), root.join("nameless"));
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let old = serde_json::json!({"checkouts": [
+            {"checkout": own}, {"checkout": "/elsewhere", "tracker": "acme/tracker"},
+            {"checkout": nameless}]});
+        std::fs::write(cache.join("checkouts.json"), old.to_string()).unwrap();
+        let list = List { host: host(&root) };
+        let listed = list.read().unwrap();
+        let trackers: Vec<_> = listed.checkouts.iter().map(|entry| entry.tracker.clone()).collect();
+        assert_eq!(
+            trackers,
+            [RepoName::read("acme/dev"), RepoName::read("acme/tracker"), None],
+            "its own repo named; a tracker named as it was; one unread says none"
+        );
+        let unpinned = &list.kept().unwrap()[UNPINNED];
+        assert_eq!(*unpinned, serde_json::json!([nameless]), "named for doctor");
+        // taken in once: an entry said with no tracker from now on stays so
+        list.change(|listed| listed.checkouts.push(entry("/new"))).unwrap();
+        assert_eq!(list.read().unwrap().checkouts[3].tracker, None);
     }
 
     #[test]

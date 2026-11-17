@@ -235,8 +235,7 @@ fn a_builder_with_an_open_pr_still_needs_its_workflow_and_worker_health() {
     assert_eq!(status(&world), "at_stage");
     assert_eq!(world.labels(7), ["flow:feature", "stage:build"]);
     assert_eq!(world.claims(), [(7, "alpha".into())]);
-    let path = world.cache().join("afkconvoy/worker-health.json");
-    let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let book = world.kept("worker-health.json");
     assert_eq!(book["workers"][0]["path"], json!(dir), "{book}");
     assert_eq!(book["workers"][0]["action"], "observing", "{book}");
 }
@@ -261,8 +260,7 @@ fn landing_verdict(world: &World, verdict: &str, blocked_by: &[&str]) {
 }
 
 fn no_worker_health(world: &World) {
-    let file = world.cache().join("afkconvoy/worker-health.json");
-    let book: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    let book = world.kept("worker-health.json");
     assert!(book["workers"].as_array().unwrap().is_empty(), "{book}");
 }
 

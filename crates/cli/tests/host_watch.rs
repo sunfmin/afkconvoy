@@ -133,9 +133,7 @@ fn two_hosts_find_one_wait_and_only_its_holder_reports_notifies_and_asks_it() {
     );
     until(&first, "holder notification", || (notifications(&output).len() == 1).then_some(()));
     until(&first, "holder asking question", || {
-        let state: Value = std::fs::read(first.cache().join("afkconvoy/asking/state.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())?;
+        let state = first.kept_object("asking/state.json");
         (state["current"]["delivered"] == true).then_some(())
     });
     first.close_issue(11);
@@ -198,8 +196,7 @@ fn paused(world: &World, harness: &str, why: &str) {
 
 /// The watch as the host keeps it.
 fn state(world: &World) -> Value {
-    let file = world.cache().join("afkconvoy/watch/state.json");
-    std::fs::read(file).map_or(json!({}), |bytes| serde_json::from_slice(&bytes).unwrap())
+    world.kept_object("watch/state.json")
 }
 
 /// Waits for a look and a check of the watch begun after now: whatever
@@ -228,10 +225,7 @@ fn guarded_watch(harness: afkconvoy_core::harness::Harness) {
     let dir = operator(&world);
     run(&world, &dir);
     until(&world, "guarded watch launch", || running(&world));
-    let journal: Value = serde_json::from_slice(
-        &std::fs::read(world.cache().join("afkconvoy/watch/terminal.json")).unwrap(),
-    )
-    .unwrap();
+    let journal: Value = world.kept("watch/terminal.json");
     crate::asking_guard::check_launch(
         &world,
         harness,
@@ -331,8 +325,7 @@ fn printed(world: &World, watch: &Value, lines: &[&str], status: Option<i32>) {
 }
 
 fn notify_state(world: &World) -> Value {
-    std::fs::read(world.cache().join("afkconvoy/watch/notify.json"))
-        .map_or(json!({}), |bytes| serde_json::from_slice(&bytes).unwrap())
+    world.kept_object("watch/notify.json")
 }
 
 fn notifications(file: &Path) -> Vec<Value> {
@@ -382,7 +375,7 @@ fn another_notification_round(world: &World, dir: &Path, previous: &Value) -> Va
     let mut kept = state(world);
     kept["covered"] = json!([]);
     kept["watched"] = json!([]);
-    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    world.keep("watch/state.json", &kept);
     run(world, dir);
     until(world, "another notification round", || {
         running(world)
@@ -505,7 +498,7 @@ fn human_notifications_send_each_condition_once_despite_reworded_reports_and_res
         2,
         "omitting a decision from one report does not end its condition's episode"
     );
-    std::fs::write(world.paused_path(), "[]").unwrap();
+    world.write_paused(&json!([]));
     world.close_issue(11);
     until(&world, "observed recovery ends both episodes", || {
         (notify_state(&world)["entries"] == json!({})).then_some(())
@@ -1048,7 +1041,7 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
     kept["research_started"] = json!(
         kept["research_started"].as_u64().unwrap() - afkconvoy_core::host_watch::RESEARCH_EVERY
     );
-    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    world.keep("watch/state.json", &kept);
     run(&world, &dir);
     let daily = until(&world, "research due again after a day", || running(&world));
     assert_eq!(daily["items"].as_array().unwrap().len(), 1, "{daily}");
@@ -1076,7 +1069,7 @@ fn unplaced_models_start_a_daily_watch_that_places_research_and_keeps_its_bound_
         kept["research_started"].as_u64().unwrap() - afkconvoy_core::host_watch::RESEARCH_EVERY
     );
     let before = kept["until"].as_u64().unwrap();
-    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    world.keep("watch/state.json", &kept);
     run(&world, &dir);
     until(&world, "look after settlement, restart and daily bound", || {
         state(&world)["until"].as_u64().filter(|at| *at > before)
@@ -1484,7 +1477,7 @@ fn a_restart_recovers_an_unreported_episode_kept_by_an_older_runner() {
         kept["last"] = failed.clone();
         kept["history"] = json!([failed]);
         kept["unavailable"] = json!("no harness was available");
-        std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+        world.keep("watch/state.json", &kept);
         world.with_orca(|orca| {
             for terminal in orca["terminals"].as_array_mut().unwrap() {
                 if terminal["handle"] == watch["terminal"] {
@@ -1509,9 +1502,7 @@ fn a_watch_whose_harness_runs_out_goes_on_on_the_next_with_the_same_look() {
     world.hold_every_harness();
     paused(&world, "kimi", "it refused every prompt");
     // The harness this host last started a worker on that took its brief.
-    let delivered = world.cache().join("afkconvoy/watch/delivered.json");
-    std::fs::create_dir_all(delivered.parent().unwrap()).unwrap();
-    std::fs::write(delivered, r#"["codex"]"#).unwrap();
+    world.keep("watch/delivered.json", &json!(["codex"]));
     run(&world, &dir);
     let first = until(&world, "a Codex watch", || running(&world));
     assert_eq!(first["harness"], "codex");
@@ -1560,11 +1551,10 @@ fn a_watch_is_ended_at_its_hour_and_one_no_harness_can_start_is_a_finding() {
     paused(&world, "pi", "it refused every prompt");
     run(&world, &dir);
     let watch = until(&world, "a watch", || running(&world));
-    let file = world.cache().join("afkconvoy/watch/state.json");
     let mut kept = state(&world);
     let hour_ago = kept["running"]["started"].as_u64().unwrap() - 3600;
     kept["running"]["started"] = json!(hour_ago);
-    std::fs::write(&file, kept.to_string()).unwrap();
+    world.keep("watch/state.json", &kept);
     let last = until(&world, "the watch to reach its hour", || ended(&world, "time_limit"));
     assert_eq!(last["id"], watch["id"]);
     assert_eq!(
@@ -1650,18 +1640,16 @@ fn a_busy_watch_is_that_watch_and_its_fix_is_one_command() {
 
     let mut paused_items = world.paused();
     paused_items.as_array_mut().unwrap().clear();
-    std::fs::write(world.paused_path(), paused_items.to_string()).unwrap();
+    world.write_paused(&paused_items);
     let key = command_key("agent");
-    std::fs::write(
-        world.cache().join("afkconvoy/worker-health.json"),
-        json!({"workers": [],
+    world.keep(
+        "worker-health.json",
+        &json!({"workers": [],
             "faults": [{"harness": "claude-code", "command_key": key, "model": null,
                 "scope": "account", "since": 1, "next_check": 9_999_999_999_u64,
                 "evidence": ["a fault on record"]}],
-            "observations_failed": []})
-        .to_string(),
-    )
-    .unwrap();
+            "observations_failed": []}),
+    );
     let faulted = world.afk(&["doctor", "--all"]);
     let blocked = finding_named(&faulted.json, "no harness can start this host's watch");
     assert_eq!(blocked["fix"], "afkconvoy kit");
@@ -1746,7 +1734,7 @@ fn a_report_is_complete_durable_and_carried_into_the_next_brief() {
     kept["watched"] = json!([]);
     kept["covered"] = json!([]);
     kept["observed"] = json!({});
-    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    world.keep("watch/state.json", &kept);
     run(&world, &dir);
     let next = until(&world, "next delivered round", || {
         running(&world)
@@ -1793,7 +1781,7 @@ fn a_stopped_watch_is_nudged_even_when_the_operators_other_session_is_working() 
     let since = watch["started"].as_u64().unwrap() - afkconvoy_core::worker::GRACE - 1;
     kept["running"]["session_started"] = json!(since);
     kept["running"]["started"] = json!(since);
-    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
+    world.keep("watch/state.json", &kept);
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
             if terminal["handle"] == watch["terminal"] {
@@ -2003,9 +1991,7 @@ fn held_since(world: &World, pressure: bool) {
         state["admission"][world.clone.to_str().unwrap()] = json!({"holding": holding, "stages": [],
                 "waiting": [{"do": "dispatch", "issue": 430}]});
     }
-    let file = world.cache().join("afkconvoy/watch/resources.json");
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(file, state.to_string()).unwrap();
+    world.keep("watch/resources.json", &state);
 }
 
 #[test]
@@ -2055,10 +2041,9 @@ fn idle_checkout_does_not_inherit_an_old_host_hold_when_work_appears() {
     world.busy("1000.00");
     held_since(&world, false);
     // An older runner recorded a host hold for an idle checkout.
-    let file = world.cache().join("afkconvoy/watch/resources.json");
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let mut saved = world.kept("watch/resources.json");
     saved["admission"][world.clone.to_str().unwrap()]["waiting"] = json!([]);
-    std::fs::write(&file, saved.to_string()).unwrap();
+    world.keep("watch/resources.json", &saved);
     world.close_issue(430);
     let dir = operator(&world);
     run(&world, &dir);
@@ -2067,7 +2052,7 @@ fn idle_checkout_does_not_inherit_an_old_host_hold_when_work_appears() {
     assert!(starts(&world).is_empty());
     world.with_gh(|gh| gh["issues"][0]["state"] = json!("open"));
     until(&world, "waiting issue recorded", || {
-        let saved: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+        let saved = world.kept("watch/resources.json");
         (!saved["admission"][world.clone.to_str()?]["waiting"].as_array()?.is_empty()).then_some(())
     });
     let doctor = world.afk(&["doctor", "--all"]).json;
@@ -2186,13 +2171,9 @@ fn account_table(world: &World, mine: u64, other: (u32, &str, u64)) {
 /// `workers` of its checkout's worktrees, as the runner's record says them.
 /// What a watch left with the operator, already recorded, is kept.
 fn pressed_with_workers(world: &World, since: u64, workers: &[&Path]) {
-    let file = world.cache().join("afkconvoy/watch/resources.json");
-    let left = std::fs::read(&file)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .map_or(Value::Null, |saved| saved["left"].clone());
+    let left = world.kept("watch/resources.json")["left"].clone();
     held_since(world, true);
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let mut saved = world.kept("watch/resources.json");
     saved["left"] = left;
     let mut holding = afkconvoy_core::resources::Holding::default();
     holding.ticked(since, &[afkconvoy_core::resources::Reason::Memory]);
@@ -2205,7 +2186,7 @@ fn pressed_with_workers(world: &World, since: u64, workers: &[&Path]) {
         })
         .collect();
     saved["samples"] = json!({world.clone.to_str().unwrap(): watched});
-    std::fs::write(file, saved.to_string()).unwrap();
+    world.keep("watch/resources.json", &saved);
 }
 
 fn pressure_finding(doctor: &Value) -> Value {
@@ -2300,9 +2281,8 @@ fn two_pressure_episodes_from_the_same_other_account_start_one_watch_until_the_c
     let first = watch["id"].as_str().unwrap().to_string();
     printed(&world, &watch, &["left the other account's memory with the operator"], Some(0));
     until(&world, "watch end", || ended(&world, "ended"));
-    let file = world.cache().join("afkconvoy/watch/resources.json");
     let saved = until(&world, "pressure left with the operator", || {
-        let saved: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+        let saved = world.kept("watch/resources.json");
         (saved["left"]["account"] == "simulators").then_some(saved)
     });
     assert_eq!(saved["left"]["uid"], 777, "{saved}");
@@ -2311,7 +2291,7 @@ fn two_pressure_episodes_from_the_same_other_account_start_one_watch_until_the_c
     // the same account holding the most.
     world.kill_host_runner("KILL");
     pressed_with_workers(&world, now() - 700, &[&path]);
-    let mut saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let mut saved = world.kept("watch/resources.json");
     assert_eq!(saved["left"]["account"], "simulators", "{saved}");
     run(&world, &dir);
     passed(&world);
@@ -2327,7 +2307,7 @@ fn two_pressure_episodes_from_the_same_other_account_start_one_watch_until_the_c
         running(&world).filter(|round| round["id"] != first.as_str())
     });
     assert!(watch["items"].to_string().contains("builder"), "{watch}");
-    saved = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    saved = world.kept("watch/resources.json");
     assert!(saved["left"].is_null(), "{saved}");
 }
 
@@ -2342,8 +2322,7 @@ fn a_resource_trigger_while_a_watch_runs_waits_for_its_next_look() {
     world.say_host_settings(json!({"hot_memory": 1, "watch_dir": dir, "watch_every": 1}));
     resource_worker(&world, 7, 1536);
     until(&world, "hot reading", || {
-        let file = world.cache().join("afkconvoy/watch/resources.json");
-        let saved = std::fs::read_to_string(file).unwrap_or_default();
+        let saved = world.kept("watch/resources.json").to_string();
         saved.contains("resident").then_some(())
     });
     assert_eq!(starts(&world).len(), 1, "no second watch while the first runs");
@@ -2400,7 +2379,7 @@ fn a_lost_creation_receipt_recovers_the_acknowledged_terminal_without_another_ag
     // Lose both the caller's saved ID and its progress file after a hard
     // runner restart. The launch journal still owns this exact session.
     world.kill_host_runner("KILL");
-    std::fs::remove_file(world.cache().join("afkconvoy/watch/state.json")).unwrap();
+    world.forget("watch/state.json");
     run(&world, &dir);
     until(&world, "the retained watch", || running(&world).filter(|w| w["terminal"] == handle));
     passed(&world);
@@ -2557,8 +2536,7 @@ fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_ex
         run(&world, &dir);
         let watch = until(&world, "watch", || running(&world));
         world.kill_host_runner("KILL");
-        let file = world.cache().join("afkconvoy/watch/terminal.json");
-        let mut record: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        let mut record = world.kept("watch/terminal.json");
         record["status"] = json!(status);
         // A retained older runner had no caller-allocated delivery key.
         // Such an ambiguous send cannot be replayed safely.
@@ -2570,10 +2548,9 @@ fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_ex
             std::fs::remove_file(transcript.with_extension("terminal")).unwrap();
             let mut state = state(&world);
             state["running"]["terminal"] = json!("");
-            std::fs::write(world.cache().join("afkconvoy/watch/state.json"), state.to_string())
-                .unwrap();
+            world.keep("watch/state.json", &state);
         }
-        std::fs::write(&file, record.to_string()).unwrap();
+        world.keep("watch/terminal.json", &record);
         run(&world, &dir);
         until(&world, "explicit recovery finding", || {
             state(&world)["unavailable"]
@@ -2640,7 +2617,7 @@ fn resident_rounds_queue_while_busy_revalidate_recover_and_keep_reports_separate
     assert_eq!(sent(&world, &first).len(), 1, "busy input remains untouched");
     let mut paused_items = world.paused();
     paused_items.as_array_mut().unwrap().retain(|p| p["harness"] != "dsh");
-    std::fs::write(world.paused_path(), paused_items.to_string()).unwrap();
+    world.write_paused(&paused_items);
     until(&world, "recovered episode removed before delivery", || {
         let s = state(&world);
         (s["pending"].as_array()?.len() == 1
@@ -2715,7 +2692,7 @@ fn resident_rounds_queue_while_busy_revalidate_recover_and_keep_reports_separate
     // A real observed recovery ends coverage; its return is a new episode.
     let mut paused_items = world.paused();
     paused_items.as_array_mut().unwrap().retain(|p| p["harness"] != "pi");
-    std::fs::write(world.paused_path(), paused_items.to_string()).unwrap();
+    world.write_paused(&paused_items);
     until(&world, "pi's observed recovery", || {
         (!state(&world)["observed"].as_object()?.keys().any(|id| id.contains(r#""pi""#)))
             .then_some(())
@@ -2744,12 +2721,11 @@ fn standby_and_completed_round_age_do_not_spend_the_next_rounds_hour() {
     let old = first["started"].as_u64().unwrap() - 7200;
     kept["resident"]["started"] = json!(old);
     kept["resident"]["session_started"] = json!(old);
-    std::fs::write(world.cache().join("afkconvoy/watch/state.json"), kept.to_string()).unwrap();
-    let file = world.cache().join("afkconvoy/watch/terminal.json");
-    let mut record: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    world.keep("watch/state.json", &kept);
+    let mut record = world.kept("watch/terminal.json");
     record["watch"]["started"] = json!(old);
     record["watch"]["session_started"] = json!(old);
-    std::fs::write(file, record.to_string()).unwrap();
+    world.keep("watch/terminal.json", &record);
     let before = kept["until"].as_u64().unwrap();
     run(&world, &dir);
     until(&world, "an idle look after two hours", || {
@@ -2786,8 +2762,7 @@ fn a_second_rounds_lost_send_receipt_replays_after_restart_without_typing_twice(
         state(&world)["unavailable"].as_str().map(str::to_string)
     });
     world.kill_host_runner("KILL");
-    let file = world.cache().join("afkconvoy/watch/terminal.json");
-    let intent: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let intent = world.kept("watch/terminal.json");
     assert_eq!(intent["status"], "sending");
     assert!(intent["request"].is_string());
     assert_ne!(intent["watch"]["id"], first["id"]);
@@ -2796,7 +2771,7 @@ fn a_second_rounds_lost_send_receipt_replays_after_restart_without_typing_twice(
     world.with_orca(|orca| orca["raw_answers"] = json!({}));
     run(&world, &dir);
     until(&world, "replayed exact submission", || {
-        let receipt: Value = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
+        let receipt = world.kept("watch/terminal.json");
         (receipt["status"] == "running" && receipt["receipt"]["mutation"]["replayed"] == true)
             .then_some(receipt)
     });
@@ -2887,15 +2862,13 @@ fn a_pre_journal_watch_keeps_its_recorded_id_and_captures_public_identity_on_upg
     run(&world, &dir);
     let watch = until(&world, "watch", || running(&world));
     world.kill_host_runner("KILL");
-    let association = world.cache().join("afkconvoy/watch/terminal.json");
-    std::fs::remove_file(&association).unwrap();
+    world.forget("watch/terminal.json");
     // The pre-upgrade state still names exactly the Terminal we own. A
     // title collision must not replace it with the operator's session.
     world.with_orca(|orca| orca["terminals"][0]["title"] = json!("afkconvoy watch"));
     run(&world, &dir);
     until(&world, "the migrated association", || {
-        let bytes = std::fs::read(&association).ok()?;
-        let record: Value = serde_json::from_slice(&bytes).ok()?;
+        let record = world.kept("watch/terminal.json");
         (record["status"] == "running").then_some(record)
     });
     assert_eq!(running(&world).unwrap()["terminal"], watch["terminal"]);

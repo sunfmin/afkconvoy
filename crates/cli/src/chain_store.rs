@@ -22,8 +22,7 @@ pub(crate) struct Stored {
 /// The key of this repo's chains: the same as its candidate worktrees', so
 /// every checkout and worktree of one repo shares them.
 fn key(repo: &Repo) -> Result<String> {
-    let common = std::fs::canonicalize(repo.common_dir()?)?;
-    Ok(format!("{:016x}", afkconvoy_core::gate::key(&common.to_string_lossy())))
+    crate::host_db::repo_key(repo)
 }
 
 fn find(db: &Connection, repo: &str, branch: &str) -> Result<Stored> {

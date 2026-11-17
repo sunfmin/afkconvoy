@@ -226,6 +226,9 @@ struct Queued {
 
 /// Serializes round transitions with the report command. No read/validate/
 /// write race may accept a report after a timeout or against another round.
+/// A lease held across a look or a check, which start and type at Orca
+/// terminals: a kernel lock in the cache directory, not a transaction of the
+/// host's database, which no writer may hold across that work.
 pub(crate) fn state_lock() -> Result<std::fs::File> {
     let path = cache()?.join("watch/state.lock");
     std::fs::create_dir_all(path.parent().expect("watch state parent"))?;
@@ -340,41 +343,33 @@ impl State {
     }
 }
 
+/// The watch's state, whole, in the host's database: the one row of
+/// `watch_state`. It was `watch/state.json` in the cache directory.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: STATE,
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("watch_state"),
+};
+
 fn read() -> Result<State> {
-    let file = cache()?.join(STATE);
-    match std::fs::read(&file) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("cannot read the watch's state {}", file.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-        Err(error) => Err(error.into()),
-    }
+    crate::host_db::read(&STORE).context("cannot read the watch's state")
 }
 
-/// Writes the state compact, and not at all when it is what the file holds
+/// Writes the state, and not at all when it is what the database holds
 /// already: the host runner's steady state costs what changed, not the size
 /// of its record. Only the running round keeps its look; the resident
 /// session, the last round and the history keep what later rounds read from
-/// them, and a round's look is in its brief already.
+/// them, and a round's look is in its brief already. Its writers hold the
+/// state lease (`state_lock`).
 fn write(state: &mut State) -> Result<()> {
     for watch in state.resident.iter_mut().chain(state.last.iter_mut()).chain(&mut state.history) {
         watch.look = Value::Null;
     }
-    let file = cache()?.join(STATE);
-    let bytes = serde_json::to_vec(state)?;
-    match std::fs::read(&file) {
-        Ok(held) if held == bytes => return Ok(()),
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(dir) = file.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-        }
-        Err(error) => return Err(error.into()),
+    let value = serde_json::to_value(&*state)?;
+    if crate::host_db::value(&STORE)?.as_ref() == Some(&value) {
+        return Ok(());
     }
-    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, bytes)?;
-    std::fs::rename(temporary, &file)?;
-    Ok(())
+    crate::host_db::put(&STORE, &value)
 }
 
 /// `afkconvoy daybook --distill`: asks the host's watch to distill the daybook
@@ -1989,8 +1984,8 @@ mod tests {
             |state: &State| -> Vec<Value> { state.history.iter().map(watch_json).collect() };
         let before = digest(&state);
         write(&mut state).unwrap();
-        let file = cache().unwrap().join(STATE);
-        let size = std::fs::metadata(&file).unwrap().len();
+        let file = crate::host_db::path().unwrap();
+        let size = crate::host_db::value(&STORE).unwrap().unwrap().to_string().len();
         assert!(size < 1 << 20, "{size} bytes with {HISTORY} rounds in history");
         let read = read().unwrap();
         assert_eq!(read.running.as_ref().unwrap().look, big, "the running round keeps its look");
@@ -1998,15 +1993,12 @@ mod tests {
         assert!(read.last.as_ref().unwrap().look.is_null());
         assert!(read.history.iter().all(|watch| watch.look.is_null()));
         assert_eq!(digest(&read), before, "doctor's rounds read the same");
-        // Unchanged: the file is not written again.
-        let marked = std::fs::read(&file).unwrap();
-        std::fs::write(&file, &marked).unwrap();
+        // Unchanged: the database is not written again.
         let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
-        let inode = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&file).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let mut again = read;
         write(&mut again).unwrap();
         let after = std::fs::metadata(&file).unwrap();
-        assert_eq!(std::os::unix::fs::MetadataExt::ino(&after), inode, "not replaced");
         assert_eq!(after.modified().unwrap(), modified, "not written");
         // Changed: it is.
         again.looked = Some(7);

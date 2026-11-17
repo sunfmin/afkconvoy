@@ -106,7 +106,9 @@ fn run_tracker_naming_a_private_repo_of_a_checkout_of_a_public_one_is_taken_and_
 }
 
 /// Has `world`'s checkout on the host's checkout list as an older afkconvoy
-/// left it, saying no tracker, under the world's host settings.
+/// left it, saying no tracker, under the world's host settings: its file in
+/// the cache directory, which the next read takes into the host database
+/// naming the checkout's own repo, `acme/dev`, as that release meant it.
 fn listed_untracked(world: &World) {
     let file = world.cache().join("afkconvoy/checkouts.json");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -153,7 +155,7 @@ fn run_tracker_that_moves_an_older_host_runner_starts_its_checkout_under_that_tr
     assert_eq!(ran["host_runner"]["replaced"], json!({"pid": old, "version": "0.0.1"}), "{ran}");
     assert!(older.wait().unwrap().success());
     assert_eq!(ran["added"], false, "{ran}");
-    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(ran["tracker"], json!({"from": "acme/dev", "to": TRACKER}), "{ran}");
     assert_eq!(world.checkout_list()["checkouts"][0]["tracker"], TRACKER);
 
     // Never started under the entry it had: no start of it was refused.
@@ -170,7 +172,7 @@ fn run_tracker_that_starts_the_host_runner_starts_its_listed_checkout_under_that
     let ran = world.afk(&[&RUN[..], &["--tracker", TRACKER]].concat()).ok();
     assert_eq!(ran["host_runner"]["started"], true, "{ran}");
     assert_eq!(ran["host_runner"]["replaced"], Value::Null, "{ran}");
-    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(ran["tracker"], json!({"from": "acme/dev", "to": TRACKER}), "{ran}");
     assert_eq!(refused_starts(&world), [] as [String; 0]);
 }
 
@@ -179,39 +181,26 @@ fn a_listed_checkout_of_a_public_repo_a_move_starts_is_refused_and_stays_on_the_
     let world = world("public");
     let mut older = listed_by_an_older_host_runner(&world);
 
-    // The `run` that moves the older host runner asks for the checkout, as
-    // that host runner's next one starts it from the list: refused, with the
-    // line that fixes it, and still on the list.
+    // Taken into the host database, its entry names its own repo, the
+    // tracker the older release meant (ADR-0118): a `run` that says no
+    // other refuses that public tracker before it moves the older runner,
+    // with the line that fixes it, and the checkout stays on the list.
     let refused = world.afk(&RUN);
     assert_eq!(refused.code, 1, "{}", refused.json);
-    assert!(older.wait().unwrap().success());
     let error = refused.json["error"].as_str().unwrap();
     assert!(refuses(&world, error, "acme/dev"), "{error}");
-    let stays = "its checkout stays on the checkout list, and its fleet instance is broken";
-    assert!(error.contains(stays), "{error}");
     let listed = world.checkout_list()["checkouts"].clone();
-    assert_eq!(listed, json!([{"checkout": world.clone, "named": {"host": "h1"}}]));
-    let removed =
-        world.runner_log().into_iter().filter(|line| line.starts_with("checkout removed"));
-    assert_eq!(removed.collect::<Vec<_>>(), [] as [String; 0]);
-
-    // Broken, as one whose tracker is made public: `doctor` says why, with
-    // the line that fixes it.
-    let checkouts = world.afk(&["checkouts"]).ok();
-    assert_eq!(checkouts["checkouts"][0]["state"], "broken", "{checkouts}");
+    let pinned = json!([{"checkout": world.clone, "named": {"host": "h1"}, "tracker": "acme/dev"}]);
+    assert_eq!(listed, pinned, "its own repo named, as the older release meant it");
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
-    let broken = found(&doctor, "is broken");
-    assert_eq!(broken.len(), 1, "{doctor}");
-    assert!(refuses(&world, broken[0]["what"].as_str().unwrap(), "acme/dev"), "{doctor}");
-    assert_eq!(broken[0]["fix"], json!(fix(&world)), "{doctor}");
-    let public = found(&doctor, "is public: its fleet instance works nothing");
-    assert_eq!(public.len(), 1, "{doctor}");
+    assert_eq!(found(&doctor, "is public: its fleet instance works nothing").len(), 1, "{doctor}");
 
-    // And that line starts it at once.
+    // And that line moves the older runner and starts it at once.
     world.put_tracker(TRACKER);
     let ran = world.afk(&[&RUN[..], &["--tracker", TRACKER]].concat()).ok();
-    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(ran["tracker"], json!({"from": "acme/dev", "to": TRACKER}), "{ran}");
     assert_eq!(ran["added"], false, "{ran}");
+    assert!(older.wait().unwrap().success());
 }
 
 #[test]

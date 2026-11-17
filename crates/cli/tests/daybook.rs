@@ -308,10 +308,7 @@ fn the_operator_asks_the_watch_for_a_distillation_outside_its_week() {
     let world = World::new();
     let asked = world.afk(&["daybook", "--distill"]).ok();
     assert_eq!(asked["asked"], true, "{asked}");
-    let state: Value = serde_json::from_slice(
-        &std::fs::read(world.cache().join("afkconvoy/watch/state.json")).unwrap(),
-    )
-    .unwrap();
+    let state: Value = world.kept("watch/state.json");
     assert_eq!(state["distilling"]["asked"], asked["at"], "{state}");
     let error = world.afk(&["daybook", "--distill", "--tracker", "acme/control"]).error();
     assert!(error.contains("cannot be used with"), "{error}");

@@ -294,8 +294,7 @@ fn background_file(world: &World) -> PathBuf {
 
 /// The worker-health record as kept. It holds no copy of the since.
 fn health_record(world: &World) -> Value {
-    let path = world.cache().join("afkconvoy/worker-health.json");
-    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    world.kept("worker-health.json")
 }
 
 /// The worker's terminal shows `screen`.
@@ -796,7 +795,7 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
         did(&ticked)[0],
         "judge 7 waiting",
         "{ticked}; health: {}",
-        std::fs::read_to_string(world.cache().join("afkconvoy/worker-health.json")).unwrap()
+        world.kept("worker-health.json")
     );
     assert_eq!(typed(&world).len(), 1, "no nudge");
     assert_eq!(world.claims().len(), 1);

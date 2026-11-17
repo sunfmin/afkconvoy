@@ -177,6 +177,7 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    HostDatabase: Warning, "the host database";
     HotWorker: Warning, "hot worker is past its limits";
     AdmissionHeld: Warning, "admission has held back new workers";
     MemoryPressure: Warning, "the host has been under memory pressure";
@@ -259,6 +260,7 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::HostDatabase
                 | Kind::HotWorker
                 | Kind::AdmissionHeld
                 | Kind::MemoryPressure
@@ -2620,6 +2622,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     }
     found.extend(look.trackers.findings(repo));
     found.extend(crate::paused::findings(now));
+    found.extend(crate::checkout_list::findings());
+    found.extend(crate::host_db::findings());
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
     found.extend(look.findings.clone());

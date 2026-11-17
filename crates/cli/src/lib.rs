@@ -1685,6 +1685,7 @@ pub fn manual() -> agent_help::Help {
         .constant("REMOTE_READS", remote::reads_help())
         .constant("GH_IN_TRANSIT", gh::in_transit_help())
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
+        .constant("BACKUPS_KEPT", host_db::BACKUPS_KEPT)
         .constant("FIRST_START_SETTINGS", first_start::settings_help())
         .constant("FIRST_START_QUESTIONS", first_start::help())
         .constant("EXCLUSIVE_SECONDS", exclusive::SECONDS)

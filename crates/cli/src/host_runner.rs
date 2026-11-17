@@ -80,6 +80,10 @@ use crate::{VERSION, concurrency, host_settings, kit, launch, probe, tracker};
 /// holds the holder's {pid, version, started}.
 pub(crate) const LOCK: &str = "host-runner.lock";
 
+/// How often the host runner looks whether the day's backup of the host's
+/// database is made (`host_db::back_up`).
+const BACKUP_LOOK_EVERY: Duration = Duration::from_secs(3600);
+
 /// The host runner's log, in the cache directory: its stdout and stderr.
 const LOG: &str = "host-runner.log";
 
@@ -1041,6 +1045,7 @@ fn held_host(
     let mut queue_noted = Instant::now();
     let mut keeper = crate::disk::Keeper::default();
     let mut disk_looked: Option<Instant> = None;
+    let mut backup_looked: Option<Instant> = None;
     while !stop.told() && left.is_none() {
         std::thread::sleep(WATCHED_EVERY);
         runner.shared.own_cpu.note();
@@ -1055,6 +1060,16 @@ fn held_host(
         if disk_looked.is_none_or(|looked| looked.elapsed() >= crate::disk::LOOK_EVERY) {
             disk_looked = Some(Instant::now());
             runner.look_at_disk(&mut keeper);
+        }
+        // Once a day, the first look of the day makes it; a failure is
+        // `doctor`'s, and tried again at the next look.
+        if backup_looked.is_none_or(|looked| looked.elapsed() >= BACKUP_LOOK_EVERY) {
+            backup_looked = Some(Instant::now());
+            match crate::host_db::back_up(&crate::daybook::today(), crate::clock()) {
+                Ok(true) => runner.log.say("host database backed up"),
+                Ok(false) => {}
+                Err(error) => runner.log.say(&format!("host database not backed up: {error:#}")),
+            }
         }
         if !stop.told() && !still_ours() {
             runner.log.say(
