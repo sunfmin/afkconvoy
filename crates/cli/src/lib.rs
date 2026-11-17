@@ -717,8 +717,8 @@ enum Command {
         /// Seconds the oldest change landed on a proving branch, not yet on its base branch,
         /// waits for this host to be idle before its promotion starts anyway: a host setting;
         /// `default` changes it back [default: {const:PROMOTION_SECONDS}]
-        #[arg(long, env = PROMOTION_SECONDS_ENV, value_name = "SECONDS", value_parser = whole_or_default)]
-        promotion_seconds: Option<To<u64>>,
+        #[arg(long, env = PROMOTION_SECONDS_ENV, value_name = "SECONDS", value_parser = boxed_whole)]
+        promotion_seconds: Option<Box<To<u64>>>,
         /// Removed: the exclusive queue has no count of places
         #[arg(long, hide = true, value_parser = removed_lanes)]
         gate_lanes: Option<()>,
@@ -1986,6 +1986,11 @@ fn boxed_percent(said: &str) -> Result<Box<To<u64>>, String> {
     percent_or_default(said).map(Box::new)
 }
 
+/// `--promotion-seconds`, boxed as `boxed_percent` is.
+fn boxed_whole(said: &str) -> Result<Box<To<u64>>, String> {
+    whole_or_default(said).map(Box::new)
+}
+
 /// What `--gate-lanes`, `--slow-gate-lanes` and `--fast-lanes` say now.
 const REMOVED_LANES: &str = "is removed: the exclusive queue has no count of places, and starts \
      a command once the host has room for it, by its CPU reading; \
@@ -2153,7 +2158,7 @@ fn start_of(
         account_limit: account_limit.map(|limit| *limit),
         exclusive_seconds,
         busy_share: busy_share.map(|share| *share),
-        promotion_seconds,
+        promotion_seconds: promotion_seconds.map(|seconds| *seconds),
         panel,
         watch_dir,
         watch_every,
