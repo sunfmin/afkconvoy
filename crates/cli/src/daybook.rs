@@ -321,7 +321,7 @@ The operator, or any agent acting on the host for them: the agent a human is tal
 
 ## What it reads and writes
 
-The daybook is this host's own: `daybook.db`, one SQLite database in afkconvoy's data directory — `$XDG_DATA_HOME/afkconvoy`, else `~/.local/share/afkconvoy` — beside the host's local tracker, made by the first entry. It asks GitHub nothing. An entry is written at once, or the command fails and nothing is written; there is nothing to retry later. Another program of the host's user (Guild) may write the same file at once: neither loses an entry.
+The daybook is this host's own: `daybook.db`, one SQLite database in afkconvoy's data directory — `$XDG_DATA_HOME/afkconvoy`, else `~/.local/share/afkconvoy` — beside the host's local tracker, made by the first entry. It asks GitHub nothing. An entry is written at once, or the command fails and nothing is written; nothing waits to be written again. Another program of the host's user (Guild) may write the same file at once: neither loses an entry.
 
 An entry is one row: its day — the host's local date, `YYYY-MM-DD` — when it was written, and its text. A day is the entries of that date, in the order they were written.
 

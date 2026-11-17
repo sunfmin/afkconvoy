@@ -624,7 +624,7 @@ fn next(from: &RepoName, reads: &[Read]) -> Vec<String> {
 /// What `afkconvoy issue import --help` says after its one line.
 pub(crate) const HELP: &str = r#"## When to run it
 
-Once on each host, when its fleets move off a GitHub tracker to the host's local tracker (docs/adr/0091), in any checkout of the host: `--dry-run` first, to read what would move and what stays. Run it again at any time: it moves nothing twice, and goes on from wherever a run before it stopped.
+Once on each host, when its fleets move off a GitHub tracker to the host's local tracker (docs/adr/0091), in any checkout of the host: `--dry-run` first, to read what would move and what stays. Run it again at any time: it moves nothing twice, and goes on from wherever a run before it stopped. Stop the host's fleets of those checkouts first (`afkconvoy stop`): a claim a fleet takes while the import runs is left on an issue the import closed on GitHub.
 
 ## Who runs it
 

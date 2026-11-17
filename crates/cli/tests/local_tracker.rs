@@ -187,7 +187,7 @@ fn a_fleet_lock_of_the_local_tracker_holds_its_fleets_of_that_repo_alone() {
 #[test]
 fn an_issue_of_a_repo_the_host_has_no_checkout_of_is_refused_naming_it() {
     let world = world();
-    let list = List::at(world.cache().join("afkconvoy/checkouts.json"));
+    let list = List::at(world.host_db());
     let mut store = world.local_tracker();
     let open = |store: &mut Store, repo: &str| {
         let repo = RepoName::read(repo).unwrap();

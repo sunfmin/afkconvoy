@@ -218,7 +218,7 @@ const READER: &str = "Run by whoever reads this manual";
 // below, the guide: the text an agent reads to learn the tool. `help` is this
 // crate's own, not clap's: it prints a topic too, and `help all` the whole
 // manual. The listing opens with usage, then commands, so `-h` stays one screen.
-/// afkconvoy works ready GitHub issues unattended. `afkconvoy run` starts one host runner with a fleet instance per repo. Each dispatches a coding agent per issue in its own git worktree, gates finished PRs and lands them on the configured base or a task's selected target. Fleet state lives in GitHub and the remote.
+/// afkconvoy works ready issues unattended. `afkconvoy run` starts one host runner with a fleet instance per repo. Each dispatches a coding agent per issue in its own git worktree, gates finished PRs and lands them on the configured base or a task's selected target. Fleet state lives in the tracker, host database and remote.
 ///
 /// `afkconvoy --help` answers the index: this guide, each command by who runs it, and each topic's first sentence. `afkconvoy help all` answers the whole manual. `afkconvoy -h` lists commands on one screen.
 ///
@@ -276,7 +276,7 @@ const READER: &str = "Run by whoever reads this manual";
 /// - A flag of the command's own, including `--instance` and `--run`, does not move the checkout to `-C`. The checkout is a path after the command whenever that command's usage line shows `[CHECKOUT]`, and `-C <checkout>` only when that command's usage line shows `-C`. A fix line and a hand-typed command use that form.
 /// - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
 /// - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
-/// - Between ticks a fleet instance sleeps {const:TICK_BUSY_SECONDS} seconds while it has work, or {const:TICK_IDLE_MINUTES} minutes after {const:TICK_IDLE_AFTER} empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads GitHub and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
+/// - Between ticks a fleet instance sleeps {const:TICK_BUSY_SECONDS} seconds while it has work, or {const:TICK_IDLE_MINUTES} minutes after {const:TICK_IDLE_AFTER} empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads the tracker and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
 /// - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A known harness with no entry or command is discovered in the worker login shell, checked, and appended to the latest kit without model probes; an explicit command always wins. A running fleet reads command edits at its next worker launch.
 /// - In a bound repo the worker launch command must end in its harness — Claude Code, pi, Codex, DSH, Kimi Code or Grok — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 ///
@@ -412,9 +412,9 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
-    /// Read and write the fleet's issues: create, view, list, comment, edit, close, reopen, block, unblock
+    /// Read and write the tracker's issues
     #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment, long_about = issue::HELP,
-        override_usage = "afkconvoy issue [-C <CHECKOUT>] <create|view|list|comment|edit|close|reopen|block|unblock> [ARGS]")]
+        override_usage = "afkconvoy issue [-C <CHECKOUT>] <create|view|list|comment|edit|close|reopen|block|unblock|import> [ARGS]")]
     Issue {
         #[command(subcommand)]
         verb: issue::Verb,
@@ -427,7 +427,7 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
-    /// Append one after-the-fact entry to this host's daybook: what an agent did or decided outside any issue
+    /// Record what an agent did or decided outside any issue, on this host
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = daybook::HELP)]
     #[command(group(clap::ArgGroup::new("span").args(["lessons", "read"]).multiple(false)))]
     Daybook {
@@ -1079,22 +1079,6 @@ enum Command {
         /// The host its gate runs and is recorded as on [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
-        #[command(flatten)]
-        at: At,
-    },
-    // TEMPORARY wiring of `issue_import::import` as a hidden top-level
-    // command, for its tests: re-homed under `afkconvoy issue import` once
-    // the `issue` command exists, when this variant and its arm in `run` go.
-    /// Move a GitHub tracker's open issues into this host's local tracker
-    #[command(name = "issue-import", hide = true, next_help_heading = OPERATOR,
-        verbatim_doc_comment, long_about = issue_import::HELP)]
-    IssueImport {
-        /// The GitHub tracker to move them from
-        #[arg(long, value_name = "OWNER/TRACKER", value_parser = tracker::repo_named)]
-        from: RepoName,
-        /// Say what would move and what stays, and why, changing nothing
-        #[arg(long)]
-        dry_run: bool,
         #[command(flatten)]
         at: At,
     },
@@ -2966,10 +2950,6 @@ fn run(
         Command::Wake { .. } => Ok(json!({})),
         Command::Promote { host, .. } => {
             promote::promote(&checkout?, &host.unwrap_or_else(this_host), now)
-        }
-        // TEMPORARY: `afkconvoy issue import` once the `issue` command exists.
-        Command::IssueImport { from, dry_run, .. } => {
-            issue_import::import(&checkout?, &from, dry_run, now)
         }
         Command::Scan { .. } => Ok(Scan::read_said(&checkout?)?.json()),
         Command::Claim { issue, who, .. } => {

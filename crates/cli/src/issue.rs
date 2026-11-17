@@ -123,6 +123,16 @@ pub(crate) enum Verb {
         #[arg(long, required = true, value_delimiter = ',')]
         by: Vec<u64>,
     },
+    /// Move a GitHub tracker's open issues into this host's local tracker
+    #[command(verbatim_doc_comment, hide = true, long_about = crate::issue_import::HELP)]
+    Import {
+        /// The GitHub tracker to move them from
+        #[arg(long, value_name = "OWNER/TRACKER", value_parser = crate::tracker::repo_named)]
+        from: RepoName,
+        /// Say what would move and what stays, and why, changing nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Which issues a listing holds, by their state.
@@ -196,7 +206,7 @@ impl Verb {
     /// The issue it acts on, where it names one: what its acting log says.
     pub(crate) fn number(&self) -> Option<u64> {
         match self {
-            Verb::Create { .. } | Verb::List { .. } => None,
+            Verb::Create { .. } | Verb::List { .. } | Verb::Import { .. } => None,
             Verb::View { number, .. }
             | Verb::Comment { number, .. }
             | Verb::Edit { number, .. }
@@ -209,7 +219,7 @@ impl Verb {
 
     /// Whether it writes: what it reads acts for nobody.
     pub(crate) fn writes(&self) -> bool {
-        !matches!(self, Verb::View { .. } | Verb::List { .. })
+        !matches!(self, Verb::View { .. } | Verb::List { .. } | Verb::Import { dry_run: true, .. })
     }
 }
 
@@ -220,6 +230,9 @@ pub(crate) fn issue(repo: &Repo, verb: Verb) -> Result<Value> {
     let tracker = issues.tracker().clone();
     let named = |number: u64| tracker.issue(number);
     match verb {
+        Verb::Import { from, dry_run } => {
+            crate::issue_import::import(repo, &from, dry_run, crate::acting_now())
+        }
         Verb::Create { title, body, labels, repo: of } => {
             let body = body.text()?;
             let labels: Vec<&str> = labels.iter().map(String::as_str).collect();

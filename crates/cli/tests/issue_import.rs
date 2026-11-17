@@ -87,7 +87,7 @@ fn claim_refs(world: &World) -> Vec<String> {
 }
 
 fn import(world: &World, more: &[&str]) -> Value {
-    let line = [&["issue-import", "--from", TRACKER, "--now", NOW][..], more].concat();
+    let line = [&["issue", "import", "--from", TRACKER, "--now", NOW][..], more].concat();
     world.afk(&line).ok()
 }
 
