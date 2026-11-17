@@ -5,7 +5,8 @@ and the cut steps under "Cutting a version". An unknown key or a wrong
 type is an error, not a default.
 
 ```yaml
-base_branch: main                 # workers cut from it, open their PR against it, land on it
+base_branch: main                 # versions are cut on it; it moves only by a promotion (ADR-0090)
+proving_branch: proving           # workers cut from it, open their PR against it, land on it once fast-green
 gate_command: afkconvoy exclusive -- ./gate.sh  # what must pass before a PR lands, one at a time on the host
 gate_seconds: 3600                # the gate limit, starting after its turn is granted
 ready_label: ready-for-agent      # an issue is dispatchable while it carries this
