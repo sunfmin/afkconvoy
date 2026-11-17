@@ -1,11 +1,19 @@
 //! A proving branch (docs/adr/0090): a fast-green round lands on it, and a
 //! promotion moves the base branch once the slow gate passes there. Real
 //! binary, real remotes; the gate script says which of its parts ran.
-use crate::common::{World, commit, git};
-use serde_json::json;
+use crate::common::{World, commit, data_beside, git};
+use serde_json::{Value, json};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Stdio};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 
 const PROVING: &str = "proving";
+/// The two hosts of a world: the world's own, and another (`Host`).
+const A: &str = "host-a";
+const B: &str = "host-b";
 
 fn quote(path: &Path) -> String {
     afkconvoy_core::line::Line::new().word(&path.to_string_lossy()).own()
@@ -14,12 +22,14 @@ fn quote(path: &Path) -> String {
 /// A world whose config splits its gate in two and names a proving branch,
 /// which the remote holds at the base branch's tip. Each part of the gate
 /// notes in the world's root that it ran, `ran-<part>`, and fails while
-/// `fail-<part>` is there. PRs are opened against the proving branch.
+/// `fail-<part>` is there. It waits while a file `hold-<part>…` of the root
+/// is there whose words, run in the gate's worktree, succeed, saying so by
+/// `<that file>.held`. PRs are opened against the proving branch.
 fn proving_world() -> World {
     let world = World::new();
     let root = quote(&world.root);
     let script = format!(
-        "#!/bin/sh\nset -e\nroot={root}\necho \"$(git rev-parse HEAD)\" >> \"$root/ran-$1\"\ntest ! -f \"$root/fail-$1\"\n"
+        "#!/bin/sh\nset -e\nroot={root}\necho \"$(git rev-parse HEAD)\" >> \"$root/ran-$1\"\nfor hold in \"$root\"/hold-$1*; do\n  case \"$hold\" in *.held) continue;; esac\n  test -f \"$hold\" || continue\n  if sh -c \"$(cat \"$hold\")\"; then touch \"$hold.held\"; while test -f \"$hold\"; do sleep 0.05; done; fi\ndone\ntest ! -f \"$root/fail-$1\"\n"
     );
     commit(&world.clone, "gate.sh", &script);
     let afk = afkconvoy_core::line::Line::new().program(env!("CARGO_BIN_EXE_afkconvoy")).own();
@@ -38,12 +48,17 @@ fn proving_world() -> World {
 /// A worker of issue `n` whose branch, cut from the proving branch, adds
 /// `<name>.txt`, pushed, with its PR open against the proving branch.
 fn worker(world: &World, n: u64, name: &str) -> PathBuf {
+    worker_in(world, &world.clone, n, name)
+}
+
+/// `worker`, in a worktree of the clone `clone`: a host's own.
+fn worker_in(world: &World, clone: &Path, n: u64, name: &str) -> PathBuf {
     let dir = world.root.join(format!("wt-{n}"));
     let branch = format!("issue-{n}");
-    git(&world.clone, &["fetch", "-q", "origin"]);
+    git(clone, &["fetch", "-q", "origin"]);
     let at = dir.to_str().unwrap();
     let from = format!("origin/{PROVING}");
-    git(&world.clone, &["worktree", "add", "-q", "-b", &branch, at, &from]);
+    git(clone, &["worktree", "add", "-q", "-b", &branch, at, &from]);
     commit(&dir, &format!("{name}.txt"), name);
     git(&dir, &["push", "-q", "origin", "HEAD"]);
     world.issue(n, &["ready-for-agent"]);
@@ -67,7 +82,7 @@ fn land_two(world: &World) -> String {
     let base = tip(world, "main");
     for (n, name) in [(1, "a"), (2, "b")] {
         let dir = worker(world, n, name);
-        let landed = world.afk_in(&dir, &["land", "--issue", &n.to_string()]).ok();
+        let landed = world.afk_in(&dir, &["land", "--issue", &n.to_string(), "--host", A]).ok();
         assert_eq!(landed["outcome"], "merged", "{landed}");
         assert_eq!(landed["target_branch"], PROVING, "{landed}");
         assert_eq!(tip(world, PROVING), landed["commit"].as_str().unwrap(), "{landed}");
@@ -153,4 +168,302 @@ fn a_promotion_never_moves_the_base_branch_to_what_is_no_fast_forward_of_it() {
     assert_eq!(answer["outcome"], "diverged", "{answer}");
     assert_eq!(tip(&world, "main"), moved);
     assert!(ran(&world, "slow").is_empty(), "nothing is gated for a move it cannot make");
+}
+
+/// Another host of the world's repo (sunfmin/control#1334): a clone of the
+/// remote of its own, and a cache and data directory of its own, and so its
+/// own host database, candidate chains and exclusive queue. GitHub's
+/// stand-in and the remote are the world's.
+struct Host {
+    clone: PathBuf,
+    cache: PathBuf,
+}
+
+impl Host {
+    fn new(world: &World, name: &str) -> Host {
+        let clone = world.clone_again(&format!("{name}-clone"));
+        let cache = world.root.join(format!("{name}-cache"));
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(data_beside(&cache)).unwrap();
+        Host { clone, cache }
+    }
+
+    fn command(&self, world: &World, cwd: &Path, args: &[&str]) -> std::process::Command {
+        let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), cwd);
+        command
+            .env("XDG_CACHE_HOME", &self.cache)
+            .env("XDG_DATA_HOME", data_beside(&self.cache))
+            .args(args);
+        command
+    }
+
+    /// The CLI run on this host, in `cwd` → its one JSON answer.
+    fn afk(&self, world: &World, cwd: &Path, args: &[&str]) -> Value {
+        let out = self.command(world, cwd, args).output().unwrap();
+        answer(&out.stdout, &out.stderr)
+    }
+
+    /// The CLI started on this host, in `cwd`, and left running.
+    fn start(&self, world: &World, cwd: &Path, args: &[&str]) -> Running {
+        let child = self
+            .command(world, cwd, args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        Running(Some(child))
+    }
+
+    /// A stand-in host runner of this host, on its socket: it puts a
+    /// command that asks for a lane in the exclusive queue behind one other,
+    /// tells `asked` the question, and gives it its lane once `go` is sent.
+    fn runner(&self) -> Runner {
+        let dir = self.cache.join("afkconvoy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let short = tempfile::tempdir_in("/tmp").unwrap();
+        let link = short.path().join("c");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        let listener = UnixListener::bind(link.join("host-runner.sock")).unwrap();
+        let (tell, asked) = channel();
+        let (go, given) = channel::<()>();
+        let given = Arc::new(Mutex::new(given));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let tell: Sender<Value> = tell.clone();
+                let given = given.clone();
+                std::thread::spawn(move || {
+                    let mut line = String::new();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    if reader.read_line(&mut line).is_err() {
+                        return;
+                    }
+                    let question: Value = serde_json::from_str(line.trim()).unwrap_or_default();
+                    if question["op"] != "exclusive" {
+                        return;
+                    }
+                    let runner = json!({"pid": 4242, "version": "test", "log": "", "panel": null});
+                    let _ = writeln!(stream, "{}", json!({"ahead": 1, "host_runner": runner}));
+                    let _ = tell.send(question);
+                    let _ = given.lock().unwrap().recv();
+                    let _ = writeln!(stream, "{}", json!({"runs": 1, "ahead_of": 0}));
+                    // Its lane is held until the asker closes its end.
+                    let _ = std::io::copy(&mut reader, &mut std::io::sink());
+                });
+            }
+        });
+        Runner { asked, go, _short: short }
+    }
+
+    /// The fleet's log of this host.
+    fn log(&self) -> String {
+        let runs = self.cache.join("afkconvoy").join("runs");
+        std::fs::read_dir(&runs)
+            .map(|files| {
+                files.map(|file| std::fs::read_to_string(file.unwrap().path()).unwrap()).collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// A host's stand-in host runner (`Host::runner`).
+struct Runner {
+    asked: Receiver<Value>,
+    go: Sender<()>,
+    _short: tempfile::TempDir,
+}
+
+/// A command left running; killed where the test ends before it.
+struct Running(Option<Child>);
+
+impl Running {
+    /// Whether it ended.
+    fn ended(&mut self) -> bool {
+        self.0.as_mut().unwrap().try_wait().unwrap().is_some()
+    }
+
+    /// Its one JSON answer, once it ended.
+    fn answer(mut self) -> Value {
+        let mut child = self.0.take().unwrap();
+        let (mut stdout, mut stderr) = (vec![], vec![]);
+        child.stdout.take().unwrap().read_to_end(&mut stdout).unwrap();
+        child.stderr.take().unwrap().read_to_end(&mut stderr).unwrap();
+        child.wait().unwrap();
+        answer(&stdout, &stderr)
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn answer(stdout: &[u8], stderr: &[u8]) -> Value {
+    let stdout = String::from_utf8_lossy(stdout);
+    serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("not one JSON object ({e}): {stdout:?}\nstderr: {}", String::from_utf8_lossy(stderr))
+    })
+}
+
+/// Holds the gate's `part` while `words`, run in its worktree, succeed, as
+/// `hold` names it → what to remove to let it go, once it holds.
+fn hold(world: &World, running: &mut Running, part: &str, name: &str, words: &str) -> PathBuf {
+    let file = world.root.join(format!("hold-{part}-{name}"));
+    std::fs::write(&file, words).unwrap();
+    let held = world.root.join(format!("hold-{part}-{name}.held"));
+    afkconvoy_patience::until_true(format!("the {part} gate held for {name}"), || {
+        assert!(!running.ended(), "it ended before its {part} gate held");
+        held.exists()
+    });
+    file
+}
+
+/// The words a hold runs: whether the gate runs in a checkout of `clone`.
+fn in_clone(clone: &Path) -> String {
+    let common = std::fs::canonicalize(clone.join(".git")).unwrap();
+    format!("test \"$(cd \"$(git rev-parse --git-common-dir)\" && pwd -P)\" = {}", quote(&common))
+}
+
+#[test]
+fn two_hosts_land_on_one_proving_branch_and_the_refused_one_is_built_again_on_the_new_tip() {
+    let world = proving_world();
+    let b = Host::new(&world, B);
+    let base = tip(&world, "main");
+    let first = worker(&world, 1, "a");
+    let second = worker_in(&world, &b.clone, 2, "b");
+    // Host B's round is fast-gating on the proving tip it read...
+    let mut turn = b.start(&world, &second, &["land", "--issue", "2", "--host", B]);
+    let held = hold(&world, &mut turn, "fast", "b", "test -f b.txt");
+    // ...when host A lands its own on the same proving branch.
+    let landed = world.afk_in(&first, &["land", "--issue", "1", "--host", A]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let a_tip = tip(&world, PROVING);
+    assert_eq!(landed["commit"], a_tip.as_str(), "{landed}");
+    std::fs::remove_file(held).unwrap();
+    let refused = turn.answer();
+    assert_eq!(refused["outcome"], "target_moved", "its push required the tip it read: {refused}");
+    assert_eq!(tip(&world, PROVING), a_tip, "the refused round landed nothing");
+    assert_eq!(world.state(2), "open");
+    // Its next turn reads the tip again, builds on it and gates that.
+    let again = b.afk(&world, &second, &["land", "--issue", "2", "--host", B]);
+    assert_eq!(again["outcome"], "merged", "{again}");
+    let b_tip = tip(&world, PROVING);
+    assert_eq!(again["commit"], b_tip.as_str(), "{again}");
+    assert_eq!(world.remote(&["rev-parse", &format!("{b_tip}^1")]), a_tip, "built on A's");
+    let files = world.remote(&["ls-tree", "--name-only", &format!("refs/heads/{PROVING}")]);
+    assert!(files.lines().any(|f| f == "a.txt") && files.lines().any(|f| f == "b.txt"));
+    // Neither lands an untested tree: each tip the proving branch took is a
+    // commit its fast gate ran on.
+    let fast = ran(&world, "fast");
+    assert!(fast.contains(&a_tip) && fast.contains(&b_tip), "{fast:?}");
+    assert_eq!(tip(&world, "main"), base, "nothing lands on the base branch but by promotion");
+    // Each landing names its host, and a promotion says whose it covers.
+    let promoted = world.afk(&["promote", "--host", A]).ok();
+    assert_eq!(promoted["outcome"], "promoted", "{promoted}");
+    assert_eq!(promoted["landed_on"], json!({A: 1, B: 1}), "{promoted}");
+}
+
+#[test]
+fn a_promotion_gates_what_another_host_landed_while_it_waited_for_its_lane() {
+    let world = proving_world();
+    let base = land_two(&world);
+    let b = Host::new(&world, B);
+    let runner = b.runner();
+    let promotion = b.start(&world, &b.clone, &["promote", "--host", B]);
+    // B's promotion read the proving tip and is queued for its lane...
+    let asked = runner.asked.recv_timeout(crate::common::PATIENCE).expect("it asked for a lane");
+    assert_eq!(asked["ticket"]["command"], "promote: the proving branch's tip", "{asked}");
+    let before = tip(&world, PROVING);
+    // ...when host A lands on the proving branch.
+    let dir = worker(&world, 3, "c");
+    let landed = world.afk_in(&dir, &["land", "--issue", "3", "--host", A]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let after = tip(&world, PROVING);
+    assert_ne!(after, before);
+    runner.go.send(()).unwrap();
+    let promoted = promotion.answer();
+    assert_eq!(promoted["outcome"], "promoted", "{promoted}");
+    assert_eq!(promoted["proving_tip"], after.as_str(), "it read the tip again: {promoted}");
+    assert_eq!(promoted["gated_tip"], after.as_str(), "{promoted}");
+    assert_eq!(ran(&world, "slow"), std::slice::from_ref(&after), "one slow run, of that tip");
+    assert_eq!(tip(&world, "main"), after, "the base branch fast-forwards to it");
+    assert_eq!(promoted["base_tip"], base.as_str(), "{promoted}");
+    assert_eq!(promoted["unpromoted"], 3, "{promoted}");
+    assert_eq!(promoted["landed_on"], json!({A: 3}), "{promoted}");
+    let log = b.log();
+    let line = log.lines().find(|line| line.contains("promotion promoted")).unwrap_or_else(|| {
+        panic!("its tick-log line says it: {log}");
+    });
+    assert!(line.contains(&format!("proving tip {after}")), "{line}");
+    assert!(line.contains("3 landing(s), from host-a 3"), "{line}");
+}
+
+#[test]
+fn a_second_host_s_promotion_of_a_tip_the_base_already_holds_pushes_nothing() {
+    let world = proving_world();
+    land_two(&world);
+    let proving = tip(&world, PROVING);
+    let b = Host::new(&world, B);
+    let mut late = b.start(&world, &b.clone, &["promote", "--host", B]);
+    let held = hold(&world, &mut late, "slow", B, &in_clone(&b.clone));
+    let first = world.afk(&["promote", "--host", A]).ok();
+    assert_eq!(first["outcome"], "promoted", "{first}");
+    assert_eq!(tip(&world, "main"), proving);
+    world.watch_pushes(None);
+    std::fs::remove_file(held).unwrap();
+    let second = late.answer();
+    assert_eq!(second["outcome"], "already_promoted", "{second}");
+    assert_eq!(second["pushed"], false, "{second}");
+    assert_eq!(second["gated_tip"], proving.as_str(), "{second}");
+    assert!(world.pushes().iter().all(|r| !r.contains("refs/heads/main")), "{:?}", world.pushes());
+    assert_eq!(tip(&world, "main"), proving);
+}
+
+#[test]
+fn a_second_host_s_promotion_of_a_tip_ahead_of_the_first_s_fast_forwards_onto_it() {
+    let world = proving_world();
+    let base = tip(&world, "main");
+    let b = Host::new(&world, B);
+    let one = worker(&world, 1, "a");
+    assert_eq!(
+        world.afk_in(&one, &["land", "--issue", "1", "--host", A]).ok()["outcome"],
+        "merged"
+    );
+    let older = tip(&world, PROVING);
+    // A's promotion gates the older tip...
+    let mut early = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+    early
+        .args(["promote", "--host", A])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut early = Running(Some(early.spawn().unwrap()));
+    let held_a = hold(&world, &mut early, "slow", A, &in_clone(&world.clone));
+    let two = worker(&world, 2, "b");
+    assert_eq!(
+        world.afk_in(&two, &["land", "--issue", "2", "--host", A]).ok()["outcome"],
+        "merged"
+    );
+    let newer = tip(&world, PROVING);
+    // ...and B's the newer one, read while the base branch was at neither.
+    let mut late = b.start(&world, &b.clone, &["promote", "--host", B]);
+    let held_b = hold(&world, &mut late, "slow", B, &in_clone(&b.clone));
+    std::fs::remove_file(held_a).unwrap();
+    let first = early.answer();
+    assert_eq!(first["outcome"], "promoted", "{first}");
+    assert_eq!(first["gated_tip"], older.as_str());
+    assert_eq!(tip(&world, "main"), older);
+    std::fs::remove_file(held_b).unwrap();
+    let second = late.answer();
+    assert_eq!(second["outcome"], "promoted", "{second}");
+    assert_eq!(second["pushed"], true, "{second}");
+    assert_eq!(second["gated_tip"], newer.as_str(), "{second}");
+    assert_eq!(second["base_tip"], older.as_str(), "it fast-forwarded from the first's: {second}");
+    assert_eq!(tip(&world, "main"), newer);
+    assert_ne!(older, base);
 }
