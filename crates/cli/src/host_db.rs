@@ -172,6 +172,7 @@ impl Host {
         }
         let mut db = Connection::open(&self.db)
             .with_context(|| format!("cannot open the host database {}", self.db.display()))?;
+        user_only(&self.db)?;
         db.busy_timeout(BUSY)?;
         migrate(&mut db)?;
         if let Some(cache) = &self.cache {
@@ -232,6 +233,19 @@ impl Host {
         let mut db = self.open_for(store)?;
         write(&mut db, |tx| store.import(tx, value))
     }
+}
+
+/// Has `file` be readable and writable by its user alone, where it is not:
+/// the host database keeps what its user alone may read, as the stderr of a
+/// host's checks. SQLite makes its journal with the same mode.
+fn user_only(file: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(file)?.permissions().mode() & 0o777;
+    if mode != 0o600 {
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("cannot make {} its user's alone", file.display()))?;
+    }
+    Ok(())
 }
 
 /// `value` as a `T`, or an error naming `store` in `db`.
@@ -557,6 +571,7 @@ fn back_up_in(data: &Path, day: &str, now: u64) -> Result<bool> {
             let part = into.join(format!("{name}.part"));
             let _ = std::fs::remove_file(&part);
             backup(&from, &part)?;
+            user_only(&part)?;
             std::fs::rename(&part, into.join(name))?;
         }
         let mut days: Vec<_> = std::fs::read_dir(&backups)?
@@ -627,12 +642,15 @@ const STORES: &[&Store] = &[
     &crate::resources::STORE,
     &crate::watch_notify::STORE,
     &crate::trash::STORE,
-    &crate::kit::STORE,
 ];
+
+/// The stores whose old file was not in the cache directory: each takes it
+/// in itself, as the host kit takes in `kit.json` of the config directory.
+const ELSEWHERE: &[&Store] = &[&crate::kit::STORE];
 
 /// The store whose old file is `file`.
 fn store_of(file: &str) -> Result<&'static Store> {
-    let store = STORES.iter().find(|store| store.file == file);
+    let store = STORES.iter().chain(ELSEWHERE).find(|store| store.file == file);
     store.copied().with_context(|| format!("the host database keeps no store of {file}"))
 }
 
@@ -686,6 +704,17 @@ fn migrate(db: &mut Connection) -> Result<()> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn the_host_database_is_its_users_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("host.db");
+        std::fs::write(&db, "").unwrap();
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
+        Host::at(db.clone()).open().unwrap();
+        assert_eq!(std::fs::metadata(&db).unwrap().permissions().mode() & 0o777, 0o600);
+    }
 
     #[test]
     fn a_database_behind_is_migrated_once_and_one_ahead_is_refused() {

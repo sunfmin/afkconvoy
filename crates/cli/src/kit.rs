@@ -625,6 +625,35 @@ pub fn remove(harness: Harness, now: u64) -> Result<Value> {
     Ok(json!({"path": file, "written": true, "removed": harness, "kit": kit, "left_out": left_out}))
 }
 
+/// Has the host kit start `harness`'s workers on `command` from now on — added
+/// last, with no model, where it holds none — then lists its models through
+/// it (`write_one`). A harness the operator removed is refused: `switch
+/// --harness` puts it back.
+pub fn set_command(harness: Harness, command: &str, now: u64) -> Result<Value> {
+    let kept = Kept::of_host()?;
+    kept.change(|state| {
+        let mut kit = state.kit_or_empty(&kept)?;
+        if kit.is_removed(harness) {
+            bail!(
+                "the harness `{}` was removed by the operator; restore it with `afkconvoy switch --harness {}`, then set its command",
+                harness.key(),
+                harness.key()
+            );
+        }
+        match kit.harnesses.iter_mut().find(|held| held.harness == harness) {
+            Some(held) => held.command = command.to_string(),
+            None => {
+                kit.harnesses.push(Held { harness, command: command.to_string(), models: vec![] })
+            }
+        }
+        let written = state.written.unwrap_or(now);
+        state.put(&kit, written)
+    })?;
+    let mut answer = write_one(harness, now)?;
+    answer["command"] = json!({"harness": harness, "command": command});
+    Ok(answer)
+}
+
 /// Applies the watch's research against the latest kit in one transaction,
 /// so listing, casting and a switch cannot lose each other's changes. A bad
 /// file never reaches the write, nor changes the kit's refresh time.
@@ -1274,7 +1303,7 @@ The operator, or a machine in their place, on the host that starts the workers: 
 
 ## What it reads and writes
 
-The host kit is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json when XDG_CONFIG_HOME is unset. It is kept on this host and never pushed. It is the only source of worker launch commands. It holds the harnesses this host can start, in order of preference, each with its worker launch command and listed models. Former `stock_consult` kit choices are accepted on read and dropped on write. It is written automatically, with no confirmation:
+The host kit is kept in the host's database (`afkconvoy help data` says where it is), on this host, and never pushed; an older release kept it in $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json, which the first process of this release takes in once and renames `kit.json.migrated`, with `kit.lock` and `kit.refresh` beside it. It is changed through commands alone: `kit`, `kit --command`, `kit --remove`, `kit --research` and `switch`. It is the only source of worker launch commands. It holds the harnesses this host can start, in order of preference, each with its worker launch command and listed models. Former `stock_consult` kit choices are accepted on read and dropped on write. It is written automatically, with no confirmation:
 
 1. Harnesses. Each known harness whose program `type` finds in the login shell a worker gets — `$SHELL -lic`, or `/bin/zsh` where `SHELL` is unset, with its rc files, PATH and logins, started from the environment a fresh login brings in and not from this process's — on the command the host kit holds for it, or else its stock worker launch command. No terminal is opened.
 2. Models. Each harness found is asked for the models its own login runs, in that same login shell, and no terminal is opened. Claude Code is asked through its command with an `initialize` request and no prompt; Codex through its command with `debug models`, its server's list; pi through its command with `--list-models`; Kimi Code through its command with `provider list --json`, under the fleet's isolated home; Grok through its command with `models`, under the fleet's isolated home and with no prompt; DSH through `dsh headless`, whose listing plugin asks `https://api.deepseek.com/models` with DSH's account token from `$DSH_HOME/.credentials.yaml` (default `~/.dsh`), or its `DEEPSEEK_API_KEY` when no account token is held. The server's ids and display names are used, never a bundled catalog. This is the sole credential the fleet reads, through DSH's credential service, only for listing: never printed or stored, and sent only to DeepSeek. Not signed in or a server refusal leaves DSH out with the reason.
@@ -1291,13 +1320,15 @@ A model named by a roster entry or a `model:` label matches a placed model the h
 
 `afkconvoy kit --cast` is refused: automatic casting is gone. An old host-kit `cast` key is ignored, changes no start, and is dropped the next time the kit is written. It does not fail `kit` or `check`. A worker's model is its one `model:` label of the selected harness, or that harness's user default (`afkconvoy cast --help`).
 
-Without --cast, --research or --remove it says on stderr where the file is, what it holds — each harness's placed models, or its default model, and those `research pending`, `not researched` or settled — and what was left out.
+`afkconvoy kit --command <harness>=<command>` has the harness's workers start on that command from now on — what an edit of the file by hand did — and then lists its models through it, as the refresh of one harness does; a harness the host kit does not hold yet is added last. A harness the operator removed is refused: `switch --harness` puts it back first.
+
+Without --cast, --research, --remove or --command it says on stderr where the host kit is kept, what it holds — each harness's placed models, or its default model, and those `research pending`, `not researched` or settled — and what was left out.
 
 ## What it answers
 
-With --cast: an error, automatic casting is gone. With --research: {path, written, placed, settled, kit}, the host kit file, true, each model placed or settled as {harness, model} in its respective array, and the resulting kit. With --remove: {path, written, removed, kit, left_out}, with removed the harness key and the kit without it. Otherwise {path, written, kit, left_out, agent_setup, tmux}: the file; true; the kit written; what was given of the agent setup, null where nothing was; tmux, null where this is no Guild machine or its tmux was already there, else {installed, by} — its path and the line that installed it — or {error, fix}; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, `no longer listed`, or `removed by the operator`. `plan` and `doctor` show operator removals in `host_kit.left_out` with that same reason. Run twice with nothing changed, it writes the same kit. The written kit has no `cast` key. Errors: the login shell did not answer within 20 seconds; a kit that cannot be read or written; or a removal refused because live workers are still on the harness.
+With --cast: an error, automatic casting is gone. With --research: {path, written, placed, settled, kit}, the host database, true, each model placed or settled as {harness, model} in its respective array, and the resulting kit. With --remove: {path, written, removed, kit, left_out}, with removed the harness key and the kit without it. With --command: {path, written, kit, left_out, agent_setup, command}, as of the refresh of that harness alone, with command the {harness, command} set. Otherwise {path, written, kit, left_out, agent_setup, tmux}: the host database; true; the kit written; what was given of the agent setup, null where nothing was; tmux, null where this is no Guild machine or its tmux was already there, else {installed, by} — its path and the line that installed it — or {error, fix}; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, `no longer listed`, or `removed by the operator`. `plan` and `doctor` show operator removals in `host_kit.left_out` with that same reason. Run twice with nothing changed, it writes the same kit. The written kit has no `cast` key. Errors: the login shell did not answer within 20 seconds; a kit that cannot be read or written; or a removal refused because live workers are still on the harness.
 
-A harness with `models` [] or no placed model starts on its default. Automatic command discovery can append a harness with no models unless the operator removed it; one written by hand or by an older release is also read as it is: a model named in it with no research is started on until research answers for it, when the watch supplies its research. Neither the kit nor `left_out` carries probe evidence any more: an older kit's `probed` fields are read and not written again.
+A harness with `models` [] or no placed model starts on its default. Automatic command discovery can append a harness with no models unless the operator removed it; one an older release wrote, or a hand edit of its file, is also read as it is: a model named in it with no research is started on until research answers for it, when the watch supplies its research. Neither the kit nor `left_out` carries probe evidence any more: an older kit's `probed` fields are read and not written again.
 
 ## The research file
 
@@ -1321,13 +1352,13 @@ Refusals name the file and fault and write nothing: malformed JSON, unknown fiel
 
 ## What trips you up
 
-A harness or model left out is gone from the file: commands and research are kept only for what is kept. At a worker launch, a known harness with no command is discovered in the worker's login shell and its checked stock command is merged into the kit, without model probes or research, unless the operator removed it. An explicit command always wins. `--worker-command` is gone: a harness's command is the host kit's. A command is an opaque shell string; an unbound repo starts it under nice with its worktree's TMPDIR, adding its harness's model flag only where a model label is followed, and its harness's worktree-trust setup. With no followed label the worker starts with no model flag, on that harness's user default. Codex also receives a session-private user directory and the effort and explicit service tier read from the host user's own Codex config at each launch; no saved worker preference selects them. A bound repo adds its role flags ([`afkconvoy help worker-launch`](help:worker-launch)).
+A harness or model left out is gone from the host kit: commands and research are kept only for what is kept. At a worker launch, a known harness with no command is discovered in the worker's login shell and its checked stock command is merged into the kit, without model probes or research, unless the operator removed it. An explicit command always wins. `--worker-command` is gone: a harness's command is the host kit's. A command is an opaque shell string; an unbound repo starts it under nice with its worktree's TMPDIR, adding its harness's model flag only where a model label is followed, and its harness's worktree-trust setup. With no followed label the worker starts with no model flag, on that harness's user default. Codex also receives a session-private user directory and the effort and explicit service tier read from the host user's own Codex config at each launch; no saved worker preference selects them. A bound repo adds its role flags ([`afkconvoy help worker-launch`](help:worker-launch)).
 
 Writing the kit sends no prompt to any listed model. A listed model that fails when its worker starts is found by worker health, classed `model` at model scope and left out; its hourly recovery probe brings it back. A harness refusing every prompt is paused and has its own hourly recovery probe. Those health probes are the only model probes; kit writes, switches and refreshes make none. A recovery probe asks that same login shell and opens no terminal. A pause is running state and recovers; an operator removal is a choice and no probe undoes it.
 
 ## It stays current
 
-A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a newly listed model waits for the watch, and a model no longer listed is dropped. A harness that cannot be found or listed is kept, and a pause leaves it out, as above. An operator removal survives this refresh and every other relisting. A harness merely left out by a hand edit is read as absent, but only `kit --remove` records the removal that survives a refresh; the next relisting may add a hand-omitted installed harness back. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its database: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
+A tick — of `run`, or `afkconvoy tick` — writes the host kit again once it was last written a day ago or more, before anything else: a newly listed model waits for the watch, and a model no longer listed is dropped. A harness that cannot be found or listed is kept, and a pause leaves it out, as above. An operator removal survives this refresh and every other relisting. Only `kit --remove` records a removal that survives a refresh. The host database keeps when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares it: the first to find it due records, in one transaction of the host database, that it tries a refresh, and writes it again, once a day; the others find it tried and read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its database: the host kit is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
 
 ## The agent setup
 

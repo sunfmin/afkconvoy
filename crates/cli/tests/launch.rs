@@ -405,6 +405,25 @@ fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host
 }
 
 #[test]
+fn kit_command_sets_a_harnesss_command_where_a_hand_edit_of_its_file_did() {
+    let world = backlog();
+    host_to_kit(&world);
+    world.afk(&["kit"]).ok();
+    let set = world.afk(&["kit", "--command", "pi=pi --custom"]).ok();
+    assert_eq!(set["command"], json!({"harness": "pi", "command": "pi --custom"}), "{set}");
+    let kit = world.kit();
+    let pi = kit["harnesses"].as_array().unwrap().iter().find(|held| held["harness"] == "pi");
+    assert_eq!(pi.unwrap()["command"], "pi --custom", "{kit}");
+    // Its models are listed through it, and the other harnesses stay.
+    assert_eq!(pi.unwrap()["models"][0]["model"], "openai/gpt-5.5", "{kit}");
+    assert_eq!(kit["harnesses"][0]["harness"], "claude-code", "{kit}");
+    // A removed harness is refused; a malformed one says how to say it.
+    world.afk(&["kit", "--remove", "pi"]).ok();
+    assert!(world.afk(&["kit", "--command", "pi=pi"]).error().contains("switch --harness pi"));
+    assert!(world.afk(&["kit", "--command", "pi"]).error().contains("<harness>=<command>"));
+}
+
+#[test]
 fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_out() {
     let world = backlog();
     world.kit_command("dsh", "dsh");
