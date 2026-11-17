@@ -867,6 +867,7 @@ afkconvoy::cli tick::an_incomplete_dispatch_does_not_belong_to_a_later_claim
 afkconvoy::cli tick::an_issue_a_peer_holds_is_passed_over
 afkconvoy::cli tick::an_issue_deleted_before_its_dispatch_claims_nothing_and_takes_no_slot
 afkconvoy::cli tick::an_issue_deleted_during_its_own_dispatch_leaves_no_claim_behind
+afkconvoy::cli tick::doctor_names_an_open_issue_whose_carrier_landed
 afkconvoy::cli tick::every_tick_says_as_it_starts_why_it_started
 afkconvoy::cli tick::one_unreadable_kept_worktree_does_not_stop_the_others_from_going_and_its_error_is_logged
 afkconvoy::cli tick::run_follows_a_tick_that_settled_a_claim_with_no_sleep_and_sleeps_after_one_that_did_nothing
@@ -1034,7 +1035,6 @@ afkconvoy::cli tools::an_orca_only_where_the_ssh_remote_runtime_puts_its_cli_is_
 afkconvoy::cli tick::a_carried_issue_s_worktree_stays_while_its_carrier_is_open_and_goes_once_it_lands
 afkconvoy::cli tick::a_carried_issue_s_worktree_whose_commits_its_carrier_holds_goes_at_settle
 afkconvoy::cli tick::a_settled_worktree_with_a_commit_no_remote_ref_holds_stays_on_every_later_tick
-afkconvoy::cli tick::doctor_names_an_open_issue_whose_carrier_landed
 # A PR red twice in a row handed to a new worker (sunfmin/control#1254): each
 # runs two candidate gates and ticks a fleet; measured 4.4s to 11.5s.
 afkconvoy::cli joining::a_red_turn_names_its_failing_tests_and_its_gate_output_in_its_answer_and_its_log_line
