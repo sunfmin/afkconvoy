@@ -159,8 +159,14 @@ fn remove_settled(
     worktree.remove()?;
     // Orca removes a worktree whose directory is already gone from its list
     // alone: git's registration of it is removed here (sunfmin/control#982).
+    // Its `.git` pointer gone with it, `remove` cannot find the repo to
+    // delete a branch orca kept: it is deleted here, where nothing is lost
+    // with it (local/macnomac-studio#29).
     if gone {
         fleet.repo.remove_worktree(&worktree.path)?;
+        if !worktree.branch.is_empty() {
+            let _ = fleet.repo.delete_held_branch(&worktree.branch);
+        }
     }
     Ok(None)
 }

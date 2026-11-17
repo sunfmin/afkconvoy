@@ -66,7 +66,10 @@ fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
     assert_eq!(git(&team, &["status", "--porcelain"]), "");
     assert_eq!(git(&team, &["rev-list", "--count", "HEAD"]), "1");
     let created = ["repo", "create", "acme/hospital", "--private", "--source", ".", "--push"];
-    assert_eq!(world.gh_calls(), [created]);
+    // The write names its login first: the host's secondary hold is the
+    // login's, and every GitHub write waits on it.
+    let login = ["config", "get", "user", "--host", "github.com"];
+    assert_eq!(world.gh_calls(), [&login[..], &created[..]]);
 
     // As the repo that was created, and as its files in their directory.
     for from in [&["--team", "acme/hospital"][..], &["--dir", dir, "--team", "acme/hospital"]] {
@@ -201,7 +204,10 @@ fn a_role_in_a_repo_of_its_own_is_created_and_a_team_names_it() {
     assert_eq!(git(&role, &["status", "--porcelain"]), "");
     assert_eq!(git(&role, &["rev-list", "--count", "HEAD"]), "1");
     let created = ["repo", "create", "acme/dev", "--private", "--source", ".", "--push"];
-    assert_eq!(world.gh_calls(), [created]);
+    // The write names its login first: the host's secondary hold is the
+    // login's, and every GitHub write waits on it.
+    let login = ["config", "get", "user", "--host", "github.com"];
+    assert_eq!(world.gh_calls(), [&login[..], &created[..]]);
 
     let wrote = world
         .afk(&["scaffold", "team", team_dir, "--role", "dev=acme/dev", "--repo", "acme/team"])
@@ -343,7 +349,10 @@ fn the_example_team_is_written_whole_and_passes_check_as_pushed() {
     let tracked = git(&team, &["ls-files"]);
     assert_eq!(tracked.lines().count(), files.len(), "{tracked}");
     let created = ["repo", "create", "acme/h", "--private", "--source", ".", "--push"];
-    assert_eq!(world.gh_calls(), [created]);
+    // The write names its login first: the host's secondary hold is the
+    // login's, and every GitHub write waits on it.
+    let login = ["config", "get", "user", "--host", "github.com"];
+    assert_eq!(world.gh_calls(), [&login[..], &created[..]]);
 
     // The team's loader takes it as pushed, with no edit: seven roles in the
     // team's own repo, three workflows, four patrols and rules.

@@ -4,8 +4,8 @@
 //! candidates and cancels a failed or invalid suffix, the round whose PRs are
 //! paired and fast-gated pair by pair, and whose root is gated whole once on
 //! the target tip (docs/adr/0083), and the ordered fast-forward that lands
-//! it, all on one record the remote holds; and the proving branch such a
-//! round may land on fast-green, and the promotion that moves the base
+//! it, on a chain the host keeps (docs/adr/0117); and the proving branch
+//! such a round may land on fast-green, and the promotion that moves the base
 //! branch to its tip (docs/adr/0090). afkconvoy depends on it, and so may
 //! another program, by a git dependency pinned to a revision of this repo.
 

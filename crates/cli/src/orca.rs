@@ -464,6 +464,28 @@ fn unicode_escape(bytes: &[u8]) -> Option<u16> {
     u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
 }
 
+/// Orca answered a call with an error `code`; it reads as what orca said.
+#[derive(Debug)]
+pub struct Refused {
+    pub code: String,
+    said: String,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.said)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+impl Refused {
+    /// Whether orca refused `error`'s call with `code`.
+    fn with(error: &anyhow::Error, code: &str) -> bool {
+        error.chain().filter_map(|cause| cause.downcast_ref::<Refused>()).any(|r| r.code == code)
+    }
+}
+
 /// Orca refused a prompt because the harness cannot accept it. Keep this
 /// distinct from a terminal or transport failure, including its full reason.
 #[derive(Debug)]
@@ -531,7 +553,10 @@ impl Asked {
         }
         let error = &self.answer["error"];
         let said = match error["code"].as_str() {
-            Some(code) => refusal(code, error),
+            Some(code) => {
+                let said = format!("orca {} failed: {}", self.what, refusal(code, error));
+                return Refused { code: code.to_string(), said }.into();
+            }
             None if self.stderr.is_empty() => self.stdout.clone(),
             None => self.stderr.clone(),
         };
@@ -1742,7 +1767,9 @@ impl Worktree {
     /// and orca records that and still answers success. A directory still
     /// there is discarded, and the list is read again so orca drops the
     /// failure. An orca error removes nothing further and puts the files
-    /// back: the caller keeps the claim and a later tick tries again.
+    /// back: the caller keeps the claim and a later tick tries again — but
+    /// for orca not finding one whose directory is gone, which was already
+    /// removed: the rest of the removal still runs.
     ///
     /// A branch orca keeps — one holding a commit it cannot prove merged,
     /// as a cut's is — is deleted once a tag or a remote branch holds its
@@ -1770,13 +1797,19 @@ impl Worktree {
         if aside.is_none() {
             crate::copies::removable(&self.path);
         }
-        if let Err(error) = orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"]) {
-            if let Some(entry) = &aside {
-                self.put_files_back(entry);
+        match orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"]) {
+            Ok(_) => {}
+            // Already removed: nothing is left on disk, and orca lists
+            // nothing there (local/macnomac-studio#29).
+            Err(error) if !self.path.exists() && Refused::with(&error, "selector_not_found") => {}
+            Err(error) => {
+                if let Some(entry) = &aside {
+                    self.put_files_back(entry);
+                }
+                return Err(
+                    error.context(format!("cannot remove the worktree {}", self.path.display()))
+                );
             }
-            return Err(
-                error.context(format!("cannot remove the worktree {}", self.path.display()))
-            );
         }
         if let Some(entry) = &aside {
             crate::trash::delete_detached(entry);

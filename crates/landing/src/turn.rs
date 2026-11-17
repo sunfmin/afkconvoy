@@ -1,17 +1,11 @@
 //! A turn's rules, which every runner of one follows: afkconvoy's, with its
 //! lanes and process groups, and the plain one (`land`). What a candidate's
-//! commit gates, where the chain is recorded, what a turn waiting on the
-//! chain does next, and what one atomic publication updates.
+//! commit gates, what a turn waiting on the chain does next, and what one
+//! atomic publication updates: the chain is the host's, never the remote's
+//! (docs/adr/0117).
 
 use crate::chain::{Candidate, Chain, Phase, Publication, Slow};
 use afkconvoy_gate::declared::Gates;
-use afkconvoy_gate::layout::Layout;
-
-/// The ref the candidate chain of `target` is recorded on, under `layout`:
-/// one record per target branch.
-pub fn record_ref(layout: Layout, target: &str) -> String {
-    layout.under(&format!("candidates/{target}"))
-}
 
 /// What a candidate's commit declares of its gate: the whole gate, with its
 /// limit, and where it splits it, its fast gate and its slow gate
@@ -152,10 +146,10 @@ pub struct Update {
     pub new: String,
 }
 
-/// What one publication of `members` updates, all or none, where the chain
-/// is not a ref of the remote: every member's source ref kept at its original
-/// head, and the target from the first member's predecessor to the last
-/// member's commit.
+/// What one publication of `members` updates, all or none: every member's
+/// source ref kept at its original head, and the target from the first
+/// member's predecessor to the last member's commit. No record of the chain
+/// is among them: the chain is the host's (docs/adr/0117).
 pub fn publication<N>(members: &[&Candidate<N>], target: &str) -> Vec<Update> {
     let mut updates: Vec<Update> = members
         .iter()
@@ -172,20 +166,5 @@ pub fn publication<N>(members: &[&Candidate<N>], target: &str) -> Vec<Update> {
             new: last.commit.clone(),
         });
     }
-    updates
-}
-
-/// What one publication of `members` updates where the chain is a record of
-/// the remote (`land`): `publication`, and the record from `record.1` to
-/// `record.2`, before the target's update.
-pub fn updates<N>(
-    members: &[&Candidate<N>],
-    record: (&str, &str, &str),
-    target: &str,
-) -> Vec<Update> {
-    let mut updates = publication(members, target);
-    let (name, old, new) = record;
-    let at = updates.len().saturating_sub(1).min(members.len());
-    updates.insert(at, Update { name: name.into(), old: old.into(), new: new.into() });
     updates
 }
