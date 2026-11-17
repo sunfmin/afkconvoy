@@ -179,10 +179,10 @@ use host_settings::{
     ACCOUNT_LIMIT_ENV, ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
     AGENT_GUARDS_ENV, AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, BUSY_SHARE_ENV,
     EXCLUSIVE_SECONDS_ENV, GITHUB_SHARE_ENV, HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV,
-    HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, MAX_SHARE_OF_CORES_ENV, MAX_SHARE_OF_MEMORY_ENV,
-    NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV, jev_key_command_or_default,
-    notify_command_or_default, percent_or_default, port_or_default, thousandths_or_default,
-    watch_dir_or_default, watch_every_or_default, whole_or_default,
+    HOT_SPAWNS_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, MAX_SHARE_OF_CORES_ENV,
+    MAX_SHARE_OF_MEMORY_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
+    jev_key_command_or_default, notify_command_or_default, percent_or_default, port_or_default,
+    thousandths_or_default, watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -596,6 +596,11 @@ enum Command {
         /// one GiB at the least]
         #[arg(long, env = HOT_WRITTEN_ENV, value_name = "GIB", value_parser = thousandths_or_default)]
         hot_written: Option<To<u64>>,
+        /// The processes a second a worker's processes and the orphans of its commands may
+        /// create before it turns hot, held two minutes: a host setting; `default` changes it
+        /// back [default: 25 for each core of this host, 200 at the least]
+        #[arg(long, env = HOT_SPAWNS_ENV, value_name = "PER_SECOND", value_parser = whole_or_default)]
+        hot_spawns: Option<To<u64>>,
         /// The load, a whole percent of this host's cores, past which no tick starts a new
         /// worker: a host setting; `default` changes it back [default: 200]
         #[arg(long, env = ADMIT_LOAD_ENV, value_name = "PERCENT", value_parser = whole_or_default)]
@@ -2029,6 +2034,7 @@ fn start_of(
         hot_cores,
         hot_memory,
         hot_written,
+        hot_spawns,
         admit_load,
         admit_memory,
         admit_disk,
@@ -2063,6 +2069,7 @@ fn start_of(
         hot_cores,
         hot_memory,
         hot_written,
+        hot_spawns,
         admit_load,
         admit_memory,
         admit_disk,

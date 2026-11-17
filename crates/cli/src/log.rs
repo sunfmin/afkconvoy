@@ -121,6 +121,9 @@ pub enum What {
     /// A worker turned hot (`crate::hot`): `worker` is `#7`, or its worktree's
     /// name; `why` and what it `held` as it did, in words.
     Hot { worker: String, why: String, held: String },
+    /// Processes a command of a worker left behind, handed to pid 1 and
+    /// working in its worktree, were told to end (`crate::hot`).
+    Orphans { worker: String, ended: Vec<String> },
     /// A worker hot `since` then stopped being hot: under the limits for five
     /// minutes, or `gone` with its worktree. `held` is the most it took.
     Cooled {
@@ -269,6 +272,9 @@ impl Entry {
             What::Hot { worker, why, held } => {
                 format!("hot: {worker} is hot: {why} · it holds {held}")
             }
+            What::Orphans { worker, ended } => {
+                format!("hot: {worker} left behind {}: told to end", ended.join("; "))
+            }
             What::Cooled { worker, since, held, gone } => {
                 let why = if *gone {
                     "its worktree is gone".to_string()
@@ -348,6 +354,7 @@ impl Entry {
             | What::Tick(_)
             | What::Command { .. }
             | What::Hot { .. }
+            | What::Orphans { .. }
             | What::Cooled { .. }
             | What::WatchStarted { .. }
             | What::WatchState { .. }

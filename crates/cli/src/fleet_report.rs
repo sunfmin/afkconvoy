@@ -299,6 +299,7 @@ mod tests {
             reading,
             total_load: reading.load,
             queue_load: Some(0),
+            process_rate: None,
             span: 600,
             queue_drain: None,
             queue_bound: afkconvoy_core::admission::QUEUE_BOUND,

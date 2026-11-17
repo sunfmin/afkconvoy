@@ -40,6 +40,9 @@ pub struct Readings {
     total_load: Option<u64>,
     queue_load: Option<u64>,
     cpu_busy: Option<u64>,
+    /// The processes a second the host creates, beside its CPU reading
+    /// (sunfmin/control#1319); `None`: it could not be read.
+    process_rate: Option<u64>,
     memory_free: Option<u64>,
     memory: Option<u64>,
     /// How long the exclusive queue takes to drain, in seconds; `None`: it
@@ -93,6 +96,7 @@ impl Readings {
             total_load,
             queue_load,
             cpu_busy: crate::cpu::busy(),
+            process_rate: afkconvoy_host_reading::spawn::rate(),
             memory_free: afkconvoy_host_reading::memory_free(),
             memory: crate::hot::memory(),
             queue_drain,
@@ -153,6 +157,9 @@ pub struct Admission {
     /// queue share leaves the total in the admission decision.
     pub total_load: Option<u64>,
     pub queue_load: Option<u64>,
+    /// The processes a second the host creates, read beside its CPU
+    /// (sunfmin/control#1319); `None`: it could not be read.
+    pub process_rate: Option<u64>,
     /// How long, in seconds, admission holds back for one reason before the
     /// host calls for a watch: the host's, or `SPAN`.
     pub span: u64,
@@ -202,6 +209,7 @@ impl Admission {
         let mut admission = Admission::of(&host_settings::of_host()?, readings.at(dir));
         admission.total_load = readings.total_load;
         admission.queue_load = readings.queue_load;
+        admission.process_rate = readings.process_rate;
         admission.queue_drain = readings.queue_drain;
         admission.own = readings.own;
         admission.memory = readings.memory;
@@ -229,6 +237,7 @@ impl Admission {
             said,
             total_load: reading.load,
             queue_load: Some(0),
+            process_rate: None,
             reading,
             span,
             queue_drain: None,
@@ -371,6 +380,9 @@ impl Admission {
         if let Some(busy) = reading.cpu_busy {
             said.push(format!("its cores {busy}% busy"));
         }
+        if let Some(rate) = self.process_rate {
+            said.push(format!("{rate} processes created a second"));
+        }
         if let Some(free) = reading.memory_free {
             said.push(format!("{free}% of its memory free"));
         }
@@ -412,6 +424,7 @@ impl Admission {
                 "queue_load": self.queue_load.map(|load| load as f64 / 100.0),
                 "other_load": reading.load.map(|load| load as f64 / 100.0),
                 "cpu_busy_percent": reading.cpu_busy,
+                "process_creation_per_second": self.process_rate,
                 "memory_free_percent": reading.memory_free,
                 "disk_free_bytes": reading.disk.map(|disk| disk.free),
                 "disk_size_bytes": reading.disk.map(|disk| disk.size),
@@ -676,6 +689,7 @@ mod tests {
             },
             total_load: Some(10543),
             queue_load: Some(0),
+            process_rate: None,
             span: SPAN,
             queue_drain: None,
             queue_bound: afkconvoy_core::admission::QUEUE_BOUND,

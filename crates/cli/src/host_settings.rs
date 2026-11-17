@@ -36,6 +36,8 @@ pub struct Settings {
     /// `--hot-written`, in thousandths of a GiB.
     #[serde(with = "thousandths")]
     pub hot_written: Option<u64>,
+    /// `--hot-spawns`, in processes a second.
+    pub hot_spawns: Option<u64>,
     /// `--admit-load`: the load admission holds back past, a whole percent
     /// of the host's cores.
     pub admit_load: Option<u64>,
@@ -123,6 +125,7 @@ pub struct Named {
     pub hot_cores: Option<To<u64>>,
     pub hot_memory: Option<To<u64>>,
     pub hot_written: Option<To<u64>>,
+    pub hot_spawns: Option<To<u64>>,
     pub admit_load: Option<To<u64>>,
     pub admit_memory: Option<To<u64>>,
     pub admit_disk: Option<To<u64>>,
@@ -278,6 +281,7 @@ impl Settings {
         lay(&mut self.hot_cores, named.hot_cores.as_ref());
         lay(&mut self.hot_memory, named.hot_memory.as_ref());
         lay(&mut self.hot_written, named.hot_written.as_ref());
+        lay(&mut self.hot_spawns, named.hot_spawns.as_ref());
         lay(&mut self.admit_load, named.admit_load.as_ref());
         lay(&mut self.admit_memory, named.admit_memory.as_ref());
         lay(&mut self.admit_disk, named.admit_disk.as_ref());
@@ -381,6 +385,7 @@ impl Settings {
             millicores: self.hot_cores,
             resident: self.hot_memory.map(bytes),
             written: self.hot_written.map(bytes),
+            spawns: self.hot_spawns,
         }
     }
 
@@ -398,6 +403,7 @@ impl Settings {
             "hot_cores": limits.millicores as f64 / 1000.0,
             "hot_memory": gib(limits.resident),
             "hot_written": gib(limits.written),
+            "hot_spawns": limits.spawns,
             "admit_load": self.admit_load.unwrap_or(SHARES.load),
             "admit_memory": self.admit_memory.unwrap_or(SHARES.memory),
             "admit_disk": self.admit_disk.unwrap_or(SHARES.disk),
@@ -519,6 +525,7 @@ pub fn json(list: &List, dir: &Path, readings: &crate::admission::Readings) -> V
 pub const HOT_CORES_ENV: &str = "AFKCONVOY_HOT_CORES";
 pub const HOT_MEMORY_ENV: &str = "AFKCONVOY_HOT_MEMORY";
 pub const HOT_WRITTEN_ENV: &str = "AFKCONVOY_HOT_WRITTEN";
+pub const HOT_SPAWNS_ENV: &str = "AFKCONVOY_HOT_SPAWNS";
 pub const ADMIT_LOAD_ENV: &str = "AFKCONVOY_ADMIT_LOAD";
 pub const ADMIT_MEMORY_ENV: &str = "AFKCONVOY_ADMIT_MEMORY";
 pub const ADMIT_DISK_ENV: &str = "AFKCONVOY_ADMIT_DISK";
