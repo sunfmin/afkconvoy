@@ -173,8 +173,7 @@ pub trait Proving {
     /// Runs `command` on `tip`, in a worktree of its own detached at it,
     /// under its limit of `seconds`, recording its run → what it judged. A
     /// green run on record of `command` on its tree may answer for it.
-    fn gate(&self, tip: &str, command: &GateCommand, seconds: u64)
-    -> Result<Judged, Self::Error>;
+    fn gate(&self, tip: &str, command: &GateCommand, seconds: u64) -> Result<Judged, Self::Error>;
 
     /// Pushes `tip` onto the base branch by a push the remote refuses
     /// unless the base branch is still at `base` → whether it took.

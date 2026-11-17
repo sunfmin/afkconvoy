@@ -651,7 +651,7 @@ fn push_error(stderr: &str) -> String {
 /// A checkout's remote as the gate crate writes and reads its records:
 /// pushes tried again on the remote's own faults and bounded in time
 /// (`push_record`), listings read once per process.
-struct OnRemote<'a>(&'a Repo);
+pub(crate) struct OnRemote<'a>(pub(crate) &'a Repo);
 
 impl Records for OnRemote<'_> {
     type Error = anyhow::Error;
