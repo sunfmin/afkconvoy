@@ -101,6 +101,8 @@ control session 2026-11-17).
   transcripts, reports and delivery records, evidence, logs, copies,
   worktrees, harness homes, quota observations, the host runner's lock,
   socket and log, and every `convoy-*` note in a worker's worktree.
+  (ADR-0119 moved the quota observations, the host kit and the needs'
+  records into `host.db` too.)
 - **A daily backup.** The host runner writes an online copy (SQLite's
   backup) of `host.db`, and of `issues.db` where there is one, to
   `backups/<YYYY-MM-DD>/` once a day, keeping the newest 14 days. A failure
