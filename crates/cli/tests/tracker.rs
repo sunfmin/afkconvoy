@@ -38,7 +38,9 @@ fn target_selection_keeps_tracker_identity_and_refuses_foreign_ownership() {
     // The selection is the tracker issue's comment; no ref of its own.
     let comments = world.tracker()["comments"]["7"].clone();
     assert!(comments.to_string().contains("convoy:target branch=delivery/tracker"), "{comments}");
-    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty());
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty()
+    );
     // An older afkconvoy's separate record, its tracker spelled with
     // different case by another host, still reads until it is carried.
     let differently_spelled = json!({"issue": "ACME/TRACKER#7", "branch": "delivery/tracker"});

@@ -281,7 +281,7 @@ pub fn tick(
     }
     // Separate target records an older afkconvoy left: each is carried into
     // where a target lives now and removed (sunfmin/control#1327).
-    if let Err(error) = crate::target::carry_legacy(&mut fleet) {
+    if let Err(error) = crate::target::carry_legacy(&mut fleet, &me.instance) {
         eprintln!("warning: carrying legacy target records will retry: {error:#}");
     }
     let migration = crate::legacy::migrate(repo, &fleet.config, &fleet.gh, &me.host, me.now);

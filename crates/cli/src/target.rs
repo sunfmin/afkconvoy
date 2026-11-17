@@ -123,7 +123,9 @@ fn read_legacy(issue: &str, record: &RemoteRecord) -> Result<Target> {
     match (legacy.branch, legacy.delivery) {
         (Some(branch), None) => Ok(Target::Branch(branch)),
         (None, Some(reference)) => Ok(Target::Delivery(reference)),
-        _ => bail!("contradictory target at {name}; restore exactly one branch or delivery reference"),
+        _ => bail!(
+            "contradictory target at {name}; restore exactly one branch or delivery reference"
+        ),
     }
 }
 
@@ -303,12 +305,7 @@ pub fn snapshot_branch(
 /// The pin a claim on issue `issue` carries: the one `taken` carries, or
 /// what its legacy pin reads as; for a new claim, the issue's selection, or
 /// the configured base. A later config change cannot move it.
-pub fn for_claim(
-    repo: &Repo,
-    config: &Config,
-    issue: u64,
-    taken: Option<&Claim>,
-) -> Result<Pin> {
+pub fn for_claim(repo: &Repo, config: &Config, issue: u64, taken: Option<&Claim>) -> Result<Pin> {
     if let Some(target) = taken.and_then(|claim| claim.pin.as_ref()).and_then(Target::of) {
         return Ok(target.pin());
     }
@@ -575,13 +572,18 @@ pub fn legacy_left(fleet: &crate::fleet::Fleet) -> Vec<RemoteRecord> {
 /// selected branch other than the configured base becomes the issue's
 /// `convoy:target` comment; a delivery's task joins the delivery's tasks,
 /// closed or open, so its handoff still counts it. Those of closed issues
-/// keep nothing else. A record not carried whole is kept for the next tick.
-/// → the records removed.
-pub fn carry_legacy(fleet: &mut crate::fleet::Fleet) -> Result<Vec<String>> {
+/// keep nothing else. A record not carried whole is kept for the next tick,
+/// and so is one whose claim is another instance's: its holder carries it,
+/// or, an older afkconvoy, still reads it; a dead one's is carried once a
+/// takeover pins its claim. → the records removed.
+pub fn carry_legacy(
+    fleet: &mut crate::fleet::Fleet,
+    me: &afkconvoy_core::claims::InstanceId,
+) -> Result<Vec<String>> {
     let records = legacy_left(fleet);
     let (mut removed, mut failed) = (vec![], vec![]);
     for record in records {
-        match carry_one(fleet, &record) {
+        match carry_one(fleet, me, &record) {
             Ok(true) => removed.push(record.name),
             Ok(false) => {}
             Err(error) => failed.push(format!("{}: {error:#}", record.name)),
@@ -591,7 +593,11 @@ pub fn carry_legacy(fleet: &mut crate::fleet::Fleet) -> Result<Vec<String>> {
     Ok(removed)
 }
 
-fn carry_one(fleet: &mut crate::fleet::Fleet, record: &RemoteRecord) -> Result<bool> {
+fn carry_one(
+    fleet: &mut crate::fleet::Fleet,
+    me: &afkconvoy_core::claims::InstanceId,
+    record: &RemoteRecord,
+) -> Result<bool> {
     let repo = &fleet.repo;
     let tracker = fleet.gh.tracker.clone();
     let key = repo.layout().kept(&record.name).and_then(|name| name.strip_prefix("target/"));
@@ -603,9 +609,13 @@ fn carry_one(fleet: &mut crate::fleet::Fleet, record: &RemoteRecord) -> Result<b
     let target = read_legacy(&tracker.issue(issue), record)?;
     if let Some(claim) = fleet.scan.claim_of(issue).cloned()
         && matches!(claim.pin, None | Some(Pin::Legacy(_)))
-        && !crate::claims::repin(repo, &mut fleet.scan, &claim, &target.pin())?
     {
-        return Ok(false);
+        if !claim.is_held_by(me) {
+            return Ok(false);
+        }
+        if !crate::claims::repin(repo, &mut fleet.scan, &claim, &target.pin())? {
+            return Ok(false);
+        }
     }
     match &target {
         Target::Delivery(reference) => join(repo, reference, &tracker.issue(issue))?,

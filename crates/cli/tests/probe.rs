@@ -223,10 +223,7 @@ fn a_remote_that_rejects_hidden_refs_has_every_ref_kept_as_a_branch() {
     assert_eq!(refs(&world, "refs/convoy"), [] as [String; 0]);
     assert_eq!(
         refs(&world, "refs/heads/convoy-"),
-        [
-            "refs/heads/convoy-claim/7",
-            "refs/heads/convoy-heartbeat/alpha",
-        ]
+        ["refs/heads/convoy-claim/7", "refs/heads/convoy-heartbeat/alpha",]
     );
     // every later command names the refs the start settled on, probe or none
     assert_eq!(world.claims(), [(7, "alpha".to_string())]);

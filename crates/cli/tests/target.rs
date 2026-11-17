@@ -126,7 +126,9 @@ fn wrong_base_missing_branch_and_lost_or_corrupt_records_refuse_without_fallback
     // The claim carries the target; no separate record is written.
     let claim = world.remote(&["show", "-s", "--format=%s", "refs/convoy/claim/7"]);
     assert!(claim.contains("target_branch=delivery/ABC-123"), "{claim}");
-    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty());
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty()
+    );
     // A claim an older afkconvoy made names a separate record: lost, it refuses.
     let repo = afkconvoy::git::Repo::new(world.clone.clone());
     let target = repo.record_commit(r##"{"issue":"#7","branch":"delivery/ABC-123"}"##).unwrap();
@@ -161,8 +163,7 @@ fn a_takeover_by_another_host_keeps_the_claims_target_and_lands_on_it() {
     world.with_gh(|gh| gh["comments"]["7"] = json!([]));
     let first = world.remote(&["rev-parse", "refs/convoy/claim/7"]);
     let later = (1000 + afkconvoy_core::lease::LEASE + 1).to_string();
-    let ticked =
-        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &later]).ok();
+    let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &later]).ok();
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
     assert_eq!(world.claims(), [(7, "alpha".to_string())]);
     let claim = world.remote(&["show", "-s", "--format=%s", "refs/convoy/claim/7"]);
@@ -221,18 +222,22 @@ fn legacy_target_records_are_carried_once_and_removed() {
     legacy(9, "delivery/ABC-123");
     world.close(9, "completed");
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
-    let found = doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "legacy_targets");
+    let found =
+        doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "legacy_targets");
     assert!(found, "{doctor}");
     let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"]);
     assert!(!ticked.stderr.contains("legacy target"), "{}", ticked.stderr);
-    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty());
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty()
+    );
     let claim = world.remote(&["show", "-s", "--format=%s", "refs/convoy/claim/7"]);
     assert!(claim.contains("target_branch=main") && claim.contains("instance=alpha"), "{claim}");
     assert!(world.comments(8).iter().any(|c| c.contains("convoy:target branch=delivery/ABC-123")));
     assert!(!world.comments(9).iter().any(|c| c.contains("convoy:target")));
     assert_eq!(world.afk(&["target", "--issue", "8"]).ok()["target_branch"], "delivery/ABC-123");
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1100"]).json;
-    let found = doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "legacy_targets");
+    let found =
+        doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "legacy_targets");
     assert!(!found, "{doctor}");
 }
 

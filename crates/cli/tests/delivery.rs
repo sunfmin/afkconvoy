@@ -52,8 +52,13 @@ fn first_task_lands_only_on_delivery_and_opens_one_human_owned_draft() {
     let record: Value =
         serde_json::from_str(&world.remote(&["show", "-s", "--format=%s", &tasks])).unwrap();
     assert_eq!(record["tasks"], json!(["#7"]));
-    assert_eq!(record["record"], world.remote(&["rev-parse", &format!("refs/convoy/delivery/{id}")]));
-    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty());
+    assert_eq!(
+        record["record"],
+        world.remote(&["rev-parse", &format!("refs/convoy/delivery/{id}")])
+    );
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty()
+    );
     let started = world
         .afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
         .ok();
@@ -343,7 +348,8 @@ fn branch_layout_and_separate_tracker_keep_one_authoritative_delivery() {
     let delivery = create(&world, Some("7"));
     assert_eq!(delivery["tasks"], json!(["acme/tracker#7"]));
     assert!(delivery["record"].as_str().unwrap().starts_with("refs/heads/convoy-delivery/"));
-    let tasks = format!("refs/heads/convoy-delivery-tasks/{}", delivery["delivery"].as_str().unwrap());
+    let tasks =
+        format!("refs/heads/convoy-delivery-tasks/{}", delivery["delivery"].as_str().unwrap());
     let tasks: Value =
         serde_json::from_str(&world.remote(&["show", "-s", "--format=%s", &tasks])).unwrap();
     assert_eq!(tasks["tasks"], json!(["acme/tracker#7"]));

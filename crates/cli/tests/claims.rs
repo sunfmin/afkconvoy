@@ -132,10 +132,7 @@ fn a_claim_is_never_on_the_remote_ahead_of_its_owners_heartbeat() {
     // due again
     let due = 1001 + BEAT_EVERY;
     claim(&world, "9", "alpha", &due.to_string());
-    assert_eq!(
-        world.pushes()[3..],
-        ["refs/convoy/heartbeat/alpha", "refs/convoy/claim/9"]
-    );
+    assert_eq!(world.pushes()[3..], ["refs/convoy/heartbeat/alpha", "refs/convoy/claim/9"]);
     assert_eq!(world.afk(&["scan"]).ok()["heartbeats"], json!({"alpha": due}));
 }
 

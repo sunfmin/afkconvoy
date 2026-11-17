@@ -1538,10 +1538,7 @@ fn legacy_targets_finding(left: &[String]) -> Option<Finding> {
     Some(finding(
         Kind::LegacyTargets,
         json!(["legacy-targets"]),
-        format!(
-            "{} separate target records an older afkconvoy left are on the remote",
-            left.len()
-        ),
+        format!("{} separate target records an older afkconvoy left are on the remote", left.len()),
         format!("the remote holds {first} and {} more", left.len() - 1),
         "afkconvoy run".into(),
     ))
