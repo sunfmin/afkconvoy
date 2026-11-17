@@ -336,17 +336,14 @@ fn finish(world: &World, checkout: &Path) -> Value {
     answer
 }
 
-/// Nothing on the remote's candidate chain names a cut: no candidate, no
+/// Nothing on the host's candidate chain names a cut: no candidate, no
 /// barrier, no pending entry.
 fn no_cut_on_the_chain(world: &World) {
-    let chains = world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]);
-    for chain in chains.lines() {
-        let record = world.remote(&["log", "-1", "--format=%B", chain]);
-        // A cut on the chain would be a branch of its own. The record also
-        // holds paths, which name a checkout called afkconvoy-cut whenever
-        // the tests run in a cut's gate: those name no cut.
-        assert!(!record.contains("\"branch\":\"afkconvoy-cut/"), "{record}");
-    }
+    let record = world.chain("main").to_string();
+    // A cut on the chain would be a branch of its own. The record also
+    // holds paths, which name a checkout called afkconvoy-cut whenever
+    // the tests run in a cut's gate: those name no cut.
+    assert!(!record.contains("\"branch\":\"afkconvoy-cut/"), "{record}");
     let refs = world.remote(&["for-each-ref", "--format=%(refname)"]);
     assert!(
         !refs.lines().any(|name| name.contains("barrier") || name.contains("pending")),

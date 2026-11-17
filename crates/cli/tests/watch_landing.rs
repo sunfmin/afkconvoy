@@ -41,8 +41,7 @@ fn checkout_gone(world: &World, checkout: &Path, answer: &serde_json::Value) {
     let local = git(&world.clone, &["branch", "--list", BRANCH]);
     assert_eq!(local, "", "its local branch is gone");
     assert!(!world.remote(&["rev-parse", &format!("refs/heads/{BRANCH}")]).is_empty());
-    let text = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
-    let chain: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let chain = world.chain("main");
     for candidate in chain["candidates"].as_array().unwrap() {
         let path = PathBuf::from(candidate["worktree"].as_str().unwrap());
         assert!(!path.exists() && !crate::common::worktree_listed(&listed, &path), "{listed}");

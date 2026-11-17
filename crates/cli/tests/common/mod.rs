@@ -1331,6 +1331,72 @@ impl World {
     pub fn remote(&self, args: &[&str]) -> String {
         git(&self.bare, args)
     }
+
+    /// The candidate chain of `branch` as this world's host holds it
+    /// (docs/adr/0090), `Null` where it holds none.
+    pub fn chain(&self, branch: &str) -> Value {
+        let path = self.cache().join("afkconvoy/host.db");
+        if !path.exists() {
+            return Value::Null;
+        }
+        let db = rusqlite::Connection::open(path).unwrap();
+        let found = db.query_row("SELECT chain FROM chains WHERE branch = ?1", [branch], |row| {
+            row.get::<_, String>(0)
+        });
+        match found {
+            Ok(text) => serde_json::from_str(&text).unwrap(),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Value::Null,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// Makes the host's database refuse every write of a chain whose text
+    /// holds `fragment`, with `reason`: what a remote hook refused a record
+    /// with, before the chain was the host's.
+    pub fn refuse_chain_writes(&self, fragment: &str, reason: &str) {
+        let db = rusqlite::Connection::open(self.cache().join("afkconvoy/host.db")).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        let like = fragment.replace('\'', "''");
+        let reason = reason.replace('\'', "''");
+        db.execute_batch(&format!(
+            "CREATE TRIGGER refuse BEFORE UPDATE ON chains WHEN instr(NEW.chain, '{like}') > 0 \
+             BEGIN SELECT RAISE(ABORT, '{reason}'); END"
+        ))
+        .unwrap();
+    }
+
+    /// Edits the candidate chain of `branch` on this world's host with
+    /// `edit`, which is given `Null` where the host holds none, one revision
+    /// later, in one transaction as another process of the host would.
+    pub fn edit_chain(&self, branch: &str, edit: impl FnOnce(&mut Value)) {
+        let dir = self.cache().join("afkconvoy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = rusqlite::Connection::open(dir.join("host.db")).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert!(version > 0, "the host database is made by afkconvoy first");
+        let common = std::fs::canonicalize(self.clone.join(".git")).unwrap();
+        let repo = format!("{:016x}", afkconvoy_core::gate::key(&common.to_string_lossy()));
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let found = db.query_row(
+            "SELECT chain FROM chains WHERE repo = ?1 AND branch = ?2",
+            rusqlite::params![repo, branch],
+            |row| row.get::<_, String>(0),
+        );
+        let mut chain = match found {
+            Ok(text) => serde_json::from_str(&text).unwrap(),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Value::Null,
+            Err(error) => panic!("{error}"),
+        };
+        edit(&mut chain);
+        db.execute(
+            "INSERT INTO chains (repo, branch, revision, chain) VALUES (?1, ?2, 1, ?3)
+             ON CONFLICT (repo, branch) DO UPDATE SET revision = revision + 1, chain = ?3",
+            rusqlite::params![repo, branch, chain.to_string()],
+        )
+        .unwrap();
+        db.execute_batch("COMMIT").unwrap();
+    }
 }
 
 fn create_repository(dir: &Path, files: &[(&str, &str)]) {
@@ -2466,8 +2532,7 @@ pub fn stopped_candidates_gone(world: &World, source: &Path) {
     assert!(source.is_dir(), "the source worktree stays: {}", source.display());
     let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
     assert!(worktree_listed(&listed, source), "the source worktree stays listed:\n{listed}");
-    let text = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
-    let chain: Value = serde_json::from_str(&text).unwrap();
+    let chain = world.chain("main");
     for candidate in chain["candidates"].as_array().unwrap() {
         let phase = candidate["phase"].as_str().unwrap();
         if !matches!(phase, "landed" | "red" | "cancelled") {

@@ -4,6 +4,8 @@ status: accepted
 
 # Waiting turns share one reading, and a spent quota is one finding
 
+_Amended by ADR-0090:_ the shared reading of the candidate chain this record's sunfmin/control#1321 first asked for is gone, with the chain on the remote: waiting turns read the host's own chain, which asks no remote. The shared reading of the fleet locks, below, stays as it is.
+
 sunfmin/control#1111.
 
 On Studio64, the `sunfmin` login's REST core quota, 5,000 calls an hour,
