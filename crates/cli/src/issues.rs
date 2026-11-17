@@ -87,10 +87,18 @@ pub trait Issues: Send + Sync {
     fn comment(&self, number: u64, body: &str) -> Result<()>;
     /// Replaces the body of one comment on an issue, by its id.
     fn edit_comment(&self, id: u64, body: &str) -> Result<()>;
+    /// Replaces the title of one issue, its body, or both: what is `None`
+    /// is left as it is.
+    fn edit_issue(&self, number: u64, title: Option<&str>, body: Option<&str>) -> Result<()>;
     /// Closes one issue as completed: one closed already is closed.
     fn close_issue(&self, number: u64) -> Result<()>;
+    /// Opens one closed issue again: one open is left open.
+    fn reopen_issue(&self, number: u64) -> Result<()>;
     /// Records issue `number` as blocked by issue `blocker`.
     fn add_blocker(&self, number: u64, blocker: u64) -> Result<()>;
+    /// Records issue `number` as no longer blocked by issue `blocker`: an
+    /// edge that is not there is no matter.
+    fn remove_blocker(&self, number: u64, blocker: u64) -> Result<()>;
     /// Creates the label `name`, which the tracker has none of, saying what
     /// it is as `says` where the tracker shows that.
     fn create_label(&self, name: &str, says: &str) -> Result<()>;

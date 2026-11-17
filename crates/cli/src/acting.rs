@@ -251,7 +251,7 @@ pub fn outcome(command: &str, answer: &Value) -> String {
     let said = match command {
         "switch" => Some(switch_outcome(answer)),
         "park" => Some(format!("blocked by {}", issues("blocked_by"))),
-        "escalate" | "close" | "nudge" | "restart" | "abandon" => word("action"),
+        "escalate" | "close" | "nudge" | "restart" | "abandon" | "issue" => word("action"),
         "tell" => Some(match word("why") {
             Some(why) => format!("commented, typed nothing: {why}"),
             None => format!(

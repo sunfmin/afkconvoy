@@ -544,6 +544,10 @@ fn flagged(text: &str) -> Vec<(&str, &str)> {
     flagged
 }
 
+/// The verbs of `afkconvoy issue`, each a subcommand of its own.
+const ISSUE_VERBS: [&str; 9] =
+    ["create", "view", "list", "comment", "edit", "close", "reopen", "block", "unblock"];
+
 /// Each way the fleet stops for a human, by the heading `humans` gives it.
 const STOPS: [&str; 5] = [
     "An escalation",
@@ -571,7 +575,12 @@ fn humans_names_for_each_way_the_fleet_stops_a_command_with_the_flags_its_help_g
     let mut seen = 0;
     for (topic, text) in topic_files() {
         for (command, flag) in flagged(&text).into_iter().filter(|(_, flag)| *flag != "--help") {
-            let given = asked(&[command, "-h"]);
+            // `issue` gives its flags on the verb the line names:
+            // `afkconvoy issue close <n> --comment`.
+            let given = match command {
+                "issue" => ISSUE_VERBS.map(|verb| asked(&[command, verb, "-h"])).join("\n"),
+                _ => asked(&[command, "-h"]),
+            };
             let gives = given.split_whitespace().any(|word| word.trim_end_matches(',') == flag);
             assert!(gives, "{topic}: `afkconvoy {command} -h` gives no {flag}");
             seen += 1;
@@ -977,7 +986,8 @@ fn the_readme_points_to_the_help_as_the_whole_manual() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 61, "{short}");
+    // A line more for `issue` (docs/adr/0091).
+    assert!(short.lines().count() <= 62, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -1133,11 +1143,13 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     // Nor is opening issues the operator's: whoever has work for the fleet does.
     // Waking the fleet after opening them is theirs too, and a worker's last.
     let hands = group(&long, "Run by whoever hands the fleet work");
-    assert_eq!(hands, ["flows", "wake"]);
+    assert_eq!(hands, ["flows", "issue", "wake"]);
     for command in &hands {
         assert!(who(command).contains("hands the fleet work"), "{command}");
     }
-    assert!(who("wake").contains("worker") && who("wake").contains("in its own worktree"));
+    for command in ["wake", "issue"] {
+        assert!(who(command).contains("worker") && who(command).contains("in its own worktree"));
+    }
     // Nor is giving an agent of one's own the skill file.
     let sets_up = group(&long, "Run by whoever sets an agent up");
     assert_eq!(sets_up, ["skill"]);

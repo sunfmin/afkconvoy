@@ -1891,12 +1891,27 @@ impl World {
     /// Has `checkout` say its tracker is this host's local tracker, with its
     /// entry on this world's checkout list, as `run --tracker local` keeps it.
     pub fn say_local_tracker(&self, checkout: &Path) {
+        self.say_said_tracker(checkout, "local");
+    }
+
+    /// Has `checkout` say `said` of its tracker — `local`, a repo, or null
+    /// for none — with its entry on this world's checkout list.
+    pub fn say_said_tracker(&self, checkout: &Path, said: impl Into<Value>) {
+        let said = said.into();
         let mut list = self.checkout_list();
         let entries = list["checkouts"].as_array_mut().unwrap();
         match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
-            Some(entry) => entry["tracker"] = json!("local"),
-            None => entries.push(json!({"checkout": checkout, "tracker": "local"})),
+            Some(entry) => entry["tracker"] = said,
+            None => entries.push(json!({"checkout": checkout, "tracker": said})),
         }
+        self.write_checkout_list(&list);
+    }
+
+    /// Takes `checkout` off this world's checkout list.
+    pub fn unlist_checkout(&self, checkout: &Path) {
+        let mut list = self.checkout_list();
+        let entries = list["checkouts"].as_array_mut().unwrap();
+        entries.retain(|entry| entry["checkout"] != json!(checkout));
         self.write_checkout_list(&list);
     }
 

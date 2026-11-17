@@ -22,11 +22,11 @@ use crate::tracker::Tracker;
 const ANSWERING: [&str; 7] = [
     "afkconvoy rule --issue <n> --text-file <file>",
     "afkconvoy send --issue <n> --stage <stage> --text-file <file>",
-    "gh issue close <n><tracker> --comment <why>",
-    "gh issue create<tracker> --title <title> --body-file <file> --label <ready label><labelled>",
-    "gh issue edit <n><tracker> --body-file <file>",
-    "gh api repos/<issues>/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
-    "gh api -X DELETE repos/<issues>/issues/<n>/dependencies/blocked_by/<id>",
+    "<gh_issue> close <n><tracker> --comment <why>",
+    "<gh_issue> create<tracker> --title <title> --body-file <file> --label <ready label><labelled>",
+    "<gh_issue> edit <n><tracker> --body-file <file>",
+    "<block>",
+    "<unblock>",
 ];
 
 /// Every command a human runs to answer an escalated issue of `tracker`, as

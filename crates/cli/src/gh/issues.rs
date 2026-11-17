@@ -99,6 +99,17 @@ impl GitHubIssues {
         Ok(())
     }
 
+    /// The database id GitHub names issue `number` by in a blocked-by edge:
+    /// the one a read of it in this view found (`GitHub::read_issue`) — an
+    /// id never changes — or a read of it now.
+    fn blocker_id(&self, number: u64) -> Result<u64> {
+        let id = self.gh.seen().ids.get(&number).copied();
+        match id {
+            Some(id) => Ok(id),
+            None => Ok(self.gh.read_issue(number)?.id),
+        }
+    }
+
     fn take_open(&self, open: &mut OpenIssues, row: OpenRow) -> Result<()> {
         // Another repo's issue in the tracker is none of the fleet's.
         if !self.gh.tracker.holds(&row.labels) {
@@ -462,19 +473,46 @@ impl Issues for GitHubIssues {
         Ok(())
     }
 
-    /// GitHub names the blocker of an edge by its database id: the one a read
-    /// of it in this view found (`GitHub::read_issue`) — an id never changes —
-    /// or a read of it now.
+    fn edit_issue(&self, number: u64, title: Option<&str>, body: Option<&str>) -> Result<()> {
+        let fields: Vec<String> = [("title", title), ("body", body)]
+            .into_iter()
+            .filter_map(|(name, value)| Some(format!("{name}={}", value?)))
+            .collect();
+        if fields.is_empty() {
+            return Ok(());
+        }
+        let endpoint = endpoint(&self.gh.tracker, &format!("issues/{number}"));
+        let mut args = vec!["api", "--method", "PATCH", &endpoint];
+        for field in &fields {
+            args.extend(["-f", field.as_str()]);
+        }
+        args.push("--silent");
+        self.gh.gh(&args)?;
+        Ok(())
+    }
+
+    fn reopen_issue(&self, number: u64) -> Result<()> {
+        let endpoint = endpoint(&self.gh.tracker, &format!("issues/{number}"));
+        self.gh.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=open", "--silent"])?;
+        Ok(())
+    }
+
+    /// GitHub names the blocker of an edge by its database id (`blocker_id`).
     fn add_blocker(&self, number: u64, blocker: u64) -> Result<()> {
-        let id = self.gh.seen().ids.get(&blocker).copied();
-        let id = match id {
-            Some(id) => id,
-            None => self.gh.read_issue(blocker)?.id,
-        };
+        let id = self.blocker_id(blocker)?;
         let endpoint =
             endpoint(&self.gh.tracker, &format!("issues/{number}/dependencies/blocked_by"));
         let field = format!("issue_id={id}");
         self.gh.gh(&["api", "--method", "POST", &endpoint, "-F", &field, "--silent"])?;
+        Ok(())
+    }
+
+    /// The edge named by the blocker's database id, as `add_blocker` names it.
+    fn remove_blocker(&self, number: u64, blocker: u64) -> Result<()> {
+        let id = self.blocker_id(blocker)?;
+        let endpoint =
+            endpoint(&self.gh.tracker, &format!("issues/{number}/dependencies/blocked_by/{id}"));
+        self.gh.gh(&["api", "--method", "DELETE", &endpoint, "--silent"])?;
         Ok(())
     }
 

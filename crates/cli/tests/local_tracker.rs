@@ -165,7 +165,7 @@ fn a_fleet_lock_of_the_local_tracker_holds_its_fleets_of_that_repo_alone() {
     // A checkout of the same repo whose tracker is its own GitHub repo.
     let github = world.clone_again("github");
     world.name_origin(&github, REPO);
-    world.list_checkout(&github);
+    world.say_said_tracker(&github, REPO);
     world.with_orca(|orca| {
         orca["repos"].as_array_mut().unwrap().push(json!({"id": "repo-2", "path": github}));
     });
@@ -348,4 +348,200 @@ fn doctor_finds_a_ready_local_issue_no_fleet_has_taken_by_when_its_label_was_put
     git(&world.bare, &["update-ref", "refs/convoy/claim/local/h1/1", "refs/heads/main"]);
     let claimed = observed(&world);
     assert_eq!(claimed["waiting"], json!([]), "{claimed}");
+}
+
+/// `afkconvoy issue` in the world's checkout, as of `now`.
+fn issue(world: &World, now: &str, args: &[&str]) -> common::Answer {
+    let mut all = vec!["issue"];
+    all.extend_from_slice(args);
+    all.extend(["--now", now]);
+    world.afk(&all)
+}
+
+#[test]
+fn afkconvoy_issue_opens_reads_and_lists_the_local_trackers_issues() {
+    let world = world();
+    let created = issue(
+        &world,
+        "100",
+        &["create", "-t", "Add plan", "-b", "why", "-l", "bug,ready-for-agent"],
+    )
+    .ok();
+    assert_eq!(
+        (created["action"].as_str(), created["number"].as_u64()),
+        (Some("created"), Some(1))
+    );
+    assert_eq!(created["issue"], "local/h1#1");
+    let body = world.root.join("body.md");
+    std::fs::write(&body, "from a file").unwrap();
+    let second = issue(
+        &world,
+        "110",
+        &["create", "--title", "Second", "--body-file", body.to_str().unwrap()],
+    )
+    .ok();
+    assert_eq!(second["number"], 2);
+    let stored = world.local_tracker().view(1).unwrap().issue;
+    assert_eq!(
+        (stored.repo.as_str(), stored.title.as_str(), stored.created),
+        (REPO, "Add plan", 100)
+    );
+    assert_eq!(stored.labels, ["bug", "ready-for-agent"]);
+
+    let viewed = issue(&world, "120", &["view", "1"]).ok();
+    assert_eq!(viewed["title"], "Add plan");
+    assert_eq!(viewed["body"], "why");
+    assert_eq!(viewed["state"], "OPEN");
+    assert_eq!(viewed["repo"], REPO);
+    assert_eq!(viewed["url"], "local/h1#1");
+    assert_eq!(viewed["labels"], json!([{"name": "bug"}, {"name": "ready-for-agent"}]));
+    assert!(viewed.get("comments").is_none(), "comments only when asked: {viewed}");
+    let fields =
+        issue(&world, "120", &["view", "2", "--json", "number,title,body,labels,comments,state"])
+            .ok();
+    assert_eq!(
+        fields,
+        json!({"number": 2, "title": "Second", "body": "from a file", "labels": [], "comments": [], "state": "OPEN"})
+    );
+    let refused = issue(&world, "120", &["view", "1", "--json", "assignees"]).error();
+    assert!(refused.contains("no field `assignees`"), "{refused}");
+    let missing = issue(&world, "120", &["view", "9"]).error();
+    assert!(missing.contains("no such issue"), "{missing}");
+
+    let listed = issue(&world, "130", &["list"]).ok();
+    let numbers: Vec<u64> = listed["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, [1, 2]);
+    let labelled = issue(&world, "130", &["list", "--label", "bug", "--json", "number"]).ok();
+    assert_eq!(labelled, json!({"issues": [{"number": 1}]}));
+    // Nothing reached GitHub's issues.
+    assert_eq!(issue_calls(&world), [] as [Vec<String>; 0]);
+}
+
+#[test]
+fn afkconvoy_issue_comments_edits_closes_reopens_and_blocks_a_local_issue() {
+    let world = world();
+    let one = open(&world, "One", &["ready-for-agent"]);
+    let two = open(&world, "Two", &[]);
+    let (one_s, two_s) = (one.to_string(), two.to_string());
+
+    let said = issue(&world, "200", &["comment", &one_s, "--body", "looked"]).ok();
+    assert_eq!(said["action"], "commented");
+    let viewed = issue(&world, "201", &["view", &one_s, "--comments"]).ok();
+    let comment = &viewed["comments"][0];
+    assert_eq!(
+        (comment["body"].as_str(), comment["createdAt"].as_str()),
+        (Some("looked"), Some("1970-01-01T00:03:20Z"))
+    );
+    assert_eq!(comment["url"], format!("local/h1#{one}/comments/{}", comment["id"]));
+
+    issue(
+        &world,
+        "210",
+        &[
+            "edit",
+            &one_s,
+            "--title",
+            "One, renamed",
+            "--body",
+            "new",
+            "--add-label",
+            "bug",
+            "--remove-label",
+            "ready-for-agent",
+        ],
+    )
+    .ok();
+    let edited = world.local_tracker().view(one).unwrap().issue;
+    assert_eq!(
+        (edited.title.as_str(), edited.body.as_str(), edited.body_edited),
+        ("One, renamed", "new", Some(210))
+    );
+    assert_eq!(edited.labels, ["bug"]);
+    let nothing = issue(&world, "211", &["edit", &one_s]).error();
+    assert!(nothing.contains("nothing to edit"), "{nothing}");
+
+    let blocked = issue(&world, "220", &["block", &one_s, "--by", &two_s]).ok();
+    assert_eq!(blocked["open_blockers"], json!([two]));
+    let viewed = issue(&world, "221", &["view", &one_s, "--json", "blockedBy"]).ok();
+    assert_eq!(viewed, json!({"blockedBy": [{"number": two, "state": "OPEN"}]}));
+    let cycle = issue(&world, "222", &["block", &two_s, "--by", &one_s]).error();
+    assert!(cycle.contains("cycle"), "{cycle}");
+
+    let closed = issue(&world, "230", &["close", &two_s, "--comment", "done elsewhere"]).ok();
+    assert_eq!(closed["action"], "closed");
+    let two_now = world.local_tracker().view(two).unwrap();
+    assert_eq!(two_now.issue.closed, Some(230));
+    assert_eq!(two_now.comments[0].body, "done elsewhere");
+    let listed =
+        issue(&world, "231", &["list", "--state", "closed", "--json", "number,state"]).ok();
+    assert_eq!(listed, json!({"issues": [{"number": two, "state": "CLOSED"}]}));
+    assert_eq!(
+        issue(&world, "232", &["view", &one_s, "--json", "blockedBy"]).ok()["blockedBy"][0]["state"],
+        "CLOSED"
+    );
+
+    issue(&world, "240", &["reopen", &two_s]).ok();
+    assert_eq!(world.local_tracker().view(two).unwrap().issue.closed, None);
+    let unblocked = issue(&world, "250", &["unblock", &one_s, "--by", &two_s]).ok();
+    assert_eq!(unblocked["open_blockers"], json!([]));
+    assert!(world.local_tracker().blockers(one).unwrap().is_empty());
+    assert_eq!(issue_calls(&world), [] as [Vec<String>; 0]);
+}
+
+#[test]
+fn afkconvoy_issue_opens_one_of_another_repo_only_where_the_host_has_a_checkout_of_it() {
+    let world = world();
+    let refused =
+        issue(&world, "100", &["create", "-t", "Theirs", "-b", "", "--repo", "acme/web"]).error();
+    assert!(refused.contains("this host has no checkout of acme/web"), "{refused}");
+    assert!(
+        world
+            .local_tracker()
+            .list(&Filter { state: Which::All, ..Filter::default() })
+            .unwrap()
+            .is_empty()
+    );
+    let web = world.second_repo();
+    world.name_origin(&web, "acme/web");
+    world.say_local_tracker(&web);
+    let opened =
+        issue(&world, "110", &["create", "-t", "Theirs", "-b", "", "--repo", "acme/web"]).ok();
+    let stored = world.local_tracker().view(opened["number"].as_u64().unwrap()).unwrap().issue;
+    assert_eq!(stored.repo, "acme/web");
+    // Of this checkout's own repo, as named, it is this checkout's.
+    let own = issue(&world, "120", &["create", "-t", "Ours", "-b", "", "--repo", REPO]).ok();
+    assert_eq!(
+        world.local_tracker().view(own["number"].as_u64().unwrap()).unwrap().issue.repo,
+        REPO
+    );
+}
+
+#[test]
+fn the_flows_line_of_a_local_tracker_opens_a_local_issue_from_anywhere_on_the_host() {
+    let world = world();
+    let flows = world.afk(&["flows"]).ok();
+    let line = flows["line"].as_str().unwrap();
+    assert_eq!(
+        line,
+        "afkconvoy issue create --repo acme/dev --label 'ready-for-agent' --title '<title>' --body-file <file>"
+    );
+    let body = world.root.join("body.md");
+    std::fs::write(&body, "the body").unwrap();
+    let line = line.replace("'<title>'", "Flowed").replace("<file>", body.to_str().unwrap());
+    // As a shell reads it: its quotes are no part of a word.
+    let line = line.replace('\'', "");
+    let words: Vec<&str> = line.split_whitespace().skip(1).collect();
+    let opened = world.afk(&words).ok();
+    let stored = world.local_tracker().view(opened["number"].as_u64().unwrap()).unwrap().issue;
+    assert_eq!(
+        (stored.title.as_str(), stored.body.as_str(), stored.repo.as_str()),
+        ("Flowed", "the body", REPO)
+    );
+    assert_eq!(stored.labels, ["ready-for-agent"]);
+    assert_eq!(issue_calls(&world), [] as [Vec<String>; 0]);
 }

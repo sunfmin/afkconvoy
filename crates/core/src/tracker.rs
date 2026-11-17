@@ -43,9 +43,9 @@ pub enum Tracker {
     Local { tracker: RepoName, repo: RepoName },
 }
 
-/// What a checkout says of its tracker on its host, beyond its own repo,
-/// which it says by saying none: another repo, `<owner>/<repo>`, or its
-/// host's local tracker, `local`. Kept as that text.
+/// What a checkout says of its tracker on its host: a repo, `<owner>/<repo>`
+/// — its own among them — or its host's local tracker, `local`. Kept as
+/// that text. One that says none works the local tracker (`Said::DEFAULT`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum Said {
@@ -54,6 +54,17 @@ pub enum Said {
 }
 
 impl Said {
+    /// What a checkout that says no tracker works: its host's local tracker
+    /// (docs/adr/0091). The one home of the default: a checkout works its
+    /// own repo's GitHub issues only where it names that repo.
+    pub const DEFAULT: Said = Said::Local;
+
+    /// What a checkout that says `said` works: it, or the default where it
+    /// says none.
+    pub fn or_default(said: Option<Said>) -> Said {
+        said.unwrap_or(Said::DEFAULT)
+    }
+
     /// `text` as a checkout says its tracker: `local`, or a repo's name;
     /// `None` of anything else.
     pub fn read(text: &str) -> Option<Said> {
@@ -64,11 +75,13 @@ impl Said {
     }
 
     /// The tracker of a checkout of `repo` on the host named `host` that
-    /// says this. Its own repo named — as an older release's list, which
-    /// said none for it, is taken in — is its own.
+    /// says this: the checkout's own, where it names its own repo, whatever
+    /// the case.
     pub fn tracker(self, host: &str, repo: RepoName) -> Tracker {
         match self {
-            Said::Repo(tracker) if tracker == repo => Tracker::Own,
+            Said::Repo(tracker) if tracker.as_str().eq_ignore_ascii_case(repo.as_str()) => {
+                Tracker::Own
+            }
             Said::Repo(tracker) => Tracker::Other { tracker, repo },
             Said::Local => Tracker::Local { tracker: local_name(host), repo },
         }
@@ -79,6 +92,15 @@ impl Said {
         match self {
             Said::Repo(tracker) => tracker.clone(),
             Said::Local => local_name(host),
+        }
+    }
+
+    /// What a checkout on the host named `host` says whose tracker is named
+    /// `name` (`Said::name`): the host's local tracker, by its name, or a repo.
+    pub fn named(name: RepoName, host: &str) -> Said {
+        match name.as_str().eq_ignore_ascii_case(local_name(host).as_str()) {
+            true => Said::Local,
+            false => Said::Repo(name),
         }
     }
 
@@ -276,25 +298,39 @@ impl Tracker {
         Ok(mine.filter(|_| carried.is_empty()))
     }
 
-    /// The line `gh issue <verb> <number>` of this tracker's issue, as a
-    /// human runs it in a checkout of the repo: naming the tracker, where it
-    /// is another repo — `gh` would act on the checkout's own issue of that
-    /// number; `afkconvoy issue <verb> <number>` of the local tracker, which
-    /// GitHub does not hold.
+    /// The command a worker or a human runs on this tracker's issues, before
+    /// its verb: `gh issue`, or `afkconvoy issue` of the local tracker, which
+    /// GitHub does not hold (docs/adr/0091). The one home of which: every
+    /// issue line the fleet gives is made with it (`gh_issue`,
+    /// `prompt::in_tracker`), and its verbs and flags are `gh issue`'s.
+    pub fn issue_program(&self) -> &'static str {
+        match self {
+            Tracker::Own | Tracker::Other { .. } => "gh issue",
+            Tracker::Local { .. } => "afkconvoy issue",
+        }
+    }
+
+    /// The tracker an issue command names with `--repo` after the issue's
+    /// number: another repo — `gh` run in a checkout would act on the
+    /// checkout's own issue of that number — and none of the checkout's own
+    /// or the local tracker, which `afkconvoy issue` reads off the checkout.
+    pub fn issue_flag(&self) -> Option<&RepoName> {
+        match self {
+            Tracker::Other { tracker, .. } => Some(tracker),
+            Tracker::Own | Tracker::Local { .. } => None,
+        }
+    }
+
+    /// The line `<issue_program> <verb> <number>` of this tracker's issue,
+    /// as a human runs it in a checkout of the repo, with the tracker's
+    /// `issue_flag`.
     #[spec(fn(&Tracker, &str, u64) -> Line[false])]
     pub fn gh_issue(&self, verb: &'static str, number: u64) -> Line {
-        match self {
-            Tracker::Own => Line::new().fixed("gh issue ").fixed(verb).fixed(" ").number(number),
-            Tracker::Other { tracker, .. } => Line::new()
-                .fixed("gh issue ")
-                .fixed(verb)
-                .fixed(" ")
-                .number(number)
-                .fixed(" --repo ")
-                .program(tracker.as_str()),
-            Tracker::Local { .. } => {
-                Line::new().fixed("afkconvoy issue ").fixed(verb).fixed(" ").number(number)
-            }
+        let line = Line::new().fixed(self.issue_program()).fixed(" ").fixed(verb).fixed(" ");
+        let line = line.number(number);
+        match self.issue_flag() {
+            Some(tracker) => line.fixed(" --repo ").program(tracker.as_str()),
+            None => line,
         }
     }
 
@@ -425,6 +461,20 @@ mod tests {
             assert!(names_a_ref(&name), "{host}");
         }
         assert_eq!(local().named().unwrap().as_str(), "local/offices-macbook-pro");
+    }
+
+    #[test]
+    fn a_checkout_that_says_no_tracker_works_the_local_one_and_its_own_repo_only_named() {
+        let repo = RepoName::read("acme/dev").unwrap();
+        let unsaid = Said::or_default(None).tracker("h1", repo.clone());
+        assert_eq!(unsaid.named().unwrap().as_str(), "local/h1");
+        let own = Said::Repo(RepoName::read("Acme/Dev").unwrap());
+        assert_eq!(Said::or_default(Some(own)).tracker("h1", repo.clone()), Tracker::Own);
+        let other = Said::Repo(RepoName::read("acme/tracker").unwrap()).tracker("h1", repo);
+        assert_eq!(other.named().unwrap().as_str(), "acme/tracker");
+        for said in [Said::Local, Said::Repo(RepoName::read("acme/tracker").unwrap())] {
+            assert_eq!(Said::named(said.name("H1.local"), "H1.local"), said);
+        }
     }
 
     #[test]

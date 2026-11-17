@@ -1671,7 +1671,11 @@ impl Worktree {
     pub fn keep_tracker(&self, tracker: &Tracker) -> Result<()> {
         let file = self.note(TRACKER_FILE)?;
         let said = match tracker {
-            Tracker::Own => String::new(),
+            // Its own repo by name; by nothing where its remote names none,
+            // which says its own repo all the same (`checkout_list::said`).
+            Tracker::Own => crate::checkout_list::named_repo(&Repo::new(self.path.clone()))
+                .map(|named| named.to_string())
+                .unwrap_or_default(),
             Tracker::Other { tracker, .. } => tracker.to_string(),
             Tracker::Local { .. } => Said::Local.to_string(),
         };
@@ -1679,9 +1683,10 @@ impl Worktree {
     }
 
     /// The tracker the fleet that started the worker here kept
-    /// (`keep_tracker`): the repo it names, or the host's local tracker,
-    /// `Some(None)` for the checkout's own, `None` where none was kept. One
-    /// that names no tracker is an error.
+    /// (`keep_tracker`): the repo it names, or the host's local tracker;
+    /// `Some(None)` for the checkout's own, as a fleet kept it by keeping
+    /// nothing before a checkout that says none worked the local tracker;
+    /// `None` where none was kept. One that names no tracker is an error.
     pub fn tracker(&self) -> Result<Option<Option<Said>>> {
         let file = self.note(TRACKER_FILE)?;
         let kept = match std::fs::read_to_string(&file) {

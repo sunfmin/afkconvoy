@@ -29,8 +29,10 @@ fn serving(repo: &Repo, tracker: &str) -> Result<Vec<Checkout>> {
     for entry in List::of_host()?.read()?.checkouts {
         let Ok(other) = Repo::at(&entry.checkout) else { continue };
         let Ok(name) = name(&other) else { continue };
-        let host = crate::host_settings::host_name();
-        let uses = entry.tracker.as_ref().map_or(name.clone(), |said| said.name(&host).to_string());
+        let Ok(said) = crate::checkout_list::tracker_for(entry.tracker, &other) else {
+            continue;
+        };
+        let uses = said.named().map_or_else(|| name.clone(), ToString::to_string);
         if uses.eq_ignore_ascii_case(tracker) && !found.iter().any(|row| row.repo == name) {
             found.push(Checkout { repo: name, path: entry.checkout });
         }
@@ -75,6 +77,22 @@ pub fn unworked(
                 && matches!(tracker, Tracker::Own)
                 && labels.as_ref().is_some_and(Vec::is_empty);
             if !outside && (labels.is_none() || target.is_some() || own_issue) {
+                continue;
+            }
+            // An issue whose repo is a field — the local tracker's — needs no
+            // label: only a checkout of its repo, which this host has none of.
+            if let Some(work) = edge.of.as_deref().filter(|_| !outside) {
+                found.push(UnworkedBlocker {
+                    issue: *issue,
+                    blocker: edge.number,
+                    repo: work.to_string(),
+                    reason: format!("of {work}, which no checkout on this host works"),
+                    fix: Line::new()
+                        .fixed("afkconvoy run <a checkout of ")
+                        .word(work)
+                        .fixed(">")
+                        .own(),
+                });
                 continue;
             }
             let reason = if outside {

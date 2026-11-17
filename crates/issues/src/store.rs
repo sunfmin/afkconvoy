@@ -295,6 +295,15 @@ impl Store {
         Ok(())
     }
 
+    /// Replaces the title of issue `number`, at `at`.
+    pub fn edit_title(&mut self, number: u64, title: &str, at: u64) -> Result<()> {
+        let tx = self.write()?;
+        touch(&tx, number, at)?;
+        tx.execute("UPDATE issues SET title = ?2 WHERE number = ?1", params![number, title])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Puts `labels` on issue `number` at `at`; one it carries already is
     /// left, and keeps when it was put on.
     pub fn add_labels(&mut self, number: u64, labels: &[&str], at: u64) -> Result<()> {

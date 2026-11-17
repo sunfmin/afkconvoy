@@ -55,14 +55,14 @@ You own exactly ONE GitHub issue and work in its worktree, on its branch, which 
 earlier progress.";
 
 const STEP1_FRESH: &str = "\
-1. **Read the ground truth first.** `gh issue view {n}<tracker> --comments`, then this repo's `GLOSSARY.md`,
+1. **Read the ground truth first.** `<gh_issue> view {n}<tracker> --comments`, then this repo's `GLOSSARY.md`,
    the relevant `docs/adr/*`, and `docs/agents/*`. Use the glossary's exact vocabulary.";
 
 const STEP1_CONTINUE: &str = "\
 1. **Inspect the existing progress first.** See what the previous worker left: `git status`,
    `git diff origin/{base_branch}...HEAD`, `git log origin/{base_branch}..HEAD`, and any notes. It is
    partial work toward the same acceptance criteria — do not discard it, but verify it against them.
-   **Then read the ground truth:** `gh issue view {n}<tracker> --comments`, then this repo's `GLOSSARY.md`,
+   **Then read the ground truth:** `<gh_issue> view {n}<tracker> --comments`, then this repo's `GLOSSARY.md`,
    the relevant `docs/adr/*`, and `docs/agents/*`. Use the glossary's exact vocabulary. Continue from
    the first step that is not yet done.";
 
@@ -144,7 +144,7 @@ no other PR. Nobody reads this terminal: never wait for an answer.
 
 ## Steps
 
-1. **Read why it stopped.** `gh issue view {n}<tracker> --comments`: its latest comments say why the issue
+1. **Read why it stopped.** `<gh_issue> view {n}<tracker> --comments`: its latest comments say why the issue
    left the fleet and, where a human answered, what is to be done on this PR — do that, on this
    branch. Then run `git status`: a merge left in progress is a conflict the worker before you was
    resolving — resolve it and commit the merge.
@@ -157,7 +157,7 @@ no other PR. Nobody reads this terminal: never wait for an answer.
 <defect><cross_repo>
 ## If you cannot finish it
 
-After a genuine effort, post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`),
+After a genuine effort, post a comment on the issue instead (`<gh_issue> comment {n}<tracker> --body \"...\"`),
 wake the fleet (below) and stop. Its **first line** must be exactly this marker, with `phase=escalate`,
 on one line, followed by where you are stuck, so that a human can act on it in one reply — or,
 with `phase=blocked` and every existing blocking issue in `blocked_by=`, or `cut` there when it
@@ -209,7 +209,7 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 <defect><cross_repo>
 ## If you will not open a PR
 
-Post a comment on the issue instead (`gh issue comment {n}<tracker> --body \"...\"`), wake the fleet (below)
+Post a comment on the issue instead (`<gh_issue> comment {n}<tracker> --body \"...\"`), wake the fleet (below)
 and stop. Its **first line** must be exactly this marker, on one line, followed by a human-readable
 body:
 ```
@@ -257,7 +257,7 @@ reads this terminal: never wait for an answer.
 - **Stage:** `{stage}`, of the workflow `{flow}`
 - **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
 - **Worktree:** `{worktree_path}`, on the branch `{branch}` (the base is `{base_branch}`)
-- **History:** the issue and every comment on it (`gh issue view {n}<tracker> --comments`), and what
+- **History:** the issue and every comment on it (`<gh_issue> view {n}<tracker> --comments`), and what
   the branch holds past `origin/{base_branch}`
 <rules>
 
@@ -287,7 +287,7 @@ const CROSS_REPO_BLOCKER: &str = "
 ## Cross-repo blockers
 
 For a blocker or defect belonging to another repo of this host, open it on the tracker
-`<blocker_tracker>`, with that repo's `repo:<owner>/<repo>` label. Name that repo's main checkout as
+`<blocker_tracker>`<as_that_repos>. Name that repo's main checkout as
 `<target-checkout>` and run `afkconvoy flows <target-checkout>`
 and use its `line` (the matching workflow's in a bound repo), with a title and body file. In a bound
 repo omit the line's flow label while opening, then take it in there with
@@ -302,7 +302,7 @@ const SPLIT: &str = "
 A stage that finds its issue too large for one piece of work may split it, with these commands and
 in this order:
 
-1. Open one issue per piece (`gh issue create<tracker><labelled>`), each saying what it is to
+1. Open one issue per piece (`<gh_issue> create<tracker><labelled>`), each saying what it is to
    deliver. Put no label of a workflow on it yourself.
 2. Take each in to the workflow it is to follow — the team has {workflows} — naming with
    `--blocked-by` the ones among them it has to wait for; the command's `--help` says what it takes:
@@ -396,7 +396,7 @@ they would. Nobody reads this terminal: never wait for an answer.
 - **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
 - **Worktree:** `{worktree_path}`, on the branch `{branch}` (the base is `{base_branch}`). It is
   yours to read only: a consult writes no code, so never commit and never push
-- **History:** the issue and every comment on it (`gh issue view {n}<tracker> --comments`), and what
+- **History:** the issue and every comment on it (`<gh_issue> view {n}<tracker> --comments`), and what
   the branch holds past `origin/{base_branch}`
 <rules>
 
@@ -412,8 +412,8 @@ they would. Nobody reads this terminal: never wait for an answer.
 
 What a human answering this would look at, and nothing you must: you decide what to look into.
 
-- The issue, its comments and its blocked-by edges both ways: `gh issue view {n}<tracker> --comments`,
-  `gh api repos/<issues>/issues/{n}/dependencies/blocked_by` and `…/blocking`
+- The issue, its comments and its blocked-by edges both ways: `<gh_issue> view {n}<tracker> --comments`,
+  <blockers_read>
 - Where it is and its rework: `{show_command}`
 - The worktree, its branch and what only it holds: `git -C {worktree_path} status`, `git log`
 - Its worker's terminal: `orca terminal list --worktree path:{worktree_path}`, then `orca terminal
@@ -706,13 +706,13 @@ reads this terminal: never wait for an answer.
 ## What a patrol does
 
 A patrol finds work; it writes no code. For each thing you find that the fleet should work, open an
-issue for it (`gh issue create<tracker><labelled>`) and take it in to the workflow that fits, with
+issue for it (`<gh_issue> create<tracker><labelled>`) and take it in to the workflow that fits, with
 this command — its `--help` says what it takes:
 ```bash
 {intake_command}
 ```
 You may have {room} more such issue(s) open: past that the patrol is not run again until some have
-closed. Open none that an open issue already covers (`gh issue list<tracker><labelled> --state open`).
+closed. Open none that an open issue already covers (`<gh_issue> list<tracker><labelled> --state open`).
 
 If you find the base branch broken for every issue, raise a fleet lock on the issue you opened for
 the fix:
@@ -1153,35 +1153,54 @@ pub fn fresh_look(look: &FreshLook) -> String {
 }
 
 /// `template` with the fleet's tracker in each of its issue commands, where
-/// its marks say: `<tracker>` after a `gh issue` command, `<issues>` in a
-/// `gh api` path, `<labelled>` on one that opens or looks for an issue of
-/// the repo, and `<repo_label>` where the brief says which labels that issue
-/// carries — `<only_repo_label>` where it carries no other the worker puts
-/// on. Of the checkout's own repo they say nothing more than they did before
-/// there were trackers (docs/adr/0027).
+/// its marks say: `<gh_issue>` for the command itself (`Tracker::
+/// issue_program`), `<tracker>` after its number (`Tracker::issue_flag`),
+/// `<blockers_read>`, `<block>` and `<unblock>` for reading and writing an
+/// issue's blockers, `<issues>` in a `gh api` path, `<labelled>` on one that
+/// opens or looks for an issue of the repo, and `<repo_label>` where the
+/// brief says which labels that issue carries — `<only_repo_label>` where it
+/// carries no other the worker puts on. Of the checkout's own repo they say
+/// nothing more than they did before there were trackers (docs/adr/0027); of
+/// the host's local tracker, each is an `afkconvoy issue` command
+/// (docs/adr/0091). The one place a brief's, an escalation's or a
+/// consult's issue command is made for its tracker.
 pub(crate) fn in_tracker(template: &str, tracker: &Tracker) -> String {
-    let (flag, path, labelled, said, only) = match (tracker.named(), tracker.repo_label()) {
+    let flag = tracker.issue_flag().map(|named| format!(" --repo {named}")).unwrap_or_default();
+    let (path, labelled, said, only) = match (tracker.named(), tracker.repo_label()) {
         (Some(named), Some(label)) => (
-            format!(" --repo {named}"),
             named.to_string(),
             format!(" --label {label}"),
             format!(", and the repo label `{label}` (`--label {label}`)"),
             format!(", only the repo label `{label}` (`--label {label}`)"),
         ),
-        _ => (
-            String::new(),
-            "{owner}/{repo}".to_string(),
-            String::new(),
-            String::new(),
-            String::new(),
+        _ => ("{owner}/{repo}".to_string(), String::new(), String::new(), String::new()),
+    };
+    let local = matches!(tracker, Tracker::Local { .. });
+    let (blockers_read, block, unblock, as_that_repos) = match local {
+        true => (
+            "its `blockedBy` in `<gh_issue> view {n}`",
+            "<gh_issue> block <n> --by <blocker>",
+            "<gh_issue> unblock <n> --by <blocker>",
+            " as that repo's (`--repo <owner>/<repo>`)",
+        ),
+        false => (
+            "`gh api repos/<issues>/issues/{n}/dependencies/blocked_by` and `…/blocking`",
+            "gh api repos/<issues>/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
+            "gh api -X DELETE repos/<issues>/issues/<n>/dependencies/blocked_by/<id>",
+            ", with that repo's `repo:<owner>/<repo>` label",
         ),
     };
     template
         .replace("<cross_repo>", CROSS_REPO_BLOCKER)
+        .replace("<as_that_repos>", as_that_repos)
         .replace(
             "<blocker_tracker>",
             tracker.named().map_or("<owner>/<tracker-name>", |name| name.as_str()),
         )
+        .replace("<blockers_read>", blockers_read)
+        .replace("<unblock>", unblock)
+        .replace("<block>", block)
+        .replace("<gh_issue>", tracker.issue_program())
         .replace("<tracker>", &flag)
         .replace("<issues>", &path)
         .replace("<labelled>", &labelled)
@@ -1334,6 +1353,39 @@ mod tests {
         assert!(fresh.contains("\n   Closes acme/tracker#7\""), "{fresh}");
     }
 
+    #[test]
+    fn every_issue_command_of_a_local_trackers_brief_is_afkconvoy_issue() {
+        let tracker = crate::tracker::Said::Local
+            .tracker("h1", crate::config::RepoName::read("acme/dev").unwrap());
+        let worker = WorkerFields { tracker: &tracker, ..fields() };
+        let mut briefs: Vec<(&str, String)> = bound_briefs(&tracker).into();
+        for variant in [Variant::Fresh, Variant::Continue, Variant::TakeUp { pr: 70 }] {
+            briefs.push(("worker", worker_prompt(&worker, variant).unwrap()));
+        }
+        for (what, brief) in &briefs {
+            assert!(!brief.contains("gh issue"), "{what}: {brief}");
+            assert!(!brief.contains("/issues/"), "{what}: {brief}");
+            for mark in ["<gh_issue>", "<tracker>", "<blockers_read>", "<block>", "<as_that_repos>"]
+            {
+                assert!(!brief.contains(mark), "{what} {mark}: {brief}");
+            }
+        }
+        let [stage, _, consult, patrol, _] = &bound_briefs(&tracker).map(|(_, brief)| brief);
+        assert!(stage.contains("`afkconvoy issue view 7 --comments`"), "{stage}");
+        assert!(stage.contains("`afkconvoy issue create`"), "{stage}");
+        assert!(
+            stage.contains("open it on the tracker\n`local/h1` as that repo's (`--repo"),
+            "{stage}"
+        );
+        assert!(consult.contains("its `blockedBy` in `afkconvoy issue view 7`"), "{consult}");
+        assert!(consult.contains("    afkconvoy issue close 7 --comment <why>\n"), "{consult}");
+        assert!(consult.contains("    afkconvoy issue block 7 --by <blocker>\n"), "{consult}");
+        assert!(patrol.contains("`afkconvoy issue list --state open`"), "{patrol}");
+        let fresh = worker_prompt(&worker, Variant::Fresh).unwrap();
+        assert!(fresh.contains("`afkconvoy issue view 7 --comments`"), "{fresh}");
+        assert!(fresh.contains("**Your issue:** local/h1#7"), "{fresh}");
+    }
+
     /// Each issue command of `brief` names the tracker `acme/tracker`, every
     /// one that lists issues the repo label of `acme/dev` too — and one that
     /// opens an issue, or the brief beside it — and no PR command names a
@@ -1367,12 +1419,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_issue_command_of_a_bound_roles_brief_names_the_tracker() {
-        let tracker = Tracker::Other {
-            tracker: crate::config::RepoName::read("acme/tracker").unwrap(),
-            repo: crate::config::RepoName::read("acme/dev").unwrap(),
-        };
+    /// Every brief a bound role's worker of issue 7 of `tracker` is given:
+    /// a stage's, one parked on blockers, a consult's, a patrol's and the
+    /// landing's.
+    fn bound_briefs(tracker: &Tracker) -> [(&'static str, String); 5] {
         let workflows = ["feature".to_string()];
         let record = |stated, blocked_by| StageRecord {
             stage: "build".to_string(),
@@ -1392,7 +1442,7 @@ mod tests {
             (record(Declared::Escalate, vec![]), record(Declared::Blocked, vec![11, 12]));
         let stage = StageFields {
             number: 7,
-            tracker: &tracker,
+            tracker,
             title: "Add support",
             flow: "feature",
             stage: "build",
@@ -1423,7 +1473,7 @@ mod tests {
         let waited = [Said { record: &parked, url: "https://gh/c/6" }];
         let patrol = PatrolFields {
             patrol: "sweep",
-            tracker: &tracker,
+            tracker,
             role: "dev",
             skill: "implement",
             worktree: "/wt/convoy-patrol-sweep",
@@ -1436,14 +1486,23 @@ mod tests {
             over_command: "/opt/bin/afkconvoy over --run sweep",
         };
         let landing = Landing { role: "dev", skill: "land" };
-        let worker = WorkerFields { tracker: &tracker, ..fields() };
-        let briefs = [
+        let worker = WorkerFields { tracker, ..fields() };
+        [
             ("stage", stage_prompt(&stage).unwrap()),
             ("parked", stage_prompt(&StageFields { records: &waited, ..stage.clone() }).unwrap()),
             ("consult", consult_prompt(&consult, &consulting).unwrap()),
             ("patrol", patrol_prompt(&patrol).unwrap()),
             ("landing", landing_prompt(&worker, 70, landing).unwrap()),
-        ];
+        ]
+    }
+
+    #[test]
+    fn every_issue_command_of_a_bound_roles_brief_names_the_tracker() {
+        let tracker = Tracker::Other {
+            tracker: crate::config::RepoName::read("acme/tracker").unwrap(),
+            repo: crate::config::RepoName::read("acme/dev").unwrap(),
+        };
+        let briefs = bound_briefs(&tracker);
         for (_, brief) in &briefs {
             names_the_tracker(brief);
         }

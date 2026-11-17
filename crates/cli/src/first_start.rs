@@ -53,14 +53,12 @@ pub struct Ask {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum Setting {
-    Tracker,
     WatchDir,
 }
 
 impl std::fmt::Display for Setting {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Setting::Tracker => "tracker",
             Setting::WatchDir => "watch-dir",
         })
     }
@@ -72,32 +70,19 @@ pub fn questions() -> Vec<Ask> {
         option,
         line: format!("afkconvoy run <checkout> {flag}"),
     };
-    vec![
-        Ask {
-            setting: Setting::Tracker,
-            question: "Which private repo should hold this checkout's fleet issues?",
-            default: "the checkout's own repo, only when private".into(),
-            recommend: "Use a private tracker already used by your other checkouts, listed by `afkconvoy checkouts`; otherwise use this repo when private. Two people working one repo need their own trackers.",
-            options: vec![
-                line("This repo itself, only when private", "--tracker default"),
-                line("An existing private repo, starting with the trackers other checkouts use", "--tracker <owner>/<tracker>"),
-                OptionLine {
-                    option: "A new private repo, created only on the user's yes to its owner and name",
-                    line: "gh repo create <owner>/<name> --private && afkconvoy run <checkout> --tracker <owner>/<name>".into(),
-                },
-            ],
-        },
-        Ask {
-            setting: Setting::WatchDir,
-            question: "Which operator directory should the host's watch start in, or should it be the stock watch?",
-            default: "the stock watch, in afkconvoy's own directory".into(),
-            recommend: "Use an existing operator directory holding the rules for looking after this host's projects; keep the stock watch until the user names one.",
-            options: vec![
-                line("An existing operator directory chosen by the user", "--watch-dir '<operator-directory>'"),
-                line("The stock watch", "--watch-dir default"),
-            ],
-        },
-    ]
+    vec![Ask {
+        setting: Setting::WatchDir,
+        question: "Which operator directory should the host's watch start in, or should it be the stock watch?",
+        default: "the stock watch, in afkconvoy's own directory".into(),
+        recommend: "Use an existing operator directory holding the rules for looking after this host's projects; keep the stock watch until the user names one.",
+        options: vec![
+            line(
+                "An existing operator directory chosen by the user",
+                "--watch-dir '<operator-directory>'",
+            ),
+            line("The stock watch", "--watch-dir default"),
+        ],
+    }]
 }
 
 /// The question list as Markdown, inserted into the first-start topic.
@@ -119,10 +104,11 @@ pub fn help() -> String {
 }
 
 /// Settles a start's required answers, or refuses with every missing
-/// decision together, writing nothing. An explicit default tracker of a new
-/// checkout needs no change applied: its startup probe checks privacy after
-/// checking all required tools. Existing entries and settings keep their
-/// meaning.
+/// decision together, writing nothing: a new checkout's first `run` on a
+/// host with no host settings yet asks for the watch directory. A new
+/// checkout needs no tracker said: it works its host's local tracker, as
+/// `--tracker default` says (`Said::DEFAULT`), unless it names a repo.
+/// Existing entries and settings keep their meaning.
 pub fn settled(
     checkout: &Repo,
     mut start: Start,
@@ -130,15 +116,13 @@ pub fn settled(
 ) -> Result<Start> {
     let (listed, has_settings) = List::of_host()?.read_with_settings()?;
     let new_checkout = !listed.checkouts.iter().any(|entry| entry.checkout == checkout.dir);
-    let tracker = new_checkout && start.tracker.is_none();
-    if tracker {
-        let asks = questions()
-            .into_iter()
-            .filter(|ask| match ask.setting {
-                Setting::Tracker => tracker,
-                Setting::WatchDir => !has_settings && settings.watch_dir.is_none(),
-            })
-            .collect();
+    let asks: Vec<Ask> = questions()
+        .into_iter()
+        .filter(|ask| match ask.setting {
+            Setting::WatchDir => new_checkout && !has_settings && settings.watch_dir.is_none(),
+        })
+        .collect();
+    if !asks.is_empty() {
         return Err(Refused { asks }.into());
     }
     if new_checkout && matches!(start.tracker, Some(host_settings::To::Default)) {
