@@ -48,6 +48,29 @@ pub const SECONDS: u64 = 1200;
 /// of it is reported as exit 1, so this outcome is unambiguous.
 pub const BOUND_CODE: u8 = 124;
 const CHECK_EVERY: Duration = Duration::from_millis(100);
+/// How often a command waiting in the queue asks whether it still waits
+/// (`Waited::quit`).
+const QUIT_EVERY: Duration = Duration::from_secs(30);
+
+/// Whether a command waiting in the queue gives its place up, asked each
+/// `QUIT_EVERY` while it waits.
+pub(crate) type Quit = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// How long a command waits for its place in the queue: no later than
+/// `until`, and no longer than `quit` says.
+#[derive(Clone, Default)]
+struct Waited {
+    until: Option<Instant>,
+    quit: Option<Quit>,
+}
+
+impl Waited {
+    /// Whether it waits no more: past `until`, or `quit` says so.
+    fn over(&self) -> bool {
+        self.until.is_some_and(|until| Instant::now() >= until)
+            || self.quit.as_ref().is_some_and(|quit| quit())
+    }
+}
 
 /// The worktree, rather than a caller flag, identifies a cut's commands.
 fn is_cut(repo: &Repo) -> bool {
@@ -236,7 +259,21 @@ impl Permit {
         heavy: bool,
         until: Instant,
     ) -> Result<Option<Self>> {
-        Self::acquire_until(repo, command, heavy, true, true, None, Some(until))
+        let waited = Waited { until: Some(until), quit: None };
+        Self::acquire_until(repo, command, heavy, true, true, None, &waited)
+    }
+
+    /// A candidate's lane, waited for until `quit` says, asked each
+    /// `QUIT_EVERY`, it waits no more → `None`: a round's pair whose PR was
+    /// carried as its turn waited gates nothing (sunfmin/control#1349).
+    pub(crate) fn candidate_unless(
+        repo: &Repo,
+        command: &str,
+        heavy: bool,
+        quit: Quit,
+    ) -> Result<Option<Self>> {
+        let waited = Waited { until: None, quit: Some(quit) };
+        Self::acquire_until(repo, command, heavy, true, true, None, &waited)
     }
 
     /// A candidate's lane, waited for as long as it takes: a gate of a
@@ -281,12 +318,13 @@ impl Permit {
         candidate: bool,
         gate: Option<Gate>,
     ) -> Result<Self> {
-        let permit = Self::acquire_until(repo, command, heavy, is_turn, candidate, gate, None)?;
+        let waited = Waited::default();
+        let permit = Self::acquire_until(repo, command, heavy, is_turn, candidate, gate, &waited)?;
         permit.ok_or_else(|| anyhow::anyhow!("a wait with no bound passed its bound"))
     }
 
-    /// As `acquire`, waiting in the queue until `until` at most → `None`:
-    /// the turn came no sooner.
+    /// As `acquire`, waiting in the queue as `waited` says at most →
+    /// `None`: the turn came no sooner.
     fn acquire_until(
         repo: &Repo,
         command: &str,
@@ -294,7 +332,7 @@ impl Permit {
         is_turn: bool,
         candidate: bool,
         gate: Option<Gate>,
-        until: Option<Instant>,
+        waited: &Waited,
     ) -> Result<Option<Self>> {
         if held() {
             bail!("this command already holds a turn");
@@ -322,7 +360,7 @@ impl Permit {
         let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
         let stop = Arc::new(AtomicBool::new(false));
         let ended = Arc::new(Mutex::new(None));
-        let monitor = match turn(&ticket, &acting, &crate::clock, until)? {
+        let monitor = match turn(&ticket, &acting, &crate::clock, waited)? {
             Turn::Queued(place, _) => {
                 acting.say(crate::clock(), runs_line(&ticket, crate::clock(), 0));
                 let watch = Watch::new(place)?;
@@ -968,21 +1006,31 @@ enum Turn {
     Expired,
 }
 
-/// Ends `conversation` at `until`, unless `cancel` is told first → whether
-/// it ended it. The asker waiting on its line hears it closed.
+/// Ends `conversation` once `waited` is over, unless `cancel` is told
+/// first → whether it ended it. The asker waiting on its line hears it
+/// closed.
 fn ending_at(
     conversation: &Conversation,
-    until: Instant,
+    waited: Waited,
 ) -> Result<(mpsc::Sender<()>, std::thread::JoinHandle<bool>)> {
     let end = conversation.ender()?;
     let (cancel, cancelled) = mpsc::channel::<()>();
     let timer = std::thread::spawn(move || {
-        let left = until.saturating_duration_since(Instant::now());
-        let due = matches!(cancelled.recv_timeout(left), Err(mpsc::RecvTimeoutError::Timeout));
-        if due {
-            end();
+        loop {
+            let left = waited.until.map(|until| until.saturating_duration_since(Instant::now()));
+            let next = match (left, waited.quit.is_some()) {
+                (Some(left), true) => left.min(QUIT_EVERY),
+                (Some(left), false) => left,
+                (None, _) => QUIT_EVERY,
+            };
+            if !matches!(cancelled.recv_timeout(next), Err(mpsc::RecvTimeoutError::Timeout)) {
+                return false;
+            }
+            if waited.over() {
+                end();
+                return true;
+            }
         }
-        due
     });
     Ok((cancel, timer))
 }
@@ -990,16 +1038,11 @@ fn ending_at(
 /// Waits in the host runner's queue for `ticket`'s turn, saying to `acting`
 /// and stderr how it waits. One whose host runner ends as it waits asks the
 /// next, as it first asked, for `REACHED_WITHIN`; one that finds no host
-/// runner, or one that cannot hold it, runs at once. One given `until` waits
-/// no later: `Turn::Expired`. Errors: the host runner could not be asked, or
+/// runner, or one that cannot hold it, runs at once. One whose `waited` is
+/// over waits no more: `Turn::Expired`. Errors: the host runner could not be asked, or
 /// what it said could not be read.
-fn turn(
-    ticket: &Ticket,
-    acting: &Acting,
-    now: &dyn Fn() -> u64,
-    until: Option<Instant>,
-) -> Result<Turn> {
-    let expired = || until.is_some_and(|until| Instant::now() >= until);
+fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64, waited: &Waited) -> Result<Turn> {
+    let expired = || waited.over();
     let asked = Request::Exclusive { ticket: ticket.clone() };
     // Since when it has asked with no host runner placing it.
     let mut lost: Option<Instant> = None;
@@ -1020,7 +1063,9 @@ fn turn(
                     eprintln!("[afkconvoy] exclusive: {line}");
                     acting.say(now(), line);
                 }
-                let timer = until.map(|until| ending_at(&conversation, until)).transpose()?;
+                let bounded = waited.until.is_some() || waited.quit.is_some();
+                let timer =
+                    bounded.then(|| ending_at(&conversation, waited.clone())).transpose()?;
                 // What it cannot read, a newer host runner's, is passed over.
                 let mut runs = None;
                 while let Some(said) = conversation.heard()? {
@@ -1120,7 +1165,7 @@ pub fn exclusive(
         retained: None,
     };
     let acting = Acting::new("exclusive").on_own_issue().in_checkout(checkout);
-    let place = match turn(&ticket, &acting, &now, None) {
+    let place = match turn(&ticket, &acting, &now, &Waited::default()) {
         Ok(Turn::Queued(place, ahead_of)) => {
             let started = now();
             acting.say(started, runs_line(&ticket, started, ahead_of));

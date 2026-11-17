@@ -969,6 +969,7 @@ afkconvoy::cli watch_landing::a_watch_s_checkout_left_unlanded_goes_at_a_tick_pa
 afkconvoy::cli candidates::a_pr_conflicting_with_every_partner_carries_the_earliest_and_lands_both
 afkconvoy::cli candidates::a_red_root_is_fixed_on_the_spot_by_its_last_asked_pr_which_carries_the_round
 afkconvoy::cli candidates::a_round_gates_its_pair_then_its_root_whole_once_and_lands_both_together
+afkconvoy::cli candidates::a_pr_carried_while_its_turn_gates_a_pair_ends_at_once_answering_carried
 afkconvoy::cli candidates::with_one_lane_a_round_s_one_group_gates_and_the_round_lands_on_one_slow_gate
 # Measured 7.64s: three queued deliveries and doctor's recovery observation.
 # Measured 9.5s and 8.3s: ticks of a `run` that each poll a queued line for 1s.

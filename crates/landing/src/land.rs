@@ -829,6 +829,7 @@ where
                             change: place.change.number,
                             branch: place.change.source.clone(),
                             head: place.head.clone(),
+                            carried_by: None,
                         }),
                     });
                 }

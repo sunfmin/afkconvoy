@@ -16,6 +16,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use afkconvoy_landing::forge::{Change, Forge};
@@ -1580,6 +1581,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         change: pr.number,
         branch: pr.head_branch.clone(),
         head: original.clone(),
+        carried_by: None,
     });
     let reserve = |chain: &mut Chain| {
         let in_round = chain.rounds().flat_map(|r| &r.asked).any(|a| a.id == id);
@@ -2170,6 +2172,11 @@ fn in_round(
         if let Some(hold) = issue.and_then(|n| crate::landing_hold::keeping_off(repo, n)) {
             return Ok(Rounded::Answer(crate::turn::held(answer, &hold)));
         }
+        // Its PR closed as carried as it asked: it ends at once, and leaving
+        // cancels each pair of it not yet passed (sunfmin/control#1349).
+        if let Some(by) = chain.carried_by(id) {
+            return Ok(Rounded::Answer(carried_answer(answer, by)));
+        }
         let next = chain.round_next(id);
         match next {
             None => {
@@ -2245,8 +2252,9 @@ fn in_round(
 /// tip does not (docs/adr/0083): its worker merged that PR in, their pair
 /// having run red or the two conflicting. Each is closed, commented
 /// "carried by #…", its branch deleted while still at that head, and its
-/// issues told (`forge::carry`); this PR's description takes theirs → the
-/// PRs it carried.
+/// issues told (`forge::carry`), and the chain says so of any turn of it
+/// still asking (`Chain::carried`); this PR's description takes theirs →
+/// the PRs it carried.
 fn carry_held(turn: &InRound<'_>, head: &str) -> Result<Vec<u64>> {
     let InRound { repo, config, gh, forge, asked, pr, .. } = *turn;
     let base = crate::turn::base_live(repo, config)?;
@@ -2265,6 +2273,15 @@ fn carry_held(turn: &InRound<'_>, head: &str) -> Result<Vec<u64>> {
         let change = crate::forge::change(&other);
         afkconvoy_landing::forge::carry(forge, asked, &change, &other.head_sha)?;
         carried.push(other.number);
+    }
+    // A turn of a PR it carried, asked again before it was, ends at its next
+    // step rather than gating a pair of it (sunfmin/control#1349).
+    if !carried.is_empty() {
+        change(repo, config, |chain| {
+            for &other in &carried {
+                chain.carried(other, pr.number);
+            }
+        })?;
     }
     Ok(carried)
 }
@@ -2453,10 +2470,28 @@ fn stack_root(turn: &InRound<'_>, chain: &Chain) -> Result<()> {
 
 /// Runs the fast gate of `pair`, which this turn is the later-asked PR of,
 /// in a worktree of its own on this host and a lane of it, and lets the
-/// round carry on from what it said.
+/// round carry on from what it said. The pair no longer to gate as it
+/// waits for its lane — its PR carried (`Chain::carried`), or the pair
+/// cancelled otherwise — it gives its place up and gates nothing
+/// (sunfmin/control#1349).
 fn gate_pair(turn: &InRound<'_>, pair: &str) -> Result<()> {
     let InRound { repo, config, root, host, issue, heavy, clock, .. } = *turn;
-    let _lane = Permit::candidate(repo, "turn: a pair's fast gate", heavy)?;
+    let quit = {
+        // Read apart from this turn's own reads, from the queue's thread
+        // (`Permit::candidate_unless`): the host's chain as it is now.
+        let (repo, branch, pair) = (repo.clone(), config.base_branch.clone(), pair.to_string());
+        Arc::new(move || {
+            crate::chain_store::read(&repo, &branch).is_ok_and(|Snapshot { chain, .. }| {
+                !chain.candidates.iter().any(|c| {
+                    c.id == pair && c.phase == Phase::Building && c.valid() && c.gate.is_none()
+                })
+            })
+        })
+    };
+    let Some(_lane) = Permit::candidate_unless(repo, "turn: a pair's fast gate", heavy, quit)?
+    else {
+        return Ok(());
+    };
     // Whichever host paired it, its worktree is this host's.
     let path = root.join(pair);
     let mut started = None;
