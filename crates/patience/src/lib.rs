@@ -39,13 +39,26 @@ pub fn deadline() -> Instant {
 
 /// Looks for an event until `got` answers it, every 20 milliseconds, and
 /// panics naming `what` once [`PATIENCE`] has passed without it.
-pub fn until<T>(what: impl Display, mut got: impl FnMut() -> Option<T>) -> T {
+pub fn until<T>(what: impl Display, got: impl FnMut() -> Option<T>) -> T {
+    until_told(what, got, String::new)
+}
+
+/// [`until`], whose panic also says what `told` says then: what the test
+/// waited on did instead, so that a wait that runs out names its cause
+/// (sunfmin/control#1348).
+pub fn until_told<T>(
+    what: impl Display,
+    mut got: impl FnMut() -> Option<T>,
+    told: impl FnOnce() -> String,
+) -> T {
     let until = deadline();
     loop {
         if let Some(it) = got() {
             return it;
         }
-        assert!(Instant::now() < until, "{what}: did not happen within {PATIENCE:?}");
+        if Instant::now() >= until {
+            panic!("{what}: did not happen within {PATIENCE:?}\n{}", told());
+        }
         std::thread::sleep(BETWEEN_LOOKS);
     }
 }

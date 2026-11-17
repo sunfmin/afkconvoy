@@ -1,8 +1,11 @@
 //! A turn's observable contract, through the real CLI and git remote.
 use crate::common::{World, git};
 use serde_json::{Value, json};
+use std::io::Read;
 use std::path::Path;
-use std::process::{Child, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const LINE: &str = "refs/convoy/train/line/main";
@@ -11,26 +14,168 @@ fn quote(path: &Path) -> String {
     afkconvoy_core::line::Line::new().word(&path.to_string_lossy()).own()
 }
 
-fn until(done: impl FnMut() -> bool) {
-    afkconvoy_patience::until_true("the expected transition", done)
+/// A turn a test started in the background. What it prints is read as it
+/// comes, so that a pipe it fills never holds it up, and kept, so that a
+/// wait on it says it (sunfmin/control#1348). A turn the test leaves is
+/// killed.
+struct Turn {
+    name: String,
+    child: Mutex<Child>,
+    stdout: Printed,
+    stderr: Printed,
 }
 
-fn start(world: &World, dir: &Path, cache: &Path, issue: u64) -> Child {
-    world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
+/// What one of a turn's pipes printed so far, read by a thread of its own.
+struct Printed {
+    text: Arc<Mutex<Vec<u8>>>,
+    reader: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Printed {
+    fn read(mut pipe: impl Read + Send + 'static) -> Printed {
+        let text = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&text);
+        let reader = std::thread::spawn(move || {
+            let mut chunk = [0; 8192];
+            while let Ok(read @ 1..) = pipe.read(&mut chunk) {
+                into.lock().unwrap_or_else(PoisonError::into_inner).extend(&chunk[..read]);
+            }
+        });
+        Printed { text, reader: Mutex::new(Some(reader)) }
+    }
+
+    fn so_far(&self) -> Vec<u8> {
+        self.text.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// All it printed, once its pipe closed.
+    fn all(&self) -> Vec<u8> {
+        if let Some(reader) = self.reader.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            let _ = reader.join();
+        }
+        self.so_far()
+    }
+}
+
+impl Turn {
+    fn spawn(name: String, mut command: Command) -> Turn {
+        let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let stdout = Printed::read(child.stdout.take().unwrap());
+        let stderr = Printed::read(child.stderr.take().unwrap());
+        Turn { name, child: Mutex::new(child), stdout, stderr }
+    }
+
+    fn child(&self) -> std::sync::MutexGuard<'_, Child> {
+        self.child.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// How it ended; `None`: it runs on.
+    fn ended(&self) -> Option<ExitStatus> {
+        self.child().try_wait().unwrap()
+    }
+
+    /// It waited for → how it ended, and what it printed to stdout and stderr.
+    fn wait(&self) -> (ExitStatus, Vec<u8>, Vec<u8>) {
+        let status = self.child().wait().unwrap();
+        (status, self.stdout.all(), self.stderr.all())
+    }
+
+    /// It ended now, if it runs on → what it printed to stderr.
+    fn stop(&self) -> String {
+        let _ = self.child().kill();
+        String::from_utf8_lossy(&self.wait().2).into_owned()
+    }
+
+    /// Whether it runs, and what it printed so far.
+    fn told(&self) -> String {
+        let state = match self.ended() {
+            None => "running".to_string(),
+            Some(status) => format!("ended {status}"),
+        };
+        format!(
+            "-- turn {} ({state})\nstdout: {}\nstderr: {}",
+            self.name,
+            String::from_utf8_lossy(&self.stdout.so_far()),
+            String::from_utf8_lossy(&self.stderr.so_far())
+        )
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        let _ = self.child().kill();
+    }
+}
+
+/// What a wait watches: the turns it waits on, any of which ending fails it
+/// at once, and what it says beside them when it runs out — the host queue
+/// as `queue` answers it, and the candidate chain of each world of `chains`.
+struct Watch<'a> {
+    queue: &'a World,
+    chains: Vec<&'a World>,
+    turns: Vec<&'a Turn>,
+}
+
+impl<'a> Watch<'a> {
+    /// The turns of one world.
+    fn of(world: &'a World, turns: &[&'a Turn]) -> Watch<'a> {
+        Watch { queue: world, chains: vec![world], turns: turns.to_vec() }
+    }
+
+    /// It, saying the candidate chain of `world` too, whose turns ask the
+    /// same host queue.
+    fn and(mut self, world: &'a World) -> Watch<'a> {
+        self.chains.push(world);
+        self
+    }
+
+    /// All a failed wait says of what it watched, and the host's load.
+    fn told(&self) -> String {
+        let mut told: Vec<String> = self.turns.iter().map(|turn| turn.told()).collect();
+        let queue = self.queue.afk_in(&self.queue.root, &["queue"]);
+        told.push(format!("-- queue (exit {}): {}\n{}", queue.code, queue.json, queue.stderr));
+        for (at, world) in self.chains.iter().enumerate() {
+            let chain = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
+            told.push(format!("-- candidate chain of world {at}: {chain}"));
+        }
+        let load = Command::new("uptime").output().map(|out| out.stdout).unwrap_or_default();
+        told.push(format!("-- host: {}", String::from_utf8_lossy(&load).trim()));
+        told.join("\n")
+    }
+}
+
+/// Waits until `done`, failing at once with all `watch` says where one of
+/// its turns ends first, and with it too where the wait runs out.
+fn until(what: &str, watch: &Watch, mut done: impl FnMut() -> bool) {
+    afkconvoy_patience::until_told(
+        what,
+        || {
+            let ended = watch.turns.iter().find(|turn| turn.ended().is_some());
+            if done() {
+                return Some(());
+            }
+            if let Some(turn) = ended {
+                panic!("{what}: turn {} ended before it\n{}", turn.name, watch.told());
+            }
+            None
+        },
+        || watch.told(),
+    )
+}
+
+fn start(world: &World, dir: &Path, cache: &Path, issue: u64) -> Turn {
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), dir);
+    command
         .env("XDG_CACHE_HOME", cache)
         .env("AFKCONVOY_ISSUE", issue.to_string())
-        .args(["gate", "--land"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap()
+        .args(["gate", "--land"]);
+    Turn::spawn(format!("of issue {issue}"), command)
 }
 
-fn finish(child: Child) -> Value {
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_slice(&out.stdout).unwrap()
+fn finish(turn: Turn) -> Value {
+    let (status, stdout, stderr) = turn.wait();
+    assert!(status.success(), "{}", String::from_utf8_lossy(&stderr));
+    serde_json::from_slice(&stdout).unwrap()
 }
 
 fn seed(world: &World) {
@@ -64,11 +209,13 @@ fn two_turns_land_in_order_with_a_record_of_each_landed_tree_and_no_line() {
     let two = world.worker(2, "two.txt", "two");
     let _runner = world.host_held();
     let a = start(&world, &one, &world.cache(), 1);
-    until(|| started.exists());
+    until("the first turn's gate started", &Watch::of(&world, &[&a]), || started.exists());
     let b = start(&world, &two, &world.cache(), 2);
     // It asked during the first's round: it waits for the next, or stacks
     // on this one.
-    until(|| asked_after(&world) == 1);
+    until("the second turn asked after the round", &Watch::of(&world, &[&a, &b]), || {
+        asked_after(&world) == 1
+    });
     assert!(!second_started.exists(), "a worker without its turn runs no gate");
     std::fs::write(&release, "").unwrap();
     let (a, b) = (finish(a), finish(b));
@@ -125,7 +272,7 @@ fn a_missing_base_record_is_gated_alone_before_any_worker_turn() {
     let worker = world.worker(1, "worker.txt", "one");
     let _runner = world.host_held();
     let child = start(&world, &worker, &world.cache(), 1);
-    until(|| certifying.exists());
+    until("the base tip's gate started", &Watch::of(&world, &[&child]), || certifying.exists());
     let doctor = world.afk(&["doctor"]).json;
     let queue = &doctor["host"]["exclusive"];
     assert!(queue.get("train").is_none(), "{queue}");
@@ -143,15 +290,12 @@ fn a_lock_issue_from_an_older_fleet_lands_its_fix_on_a_red_tip() {
     world.set_gate("test -f fixed.txt");
     let fix = world.worker(7, "fixed.txt", "fixed");
     world.issue(7, &["fleet-lock"]);
-    let mut child = start(&world, &fix, &world.cache(), 7);
-    let began = Instant::now();
-    while child.try_wait().unwrap().is_none() {
-        if began.elapsed() > afkconvoy_patience::PATIENCE {
-            child.kill().unwrap();
-            panic!("the lock issue's turn waited for a green tip its own fix makes green");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let child = start(&world, &fix, &world.cache(), 7);
+    afkconvoy_patience::until_told(
+        "the lock issue's turn ended, not waiting for a green tip its own fix makes green",
+        || child.ended(),
+        || Watch::of(&world, &[&child]).told(),
+    );
     let answer = finish(child);
     assert_eq!(answer["outcome"], "merged", "{answer}");
     assert_eq!(answer["recorded"], true);
@@ -187,13 +331,22 @@ fn a_busy_host_bounds_candidates_and_room_lets_another_repo_start() {
     let other_repo = b.worker(3, "held.txt", "other repo");
     let _runner = a.host_held();
     let first = start(&a, &one, &a.cache(), 1);
-    until(|| a.root.join("started").exists());
+    // Both repos' turns hold the one host queue, `a`'s.
+    let watch = Watch::of(&a, &[&first]).and(&b);
+    until("the first turn's gate started", &watch, || a.root.join("started").exists());
     let third = start(&b, &other_repo, &a.cache(), 3);
-    until(|| b.root.join("started").exists());
-    // Past the share now: nothing more starts beside the two.
+    let watch = Watch::of(&a, &[&first, &third]).and(&b);
+    until("the other repo's gate started beside it", &watch, || b.root.join("started").exists());
+    // Past the share now: nothing more starts beside the two, once the
+    // queue reads it. A reading is said again within its second, and one
+    // taken before this would start the second turn (sunfmin/control#1348).
     a.cores_busy(95);
+    until("the queue read the cores past the share", &watch, || {
+        a.afk_in(&a.root, &["queue"]).ok()["room"]["reading"]["busy"] == 95
+    });
     let second = start(&a, &another, &a.cache(), 2);
-    until(|| asked_after(&a) == 1);
+    let all = Watch::of(&a, &[&first, &third, &second]).and(&b);
+    until("the second turn asked after the round", &all, || asked_after(&a) == 1);
     assert!(!another.join("held.txt").exists(), "the second turn has not merged yet");
     // The second turn waits on the host's room, saying the reading.
     let busy = || {
@@ -209,7 +362,7 @@ fn a_busy_host_bounds_candidates_and_room_lets_another_repo_start() {
                 })
         })
     };
-    until(busy);
+    until("the second turn waited on the busy host", &all, busy);
     // Room again: it starts once the next reading counts the two.
     a.cores_busy(10);
     std::fs::write(a.root.join("release"), "").unwrap();
@@ -245,7 +398,7 @@ fn a_light_gate_takes_its_repo_turn_while_the_worker_lane_is_occupied() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    until(|| held.exists());
+    afkconvoy_patience::until_true("the other repo's command started", || held.exists());
     assert_eq!(finish(start(&world, &worker, &world.cache(), 1))["outcome"], "merged");
     std::fs::write(release, "").unwrap();
     assert!(heavy.wait_with_output().unwrap().status.success());
@@ -264,12 +417,16 @@ fn the_exclusive_bound_ends_the_whole_turn_and_releases_the_next_one() {
     let two = world.worker(2, "second.txt", "two");
     let _runner = world.host_held();
     let first = start(&world, &one, &world.cache(), 1);
-    until(|| world.root.join("started").exists());
+    until("the first turn's gate started", &Watch::of(&world, &[&first]), || {
+        world.root.join("started").exists()
+    });
     // The next turn waits for the next round, or stacks on this one, whose
     // whole gate runs (sunfmin/control#1140); a command waiting in the queue
     // is what the bound ends the turn for.
     let next = start(&world, &two, &world.cache(), 2);
-    until(|| asked_after(&world) == 1);
+    until("the next turn asked after the round", &Watch::of(&world, &[&first, &next]), || {
+        asked_after(&world) == 1
+    });
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     command.env("XDG_CACHE_HOME", world.cache());
     let queued = command
@@ -278,9 +435,9 @@ fn the_exclusive_bound_ends_the_whole_turn_and_releases_the_next_one() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let ended = first.wait_with_output().unwrap();
-    assert_eq!(ended.status.code(), Some(124), "{}", String::from_utf8_lossy(&ended.stderr));
-    let answer: Value = serde_json::from_slice(&ended.stdout).unwrap();
+    let (status, stdout, stderr) = first.wait();
+    assert_eq!(status.code(), Some(124), "{}", String::from_utf8_lossy(&stderr));
+    let answer: Value = serde_json::from_slice(&stdout).unwrap();
     assert!(answer["error"].as_str().unwrap().contains("exclusive bound of 1s"), "{answer}");
     assert!(queued.wait_with_output().unwrap().status.success());
     assert_eq!(finish(next)["outcome"], "merged");
@@ -379,7 +536,7 @@ fn red_base_repair(bound: bool, legacy_lock: Option<&str>) {
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
     let before = world.remote(&["rev-parse", "refs/heads/main"]);
     let child = start(&world, &worker, &world.cache(), 1);
-    until(|| {
+    until("the base tip was recorded red", &Watch::of(&world, &[&child]), || {
         !world
             .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/base/red/main"])
             .is_empty()
@@ -428,10 +585,10 @@ fn red_base_repair(bound: bool, legacy_lock: Option<&str>) {
             .any(|step| step["do"] == "dispatch" && step["issue"] == repair),
         "{tick}"
     );
-    let ordinary = child.wait_with_output().unwrap();
+    let (status, stdout, _) = child.wait();
     assert!(
-        !ordinary.status.success()
-            || serde_json::from_slice::<Value>(&ordinary.stdout).unwrap()["outcome"] == "locked"
+        !status.success()
+            || serde_json::from_slice::<Value>(&stdout).unwrap()["outcome"] == "locked"
     );
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), before);
     let orca = world.orca();
@@ -464,7 +621,7 @@ fn a_rejected_push_ends_the_turn_and_another_turn_gates_the_new_base() {
     seed(&world);
     let worker = world.worker(1, "worker.txt", "work");
     let child = start(&world, &worker, &world.cache(), 1);
-    until(|| started.exists());
+    until("the turn's gate started", &Watch::of(&world, &[&child]), || started.exists());
     crate::common::commit(&world.clone, "outside.txt", "another host");
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
     let outside = world.remote(&["rev-parse", "refs/heads/main"]);
@@ -667,65 +824,45 @@ fn a_red_base_tip_whose_gate_left_read_only_files_removes_its_worktree_and_recor
     let worker = world.worker(1, "worker.txt", "normal work");
     crate::common::commit(&world.clone, "broken.txt", "outside change");
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
-    let mut child = start(&world, &worker, &world.cache(), 1);
-    until(|| {
+    let child = start(&world, &worker, &world.cache(), 1);
+    until("the base tip was recorded red", &Watch::of(&world, &[&child]), || {
         !world
             .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/base/red/main"])
             .is_empty()
-            || child.try_wait().unwrap().is_some()
     });
-    let exited = child.try_wait().unwrap();
-    if exited.is_some() {
-        let out = child.wait_with_output().unwrap();
-        panic!("the turn ended instead of waiting: {}", String::from_utf8_lossy(&out.stderr));
-    }
-    let _ = child.kill();
-    let out = child.wait_with_output().unwrap();
+    let stderr = child.stop();
     let path = std::path::PathBuf::from(std::fs::read_to_string(&certified).unwrap().trim());
     assert!(!path.exists(), "{} is still there", path.display());
     let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
     assert!(!crate::common::worktree_listed(&listed, &path), "{listed}");
-    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("cannot remove worktree"), "{stderr}");
 }
 
 /// A `land --issue 1` of `worker`, waiting on a red base tip, under
 /// `pending` seconds of pending bound.
-fn land_waiting(world: &World, worker: &Path, pending: u64) -> Child {
-    world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), worker)
+fn land_waiting(world: &World, worker: &Path, pending: u64) -> Turn {
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), worker);
+    command
         .env("XDG_CACHE_HOME", world.cache())
         .env("AFKCONVOY_PENDING_SECONDS", pending.to_string())
-        .args(["land", "--issue", "1"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap()
+        .args(["land", "--issue", "1"]);
+    Turn::spawn("land of issue 1".into(), command)
 }
 
 /// A world whose base tip is red on record, with a worker's PR waiting on it
 /// → that worker's checkout and the land turn waiting.
-fn waiting_on_red(world: &World, pending: u64) -> (std::path::PathBuf, Child) {
+fn waiting_on_red(world: &World, pending: u64) -> (std::path::PathBuf, Turn) {
     world.set_gate("if test -f broken.txt && test ! -f repaired.txt; then exit 1; fi");
     seed(world);
     let worker = world.worker(1, "worker.txt", "normal work");
     crate::common::commit(&world.clone, "broken.txt", "outside change");
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
-    let mut child = land_waiting(world, &worker, pending);
-    until(|| {
+    let child = land_waiting(world, &worker, pending);
+    until("the turn waits on the red tip", &Watch::of(world, &[&child]), || {
         !world
             .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/base/red/main"])
             .is_empty()
-            || child.try_wait().unwrap().is_some()
     });
-    if child.try_wait().unwrap().is_some() {
-        let out = child.wait_with_output().unwrap();
-        panic!(
-            "the turn ended instead of waiting on the red tip: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
     (worker, child)
 }
 
@@ -735,11 +872,10 @@ fn waiting_on_red(world: &World, pending: u64) -> (std::path::PathBuf, Child) {
 #[test]
 fn a_land_waiting_on_a_red_base_takes_its_turn_once_a_green_commit_lands() {
     let world = World::new();
-    let (_worker, mut child) = waiting_on_red(&world, 600);
+    let (_worker, child) = waiting_on_red(&world, 600);
     crate::common::commit(&world.clone, "repaired.txt", "repair");
     git(&world.clone, &["push", "-q", "origin", "HEAD"]);
     let repaired = world.remote(&["rev-parse", "refs/heads/main"]);
-    until(|| child.try_wait().unwrap().is_some());
     let landed = finish(child);
     assert_eq!(landed["outcome"], "merged", "{landed}");
     assert_eq!(landed["merged"], repaired, "{landed}");
@@ -752,9 +888,8 @@ fn a_land_waiting_on_a_red_base_takes_its_turn_once_a_green_commit_lands() {
 fn a_land_waiting_on_a_red_base_answers_base_red_at_its_bound() {
     let world = World::new();
     let started = Instant::now();
-    let (_worker, mut child) = waiting_on_red(&world, 3);
+    let (_worker, child) = waiting_on_red(&world, 3);
     let red = world.remote(&["rev-parse", "refs/heads/main"]);
-    until(|| child.try_wait().unwrap().is_some());
     let answer = finish(child);
     assert!(started.elapsed() >= Duration::from_secs(3));
     assert_eq!(answer["outcome"], "base_red", "{answer}");
