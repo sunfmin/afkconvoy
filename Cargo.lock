@@ -106,6 +106,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "afkconvoy-issues"
+version = "0.5.64"
+dependencies = [
+ "rusqlite",
+]
+
+[[package]]
 name = "afkconvoy-landing"
 version = "0.5.64"
 dependencies = [

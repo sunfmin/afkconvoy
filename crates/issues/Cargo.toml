@@ -1,0 +1,14 @@
+[package]
+name = "afkconvoy-issues"
+description = "A host's local tracker: its issues, their labels, comments and blockers, kept in one SQLite database many processes read and write at once, with no fleet concept in its API (docs/adr/0091)"
+version.workspace = true
+edition.workspace = true
+publish = false
+# Built again at every commit the gate names (sunfmin/control#1114).
+build = "../commit.rs"
+
+[dependencies]
+# The version the cli's host database is on: `libsqlite3-sys` links the one
+# `sqlite3`, so the workspace can hold one version of it alone. Bundled, so
+# no system library is assumed.
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
