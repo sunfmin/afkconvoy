@@ -115,17 +115,18 @@ HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow sh "$tmp/repo/gate.sh" fast >"$tmp/out
 absent 'run again under the limit'
 # A test past the 2s line that the change under test did not touch warns and
 # is named in one open issue; a touched one fails the gate (sunfmin/control#1307).
-cat > "$tmp/home/.cargo/bin/gh" <<'MOCK'
+cat > "$tmp/home/.cargo/bin/afkconvoy" <<'MOCK'
 #!/bin/sh
-echo "$*" >> "$HOME/gh-ran"
+echo "$*" >> "$HOME/afkconvoy-ran"
 case "$*" in
-'issue list'*) if [ -f "$HOME/open-issue" ]; then echo 7; fi ;;
-'issue create'*) : > "$HOME/open-issue" ;;
-'issue view'*) cat "$HOME/open-issue" ;;
+'issue list'*) if [ -f "$HOME/open-issue" ]; then echo '{"issues":[{"number":7}]}'; else echo '{"issues":[]}'; fi ;;
+'issue create'*) : > "$HOME/open-issue"; echo '{"action":"created","number":7}' ;;
+'issue view'*) printf '{"body":"%s","comments":[]}\n' "$(cat "$HOME/open-issue")" ;;
+'issue comment'*) echo '{"action":"commented","number":7}' ;;
 esac
 exit 0
 MOCK
-chmod +x "$tmp/home/.cargo/bin/gh"
+chmod +x "$tmp/home/.cargo/bin/afkconvoy"
 cd "$tmp/repo"
 git config user.email gate@example.invalid
 git config user.name gate
@@ -142,13 +143,13 @@ HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow sh "$tmp/repo/gate.sh" fast >"$tmp/out
 }
 grep -q 'afkconvoy::cli tick::example is past the 2s line and was not touched by this change' "$tmp/out"
 absent 'Name it in .config/slow-tests'
-grep -q '^issue create' "$tmp/home/gh-ran"
-grep -q -- '--label ready-for-agent' "$tmp/home/gh-ran"
+grep -q '^issue create' "$tmp/home/afkconvoy-ran"
+grep -q -- '--label ready-for-agent' "$tmp/home/afkconvoy-ran"
 # A second sighting adds to the open issue, never a second one.
-rm -f "$tmp/home/gh-ran"
+rm -f "$tmp/home/afkconvoy-ran"
 HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 || exit 1
-if grep -q '^issue create' "$tmp/home/gh-ran"; then exit 1; fi
-rm -f "$tmp/home/gh-ran"
+if grep -q '^issue create' "$tmp/home/afkconvoy-ran"; then exit 1; fi
+rm -f "$tmp/home/afkconvoy-ran"
 # A test the change modifies, by its body, still fails the gate.
 cd "$tmp/repo"
 printf 'fn example() {\n    2;\n}\nfn other() {\n    0;\n}\nfn third() { 1; }\n' > src/lib.rs
