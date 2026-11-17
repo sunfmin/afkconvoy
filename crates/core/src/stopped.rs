@@ -139,6 +139,18 @@ pub struct Silent {
     pub waited: Option<u64>,
 }
 
+impl Silent {
+    /// Its one nudge, still to send: a silence that is its wait on its own
+    /// background work past the limit, of a worker this host never nudged. A
+    /// landing worker climbs its rungs from a nudge (`landing_worker::join_route`).
+    pub fn unnudged(&self, nudged: Nudged) -> Option<Unnudged> {
+        match (self.waited, nudged) {
+            (Some(_), Nudged::Never) => Some(Unnudged { sent: 0 }),
+            _ => None,
+        }
+    }
+}
+
 /// The proof that the worker here was never nudged, used up by the one nudge
 /// it allows.
 #[derive(Debug, PartialEq, Eq)]

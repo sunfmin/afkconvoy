@@ -594,10 +594,22 @@ pub struct Silenced {
     pub command: &'static str,
     /// It was nudged, and stayed silent a grace period more.
     pub nudged: bool,
-    /// How long it waited on its own background work, past the gate limit.
-    pub waited: Option<u64>,
+    /// Its wait on its own background work, past the gate limit.
+    pub waited: Option<Waited>,
     /// It declared a verdict past grace, which the tick has yet to carry out.
     pub declared: bool,
+}
+
+/// A silent worker's wait on its own background work, past its bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Waited {
+    /// How long it waited, in seconds.
+    pub seconds: u64,
+    /// The bound it waited past: the gate limit.
+    pub limit: u64,
+    /// The command it waited on, where the fleet knows it: its own
+    /// `afkconvoy land` still asking for its turn.
+    pub on: Option<&'static str>,
 }
 
 impl Silenced {
@@ -605,7 +617,13 @@ impl Silenced {
         Silenced { command, nudged: false, waited: None, declared: true }
     }
 
-    fn of(silence: Silence, nudge: &'static str) -> Option<Silenced> {
+    /// `limit` and `on`: the bound its background work is judged by, and
+    /// the command that work is, where the fleet knows it.
+    fn of(
+        silence: Silence,
+        nudge: &'static str,
+        (limit, on): (u64, Option<&'static str>),
+    ) -> Option<Silenced> {
         match silence {
             Silence::Nudge(_) => {
                 Some(Silenced { command: nudge, nudged: false, waited: None, declared: false })
@@ -613,7 +631,7 @@ impl Silenced {
             Silence::Stalled(silent) => Some(Silenced {
                 command: "tick",
                 nudged: silent.nudged,
-                waited: silent.waited,
+                waited: silent.waited.map(|seconds| Waited { seconds, limit, on }),
                 declared: false,
             }),
             Silence::Gone | Silence::Lively | Silence::Waiting(_) => None,
@@ -634,6 +652,7 @@ pub(crate) fn silenced(
     issue: u64,
     status: Status,
 ) -> Result<Option<Silenced>> {
+    let limit = fleet.config.gate_seconds();
     if status == Status::NoPr {
         let Some(Asked::Stopped(found)) = ask_after(fleet, me, issue, Look::Reporting)? else {
             return Ok(None);
@@ -642,8 +661,12 @@ pub(crate) fn silenced(
             return Ok(None);
         }
         return Ok(match found.route {
-            Route::Nudge(unnudged) => Silenced::of(Silence::Nudge(unnudged), "nudge"),
-            Route::Stalled(silent) => Silenced::of(Silence::Stalled(silent), "nudge"),
+            Route::Nudge(unnudged) => {
+                Silenced::of(Silence::Nudge(unnudged), "nudge", (limit, None))
+            }
+            Route::Stalled(silent) => {
+                Silenced::of(Silence::Stalled(silent), "nudge", (limit, None))
+            }
             Route::Blocked => {
                 let named = found.verdict.map(|verdict| verdict.blocked_by).unwrap_or_default();
                 let command = match routed(fleet, issue, &named)? {
@@ -663,7 +686,10 @@ pub(crate) fn silenced(
     let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? else {
         return Ok(None);
     };
-    if crate::turn_answer::waiting(&worktree) {
+    // Obeying its turn's wait needs no word from it; its own `land` still
+    // asking does, once unheard from past the gate limit.
+    let asking = crate::turn_answer::asking_since(&worktree)?;
+    if crate::turn_answer::waiting(&worktree) && !unheard_past(asking, limit, fleet.now) {
         return Ok(None);
     }
     let state = worktree.state(fleet.now)?;
@@ -671,7 +697,15 @@ pub(crate) fn silenced(
         return Ok(None);
     }
     let silence = silence_of(fleet, issue, &worktree, state, None, Look::Reporting)?;
-    Ok(Silenced::of(silence, "tick"))
+    let on = asking.map(|_| crate::turn_answer::ASKING_COMMAND);
+    Ok(Silenced::of(silence, "tick", (limit, on)))
+}
+
+/// Whether a turn still being asked for, last heard from at `asking`, has
+/// gone unheard from past `limit` at `now`: its worker is judged as any that
+/// waits on background work of its own (Silent worker).
+pub(crate) fn unheard_past(asking: Option<u64>, limit: u64, now: u64) -> bool {
+    asking.is_some_and(|since| now.saturating_sub(since) >= limit)
 }
 
 /// Whether worker health holds the worker in `worktree`, for a report that
@@ -768,6 +802,18 @@ pub(crate) fn own_background(
         }
         return Ok(None);
     }
+    let limit = fleet.config.gate_seconds();
+    // Its own `afkconvoy land`, still asking for its turn, is background work
+    // it waits on, heard from at each tick-log line it writes: past the gate
+    // limit since, it is a silence as any other is, a candidate on the chain
+    // or not. The turn bounds its own waits on the chain well inside that
+    // (Land turn); on 2026-11-17 two hung for 11 h unseen (sunfmin/control#1303).
+    if let Some(since) = crate::turn_answer::asking_since(worktree)? {
+        if look == Look::Acting {
+            worktree.background_since(false, None, fleet.now)?;
+        }
+        return Ok(Some(Background { since, limit }));
+    }
     let seen = read_own_background(worktree);
     // A command of its in the host's `exclusive` queue is work it waits on
     // too, since it asked to run: busy, not silent (docs/adr/0019).
@@ -776,7 +822,6 @@ pub(crate) fn own_background(
         Look::Acting => worktree.background_since(waiting, seen.queued, fleet.now)?,
         Look::Reporting => waiting.then(|| worktree.background_seen(seen.queued, fleet.now)),
     };
-    let limit = fleet.config.gate_seconds();
     // A land turn with a candidate on the chain waits on the chain, which
     // keeps its own time: past one gate's limit, as a round's members wait
     // for its slow gate, it is not silent. On 2026-10-29 a member restarted
