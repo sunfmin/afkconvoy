@@ -85,15 +85,15 @@ impl Readings {
         queue_drain: Option<u64>,
         own: Option<Own>,
     ) -> Readings {
-        let total_load = load().ok();
+        let total_load = afkconvoy_host_reading::load();
         let queue_load = total_load.and_then(estimate_queue);
         Readings {
-            cores: std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64),
+            cores: afkconvoy_host_reading::cores(),
             load: total_load.map(|load| load.saturating_sub(queue_load.unwrap_or(0))),
             total_load,
             queue_load,
             cpu_busy: crate::cpu::busy(),
-            memory_free: memory_free().ok(),
+            memory_free: afkconvoy_host_reading::memory_free(),
             memory: crate::hot::memory(),
             queue_drain,
             own,
@@ -636,42 +636,6 @@ fn hundredths(hundredths: u64) -> String {
     format!("{}.{:02}", hundredths / 100, hundredths % 100)
 }
 
-/// The 1-minute load average, in hundredths: what `sysctl vm.loadavg` says
-/// first, `{ 2.34 2.10 1.98 }`, or `/proc/loadavg` where there is one.
-pub(crate) fn load() -> Result<u64> {
-    let said = match std::fs::read_to_string("/proc/loadavg") {
-        Ok(said) => said,
-        Err(_) => output("sysctl", &["-n", "vm.loadavg"])?,
-    };
-    first_load(&said).with_context(|| format!("the load average was said as {said:?}"))
-}
-
-fn first_load(said: &str) -> Option<u64> {
-    let first = said.split_whitespace().find(|word| *word != "{")?;
-    let load: f64 = first.parse().ok()?;
-    (load >= 0.0).then(|| (load * 100.0).round() as u64)
-}
-
-/// The share of memory free, in percent: the kernel's own count of what is
-/// available — `sysctl kern.memorystatus_level`, or `MemAvailable` of
-/// `MemTotal` in `/proc/meminfo` where there is one.
-pub(crate) fn memory_free() -> Result<u64> {
-    if let Ok(said) = std::fs::read_to_string("/proc/meminfo") {
-        return meminfo(&said).context("/proc/meminfo says no MemAvailable and MemTotal");
-    }
-    let said = output("sysctl", &["-n", "kern.memorystatus_level"])?;
-    said.trim().parse().with_context(|| format!("`sysctl kern.memorystatus_level` said {said:?}"))
-}
-
-fn meminfo(said: &str) -> Option<u64> {
-    let field = |name: &str| -> Option<u64> {
-        let line = said.lines().find(|line| line.starts_with(name))?;
-        line.split_whitespace().nth(1)?.parse().ok()
-    };
-    let (available, total) = (field("MemAvailable:")?, field("MemTotal:")?);
-    (total > 0).then(|| available.saturating_mul(100) / total)
-}
-
 /// The disk of the volume `dir` is on, as `df -Pk` says it.
 pub(crate) fn disk(dir: &Path) -> Result<Disk> {
     let said = output("df", &["-Pk", &dir.display().to_string()])?;
@@ -691,14 +655,7 @@ mod tests {
     use crate::host_settings::To;
 
     #[test]
-    fn the_host_is_read_as_sysctl_proc_and_df_say_it() {
-        assert_eq!(first_load("{ 105.43 84.89 85.03 }\n"), Some(10543));
-        assert_eq!(first_load("0.52 0.58 0.59 1/467 12345\n"), Some(52));
-        assert_eq!(first_load("nothing"), None);
-        let meminfo_said =
-            "MemTotal:       16000000 kB\nMemFree: 1 kB\nMemAvailable:    4000000 kB\n";
-        assert_eq!(meminfo(meminfo_said), Some(25));
-        assert_eq!(meminfo("MemTotal: 0 kB\nMemAvailable: 0 kB\n"), None);
+    fn the_disk_is_read_as_df_says_it() {
         let df_said = "Filesystem   1024-blocks      Used Available Capacity  Mounted on\n\
                        /dev/disk3s5   971350180 894451764  45889612    96%    /System/Volumes/Data\n";
         assert_eq!(df(df_said), Some(Disk { free: 45_889_612 * 1024, size: 971_350_180 * 1024 }));

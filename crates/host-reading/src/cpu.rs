@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(minute.said(161), Some((30, 100)), "since the newest of a minute ago");
         assert_eq!(minute.said(200), Some((50, 130)), "only the last minute's");
         assert_eq!(Minute::default().said(5), None, "nothing read");
-        let read = Minute::default().read(crate::clock());
+        let read = Minute::default().read(crate::now());
         if std::env::var_os(FAKE).is_none() {
             assert!(read.is_none_or(|(busy, _)| busy <= 100), "{read:?}");
         }

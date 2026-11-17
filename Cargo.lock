@@ -10,6 +10,7 @@ dependencies = [
  "afkconvoy-daybook",
  "afkconvoy-gate",
  "afkconvoy-host-kit",
+ "afkconvoy-host-reading",
  "afkconvoy-landing",
  "afkconvoy-patience",
  "agent-help",
@@ -93,6 +94,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "afkconvoy-host-reading"
+version = "0.5.64"
+dependencies = [
+ "afkconvoy-gate",
+ "libc",
 ]
 
 [[package]]

@@ -1,0 +1,15 @@
+[package]
+name = "afkconvoy-host-reading"
+description = "How busy a host is, with no fleet concept in its API: the kernel's CPU ticks over the last minute, the load average over the cores where those cannot be read, and the memory free under a floor, as the exclusive queue's holder starts a command by them (docs/adr/0089)"
+version.workspace = true
+edition.workspace = true
+publish = false
+# Built again at every commit the gate names (sunfmin/control#1114).
+build = "../commit.rs"
+
+[dependencies]
+afkconvoy-gate = { path = "../gate" }
+
+[target.'cfg(unix)'.dependencies]
+# The kernel's CPU ticks on macOS (`host_statistics`).
+libc = "0.2"

@@ -1051,3 +1051,4 @@ afkconvoy::cli cutting::a_cut_need_installs_before_the_cut_is_claimed
 afkconvoy::cli cutting::an_end_of_a_cut_that_fails_after_it_said_the_cut_ended_still_says_so
 afkconvoy::cli gate::a_gate_runs_two_tests_to_each_core_it_is_given
 afkconvoy::cli joining::a_landing_stopped_at_a_fleet_lock_is_asked_again_by_the_tick_once_the_lock_closes
+afkconvoy::cli tick::doctor_names_an_open_issue_whose_carrier_landed
