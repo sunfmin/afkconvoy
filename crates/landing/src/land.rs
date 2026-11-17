@@ -2,8 +2,8 @@
 //! of its own: one process takes its changes into a round, pairs them and
 //! fast-gates each pair, its pairs' gates of one level at once, merges the
 //! round's root onto the target tip, gates it whole once and lands the round
-//! as one atomic fast-forward (docs/adr/0083), on the chain the remote
-//! records, through the round's rules (`pairing`), the turn's (`turn`) and
+//! as one atomic fast-forward (docs/adr/0083), on the chain its host keeps
+//! (docs/adr/0117), through the round's rules (`pairing`), the turn's (`turn`) and
 //! the gate crate's plain gate runner (`afkconvoy_gate::run`). It asks its
 //! program's forge what it must (`Forge`).
 //!
@@ -113,9 +113,17 @@ enum Published<E> {
 /// One program's landing on one remote, by plain git.
 pub struct Lander<'a, F: Forge> {
     /// A checkout of the repo: the candidates are made in its object store,
-    /// and its remote holds the target, the changes' sources, the chain and
-    /// the gate's records.
+    /// and its remote holds the target, the changes' sources and the gate's
+    /// records. Only a publication changes the target (docs/adr/0117).
     pub git: Git,
+    /// Where this host keeps the candidate chains of the repo: a bare repo
+    /// the lander makes there where there is none, one per repo, which every
+    /// process and checkout of the host landing on the repo names. Each
+    /// target's chain is a commit at `refs/convoy/held/<target>` there, and
+    /// at the same ref of the checkout, whose parents keep the candidates
+    /// reachable; it is written as a fast-forward of the commit it was read
+    /// at, so that git's ref update is the lock.
+    pub chains: PathBuf,
     pub forge: &'a F,
     /// The host name a gate run is recorded as having run on.
     pub host: String,
@@ -141,8 +149,8 @@ pub struct Lander<'a, F: Forge> {
     pub now: fn() -> u64,
 }
 
-/// The chain of one target as read: its record's commit, the target's tip,
-/// and the chain.
+/// The chain of one target as read: its record's commit on the host, the
+/// target's tip on the remote, and the chain.
 struct Read<N> {
     sha: Option<String>,
     base: String,
@@ -216,14 +224,32 @@ where
         &self.git.worktree
     }
 
-    fn record_ref(&self, target: &str) -> String {
-        turn::record_ref(self.git.layout, target)
+    /// The ref the chain of `target` is kept at, in the host's store of
+    /// chains and in the checkout.
+    fn held_ref(target: &str) -> String {
+        format!("refs/convoy/held/{target}")
+    }
+
+    /// The host's store of chains, made where there is none yet.
+    fn store(&self) -> Result<String, String> {
+        let store = self.chains.to_string_lossy().into_owned();
+        if !self.chains.join("HEAD").exists() {
+            std::fs::create_dir_all(&self.chains).map_err(|error| error.to_string())?;
+            git(&self.chains, &["init", "--quiet", "--bare"])?;
+        }
+        Ok(store)
     }
 
     /// The sha the remote has at `name`, fetched into the checkout; `None`
     /// where it has none.
     fn fetched(&self, name: &str) -> Result<Option<String>, String> {
-        let listed = git(self.dir(), &["ls-remote", &self.git.remote, name])?;
+        self.fetched_from(&self.git.remote, name)
+    }
+
+    /// The sha `from` has at `name`, fetched into the checkout; `None`
+    /// where it has none.
+    fn fetched_from(&self, from: &str, name: &str) -> Result<Option<String>, String> {
+        let listed = git(self.dir(), &["ls-remote", from, name])?;
         let Some(sha) = listed
             .lines()
             .find_map(|line| line.split_once('\t').filter(|(_, n)| *n == name))
@@ -232,7 +258,7 @@ where
             return Ok(None);
         };
         if git(self.dir(), &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_err() {
-            git(self.dir(), &["fetch", "--quiet", "--no-tags", &self.git.remote, name])?;
+            git(self.dir(), &["fetch", "--quiet", "--no-tags", from, name])?;
         }
         Ok(Some(sha))
     }
@@ -241,7 +267,7 @@ where
         let base = self
             .fetched(&format!("refs/heads/{target}"))?
             .ok_or_else(|| format!("the remote has no branch {target:?}"))?;
-        let sha = self.fetched(&self.record_ref(target))?;
+        let sha = self.fetched_from(&self.store()?, &Self::held_ref(target))?;
         let chain = match &sha {
             Some(sha) => {
                 let message = git(self.dir(), &["show", "-s", "--format=%B", sha])?;
@@ -288,8 +314,10 @@ where
         git_in(self.dir(), &args, Some(&text))
     }
 
-    /// Writes `chain` over the record `sha`, as a fast-forward of it alone
-    /// → whether it took: another writer's record is not one this extends.
+    /// Writes `chain` over the record `sha` in the host's store, as a
+    /// fast-forward of it alone → whether it took: another writer's record
+    /// is not one this extends. The checkout's own ref follows, keeping the
+    /// candidates reachable in its object store.
     fn write(
         &self,
         target: &str,
@@ -297,12 +325,20 @@ where
         chain: &Chain<F::Note>,
     ) -> Result<bool, String> {
         let next = self.commit(sha, chain)?;
-        let name = self.record_ref(target);
-        let pushed =
-            git(self.dir(), &["push", "--quiet", &self.git.remote, &format!("{next}:{name}")]);
+        let name = Self::held_ref(target);
+        let store = self.store()?;
+        let pushed = git(self.dir(), &["push", "--quiet", &store, &format!("{next}:{name}")]);
         match pushed {
-            Ok(_) => Ok(true),
-            Err(_) if self.fetched(&name)?.as_deref() != sha => Ok(false),
+            Ok(_) => {
+                // Moved only forward: a later record another writer of this
+                // checkout set is not taken back.
+                let local = git(self.dir(), &["rev-parse", "--verify", "--quiet", &name]).ok();
+                if local.is_none_or(|l| contains(self.dir(), &next, &l).unwrap_or(false)) {
+                    git(self.dir(), &["update-ref", &name, &next])?;
+                }
+                Ok(true)
+            }
+            Err(_) if self.fetched_from(&store, &name)?.as_deref() != sha => Ok(false),
             Err(said) => Err(said),
         }
     }
@@ -619,13 +655,8 @@ where
             return none();
         };
         let landed: Vec<Candidate<F::Note>> = members.iter().map(|c| (*c).clone()).collect();
-        let mut next = read.chain.clone();
-        next.land(id);
-        let state = self.commit(read.sha.as_deref(), &next)?;
-        let record = self.record_ref(target);
-        let old = read.sha.clone().unwrap_or_default();
         let mut refspecs = vec![];
-        for update in turn::updates(&members, (&record, &old, &state), target) {
+        for update in turn::publication(&members, target) {
             // A source kept at its head was read so just before; plain git
             // has no condition on a ref it does not change.
             if update.old != update.new {
@@ -637,6 +668,10 @@ where
         if let Err(said) = git(self.dir(), &args) {
             return Ok(Published::Refused(landed.iter().map(|c| c.change).collect(), said));
         }
+        // The push took: the chain says so. A run that ends before this
+        // leaves a candidate whose predecessor is not the target's tip, which
+        // the next look cancels; its change is then found on the target.
+        self.change(target, |chain| chain.land(id))?;
         let commit = last.commit.clone();
         let told = landed.iter().map(|c| (c.change, self.forge.landed(&asked(c), &commit)));
         Ok(Published::Landed(told.collect()))

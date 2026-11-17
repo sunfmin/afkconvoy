@@ -21,7 +21,7 @@ use afkconvoy_gate::run::{self, Git, Settled};
 use afkconvoy_landing::chain::{Candidate, Chain, Decision, Evidence, Phase, Plain, Process};
 use afkconvoy_landing::forge::{Change, Forge, SentBack};
 use afkconvoy_landing::land::{Lander, Outcome};
-use afkconvoy_landing::turn::{self, Declared};
+use afkconvoy_landing::turn::Declared;
 
 /// A forge that lets every change land and remembers what it was told.
 #[derive(Default)]
@@ -195,6 +195,7 @@ fn lander_as<'a>(
 ) -> Lander<'a, Fake> {
     Lander {
         git: Git { worktree: work.into(), remote: "origin".into(), layout: Layout::Hidden },
+        chains: chains(work),
         forge,
         host: "scratch-host".into(),
         machine: MACHINE.into(),
@@ -210,17 +211,25 @@ fn lander_as<'a>(
     }
 }
 
-/// The chain of `main` as the remote records it.
-fn recorded(work: &Path) -> Chain {
-    let name = turn::record_ref(Layout::Hidden, "main");
-    git(work, &["fetch", "--quiet", "origin", &format!("+{name}:{name}")]);
-    serde_json::from_str(&git(work, &["show", "-s", "--format=%B", &name])).unwrap()
+/// Where the scratch host keeps its chains of the repo: one store beside
+/// every checkout of it.
+fn chains(work: &Path) -> PathBuf {
+    work.parent().unwrap().join("chains")
 }
 
-/// Rewrites the chain of `main` on the remote by `edit`: as a run that
-/// ended mid-way left it.
+/// The ref the chain of `main` is kept at on the host.
+const HELD: &str = "refs/convoy/held/main";
+
+/// The chain of `main` as the host keeps it.
+fn recorded(work: &Path) -> Chain {
+    serde_json::from_str(&git(&chains(work), &["show", "-s", "--format=%B", HELD])).unwrap()
+}
+
+/// Rewrites the chain of `main` on the host by `edit`: as a run that ended
+/// mid-way left it.
 fn rewrite(work: &Path, edit: impl FnOnce(&mut Chain)) {
-    let name = turn::record_ref(Layout::Hidden, "main");
+    let name = HELD;
+    git(work, &["fetch", "--quiet", chains(work).to_str().unwrap(), &format!("+{name}:{name}")]);
     let mut chain = recorded(work);
     edit(&mut chain);
     let tree = git(work, &["hash-object", "-t", "tree", "/dev/null"]);
@@ -231,7 +240,7 @@ fn rewrite(work: &Path, edit: impl FnOnce(&mut Chain)) {
         args.extend(["-p", commit]);
     }
     let next = git(work, &args);
-    git(work, &["push", "--quiet", "origin", &format!("{next}:{name}")]);
+    git(work, &["push", "--quiet", chains(work).to_str().unwrap(), &format!("{next}:{name}")]);
 }
 
 /// The chain holds no two valid candidates of one change.
@@ -1068,11 +1077,9 @@ fn another_checkout(root: &Path, name: &str) -> PathBuf {
     work
 }
 
-/// The chain of `main` as the remote holds it, read on the remote itself.
-fn on_remote(root: &Path) -> Chain {
-    let name = turn::record_ref(Layout::Hidden, "main");
-    let text = git(&root.join("remote.git"), &["show", "-s", "--format=%B", &name]);
-    serde_json::from_str(&text).unwrap()
+/// The chain of `main` as the host keeps it, read in its store.
+fn on_host(root: &Path) -> Chain {
+    recorded(&root.join("work"))
 }
 
 /// Waits until `done`.
@@ -1111,9 +1118,9 @@ fn stacked_on(root: &Path, work: &Path, (first, second): (Change, Change)) -> St
             let outcomes = lander(&other, &worktrees, &forge).land(&[second]).unwrap();
             (outcomes, forge.sent_back.take())
         });
-        wait_for("the stacked merge's fast gate", || stacked_merge(&on_remote(root)).is_some());
-        let merge = stacked_merge(&on_remote(root)).unwrap();
-        let chain = on_remote(root);
+        wait_for("the stacked merge's fast gate", || stacked_merge(&on_host(root)).is_some());
+        let merge = stacked_merge(&on_host(root)).unwrap();
+        let chain = on_host(root);
         assert!(chain.whole_running().is_some(), "the round's whole gate still runs: {chain:?}");
         std::fs::write(root.join("release"), "").unwrap();
         let first = running.join().unwrap();
