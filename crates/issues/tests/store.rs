@@ -6,7 +6,71 @@ use std::process::{Command, Stdio};
 use std::sync::Barrier;
 use std::thread;
 
-use afkconvoy_issues::{Blocker, Error, Filter, State, Store, Which};
+use afkconvoy_issues::{Blocker, Error, Filter, Import, State, Store, Which};
+
+/// An issue as `acme/tracker#<n>` held it: opened at 100, edited at 150, two
+/// comments, blocked by `blockers`.
+fn moved<'a>(source: &'a str, blockers: &'a [u64]) -> Import<'a> {
+    Import {
+        source,
+        repo: REPO,
+        title: "Moved",
+        body: "as it was",
+        labels: &["ready-for-agent", "bug"],
+        created: 100,
+        body_edited: Some(150),
+        comments: &[("<!--convoy:claim-->\nfirst", 110), ("second", 120)],
+        blockers,
+    }
+}
+
+#[test]
+fn an_imported_issue_keeps_the_times_and_comments_its_other_tracker_gave_it() {
+    let (mut store, _) = store("import");
+    let blocker = store.create(REPO, "Here first", "", &[], 50).unwrap();
+    let number = store.import(&moved("acme/tracker#7", &[blocker]), 1000).unwrap();
+    let view = store.view(number).unwrap();
+    let issue = &view.issue;
+    assert_eq!((issue.title.as_str(), issue.body.as_str()), ("Moved", "as it was"));
+    assert_eq!(issue.labels, ["bug", "ready-for-agent"]);
+    assert_eq!(
+        (issue.created, issue.updated, issue.body_edited, issue.closed),
+        (100, 1000, Some(150), None),
+        "opened when the other tracker says; changed by the move"
+    );
+    let comments: Vec<(&str, u64)> =
+        view.comments.iter().map(|c| (c.body.as_str(), c.created)).collect();
+    assert_eq!(comments, [("<!--convoy:claim-->\nfirst", 110), ("second", 120)]);
+    assert_eq!(view.blockers.iter().map(|b| b.number).collect::<Vec<_>>(), [blocker]);
+    let added = store.labels_added(number).unwrap();
+    assert_eq!(added, [("bug".to_string(), Some(1000)), ("ready-for-agent".into(), Some(1000))]);
+    assert_eq!(store.imported("acme/tracker#7").unwrap(), Some(number));
+    assert_eq!(store.imported("acme/tracker#8").unwrap(), None);
+}
+
+#[test]
+fn an_import_run_again_keeps_no_second_copy_and_changes_nothing() {
+    let (mut store, _) = store("import-again");
+    let number = store.import(&moved("acme/tracker#7", &[]), 1000).unwrap();
+    store.comment(number, "worked here since", 1100).unwrap();
+    let before = store.view(number).unwrap();
+    assert_eq!(store.import(&moved("acme/tracker#7", &[]), 2000).unwrap(), number);
+    assert_eq!(store.view(number).unwrap(), before);
+    let all = store.list(&Filter { state: Which::All, ..Filter::default() }).unwrap();
+    assert_eq!(all.len(), 1);
+}
+
+#[test]
+fn an_import_blocked_by_no_issue_here_keeps_nothing() {
+    let (mut store, _) = store("import-whole");
+    let refused = store.import(&moved("acme/tracker#7", &[9]), 1000).unwrap_err();
+    assert!(matches!(refused, Error::NoSuchIssue(9)), "{refused}");
+    assert_eq!(store.imported("acme/tracker#7").unwrap(), None);
+    let all = store.list(&Filter { state: Which::All, ..Filter::default() }).unwrap();
+    assert!(all.is_empty(), "{all:?}");
+    let bad = Import { repo: "widgets", ..moved("acme/tracker#7", &[]) };
+    assert!(matches!(store.import(&bad, 1000), Err(Error::BadRepo(_))));
+}
 
 /// A directory no other test writes in, empty.
 fn dir(name: &str) -> PathBuf {

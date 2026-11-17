@@ -47,6 +47,10 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // When each label an issue carries was put on it: none of one put on
     // before this was kept.
     "ALTER TABLE labels ADD COLUMN added INTEGER;",
+    // Where an issue was moved from, of one another tracker held first
+    // (`Store::import`): this database holds one issue of each, at most.
+    "ALTER TABLE issues ADD COLUMN source TEXT;
+    CREATE UNIQUE INDEX issues_by_source ON issues (source) WHERE source IS NOT NULL;",
 ];
 
 /// The schema version of `db`.
