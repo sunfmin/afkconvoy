@@ -2,7 +2,8 @@
 //! finds refusing every prompt (`harness_down`) is left out of the host kit,
 //! and so of every range, until a probe finds it working. Every hour each one
 //! is probed; one that answers is back. This is the host's running state, in
-//! its cache, shared by every fleet on it: the host kit's file is not changed.
+//! its database (`host_db`), shared by every fleet on it: the host kit's file
+//! is not changed.
 
 use std::path::PathBuf;
 
@@ -10,6 +11,7 @@ use afkconvoy_core::casting::Paused;
 use afkconvoy_core::harness::Harness;
 use anyhow::Result;
 
+use crate::host_db::{Host, Layout, Old, Store};
 use crate::launch::Answer;
 
 /// Why a worker is not started: the harness it would run is paused, or every
@@ -49,39 +51,35 @@ pub fn said(pause: &Paused, now: u64) -> String {
     )
 }
 
-/// Where this host keeps its pauses: in its cache, outside every checkout.
+/// The harnesses paused on this host, in the host's database: a row each of
+/// `paused`, by its harness, in the order they were paused. It was
+/// `paused.json` in the cache directory.
+pub(crate) static STORE: Store = Store {
+    file: "paused.json",
+    old: Old::Json,
+    layout: Layout::Rows("paused", |pause| pause["harness"].as_str().unwrap_or("").into()),
+};
+
+/// Where this host keeps its pauses: in its database, outside every checkout.
 #[derive(Debug, Clone)]
 pub struct Pauses {
-    file: PathBuf,
+    host: Host,
 }
 
 impl Pauses {
     /// This host's, whichever repo a command is about.
     pub fn of_host() -> Result<Pauses> {
-        Ok(Pauses { file: crate::copies::cache()?.join("paused.json") })
+        Ok(Pauses { host: Host::of_host()? })
     }
 
-    /// Kept in `file`.
+    /// Kept in the host database `file`.
     pub fn at(file: PathBuf) -> Pauses {
-        Pauses { file }
+        Pauses { host: Host::at(file) }
     }
 
     /// The harnesses paused, in the order they were paused.
     pub fn read(&self) -> Result<Vec<Paused>> {
-        match std::fs::read(&self.file) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn write(&self, paused: &[Paused]) -> Result<()> {
-        if let Some(parent) = self.file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let temporary = self.file.with_extension(format!("{}.tmp", crate::unique()));
-        std::fs::write(&temporary, serde_json::to_vec_pretty(paused)?)?;
-        Ok(std::fs::rename(temporary, &self.file)?)
+        self.host.read(&STORE)
     }
 
     /// The pause of `harness`, where it is paused.
@@ -92,25 +90,22 @@ impl Pauses {
     /// Pauses `harness` `now`, for `why` → whether it was not paused
     /// already: one already paused keeps its time and its reason.
     pub fn pause(&self, harness: Harness, now: u64, why: &str) -> Result<bool> {
-        let mut paused = self.read()?;
-        if paused.iter().any(|pause| pause.harness == harness) {
-            return Ok(false);
-        }
-        paused.push(Paused { harness, since: now, why: why.to_string(), probed: None });
-        self.write(&paused)?;
-        Ok(true)
+        self.host.change(&STORE, |paused: &mut Vec<Paused>| {
+            if paused.iter().any(|pause| pause.harness == harness) {
+                return false;
+            }
+            paused.push(Paused { harness, since: now, why: why.to_string(), probed: None });
+            true
+        })
     }
 
     /// Puts `harness` back in the host kit → whether it was paused.
     pub fn resume(&self, harness: Harness) -> Result<bool> {
-        let mut paused = self.read()?;
-        let before = paused.len();
-        paused.retain(|pause| pause.harness != harness);
-        if paused.len() == before {
-            return Ok(false);
-        }
-        self.write(&paused)?;
-        Ok(true)
+        self.host.change(&STORE, |paused: &mut Vec<Paused>| {
+            let before = paused.len();
+            paused.retain(|pause| pause.harness != harness);
+            paused.len() != before
+        })
     }
 
     /// Probes each harness paused that is due `now` (`Paused::due`), with
@@ -142,11 +137,11 @@ impl Pauses {
             if resumed {
                 self.resume(pause.harness)?;
             } else {
-                let mut paused = self.read()?;
-                for kept in paused.iter_mut().filter(|kept| kept.harness == pause.harness) {
-                    kept.probed = Some(now);
-                }
-                self.write(&paused)?;
+                self.host.change(&STORE, |paused: &mut Vec<Paused>| {
+                    for kept in paused.iter_mut().filter(|kept| kept.harness == pause.harness) {
+                        kept.probed = Some(now);
+                    }
+                })?;
             }
             probed.push(Probed { harness: pause.harness, resumed, unasked });
         }
@@ -230,7 +225,7 @@ mod tests {
     #[test]
     fn a_pause_keeps_its_first_reason_and_a_due_probe_that_answers_ends_it() {
         let dir = tempfile::tempdir().unwrap();
-        let pauses = Pauses::at(dir.path().join("cache/paused.json"));
+        let pauses = Pauses::at(dir.path().join(crate::host_db::FILE));
         let kit: crate::kit::Kit = serde_json::from_str(
             r#"{"harnesses":[{"harness":"pi","command":"pi","models":[{"model":"a/b"}]},
                 {"harness":"codex","command":"codex"}]}"#,

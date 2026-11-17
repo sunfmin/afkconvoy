@@ -82,7 +82,7 @@ fn hand_on(fleet: &mut Fleet, claim: &Claim, waits_at: Option<&str>, end: End) -
 
 /// Hands `claim` on for `failure`, said as `why`: to its stage's consult,
 /// where the stage names one that has not ruled on that kind of failure
-/// since a human last put the issue at a stage (docs/adr/0018) — the fleet
+/// since a human last put the issue at a stage (docs/adr/0005) — the fleet
 /// leaves the record of the failure, with what a human handed it would be
 /// told, and ends the claim, the worktree kept for the consult — and else to
 /// a human, as ever.
@@ -102,7 +102,7 @@ fn hand_off(
     };
     let record = StageRecord::failed(&stage, failure, &why.reason);
     if !flows.ends_with(issue, &record) {
-        fleet.gh.comment(issue, &record.comment())?;
+        fleet.issues.comment(issue, &record.comment())?;
     }
     hand_on(fleet, claim, None, End::HandedOn)?;
     // The consult is the next tick's to start.
@@ -122,7 +122,7 @@ fn leave_lock_closed(
 ) -> Result<()> {
     let record = StageRecord::lock_closed(stage, lock);
     if !flows.ends_with(issue, &record) {
-        fleet.gh.comment(issue, &record.comment())?;
+        fleet.issues.comment(issue, &record.comment())?;
     }
     Ok(())
 }
@@ -217,7 +217,7 @@ fn ask_after(
                 // the consult again.
                 let record = StageRecord::failed(stage, Failure::Silent, &reason.reason);
                 if !flows.ends_with(issue, &record) {
-                    fleet.gh.comment(issue, &record.comment())?;
+                    fleet.issues.comment(issue, &record.comment())?;
                 }
                 escalate_claim(
                     fleet,
@@ -313,7 +313,7 @@ pub fn advance(
             return Ok(Outcome::Done);
         }
         Advance::ConsultClose => {
-            fleet.gh.close_issue(issue)?;
+            fleet.issues.close_issue(issue)?;
             hand_on(fleet, &claim, None, End::Closed)?;
             return Ok(Outcome::Done);
         }

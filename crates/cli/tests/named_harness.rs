@@ -17,15 +17,13 @@ const KIMI_SCREEN: &str = include_str!("screens/kimi-5-hour-usage-limit-control-
 const CODEX_REFUSAL: &str = include_str!("screens/codex-task-refusal-control-98.txt");
 
 fn name(world: &World, checkout: &Path, harness: &str) {
-    let file = world.cache().join("afkconvoy/checkouts.json");
     let mut list = world.checkout_list();
     let entries = list["checkouts"].as_array_mut().unwrap();
     match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
         Some(entry) => entry["harness"] = json!(harness),
         None => entries.push(json!({"checkout": checkout, "harness": harness})),
     }
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(file, list.to_string()).unwrap();
+    world.write_checkout_list(&list);
 }
 
 fn harness_of(world: &World, checkout: &Path) -> Value {
@@ -481,9 +479,7 @@ fn the_host_watch_starts_from_the_last_brief_and_not_a_checkouts_named_harness()
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
     world.pause("pi", now.as_secs(), "it refused every prompt");
     name(&world, &world.clone, "grok");
-    let delivered = world.cache().join("afkconvoy/watch/delivered.json");
-    std::fs::create_dir_all(delivered.parent().unwrap()).unwrap();
-    std::fs::write(&delivered, r#"["codex"]"#).unwrap();
+    world.keep("watch/delivered.json", &json!(["codex"]));
 
     let watch_dir = dir.to_str().unwrap();
     world
@@ -501,9 +497,7 @@ fn the_host_watch_starts_from_the_last_brief_and_not_a_checkouts_named_harness()
         .ok();
     let until = afkconvoy_patience::deadline();
     let running = loop {
-        let file = world.cache().join("afkconvoy/watch/state.json");
-        let state: Value =
-            std::fs::read(&file).map_or(json!({}), |bytes| serde_json::from_slice(&bytes).unwrap());
+        let state = world.kept_object("watch/state.json");
         if !state["running"].is_null() {
             break state["running"].clone();
         }
@@ -528,20 +522,11 @@ fn the_glossary_and_adr_0020_say_a_checkout_can_name_its_harness() {
     );
     assert!(glossary.contains("no other harness is started in its place"), "{glossary}");
     assert!(!glossary.contains("docs/adr/"), "{glossary}");
-    let yielded = std::fs::read_to_string(
-        root.join("docs/adr/0020-an-issue-is-cast-within-its-role-s-range-on-the-host.md"),
-    )
-    .unwrap();
-    assert!(
-        yielded.contains("yielded for a checkout that names a harness by ADR-0045"),
-        "{yielded}"
-    );
-    assert!(yielded.contains("never starts by a checkout's named harness"), "{yielded}");
     let recorded = std::fs::read_to_string(
-        root.join("docs/adr/0045-a-checkout-can-name-the-harness-its-workers-start-on.md"),
+        root.join("docs/adr/0020-an-issue-s-worker-runs-within-its-role-s-range-on-the-host.md"),
     )
     .unwrap();
-    assert!(recorded.contains("ADR-0020"), "{recorded}");
     assert!(recorded.contains("checkout list"), "{recorded}");
     assert!(recorded.contains("--harness default"), "{recorded}");
+    assert!(recorded.contains("on that harness or not at all"), "{recorded}");
 }

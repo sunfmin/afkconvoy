@@ -13,6 +13,8 @@ afkconvoy-daybook = { path = "../daybook" }
 afkconvoy-gate = { path = "../gate" }
 afkconvoy-host-kit = { path = "../host-kit" }
 afkconvoy-host-reading = { path = "../host-reading" }
+# The host's local tracker (`issues::local`, docs/adr/0091).
+afkconvoy-issues = { path = "../issues" }
 afkconvoy-landing = { path = "../landing" }
 agent-help = { git = "https://github.com/sunfmin/agent-cli" }
 anyhow = "1"
@@ -28,6 +30,9 @@ signal-hook = "0.3"
 # A rebuild's read keeps each issue's stage history beside the team whose
 # workflow it borrows (`stage::Flows`).
 self_cell = "1"
+# The host's one database (`host_db`): its candidate chains first, the rest of
+# its local state after them. Bundled, so no system library is assumed.
+rusqlite = { version = "=0.32.1", features = ["bundled", "backup"] }
 
 [target.'cfg(unix)'.dependencies]
 # What a process wrote to disk and where it works, as the kernel says them

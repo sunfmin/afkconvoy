@@ -188,7 +188,7 @@ fn added_settings(command: &str) -> String {
 /// said on stderr.
 fn guarded(world: &World, command: &str, line: &str) -> (i32, String) {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let mut steps = command.split(" && ");
     let (enter, facts, start) = (steps.next().unwrap(), steps.next().unwrap(), steps.next());
     let settings = start.unwrap().rsplit(" --settings '").next().unwrap();
@@ -197,11 +197,12 @@ fn guarded(world: &World, command: &str, line: &str) -> (i32, String) {
     assert_eq!(hooks.len(), 1, "{settings}");
     assert!(hooks[0]["matcher"].is_null(), "it is run before every tool: {settings}");
     let hook = hooks[0]["hooks"][0]["command"].as_str().unwrap();
-    let mut child = Command::new("/bin/sh")
+    let mut child = afkconvoy::census::command("/bin/sh")
         .args(["-c", &format!("{enter} && {facts} && {hook}")])
         .env_clear()
         .envs(world.login_env())
         .env("XDG_CACHE_HOME", world.cache())
+        .env("XDG_DATA_HOME", world.data())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -669,7 +670,7 @@ fn a_worker_that_is_gone_is_started_again_in_its_role() {
 fn the_worker_launch_topic_names_what_a_bound_repo_requires_of_each_launch_command() {
     use afkconvoy_core::harness::Harness;
     use afkconvoy_core::role::{Facts, On};
-    let mut topic = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
+    let mut topic = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"));
     let output = topic.args(["help", "worker-launch"]).output().unwrap();
     let help = String::from_utf8(output.stdout).unwrap();
     for harness in Harness::ALL {
@@ -703,7 +704,7 @@ fn the_worker_launch_topic_names_what_a_bound_repo_requires_of_each_launch_comma
         assert!(help.contains(name), "the topic does not name {name}");
     }
     // `run --help` names the topic, and holds no harness's launch line.
-    let mut run = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
+    let mut run = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"));
     let run = String::from_utf8(run.args(["run", "--help"]).output().unwrap().stdout).unwrap();
     assert!(run.contains("`afkconvoy help worker-launch`"), "{run}");
     let lines = ["cd <the role's copy> && export", "PI_CODING_AGENT_DIR", "CODEX_HOME", "DSH_HOME"];
@@ -844,7 +845,7 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     let settings: Value = serde_json::from_str(&settings).unwrap();
     let hook = settings["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
     let enter = command.split(" && ").next().unwrap();
-    let ran = std::process::Command::new("/bin/sh")
+    let ran = afkconvoy::census::command("/bin/sh")
         .args(["-c", &format!("{enter} && CLAUDE_PROJECT_DIR=\"$PWD\" && {hook}")])
         .env_clear()
         .env("PATH", "/usr/bin:/bin")

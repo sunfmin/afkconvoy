@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use afkconvoy_core::layout::{Layout, Note};
@@ -459,7 +458,7 @@ impl Repo {
     pub fn git_raw(&self, args: &[&str]) -> Result<String> {
         local(args)?;
         let out = crate::process::output(
-            Command::new("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
+            crate::census::command("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
         )
         .with_context(|| could_not_run(args, &self.dir))?;
         if !out.status.success() {
@@ -473,7 +472,7 @@ impl Repo {
     pub fn git_with_input(&self, args: &[&str], input: &str) -> Result<String> {
         local(args)?;
         let out = crate::process::output_with_input(
-            Command::new("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
+            crate::census::command("git").current_dir(&self.dir).args(args).env("LC_ALL", "C"),
             input.as_bytes(),
         )
         .with_context(|| could_not_run(args, &self.dir))?;
@@ -669,7 +668,7 @@ fn could_not_run(args: &[&str], dir: &Path) -> String {
 /// down — so they are asked for in one language whatever the machine's locale.
 pub(crate) fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
     let out = crate::process::output(
-        Command::new("git")
+        crate::census::command("git")
             .current_dir(dir)
             .args(args)
             .env("LC_ALL", "C")
@@ -694,7 +693,7 @@ fn commit_tree(
     }
     args.extend(["-F", "-"]);
     let out = crate::process::output_with_input(
-        Command::new("git")
+        crate::census::command("git")
             .current_dir(dir)
             .args(&args)
             .env("LC_ALL", "C")
@@ -715,7 +714,7 @@ pub(crate) fn run_within(
     limit: std::time::Duration,
 ) -> Result<Ran> {
     let (out, timed_out) = crate::process::output_within_with_timeout(
-        Command::new("git")
+        crate::census::command("git")
             .current_dir(dir)
             .args(args)
             .env("LC_ALL", "C")
@@ -751,7 +750,7 @@ mod tests {
     use super::*;
 
     fn git(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+        let out = crate::census::command("git").current_dir(dir).args(args).output().unwrap();
         assert!(
             out.status.success(),
             "git {}: {}",
@@ -872,7 +871,7 @@ mod tests {
         let commit = ["-c", "user.name=a", "-c", "user.email=a@b", "commit", "-q"];
         git(&origin, &[&commit[..], &["--allow-empty", "-m", "chain"]].concat());
         git(&origin, &["update-ref", "refs/convoy/candidates/main", "HEAD"]);
-        let sha = std::process::Command::new("git")
+        let sha = crate::census::command("git")
             .current_dir(&origin)
             .args(["rev-parse", "HEAD"])
             .output()

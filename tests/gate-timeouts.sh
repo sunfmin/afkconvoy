@@ -8,7 +8,11 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/home/.cargo/bin" "$tmp/repo/.config"
 cp "$root/gate.sh" "$tmp/repo/gate.sh"
 cp "$root/.config/nextest.toml" "$tmp/repo/.config/nextest.toml"
+cp "$root/.config/process-bound" "$tmp/repo/.config/process-bound"
 : > "$tmp/repo/.config/slow-tests"
+# The mock repo is a repository of its own, or git would find this checkout's.
+# With no base branch the change cannot be read, and every test is touched.
+git init -q -b main "$tmp/repo"
 cat > "$tmp/repo/verify.sh" <<'MOCK'
 #!/bin/sh
 echo 'summary. 0 errors; 0 trusted; 0 ignored.'
@@ -109,3 +113,48 @@ done
 rm -f "$tmp/home/ran"
 HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 && exit 1
 absent 'run again under the limit'
+# A test past the 2s line that the change under test did not touch warns and
+# is named in one open issue; a touched one fails the gate (sunfmin/control#1307).
+cat > "$tmp/home/.cargo/bin/afkconvoy" <<'MOCK'
+#!/bin/sh
+echo "$*" >> "$HOME/afkconvoy-ran"
+case "$*" in
+'issue list'*) if [ -f "$HOME/open-issue" ]; then echo '{"issues":[{"number":7}]}'; else echo '{"issues":[]}'; fi ;;
+'issue create'*) : > "$HOME/open-issue"; echo '{"action":"created","number":7}' ;;
+'issue view'*) printf '{"body":"%s","comments":[]}\n' "$(cat "$HOME/open-issue")" ;;
+'issue comment'*) echo '{"action":"commented","number":7}' ;;
+esac
+exit 0
+MOCK
+chmod +x "$tmp/home/.cargo/bin/afkconvoy"
+cd "$tmp/repo"
+git config user.email gate@example.invalid
+git config user.name gate
+mkdir -p src
+printf 'fn example() {}\nfn other() {\n    0;\n}\nfn third() {}\n' > src/lib.rs
+git add -A src && git commit -q -m base
+git checkout -q -b change
+printf 'fn example() {}\nfn other() {\n    0;\n}\nfn third() { 1; }\n' > src/lib.rs
+git commit -q -am 'touch another test'
+cd "$root"
+HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 || {
+    cat "$tmp/out" >&2
+    exit 1
+}
+grep -q 'afkconvoy::cli tick::example is past the 2s line and was not touched by this change' "$tmp/out"
+absent 'Name it in .config/slow-tests'
+grep -q '^issue create' "$tmp/home/afkconvoy-ran"
+grep -q -- '--label ready-for-agent' "$tmp/home/afkconvoy-ran"
+# A second sighting adds to the open issue, never a second one.
+rm -f "$tmp/home/afkconvoy-ran"
+HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 || exit 1
+if grep -q '^issue create' "$tmp/home/afkconvoy-ran"; then exit 1; fi
+rm -f "$tmp/home/afkconvoy-ran"
+# A test the change modifies, by its body, still fails the gate.
+cd "$tmp/repo"
+printf 'fn example() {\n    2;\n}\nfn other() {\n    0;\n}\nfn third() { 1; }\n' > src/lib.rs
+git commit -q -am 'touch the slow test'
+cd "$root"
+HOME="$tmp/home" FAKE_LOAD=1.00 CASE=slow sh "$tmp/repo/gate.sh" fast >"$tmp/out" 2>&1 && exit 1
+grep -q 'Name it in .config/slow-tests' "$tmp/out"
+absent 'was not touched by this change'

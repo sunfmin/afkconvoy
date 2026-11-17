@@ -5,7 +5,7 @@
 //! ending calls for one.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use afkconvoy_core::candidate::Process;
 use afkconvoy_core::ending::Ending;
@@ -15,8 +15,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::gh::BlockedBy;
 use crate::git::Repo;
+use crate::issues::BlockedBy;
 use crate::orca::{TURN_FILE, TURN_LOG_FILE, Worktree};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -170,7 +170,8 @@ pub fn noted(
         };
         let dependencies = issue.filter(|_| outcome == Ending::Blocked.word()).and_then(|issue| {
             let gh = crate::gh::GitHub::of(repo).ok()?;
-            let edges = gh.blocked_by(issue).ok()?;
+            let issues = crate::issues::of(&gh);
+            let edges = issues.blocked_by(issue).ok()?;
             Some(dependency_list(&edges))
         });
         let _ = write(
@@ -390,7 +391,7 @@ pub fn ask_again(worktree: &Worktree, issue: u64) -> Result<()> {
         .with_context(|| format!("cannot open {}", log.display()))?;
     let program = std::env::current_exe().context("cannot find this afkconvoy")?;
     let mut child = crate::process::spawn(
-        Command::new(program)
+        crate::census::command(program)
             .args(["land", "--issue", &issue.to_string()])
             .env(HANDOFF, uuid::Uuid::new_v4().to_string())
             .current_dir(&worktree.path)

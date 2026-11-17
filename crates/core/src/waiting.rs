@@ -22,17 +22,17 @@ use crate::tracker::Tracker;
 const ANSWERING: [&str; 7] = [
     "afkconvoy rule --issue <n> --text-file <file>",
     "afkconvoy send --issue <n> --stage <stage> --text-file <file>",
-    "gh issue close <n><tracker> --comment <why>",
-    "gh issue create<tracker> --title <title> --body-file <file> --label <ready label><labelled>",
-    "gh issue edit <n><tracker> --body-file <file>",
-    "gh api repos/<issues>/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
-    "gh api -X DELETE repos/<issues>/issues/<n>/dependencies/blocked_by/<id>",
+    "<gh_issue> close <n><tracker> --comment <why>",
+    "<gh_issue> create<tracker> --title <title> --body-file <file> --label <ready label><labelled>",
+    "<gh_issue> edit <n><tracker> --body-file <file>",
+    "<block>",
+    "<unblock>",
 ];
 
 /// Every command a human runs to answer an escalated issue of `tracker`, as
 /// the `humans` help names them of the checkout's own repo, `<n>` standing
 /// for the issue's number: a watch, or a named consult standing where that human stands
-/// (docs/adr/0018), is given the same list, each issue command naming the
+/// (docs/adr/0005), is given the same list, each issue command naming the
 /// tracker. A command added here is given to all three.
 pub fn answering(tracker: &Tracker) -> Vec<String> {
     ANSWERING.iter().map(|line| in_tracker(line, tracker)).collect()
@@ -76,7 +76,7 @@ pub enum Waits {
     /// it is open.
     PatrolFailed { patrol: String },
     /// It says a cut failed, and a watch handed it to a human (docs/adr/0028).
-    /// It holds no cut back (docs/adr/0072).
+    /// It holds no cut back (docs/adr/0028).
     CutFailed,
 }
 

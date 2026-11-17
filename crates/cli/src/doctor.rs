@@ -177,6 +177,7 @@ kinds! {
     StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    HostDatabase: Warning, "the host database";
     HotWorker: Warning, "hot worker is past its limits";
     AdmissionHeld: Warning, "admission has held back new workers";
     MemoryPressure: Warning, "the host has been under memory pressure";
@@ -187,7 +188,6 @@ kinds! {
     WatchUnavailable: Critical, "no harness can start this host's watch";
     WatchBusy: Critical, "the resident watch is busy; its round remains undelivered";
     NotifyFailed: Warning, "human decision sending has failed repeatedly";
-    DaybookUnwritten: Warning, "a watch round's daybook entry is not written";
     NotMoved: Warning, "the host runner did not move onto";
     NotUpgraded: Warning, "is published, newer than the host runner's";
     RunnerBusy: Warning, "the host runner's own process uses";
@@ -226,6 +226,7 @@ kinds! {
     WaitTaken: Info, "human wait is taken by";
     NotOurs: Warning, "is held off by a PR not the fleet's";
     CarriedLanded: Warning, "is open though the PR that carried it landed";
+    LegacyTargets: Info, "separate target records an earlier release left";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
@@ -258,6 +259,7 @@ impl Kind {
                 | Kind::NoProvider
                 | Kind::OrcaNotRunning
                 | Kind::HarnessPaused
+                | Kind::HostDatabase
                 | Kind::HotWorker
                 | Kind::AdmissionHeld
                 | Kind::MemoryPressure
@@ -268,7 +270,6 @@ impl Kind {
                 | Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotifyFailed
-                | Kind::DaybookUnwritten
                 | Kind::NotMoved
                 | Kind::NotUpgraded
                 | Kind::RunnerBusy
@@ -298,7 +299,6 @@ impl Kind {
             Kind::WatchUnavailable
                 | Kind::WatchBusy
                 | Kind::NotifyFailed
-                | Kind::DaybookUnwritten
                 | Kind::PathStale
                 | Kind::OrcaDisagrees
                 | Kind::NotUpgraded
@@ -609,11 +609,18 @@ pub struct State {
     /// The open issues whose PR a PR carried that has landed
     /// (sunfmin/control#1248).
     pub carried_landed: Vec<CarriedLanded>,
+    /// The separate `target/<n>` records an earlier release left, which the
+    /// acting tick carries and removes (`target::carry_legacy`).
+    pub legacy_targets: Vec<String>,
     /// Candidate state from the same remote listing as the working set.
     pub candidates: Value,
     /// The pending places live lands of this host hold on its chains, from
     /// the same listing.
     pub(crate) pending: Vec<crate::candidates::PendingLand>,
+    /// The remote candidate chain records an afkconvoy before
+    /// docs/adr/0117 left: ignored, and removed by the tick once no turn of
+    /// this host holds a place on one.
+    pub(crate) legacy_chains: Vec<(String, bool)>,
     /// When the base branch's tip on the remote was committed, in epoch
     /// seconds: the repo's last landing, this host's or a peer's.
     pub base_moved: Option<u64>,
@@ -1372,7 +1379,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
     {
         // What its issue says, and how the cut starts again: by itself, at
         // the next due cut, or once more lands where the same failure
-        // repeated (docs/adr/0072). The watch looks for its cause
+        // repeated (docs/adr/0028). The watch looks for its cause
         // (sunfmin/control#801).
         let held = match cut.standing == cut::Standing::Failed {
             true => "the fleet cuts no version until more lands: ",
@@ -1527,6 +1534,19 @@ fn carried_landed_finding(tracker: &Tracker, carried: &CarriedLanded) -> Finding
     )
 }
 
+/// The separate target records still left: the acting tick carries each and
+/// removes it, so this says only that one has not run since, or failed.
+fn legacy_targets_finding(left: &[String]) -> Option<Finding> {
+    let first = left.first()?;
+    Some(finding(
+        Kind::LegacyTargets,
+        json!(["legacy-targets"]),
+        format!("{} separate target records an earlier release left are on the remote", left.len()),
+        format!("the remote holds {first} and {} more", left.len() - 1),
+        "afkconvoy run".into(),
+    ))
+}
+
 /// A claim on an issue that is gone: the line that deletes it, for a holder
 /// whose ticks do not.
 fn on_gone_finding(on: &OnGone) -> Finding {
@@ -1671,7 +1691,7 @@ fn install_findings(checkout: &Path, config: &Config) -> Vec<Finding> {
         .collect()
 }
 
-/// A concurrency still named, which nothing reads any more (docs/adr/0072):
+/// A concurrency still named, which nothing reads any more (docs/adr/0107):
 /// no number bounds a fleet's workers, and admission alone decides each
 /// start. Nothing is held up. One the checkout keeps on this host's
 /// checkout list, as a `run --concurrency` said it, is dropped by
@@ -1790,6 +1810,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(
                 state.carried_landed.iter().map(|c| carried_landed_finding(&state.tracker, c)),
             );
+            found.extend(legacy_targets_finding(&state.legacy_targets));
             found.extend(pending_finding(&state.pending));
         }
         Err(why) => found.push(finding(
@@ -2049,7 +2070,7 @@ fn finish_state(
     now: u64,
     run: &mut Run,
     trust: bool,
-    opened: (Fleet, crate::gh::Open),
+    opened: (Fleet, crate::issues::Open),
     readings: &Readings,
 ) -> Result<(State, FleetReport)> {
     let (mut fleet, open) = opened;
@@ -2106,11 +2127,12 @@ fn finish_state(
         })
         .collect();
     let carried_landed = read_carried_landed(&fleet, &open)?;
-    let prefix = fleet.repo.layout().under("candidates/");
-    let chains = fleet.records_at_open(&format!("{prefix}*"));
-    let candidates = crate::candidates::view(&fleet.repo, &fleet.config, &chains)
-        .unwrap_or_else(|error| json!({"error": error.to_string()}));
-    let pending = crate::candidates::pending_lands(&chains, &prefix, now);
+    let (candidates, pending) = match crate::chain_store::all(&fleet.repo) {
+        Ok(chains) => {
+            (crate::candidates::view(&chains), crate::candidates::pending_lands(&chains, now))
+        }
+        Err(error) => (json!({"error": error.to_string()}), vec![]),
+    };
     let base_moved = fleet.base_tip().ok().and_then(|tip| {
         fleet.repo.git(&["log", "-1", "--format=%ct", &tip]).ok()?.trim().parse().ok()
     });
@@ -2123,7 +2145,7 @@ fn finish_state(
         held,
         stage_baselines: if stood.iter().any(|issue| issue.stage.is_some() && issue.role.is_some())
         {
-            afkconvoy_core::accounts::stage_baselines(&fleet.gh.accounts()?)
+            afkconvoy_core::accounts::stage_baselines(&fleet.issues.accounts()?)
         } else {
             Default::default()
         },
@@ -2136,8 +2158,16 @@ fn finish_state(
         not_ours,
         on_gone,
         carried_landed,
+        legacy_targets: crate::target::legacy_left(&fleet).into_iter().map(|r| r.name).collect(),
         candidates,
         pending,
+        legacy_chains: crate::candidates::legacy(
+            &fleet.repo,
+            &fleet.records_at_open(&format!("{}*", fleet.repo.layout().under("candidates/"))),
+        )
+        .into_iter()
+        .map(|old| (old.name, old.in_use))
+        .collect(),
         base_moved,
         deliveries,
     };
@@ -2146,7 +2176,7 @@ fn finish_state(
 
 /// The open issues whose latest record says a PR carries theirs, where that
 /// PR is open no more and the base branch holds its landing.
-fn read_carried_landed(fleet: &Fleet, open: &crate::gh::Open) -> Result<Vec<CarriedLanded>> {
+fn read_carried_landed(fleet: &Fleet, open: &crate::issues::Open) -> Result<Vec<CarriedLanded>> {
     let mut found = vec![];
     let mut tip = None;
     for issue in &open.issues.rows {
@@ -2589,6 +2619,8 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     }
     found.extend(look.trackers.findings(repo));
     found.extend(crate::paused::findings(now));
+    found.extend(crate::checkout_list::findings());
+    found.extend(crate::host_db::findings());
     found.extend(host_runner::findings());
     found.extend(crate::host_watch::finding());
     found.extend(look.findings.clone());
@@ -2639,6 +2671,23 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
     };
     fleet["tracker"] = report.tracker.clone();
     fleet["landing_hold"] = crate::landing_hold::json(repo);
+    // Where a proving branch is declared: its tip, the base's, and what
+    // landed on it waits for a promotion (docs/adr/0090).
+    if let Ok(config) = crate::config::of(repo)
+        && config.proving_branch.is_some()
+    {
+        let read = crate::gh::GitHub::of(repo)
+            .and_then(|gh| crate::promote::Standing::read(repo, &config, &gh.tracker));
+        fleet["proving"] = match read {
+            Ok(Some(standing)) => {
+                let mut said = standing.json(now);
+                said["said"] = json!(standing.line(now));
+                said
+            }
+            Ok(None) => Value::Null,
+            Err(error) => json!({"error": format!("{error:#}")}),
+        };
+    }
     let deliveries = match &state {
         Ok(state) => state.deliveries.clone(),
         Err(error) => vec![json!({ "error": error })],
@@ -2655,6 +2704,13 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         "refusals": state.as_ref().ok().map(|state| &state.refusals),
         "waiting_on_human": waiting,
         "candidates": state.as_ref().ok().map(|state| &state.candidates),
+        "legacy_candidate_chains": state.as_ref().ok().map(|state| {
+            state
+                .legacy_chains
+                .iter()
+                .map(|(name, in_use)| json!({"ref": name, "in_use": in_use}))
+                .collect::<Vec<_>>()
+        }),
         "kept_at_settle": kept_at_settle_json(repo),
     });
     Ok(Examined { answer, found, pace, not_alive })
@@ -2707,7 +2763,7 @@ fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
 }
 
 /// A repo whose candidate chain had more conflicts than landings in the last
-/// hour, at the fewest that hold its starts (docs/adr/0076): admission
+/// hour, at the fewest that hold its starts (docs/adr/0107): admission
 /// starts no new worker of it until the chain drains. Nothing of the host
 /// is to mend, and the watch is not called for it.
 fn landing_finding(entries: &[Entry], now: u64) -> Option<Finding> {
@@ -2967,7 +3023,6 @@ fn host_once(
         ("watch".to_string(), crate::host_watch::json(watch.as_ref(), rounds)),
         ("asking".to_string(), crate::host_asking::json()),
         ("notify".to_string(), crate::watch_notify::json()),
-        ("daybook".to_string(), crate::watch_daybook::json()),
         ("other_accounts".to_string(), crate::machine::json(others)),
     ])
 }
@@ -2988,7 +3043,6 @@ impl Look {
         findings.extend(crate::agent_setup::findings());
         findings.extend(crate::tmux::findings());
         findings.extend(crate::watch_notify::findings());
-        findings.extend(crate::watch_daybook::findings());
         Look { readings, host, findings, trackers: crate::tracker::Public::default() }
     }
 }
@@ -3182,12 +3236,12 @@ It reads this host (the commands the fleet needs, in a login shell; orca), the l
 
 A harness whose first login answer reads logged out is asked once more in that same login shell setting before `tools` reports `logged_out`; ready on the second answer is ready. A ready harness is still started at most once per doctor. A tool finding's evidence carries the last answer's exit status and the first 500 characters it printed, with credential-shaped text redacted.
 
-With `--all` it reads the checkout list (checkouts.json in the cache directory) and the same of each checkout on it, all at once.
+With `--all` it reads the checkout list (in the host's database) and the same of each checkout on it, all at once.
 It also reads every tracker that list names once for repo-labelled work, including repos absent from this host. A repo nobody works has an open ready issue with no open blocker or claim, ready for more than an hour since the later of its dispatch label being applied and its last blocker closing, and no remote heartbeat within the 1800-second lease. Ready means the repo's ready label, or its team's flow labels. Only an old enough unblocked issue, or an existing report, asks that repo's heartbeat remote. `host.unworked_repos` holds the waiting issues and their seconds, newest heartbeat's host and time (or null), report and opening host, recovery host, and read error. An unreadable remote proves nothing about whether a fleet works it. Where the login's REST core quota is spent, no tracker is read before its reset, and no repo is said unread for want of it: `host.github_quota` holds {host, login, api, reset} and one finding says it, which calls no watch. Doctor opens and closes nothing; the host runner reconciles these reports at its look.
 
 ## What it answers
 
-{"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "findings", "deliveries"}
+{"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "legacy_candidate_chains", "findings", "deliveries"}
 
 `targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned; an invalid record or missing branch adds error rather than selecting the configured base. A failed listing is {error}.
 
@@ -3222,13 +3276,14 @@ It also reads every tracker that list names once for repo-labelled work, includi
   - `failed_steps`: the last {const:DOCTOR_FAILED_SHOWN} failures, newest first: {tick, ended, do, issue, patrol, error, count}. One cause that stopped several steps of a tick is one failure: count is how many, and do, issue and patrol the first's
   - `events`: the last {const:DOCTOR_EVENTS_SHOWN} events that reached a `run` of this host, newest first, whichever instance: {at, event, cause, instance} — event being wake (between ticks, or during one), start, stop (told to, by SIGTERM or SIGINT), broken, back, moved or not_moved (the host runner moved onto a newer afkconvoy, with both releases, or that one did not start: `afkconvoy run --help`), host_wake, watch (a thing a watch did, and how it ended: `afkconvoy run --help`) or cut (a cut started, and how it ended: `afkconvoy cut --help`); cause says what caused it, in words. [] with no log
   - `broken`: {why, since, next, instance}: its fleet instance is broken (`afkconvoy run --help`) — why, as it last broke; since when, and when the host runner starts it again, in epoch seconds, null where no host runner runs on this host; and the fleet instance that broke, "" where none had started. null: it is not broken
-  - `tracker`: the repo its fleet reads and writes its issues in, as `afkconvoy checkouts` says it: null where the checkout says none, and its own repo is its tracker. {error} where the checkout list cannot be read
+  - `tracker`: the repo its fleet reads and writes its issues in, as `afkconvoy checkouts` says it: another repo, or the host's local tracker, `local/<host>`, which it is where the checkout says none; null where it says its own repo. {error} where the checkout list cannot be read
   - `github_api`: {host, login, core, graphql, secondary, for_rest_reads, for_graphql_reads}. Each quota has {remaining, reset}; null remaining means unknown and reset is Unix seconds. Selection respects primary exhaustion until reset and shared secondary cooldowns; fallback requires equivalent facts. {error} when the observation cannot be read. [`afkconvoy help troubleshooting`](help:troubleshooting) explains capability refusals and write receipts.
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; a session that says busy while orca reports the agent done says disputed instead, with session: "busy", and raises a finding once orca has said so for the grace period. A claim left alone by a fleet lock instead says {state: "waiting_on_lock", locks: [issue numbers]} and raises no stopped or missing worker finding; the lock's own worker keeps its findings. gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
 - `kept_at_settle`: each worktree of this checkout on this host that a settle kept, [] with none: {issue, path, branch, kept_because, unpushed, carried_by, since}. `kept_because` is `dirty`, `unpushed` or `unread`; `unpushed` how many commits only it holds; `carried_by` the PR that carries its issue's, or null; `since` when a settle first kept it. Each tick looks at it again and removes it once it holds nothing the remote does not.
-- `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round, assigned}. `assigned` is when it was assigned, in epoch seconds, or null on a record older than that. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. A candidate of a round's root carries `batch: true` and its phase is `batched` until its round's whole gate runs at the root's last candidate; a pair of a round's pairing tree carries `pair`, {round, level, first, second, partner}: the PRs of its two nodes and the second's commit. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_round_gate` (batched, until its round's whole gate runs at the root's last candidate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
+- `legacy_candidate_chains`: the remote candidate chain records an older afkconvoy left, `[{ref, in_use}]`: this host keeps its chain in its own database and ignores them, and its tick removes each once `in_use` is false, no live process of this host holding a place on it. Empty where none is left.
+- `candidates`: this host's candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round, assigned}. `assigned` is when it was assigned, in epoch seconds, or null on a record older than that. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. A candidate of a round's root carries `batch: true` and its phase is `batched` until its round's whole gate runs at the root's last candidate; a pair of a round's pairing tree carries `pair`, {round, level, first, second, partner}: the PRs of its two nodes and the second's commit. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_round_gate` (batched, until its round's whole gate runs at the root's last candidate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
 - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`) unless a model label is followed (`model_label`; a stored `casting` is read as that), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
 - `findings`: what is wrong, most severe first — none: []. Each is {kind, severity, what, evidence, fix, see, watch_id}:
@@ -3249,7 +3304,7 @@ It exits 0 with no critical finding, and non-zero with one — printing the same
 
 With `--all`:
 
-{"host": {"host_kit", "exclusive", "watch", "notify", "daybook", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
+{"host": {"host_kit", "exclusive", "watch", "notify", "resources", "installed", "other_accounts"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
 
 - `host`: what of `host` is the host's alone, as above, said once
 - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy, a worker health observation overdue by the pace of every fleet instance on the host. A checkout's own findings add, under `--all`, its fleet instance not alive, and, with `--since`, each tick of the interval that failed with what no unrecovered step's finding says
@@ -3311,17 +3366,12 @@ mod tests {
                 asks: None,
             });
             let chain: Chain = Chain { pending, ..Chain::default() };
-            crate::remote::RemoteRecord {
-                name: "refs/convoy/candidates/main".into(),
-                sha: "0".into(),
-                subject: serde_json::to_string(&chain).unwrap(),
-            }
+            ("main".to_string(), chain)
         };
-        let prefix = "refs/convoy/candidates/";
-        let nineteen = pending_lands(&[record(19)], prefix, 5000);
+        let nineteen = pending_lands(&[record(19)], 5000);
         assert_eq!(nineteen.len(), 19, "a place whose owner is gone is no live land");
         assert!(pending_finding(&nineteen).is_none());
-        let found = pending_finding(&pending_lands(&[record(20)], prefix, 5000)).unwrap();
+        let found = pending_finding(&pending_lands(&[record(20)], 5000)).unwrap();
         assert_eq!(found.kind, Kind::PendingLands);
         assert!(found.what.starts_with("20 live lands hold pending turns"), "{}", found.what);
         let pid = live.pid;
@@ -3455,10 +3505,12 @@ mod tests {
             ready_label: "ready-for-agent".into(),
             tracker: Tracker::Own,
             unclaimed: vec![],
+            legacy_chains: vec![],
             left_watch: vec![],
             not_ours: vec![],
             on_gone: vec![],
             carried_landed: vec![],
+            legacy_targets: vec![],
             candidates: json!([]),
             pending: vec![],
             base_moved: None,

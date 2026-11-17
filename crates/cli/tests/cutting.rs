@@ -8,7 +8,7 @@ use afkconvoy_core::{
 use common::{BASE, CONFIG, World, git};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 /// The `publish` line that says, in the world, what it published with which
@@ -336,17 +336,14 @@ fn finish(world: &World, checkout: &Path) -> Value {
     answer
 }
 
-/// Nothing on the remote's candidate chain names a cut: no candidate, no
+/// Nothing on the host's candidate chain names a cut: no candidate, no
 /// barrier, no pending entry.
 fn no_cut_on_the_chain(world: &World) {
-    let chains = world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]);
-    for chain in chains.lines() {
-        let record = world.remote(&["log", "-1", "--format=%B", chain]);
-        // A cut on the chain would be a branch of its own. The record also
-        // holds paths, which name a checkout called afkconvoy-cut whenever
-        // the tests run in a cut's gate: those name no cut.
-        assert!(!record.contains("\"branch\":\"afkconvoy-cut/"), "{record}");
-    }
+    let record = world.chain("main").to_string();
+    // A cut on the chain would be a branch of its own. The record also
+    // holds paths, which name a checkout called afkconvoy-cut whenever
+    // the tests run in a cut's gate: those name no cut.
+    assert!(!record.contains("\"branch\":\"afkconvoy-cut/"), "{record}");
     let refs = world.remote(&["for-each-ref", "--format=%(refname)"]);
     assert!(
         !refs.lines().any(|name| name.contains("barrier") || name.contains("pending")),
@@ -1698,7 +1695,7 @@ fn cutting_red() -> World {
 
 /// The git dir of `checkout`, where its cut keeps each gate run's output.
 fn git_dir(checkout: &Path) -> PathBuf {
-    let out = std::process::Command::new("git")
+    let out = afkconvoy::census::command("git")
         .args(["rev-parse", "--absolute-git-dir"])
         .current_dir(checkout)
         .output()
@@ -1864,7 +1861,7 @@ fn a_cut_s_gate_red_only_on_timeouts_it_cannot_classify_under_overload_gates_aga
     assert_eq!(gate_runs(&world), 3, "two overloaded runs, then a green one");
     assert_eq!(cut(&tick_as(&world, "alpha", now()))[0], "end_cut done");
     assert!(failures(&world).is_empty(), "no failure issue opens");
-    let help = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
+    let help = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
         .args(["cut", "--help"])
         .output()
         .unwrap();
@@ -1962,4 +1959,118 @@ fn a_cut_of_a_repo_that_splits_its_gate_runs_its_slow_part_in_a_slow_lane() {
         GreenRun::recorded(&message, &Tree::named(&tree), &whole).is_some()
     });
     assert!(recorded, "{refs}");
+}
+
+/// A repo that turns cutting on, whose gate — the cut's alone, on the
+/// commit that holds VERSION — counts each run in `gated` and waits for
+/// `go` → the world, `gated` and `go`.
+fn cutting_with_a_gate_that_waits() -> (World, PathBuf, PathBuf) {
+    let world = World::new();
+    let go = world.root.join("go");
+    let gated = world.root.join("gated");
+    let script = world.root.join("gate-or-wait.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "if test -f VERSION; then echo run >> '{}'; while test ! -f '{}'; do sleep 0.05; done; fi\n",
+            gated.display(),
+            go.display()
+        ),
+    )
+    .unwrap();
+    world.cores_busy(10);
+    tag(&world, "v0.1.0");
+    let gate = format!("sh '{}'", script.display());
+    commit_config(
+        &world,
+        &format!("{}\n{}", CONFIG.replace("./gate.sh", &gate), cut_block(&says_published(&world))),
+        "Turn cutting on (#7)",
+    );
+    (world, gated, go)
+}
+
+/// Starts `afkconvoy cut <args>` in `checkout`, and waits until its gate runs.
+fn cut_until_gated(world: &World, checkout: &Path, args: &[&str], gated: &Path) -> Child {
+    let mut child = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), checkout)
+        .arg("cut")
+        .args(args)
+        .args(["--host", "h1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let until = afkconvoy_patience::deadline();
+    while !gated.exists() {
+        assert!(child.try_wait().unwrap().is_none(), "the cut ended before its gate");
+        assert!(Instant::now() < until, "the cut's gate never started");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child
+}
+
+fn runs_of_the_gate(gated: &Path) -> usize {
+    std::fs::read_to_string(gated).unwrap().lines().count()
+}
+
+#[test]
+fn a_second_cut_of_a_held_checkout_refuses_at_once_and_runs_nothing() {
+    let (world, gated, go) = cutting_with_a_gate_that_waits();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    let first = cut_until_gated(&world, &checkout, &[], &gated);
+
+    let second = world.afk_in(&checkout, &["cut", "--from", "gate", "--host", "h1"]).error();
+    let pid = first.id();
+    assert!(second.contains(&format!("pid {pid}")), "{second}");
+    assert!(second.contains("at its step `gate`"), "{second}");
+    assert!(second.contains("since "), "{second}");
+    assert_eq!(runs_of_the_gate(&gated), 1, "the gate never started a second time");
+    assert_eq!(record(&checkout)["at"], "gate", "the refused cut wrote nothing");
+
+    std::fs::write(&go, "go").unwrap();
+    let answer: Value = serde_json::from_slice(&first.wait_with_output().unwrap().stdout).unwrap();
+    assert_eq!(answer["tag"], "v0.1.1", "{answer}");
+    assert_eq!(runs_of_the_gate(&gated), 1);
+}
+
+#[test]
+fn a_dead_cut_s_hold_is_taken_over() {
+    let (world, gated, go) = cutting_with_a_gate_that_waits();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    let mut first = cut_until_gated(&world, &checkout, &[], &gated);
+    first.kill().unwrap();
+    first.wait().unwrap();
+
+    std::fs::write(&go, "go").unwrap();
+    let answer = world.afk_in(&checkout, &["cut", "--from", "gate", "--host", "h1"]).ok();
+    assert_eq!(answer["tag"], "v0.1.1", "{answer}");
+}
+
+#[test]
+fn the_next_due_cut_starts_nothing_in_a_checkout_a_cut_by_hand_holds_and_says_so() {
+    let (world, gated, go) = cutting_with_a_gate_that_waits();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    workers_leave(&world);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    let kept = checkout(&world);
+    // Going on by hand from the step that failed, its gate still running.
+    let by_hand = cut_until_gated(&world, &kept, &["--from", "set"], &gated);
+
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), ["cut nothing"]);
+    assert!(kept.exists(), "the held checkout is not removed");
+    assert_eq!(checkout(&world), kept, "no second checkout is cut");
+    assert!(!claimed(&world), "nothing is claimed while it waits");
+    let said = logged(&world);
+    let line = said.iter().find(|line| line.contains("the due cut waits")).cloned();
+    let line = line.unwrap_or_else(|| panic!("{said:?}"));
+    assert!(line.contains(&format!("pid {}", by_hand.id())), "{line}");
+    assert!(line.contains("at its step `gate`"), "{line}");
+    assert_eq!(runs_of_the_gate(&gated), 1);
+
+    std::fs::write(&go, "go").unwrap();
+    let answer: Value =
+        serde_json::from_slice(&by_hand.wait_with_output().unwrap().stdout).unwrap();
+    assert_eq!(answer["tag"], "v0.1.1", "{answer}");
 }

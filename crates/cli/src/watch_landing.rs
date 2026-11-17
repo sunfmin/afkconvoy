@@ -28,7 +28,7 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
             "no open PR has this checkout's branch {branch:?} for its head — push it \
              (`git push origin HEAD`) and open one (`gh pr create --base {} --head {branch}`), \
              then run this again",
-            config.base_branch
+            config.lands_on()
         );
     };
     let name = Shown::Watch { fixes: &pr.title }.name(&gh.tracker);
@@ -45,7 +45,7 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
         && let Some(commit) = answer["commit"].as_str().map(str::to_string)
     {
         answer["checkout"] =
-            crate::watch_checkout::landed(repo, &config.base_branch, &checkout, &commit);
+            crate::watch_checkout::landed(repo, config.lands_on(), &checkout, &commit);
     }
     Ok(answer)
 }

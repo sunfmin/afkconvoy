@@ -42,12 +42,35 @@ const ASKS_EVERY: Duration = Duration::from_millis(200);
 /// queue: it says it at once.
 const PLACED_WITHIN: Duration = Duration::from_secs(10);
 
-/// The default bound on time holding other commands up (docs/adr/0031).
+/// The default bound on time holding other commands up (docs/adr/0088).
 pub const SECONDS: u64 = 1200;
 /// Reserved for a command ended at the exclusive bound. A child's own use
 /// of it is reported as exit 1, so this outcome is unambiguous.
 pub const BOUND_CODE: u8 = 124;
 const CHECK_EVERY: Duration = Duration::from_millis(100);
+/// How often a command waiting in the queue asks whether it still waits
+/// (`Waited::quit`).
+const QUIT_EVERY: Duration = Duration::from_secs(30);
+
+/// Whether a command waiting in the queue gives its place up, asked each
+/// `QUIT_EVERY` while it waits.
+pub(crate) type Quit = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// How long a command waits for its place in the queue: no later than
+/// `until`, and no longer than `quit` says.
+#[derive(Clone, Default)]
+struct Waited {
+    until: Option<Instant>,
+    quit: Option<Quit>,
+}
+
+impl Waited {
+    /// Whether it waits no more: past `until`, or `quit` says so.
+    fn over(&self) -> bool {
+        self.until.is_some_and(|until| Instant::now() >= until)
+            || self.quit.as_ref().is_some_and(|quit| quit())
+    }
+}
 
 /// The worktree, rather than a caller flag, identifies a cut's commands.
 fn is_cut(repo: &Repo) -> bool {
@@ -58,7 +81,7 @@ fn is_cut(repo: &Repo) -> bool {
 
 /// Which of the two gates (docs/adr/0047) the command `exclusive` runs is,
 /// as `gate --fast` and `--slow` say it to the gate's command: `fast` takes
-/// the fast lane (docs/adr/0049). It is said to that `exclusive` alone, and
+/// the fast lane (docs/adr/0047). It is said to that `exclusive` alone, and
 /// not passed on to what its command runs.
 pub const GATE_ENV: &str = "AFKCONVOY_GATE";
 
@@ -236,7 +259,21 @@ impl Permit {
         heavy: bool,
         until: Instant,
     ) -> Result<Option<Self>> {
-        Self::acquire_until(repo, command, heavy, true, true, None, Some(until))
+        let waited = Waited { until: Some(until), quit: None };
+        Self::acquire_until(repo, command, heavy, true, true, None, &waited)
+    }
+
+    /// A candidate's lane, waited for until `quit` says, asked each
+    /// `QUIT_EVERY`, it waits no more → `None`: a round's pair whose PR was
+    /// carried as its turn waited gates nothing (sunfmin/control#1349).
+    pub(crate) fn candidate_unless(
+        repo: &Repo,
+        command: &str,
+        heavy: bool,
+        quit: Quit,
+    ) -> Result<Option<Self>> {
+        let waited = Waited { until: None, quit: Some(quit) };
+        Self::acquire_until(repo, command, heavy, true, true, None, &waited)
     }
 
     /// A candidate's lane, waited for as long as it takes: a gate of a
@@ -266,7 +303,7 @@ impl Permit {
     }
 
     /// One of the two gates a worker runs alone, `gate --fast` or `--slow`,
-    /// in its lane (docs/adr/0049): the fast lane, or the slow lanes. Taken
+    /// in its lane (docs/adr/0047): the fast lane, or the slow lanes. Taken
     /// before the gate's command starts, so that the wait for it uses none
     /// of the gate's limit, which times the command alone (sunfmin/control#822).
     pub(crate) fn alone(repo: &Repo, command: &str, gate: Gate) -> Result<Self> {
@@ -281,12 +318,13 @@ impl Permit {
         candidate: bool,
         gate: Option<Gate>,
     ) -> Result<Self> {
-        let permit = Self::acquire_until(repo, command, heavy, is_turn, candidate, gate, None)?;
+        let waited = Waited::default();
+        let permit = Self::acquire_until(repo, command, heavy, is_turn, candidate, gate, &waited)?;
         permit.ok_or_else(|| anyhow::anyhow!("a wait with no bound passed its bound"))
     }
 
-    /// As `acquire`, waiting in the queue until `until` at most → `None`:
-    /// the turn came no sooner.
+    /// As `acquire`, waiting in the queue as `waited` says at most →
+    /// `None`: the turn came no sooner.
     fn acquire_until(
         repo: &Repo,
         command: &str,
@@ -294,7 +332,7 @@ impl Permit {
         is_turn: bool,
         candidate: bool,
         gate: Option<Gate>,
-        until: Option<Instant>,
+        waited: &Waited,
     ) -> Result<Option<Self>> {
         if held() {
             bail!("this command already holds a turn");
@@ -322,7 +360,7 @@ impl Permit {
         let acting = Acting::new("exclusive").on_own_issue().in_checkout(Some(repo.clone()));
         let stop = Arc::new(AtomicBool::new(false));
         let ended = Arc::new(Mutex::new(None));
-        let monitor = match turn(&ticket, &acting, &crate::clock, until)? {
+        let monitor = match turn(&ticket, &acting, &crate::clock, waited)? {
             Turn::Queued(place, _) => {
                 acting.say(crate::clock(), runs_line(&ticket, crate::clock(), 0));
                 let watch = Watch::new(place)?;
@@ -616,7 +654,7 @@ impl Host<Note> for Hosted {
 }
 
 /// How busy this host is at `now`, as the queue starts a command by it
-/// (docs/adr/0088): the host reading crate's (docs/adr/0089), its memory held
+/// (docs/adr/0088): the host reading crate's (docs/adr/0058), its memory held
 /// to admission's floor in the host settings. `None`: neither its cores nor
 /// its load can be read.
 fn host_reading(
@@ -939,7 +977,7 @@ pub fn standing() -> Result<Vec<Ticket>> {
 
 /// The work `queue`'s running tickets run, as `procs` — one reading of the
 /// process table — finds it: what admission discounts of the host's load
-/// (docs/adr/0050) and the hot sampler of a worker's memory (docs/adr/0056).
+/// (docs/adr/0107) and the hot sampler of a worker's memory (docs/adr/0019).
 pub(crate) fn running_work(queue: &[Ticket], procs: &[crate::hot::Proc]) -> Work {
     let table: Vec<(u32, u32)> = procs.iter().map(|proc| (proc.pid, proc.ppid)).collect();
     afkconvoy_core::exclusive::running_work(queue, &table)
@@ -968,21 +1006,31 @@ enum Turn {
     Expired,
 }
 
-/// Ends `conversation` at `until`, unless `cancel` is told first → whether
-/// it ended it. The asker waiting on its line hears it closed.
+/// Ends `conversation` once `waited` is over, unless `cancel` is told
+/// first → whether it ended it. The asker waiting on its line hears it
+/// closed.
 fn ending_at(
     conversation: &Conversation,
-    until: Instant,
+    waited: Waited,
 ) -> Result<(mpsc::Sender<()>, std::thread::JoinHandle<bool>)> {
     let end = conversation.ender()?;
     let (cancel, cancelled) = mpsc::channel::<()>();
     let timer = std::thread::spawn(move || {
-        let left = until.saturating_duration_since(Instant::now());
-        let due = matches!(cancelled.recv_timeout(left), Err(mpsc::RecvTimeoutError::Timeout));
-        if due {
-            end();
+        loop {
+            let left = waited.until.map(|until| until.saturating_duration_since(Instant::now()));
+            let next = match (left, waited.quit.is_some()) {
+                (Some(left), true) => left.min(QUIT_EVERY),
+                (Some(left), false) => left,
+                (None, _) => QUIT_EVERY,
+            };
+            if !matches!(cancelled.recv_timeout(next), Err(mpsc::RecvTimeoutError::Timeout)) {
+                return false;
+            }
+            if waited.over() {
+                end();
+                return true;
+            }
         }
-        due
     });
     Ok((cancel, timer))
 }
@@ -990,16 +1038,11 @@ fn ending_at(
 /// Waits in the host runner's queue for `ticket`'s turn, saying to `acting`
 /// and stderr how it waits. One whose host runner ends as it waits asks the
 /// next, as it first asked, for `REACHED_WITHIN`; one that finds no host
-/// runner, or one that cannot hold it, runs at once. One given `until` waits
-/// no later: `Turn::Expired`. Errors: the host runner could not be asked, or
+/// runner, or one that cannot hold it, runs at once. One whose `waited` is
+/// over waits no more: `Turn::Expired`. Errors: the host runner could not be asked, or
 /// what it said could not be read.
-fn turn(
-    ticket: &Ticket,
-    acting: &Acting,
-    now: &dyn Fn() -> u64,
-    until: Option<Instant>,
-) -> Result<Turn> {
-    let expired = || until.is_some_and(|until| Instant::now() >= until);
+fn turn(ticket: &Ticket, acting: &Acting, now: &dyn Fn() -> u64, waited: &Waited) -> Result<Turn> {
+    let expired = || waited.over();
     let asked = Request::Exclusive { ticket: ticket.clone() };
     // Since when it has asked with no host runner placing it.
     let mut lost: Option<Instant> = None;
@@ -1020,7 +1063,9 @@ fn turn(
                     eprintln!("[afkconvoy] exclusive: {line}");
                     acting.say(now(), line);
                 }
-                let timer = until.map(|until| ending_at(&conversation, until)).transpose()?;
+                let bounded = waited.until.is_some() || waited.quit.is_some();
+                let timer =
+                    bounded.then(|| ending_at(&conversation, waited.clone())).transpose()?;
                 // What it cannot read, a newer host runner's, is passed over.
                 let mut runs = None;
                 while let Some(said) = conversation.heard()? {
@@ -1087,7 +1132,7 @@ pub fn exclusive(
     now: impl Fn() -> u64,
 ) -> ExitCode {
     if let Some(owner) = inherited(checkout.as_ref()) {
-        let mut nested = Command::new(&command[0]);
+        let mut nested = crate::census::command(&command[0]);
         keep_within(&mut nested);
         if std::env::var_os(SHARE_ENV).is_some() {
             share(&mut nested, owner);
@@ -1120,7 +1165,7 @@ pub fn exclusive(
         retained: None,
     };
     let acting = Acting::new("exclusive").on_own_issue().in_checkout(checkout);
-    let place = match turn(&ticket, &acting, &now, None) {
+    let place = match turn(&ticket, &acting, &now, &Waited::default()) {
         Ok(Turn::Queued(place, ahead_of)) => {
             let started = now();
             acting.say(started, runs_line(&ticket, started, ahead_of));
@@ -1173,7 +1218,7 @@ fn run_command(
     now: &dyn Fn() -> u64,
     slot: &crate::slots::Slot,
 ) -> std::io::Result<Option<ExitStatus>> {
-    let mut cmd = Command::new(&command[0]);
+    let mut cmd = crate::census::command(&command[0]);
     cmd.args(&command[1..]).current_dir(dir).env_remove(GATE_ENV);
     keep_within(&mut cmd);
     if std::env::var_os(SHARE_ENV).is_some() {
@@ -1538,8 +1583,9 @@ mod tests {
 
     #[test]
     fn an_ended_command_is_passed_on_as_a_shell_would() {
-        let run =
-            |line: &str| crate::process::status(Command::new("sh").args(["-c", line])).unwrap();
+        let run = |line: &str| {
+            crate::process::status(crate::census::command("sh").args(["-c", line])).unwrap()
+        };
         assert_eq!(ended(run("exit 3")), (3, "exit 3".to_string()));
         assert_eq!(ended(run("kill -9 $$")), (137, "killed by signal 9".to_string()));
     }

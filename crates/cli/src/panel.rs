@@ -126,7 +126,7 @@ pub struct Panel {
     pub repo: String,
     pub base_branch: String,
     /// The repo its fleet reads and writes its issues in, where that is not
-    /// its own (docs/adr/0027).
+    /// its own (docs/adr/0091).
     pub tracker: Option<String>,
     /// The fleet instance whose view this is, and its host; `None` of nobody's:
     /// every claim is then another instance's.
@@ -631,15 +631,10 @@ pub fn read(
     };
     let mut panel = Panel::empty(fleet, me).show(&seen);
     panel.codex_workers = crate::codex_launch::workers(&fleet.repo);
-    let prefix = fleet.repo.layout().under("candidates/");
-    panel.candidates = crate::candidates::view(
-        &fleet.repo,
-        &fleet.config,
-        &fleet.records_at_open(&format!("{prefix}*")),
-    )
-    .ok()
-    .and_then(|rows| rows.as_array().cloned())
-    .unwrap_or_default();
+    panel.candidates = crate::chain_store::all(&fleet.repo)
+        .ok()
+        .and_then(|chains| crate::candidates::view(&chains).as_array().cloned())
+        .unwrap_or_default();
     panel.tracker = report.tracker_named();
     panel.deliveries = match &report.deliveries {
         Some(Ok(rows)) => rows.iter().map(crate::delivery::panel_line).collect(),
@@ -1907,6 +1902,7 @@ mod tests {
                 reading,
                 total_load: reading.load,
                 queue_load: Some(0),
+                process_rate: None,
                 span: 600,
                 queue_drain: None,
                 queue_bound: afkconvoy_core::admission::QUEUE_BOUND,
@@ -2208,6 +2204,7 @@ mod tests {
             since: 280,
             why: afkconvoy_core::hot::Why::Held,
             millicores: 6200,
+            spawns: 0,
             resident: 3 << 29,
             written: 0,
             held: 5 << 30,

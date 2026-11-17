@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
@@ -104,7 +104,7 @@ fn host(gh: &GitHub) -> String {
     hosts
         .entry(gh.dir.clone())
         .or_insert_with_key(|dir| {
-            let host = Command::new("git")
+            let host = crate::census::command("git")
                 .current_dir(dir)
                 .args(["remote", "get-url", "origin"])
                 .output()
@@ -407,7 +407,7 @@ fn credential_fingerprint(gh: &GitHub, local: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     bytes.extend_from_slice(local.as_bytes());
-    let mut child = Command::new("git")
+    let mut child = crate::census::command("git")
         .current_dir(&gh.dir)
         .args(["hash-object", "--stdin"])
         .stdin(Stdio::piped())

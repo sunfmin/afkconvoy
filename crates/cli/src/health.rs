@@ -156,22 +156,28 @@ pub(crate) fn command_key(command: &str) -> String {
     format!("{:016x}", hash.finish())
 }
 
-fn file() -> Result<PathBuf> {
-    Ok(crate::copies::cache()?.join("worker-health.json"))
+/// The book of worker health, whole, in the host's database: the one row of
+/// `worker_health`. It was `worker-health.json` in the cache directory.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: "worker-health.json",
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("worker_health"),
+};
+
+/// The lease of the one observer of worker health on the host: held by a
+/// reconcile across its whole observation, which runs processes and asks
+/// Orca, and by a watch's fault while it records it. It is a kernel lock in
+/// the cache directory, not a transaction of the host's database, which no
+/// writer may hold across that work: every other writer of the database
+/// would wait on it. Each change of the book is a transaction of its own.
+fn lease_file() -> Result<PathBuf> {
+    Ok(crate::copies::cache()?.join("worker-health.lock"))
 }
 fn read() -> Result<Book> {
-    match std::fs::read(file()?) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Book::default()),
-        Err(e) => Err(e.into()),
-    }
+    crate::host_db::read(&STORE)
 }
 fn store(book: &Book) -> Result<()> {
-    let file = file()?;
-    std::fs::create_dir_all(file.parent().context("health cache parent")?)?;
-    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(book)?)?;
-    Ok(std::fs::rename(temporary, file)?)
+    crate::host_db::put(&STORE, book)
 }
 
 /// Worker health as every read-only surface reads it: each worker observed,
@@ -484,28 +490,27 @@ pub fn fault_reason(harness: Harness) -> Option<String> {
     Some(format!("{} has an {scope} fault: {}", harness.key(), fault.evidence.join("; ")))
 }
 
-/// The harnesses whose workers took their briefs, most recent first.
-fn delivered_file() -> Result<PathBuf> {
-    Ok(crate::copies::cache()?.join("watch/delivered.json"))
-}
+/// The harnesses whose workers took their briefs, most recent first, in the
+/// host's database: a row each of `delivered`. It was `watch/delivered.json`
+/// in the cache directory.
+pub(crate) static DELIVERED: crate::host_db::Store = crate::host_db::Store {
+    file: "watch/delivered.json",
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Rows("delivered", |key| key.as_str().unwrap_or("").into()),
+};
 
 fn delivered_read() -> Vec<String> {
-    let bytes = delivered_file().and_then(|file| Ok(std::fs::read(file)?));
-    bytes.ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    crate::host_db::read(&DELIVERED).unwrap_or_default()
 }
 
 /// Records that the worker in `worktree` took its brief: its harness is the
 /// one a watch starts on first.
 pub fn delivered(worktree: &Worktree) -> Result<()> {
     let Some(harness) = worktree.harness()? else { return Ok(()) };
-    let mut delivered = delivered_read();
-    delivered.retain(|held| held != harness.key());
-    delivered.insert(0, harness.key().to_string());
-    let file = delivered_file()?;
-    std::fs::create_dir_all(file.parent().context("watch cache parent")?)?;
-    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec(&delivered)?)?;
-    Ok(std::fs::rename(temporary, file)?)
+    crate::host_db::change(&DELIVERED, |delivered: &mut Vec<String>| {
+        delivered.retain(|held| held != harness.key());
+        delivered.insert(0, harness.key().to_string());
+    })
 }
 
 /// The harnesses a watch may start on, in order: the one this host last
@@ -542,13 +547,9 @@ pub fn watch_candidates() -> Result<Vec<crate::kit::Named>> {
 /// diagnosis proved: the watch skips it, and an account's fault every worker
 /// too, until the hourly probe answers.
 pub fn watch_fault(harness: Harness, diagnosis: &Diagnosis, now: u64) -> Result<()> {
-    let file = file()?;
+    let file = lease_file()?;
     std::fs::create_dir_all(file.parent().context("health cache parent")?)?;
-    let lock = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(file.with_extension("lock"))?;
+    let lock = OpenOptions::new().write(true).create(true).truncate(false).open(file)?;
     lock.lock()?;
     let mut book = read()?;
     let command = crate::kit::load()?.command(harness).unwrap_or_default().to_string();
@@ -836,17 +837,13 @@ pub fn reconcile(
     found: &mut Found,
     me: &Me,
     agent: &Agent,
-    open: &crate::gh::Open,
+    open: &crate::issues::Open,
     flows: &crate::stage::Flows,
     set: &WorkingSet,
 ) -> Result<Vec<Value>> {
-    let file = file()?;
+    let file = lease_file()?;
     std::fs::create_dir_all(file.parent().context("health cache parent")?)?;
-    let lock = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(file.with_extension("lock"))?;
+    let lock = OpenOptions::new().write(true).create(true).truncate(false).open(file)?;
     if lock.try_lock().is_err() {
         return Ok(vec![]);
     }
@@ -949,7 +946,7 @@ pub fn reconcile(
             book.observations_failed.retain(|failed| failed.path != worktree.path);
             continue;
         }
-        let verdict = crate::gh::verdict_since(comments, claim.since);
+        let verdict = crate::issues::verdict_since(comments, claim.since);
         let said = verdict.as_ref().and_then(|v| comments.get(v.comment)).map(|c| c.url.as_str());
         let answered = worktree.answered()?;
         let unbound_declared =
@@ -1658,7 +1655,7 @@ fn decide(
         && observed.command_key.is_some();
     // A quota its account met, where another account of its harness takes
     // a worker now, continues on that harness: the account rests, not the
-    // harness (docs/adr/0087).
+    // harness (docs/adr/0086).
     let on_another_account = account_rests
         && crate::engine_accounts::of(observed.harness, fleet.now)
             .is_some_and(|accounts| accounts.chosen().is_some());

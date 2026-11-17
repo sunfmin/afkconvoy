@@ -9,7 +9,7 @@ pub const EVERY: u64 = 7 * 24 * 60 * 60;
 /// A due distillation whose span held nothing is read again after this long.
 pub const READ_AGAIN: u64 = 60 * 60;
 
-/// Distillation item identities: `daybook-distill:<tracker>:<since>:<until>`.
+/// Distillation item identities: `daybook-distill:<since>:<until>`.
 pub const ITEM: &str = "daybook-distill:";
 
 /// Whether a look reads the daybook for a distillation now: a week after the
@@ -36,10 +36,10 @@ pub fn holds(lessons: usize, unlessoned: usize) -> bool {
     lessons > 0 || unlessoned >= 2
 }
 
-/// The item identity of a distillation of `tracker`'s daybook over the days
+/// The item identity of a distillation of the host's daybook over the days
 /// `since` to `until`.
-pub fn item(tracker: &str, since: &str, until: &str) -> String {
-    format!("{ITEM}{tracker}:{since}:{until}")
+pub fn item(since: &str, until: &str) -> String {
+    format!("{ITEM}{since}:{until}")
 }
 
 /// The last day a distillation item's span covers.
@@ -73,8 +73,8 @@ mod tests {
 
     #[test]
     fn an_item_says_its_span() {
-        let id = item("acme/control", "2026-10-27", "2026-11-02");
-        assert_eq!(id, "daybook-distill:acme/control:2026-10-27:2026-11-02");
+        let id = item("2026-10-27", "2026-11-02");
+        assert_eq!(id, "daybook-distill:2026-10-27:2026-11-02");
         assert_eq!(until_of(&id), Some("2026-11-02"));
         assert_eq!(until_of("kit-research:x"), None);
     }

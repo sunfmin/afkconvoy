@@ -203,7 +203,8 @@ fn left_behind(file: &File, owners: &[Owner]) -> bool {
 /// finds them by its path. Errors: they cannot be listed.
 fn holders(file: &File) -> Result<Vec<u32>> {
     let path = path_of(file)?;
-    let out = crate::process::output(Command::new("lsof").args(["-w", "-t", "--"]).arg(&path))?;
+    let out =
+        crate::process::output(crate::census::command("lsof").args(["-w", "-t", "--"]).arg(&path))?;
     let pids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| l.trim().parse().ok())
@@ -321,7 +322,7 @@ fn lock_dir(dir: &Path) -> Result<File> {
 }
 
 /// A fast gate holds no repo lease: fast gates run in their own worktrees,
-/// side by side whatever their repo (docs/adr/0049).
+/// side by side whatever their repo (docs/adr/0047).
 fn repo_file(ticket: &Ticket) -> Result<Option<(std::path::PathBuf, File)>> {
     let Some(repo) = ticket.repo.as_ref().filter(|_| !afkconvoy_core::exclusive::is_fast(ticket))
     else {

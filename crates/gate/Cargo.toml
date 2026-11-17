@@ -1,6 +1,6 @@
 [package]
 name = "afkconvoy-gate"
-description = "The gate and the exclusive queue, with no fleet concept in their API: a repo's fast and slow gate, recorded gate runs, heavy commands and the host's lanes (docs/adr/0059)"
+description = "The gate and the exclusive queue, with no fleet concept in their API: a repo's fast and slow gate, recorded gate runs, heavy commands and the host's lanes (docs/adr/0058)"
 version.workspace = true
 edition.workspace = true
 publish = false

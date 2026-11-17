@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::Command;
 use std::sync::Mutex;
 
 use afkconvoy_core::admission::{
@@ -24,7 +23,7 @@ use crate::measure;
 
 /// The output of `program` with `args`, which must succeed.
 pub(crate) fn output(program: &str, args: &[&str]) -> Result<String> {
-    let out = crate::process::output(Command::new(program).args(args))
+    let out = crate::process::output(crate::census::command(program).args(args))
         .with_context(|| format!("`{program}` could not be run"))?;
     if !out.status.success() {
         bail!("`{program} {}` failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr));
@@ -40,6 +39,9 @@ pub struct Readings {
     total_load: Option<u64>,
     queue_load: Option<u64>,
     cpu_busy: Option<u64>,
+    /// The processes a second the host creates, beside its CPU reading
+    /// (sunfmin/control#1319); `None`: it could not be read.
+    process_rate: Option<u64>,
     memory_free: Option<u64>,
     memory: Option<u64>,
     /// How long the exclusive queue takes to drain, in seconds; `None`: it
@@ -93,6 +95,7 @@ impl Readings {
             total_load,
             queue_load,
             cpu_busy: crate::cpu::busy(),
+            process_rate: afkconvoy_host_reading::spawn::rate(),
             memory_free: afkconvoy_host_reading::memory_free(),
             memory: crate::hot::memory(),
             queue_drain,
@@ -153,6 +156,9 @@ pub struct Admission {
     /// queue share leaves the total in the admission decision.
     pub total_load: Option<u64>,
     pub queue_load: Option<u64>,
+    /// The processes a second the host creates, read beside its CPU
+    /// (sunfmin/control#1319); `None`: it could not be read.
+    pub process_rate: Option<u64>,
     /// How long, in seconds, admission holds back for one reason before the
     /// host calls for a watch: the host's, or `SPAN`.
     pub span: u64,
@@ -171,7 +177,7 @@ pub struct Admission {
     pub memory: Option<u64>,
     /// What the checkout's candidate chain answered in the last
     /// `LANDING_WINDOW`, as this host's tick log of it says; `None`: it
-    /// could not be read (docs/adr/0076).
+    /// could not be read (docs/adr/0107).
     pub landing: Option<Landing>,
 }
 
@@ -202,6 +208,7 @@ impl Admission {
         let mut admission = Admission::of(&host_settings::of_host()?, readings.at(dir));
         admission.total_load = readings.total_load;
         admission.queue_load = readings.queue_load;
+        admission.process_rate = readings.process_rate;
         admission.queue_drain = readings.queue_drain;
         admission.own = readings.own;
         admission.memory = readings.memory;
@@ -229,6 +236,7 @@ impl Admission {
             said,
             total_load: reading.load,
             queue_load: Some(0),
+            process_rate: None,
             reading,
             span,
             queue_drain: None,
@@ -242,7 +250,7 @@ impl Admission {
     }
 
     /// This admission, judging the candidate chain of the checkout at `dir`
-    /// too, as its tick log has it up to `now` (docs/adr/0076).
+    /// too, as its tick log has it up to `now` (docs/adr/0107).
     pub fn with_landing(self, dir: &Path, now: u64) -> Admission {
         Admission { landing: landing_of(dir, now), ..self }
     }
@@ -279,7 +287,7 @@ impl Admission {
     /// watch once held past its span: none, and none calls. The candidate
     /// chain is none of them: it drains as the workers already running land,
     /// and nothing of the host is the watch's to mend for it
-    /// (docs/adr/0076). Nor are the accounts of a harness with none left:
+    /// (docs/adr/0107). Nor are the accounts of a harness with none left:
     /// nothing on the host gives an account's use back before its window
     /// resets (sunfmin/control#1220).
     pub fn reasons(&self) -> Vec<Reason> {
@@ -371,6 +379,9 @@ impl Admission {
         if let Some(busy) = reading.cpu_busy {
             said.push(format!("its cores {busy}% busy"));
         }
+        if let Some(rate) = self.process_rate {
+            said.push(format!("{rate} processes created a second"));
+        }
         if let Some(free) = reading.memory_free {
             said.push(format!("{free}% of its memory free"));
         }
@@ -412,6 +423,7 @@ impl Admission {
                 "queue_load": self.queue_load.map(|load| load as f64 / 100.0),
                 "other_load": reading.load.map(|load| load as f64 / 100.0),
                 "cpu_busy_percent": reading.cpu_busy,
+                "process_creation_per_second": self.process_rate,
                 "memory_free_percent": reading.memory_free,
                 "disk_free_bytes": reading.disk.map(|disk| disk.free),
                 "disk_size_bytes": reading.disk.map(|disk| disk.size),
@@ -528,7 +540,7 @@ fn own_of(procs: &[crate::hot::Proc], of: &std::collections::HashSet<u32>) -> Ow
 
 /// Attribute the one-minute load in proportion to the CPU the queue's work
 /// took over the same minute: `averaged`, the host runner's average of its
-/// share in ten-thousandths, where it keeps one (docs/adr/0078); else the
+/// share in ten-thousandths, where it keeps one (docs/adr/0107); else the
 /// CPU its running work uses now, as the exclusive queue finds it in one
 /// reading of the process table. This is an estimate: the kernel exposes no
 /// per-tree load average. On an unreadable queue or process table, subtract
@@ -676,6 +688,7 @@ mod tests {
             },
             total_load: Some(10543),
             queue_load: Some(0),
+            process_rate: None,
             span: SPAN,
             queue_drain: None,
             queue_bound: afkconvoy_core::admission::QUEUE_BOUND,

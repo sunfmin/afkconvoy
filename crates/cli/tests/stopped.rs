@@ -294,8 +294,7 @@ fn background_file(world: &World) -> PathBuf {
 
 /// The worker-health record as kept. It holds no copy of the since.
 fn health_record(world: &World) -> Value {
-    let path = world.cache().join("afkconvoy/worker-health.json");
-    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    world.kept("worker-health.json")
 }
 
 /// The worker's terminal shows `screen`.
@@ -411,6 +410,22 @@ fn a_worker_waiting_on_its_own_background_work_has_one_since() {
     let worker = &shown["host"]["host_kit"]["worker_health"]["workers"][0];
     assert_eq!(worker["background"], 2200, "{worker}");
     assert!(health_record(&world)["workers"][0].get("background").is_none());
+}
+
+#[test]
+fn a_verdict_declared_while_the_tick_holds_the_worker_on_background_work_is_carried_out() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    show(&world, &WAITING);
+    // held on its own background work, past the stopped bound
+    assert_eq!(did(&tick(&world, 1300))[0], "judge 7 waiting");
+    // it declares its verdict while the wait is recorded
+    declare(&world, "already-satisfied");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1500"]).json;
+    assert_eq!(stopped_for(&doctor), [] as [&Value; 0], "{doctor}");
+    // the next tick carries it out, whatever the worker waits on
+    assert_eq!(did(&tick(&world, 1600))[0], "judge 7 done");
+    assert_eq!(world.state(7), "closed");
 }
 
 #[test]
@@ -780,7 +795,7 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
         did(&ticked)[0],
         "judge 7 waiting",
         "{ticked}; health: {}",
-        std::fs::read_to_string(world.cache().join("afkconvoy/worker-health.json")).unwrap()
+        world.kept("worker-health.json")
     );
     assert_eq!(typed(&world).len(), 1, "no nudge");
     assert_eq!(world.claims().len(), 1);
@@ -794,7 +809,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
     use std::os::unix::process::CommandExt;
 
     let unrelated = common::FixtureProcess::spawn(
-        std::process::Command::new("sleep")
+        afkconvoy::census::command("sleep")
             .arg("600")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -813,7 +828,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
             // Also clean up a red reproduction: only this unique descriptor's
             // inheritors are ours, including helpers reparented to pid 1.
             let holders =
-                std::process::Command::new("lsof").arg("-t").arg(&self.path).output().unwrap();
+                afkconvoy::census::command("lsof").arg("-t").arg(&self.path).output().unwrap();
             for pid in String::from_utf8_lossy(&holders.stdout).split_whitespace() {
                 let pid: u32 = pid.parse().unwrap();
                 if pid != std::process::id() {
@@ -842,7 +857,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
         lease.lock_shared().unwrap();
         let observer = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
         let fd = lease.as_raw_fd();
-        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        let mut command = afkconvoy::census::command(std::env::current_exe().unwrap());
         command
             .args(["--exact", scenario, "--nocapture"])
             .env("CONVOY_FIXTURE_LEASE_PROBE", rendezvous.path())
@@ -876,7 +891,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let holders =
-            std::process::Command::new("lsof").arg("-Fpc").arg(&probe.path).output().unwrap();
+            afkconvoy::census::command("lsof").arg("-Fpc").arg(&probe.path).output().unwrap();
         assert!(
             String::from_utf8_lossy(&holders.stdout).lines().any(|line| line == "csleep"),
             "the actual worker must inherit its lease: {}",
@@ -916,7 +931,7 @@ fn queued_fixture_reaps_its_workers_and_releases_inherited_descriptors() {
             probe.observer.try_lock().is_ok(),
             "completed {scenario} workers still retain the inherited lease"
         );
-        let state = std::process::Command::new("ps")
+        let state = afkconvoy::census::command("ps")
             .args(["-p", &unrelated.id().to_string(), "-o", "stat="])
             .output()
             .unwrap();
@@ -1821,8 +1836,7 @@ fn no_health_observation_is_overdue_for_a_worker_whose_checkout_left_the_list() 
     world.list_checkout(&world.clone);
     assert_eq!(overdue(&world).len(), 1, "on the list, its observation is overdue");
 
-    let list = world.cache().join("afkconvoy/checkouts.json");
-    std::fs::write(list, json!({"checkouts": []}).to_string()).unwrap();
+    world.write_checkout_list(&json!({"checkouts": []}));
     assert_eq!(overdue(&world), [] as [Value; 0], "off the list, no fleet ticks for it");
 }
 

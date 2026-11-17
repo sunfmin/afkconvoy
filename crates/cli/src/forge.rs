@@ -1,4 +1,4 @@
-//! afkconvoy's forge, as a landing asks it (docs/adr/0060): a GitHub pull
+//! afkconvoy's forge, as a landing asks it (docs/adr/0058): a GitHub pull
 //! request is the change that asks to land, the issue it closes what it
 //! completes, the issue's open blockers and pinned target what may keep it
 //! off, and closing that issue, with its work account, what follows once it
@@ -60,8 +60,8 @@ impl Pulls<'_> {
     /// description still names what it carried, and doctor names a carried
     /// issue left open once its carrier landed (`carried_landed`).
     fn told_carried(&self, by: u64) -> Result<BTreeMap<u64, u64>> {
-        let open = match self.gh.open_issues() {
-            Ok(open) => open,
+        let open = match crate::issues::of(self.gh).open_issues(None) {
+            Ok(open) => open.issues,
             Err(error) => {
                 eprintln!(
                     "[afkconvoy] land: the issues PR #{by} was told it carries cannot be read, so its description alone says them: {error:#}"
@@ -108,11 +108,12 @@ impl Forge for Pulls<'_> {
     }
 
     fn may_land(&self, _: &Change) -> Result<Result<(), Refusal>> {
+        let issues = crate::issues::of(self.gh);
         let Some(n) = self.issue() else { return Ok(Ok(())) };
-        if self.gh.issue(n)?.is_closed() {
+        if issues.issue(n)?.is_closed() {
             return Ok(Err(Refusal::Closed(n)));
         }
-        let blockers = self.gh.open_blockers(n)?;
+        let blockers = issues.open_blockers(n)?;
         if !blockers.is_empty() {
             return Ok(Err(Refusal::Blocked(blockers)));
         }
@@ -126,8 +127,9 @@ impl Forge for Pulls<'_> {
     /// description closes as well (docs/adr/0083), and each the fleet told
     /// it carries, whatever its description says now (sunfmin/control#1248).
     fn landed(&self, change: &Change, _commit: &str) -> Result<()> {
+        let issues = crate::issues::of(self.gh);
         let Some(n) = self.issue() else { return Ok(()) };
-        self.gh.close_issue(n)?;
+        issues.close_issue(n)?;
         crate::account::leave(self.repo, self.gh, n, End::Landed, (self.clock)())?;
         let body = self.gh.pr_body(change.number)?;
         let mut carried: Vec<u64> = self.told_carried(change.number)?.into_keys().collect();
@@ -137,8 +139,8 @@ impl Forge for Pulls<'_> {
         carried.sort_unstable();
         carried.dedup();
         for carried in carried.into_iter().filter(|&c| c != n) {
-            if !self.gh.issue(carried)?.is_closed() {
-                self.gh.close_issue(carried)?;
+            if !issues.issue(carried)?.is_closed() {
+                issues.close_issue(carried)?;
                 crate::account::leave(self.repo, self.gh, carried, End::Landed, (self.clock)())?;
             }
         }
@@ -190,9 +192,10 @@ impl Forge for Pulls<'_> {
     /// while `by` is open, and starts its next worker from that branch
     /// should `by` close unlanded.
     fn carried(&self, carried: &Change, by: &Change) -> Result<()> {
+        let issues = crate::issues::of(self.gh);
         let body = self.gh.pr_body(carried.number)?;
         for issue in self.tracker.closed_by(&body, &[], None) {
-            self.gh.comment(issue, &carried_comment(carried.number, by.number, &by.source))?;
+            issues.comment(issue, &carried_comment(carried.number, by.number, &by.source))?;
         }
         Ok(())
     }

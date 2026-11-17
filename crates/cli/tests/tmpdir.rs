@@ -2,7 +2,7 @@ use crate::common::{World, git};
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde_json::Value;
 
@@ -22,7 +22,7 @@ struct Server(i32);
 impl Server {
     fn start(tmp: &Path) -> Self {
         let exe = std::env::current_exe().unwrap();
-        let out = Command::new("/bin/sh")
+        let out = afkconvoy::census::command("/bin/sh")
             .args(["-c", "\"$0\" --exact tmpdir::a_server --ignored >/dev/null 2>&1 & echo $!"])
             .arg(exe)
             .current_dir("/")

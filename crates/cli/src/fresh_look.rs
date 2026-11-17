@@ -1,5 +1,5 @@
 //! A PR whose landing turns went red twice in a row is handed to a new worker
-//! in a new worktree (docs/adr/0088): the worker that retried it in its own
+//! in a new worktree (docs/adr/0114): the worker that retried it in its own
 //! worktree is ended, confirmed stopped, what it left is saved as a patch,
 //! its worktree is removed, and a worker of the issue starts in a new one on
 //! the PR's branch merged up to the base tip, briefed with both red runs.
@@ -66,15 +66,41 @@ struct Said {
     line: String,
 }
 
-fn said_file(fleet: &Fleet, issue: u64) -> Result<PathBuf> {
-    Ok(fleet.repo.common_dir()?.join("convoy-fresh-looks").join(format!("{issue}.json")))
+/// The host's database, with the note an older release kept of `issue`'s
+/// hand-on in the repo's git dir, `convoy-fresh-looks/<issue>.json`, taken
+/// in (`host_db::converge_file`); and the key of the repo's rows of
+/// `fresh_looks`, one per issue.
+fn converged(fleet: &Fleet, issue: u64) -> Result<(rusqlite::Connection, String)> {
+    let mut db = crate::host_db::open()?;
+    let key = crate::host_db::repo_key(&fleet.repo)?;
+    let note = fleet.repo.common_dir()?.join("convoy-fresh-looks").join(format!("{issue}.json"));
+    let cache = crate::copies::cache()?;
+    crate::host_db::converge_file(&mut db, &note, &cache, |tx, bytes| {
+        let said: Said = serde_json::from_slice(bytes)?;
+        keep(tx, &key, issue, &said)
+    })?;
+    Ok((db, key))
+}
+
+fn keep(db: &rusqlite::Connection, key: &str, issue: u64, said: &Said) -> Result<()> {
+    db.execute(
+        "INSERT OR REPLACE INTO fresh_looks (repo, issue, said) VALUES (?1, ?2, ?3)",
+        rusqlite::params![key, issue as i64, serde_json::to_string(said)?],
+    )?;
+    Ok(())
 }
 
 /// What the board of the claim `claim` on `issue` says of its PR's last
 /// hand-on to a new worker, where it had one under that claim.
 pub(crate) fn board_line(fleet: &Fleet, issue: u64, claim: &str) -> Option<String> {
-    let bytes = std::fs::read(said_file(fleet, issue).ok()?).ok()?;
-    let said: Said = serde_json::from_slice(&bytes).ok()?;
+    use rusqlite::OptionalExtension;
+    let (db, key) = converged(fleet, issue).ok()?;
+    let sql = "SELECT said FROM fresh_looks WHERE repo = ?1 AND issue = ?2";
+    let text: String = db
+        .query_row(sql, rusqlite::params![key, issue as i64], |row| row.get(0))
+        .optional()
+        .ok()??;
+    let said: Said = serde_json::from_str(&text).ok()?;
     (said.claim == claim).then_some(said.line)
 }
 
@@ -98,7 +124,7 @@ pub(crate) fn said(issue: u64, pr: u64, reds: &[RedTurn], worktree: &str) -> Str
 
 /// The text of the last verdict declared on `issue`, where one was.
 fn last_verdict(fleet: &Fleet, issue: u64) -> Result<Option<String>> {
-    let comments = fleet.gh.comments(issue)?;
+    let comments = fleet.issues.comments(issue)?;
     let declared = comments
         .iter()
         .rev()
@@ -208,13 +234,9 @@ pub(crate) fn hand_on(
     let started = dispatched.answer;
     let path = started["worktree"].as_str().unwrap_or_default().to_string();
     let line = said(issue, pr, &handed.reds, &path);
-    if let Ok(file) = said_file(fleet, issue) {
-        if let Some(dir) = file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let kept = Said { claim: claim.sha.clone(), line: line.clone() };
-        let _ = std::fs::write(&file, serde_json::to_vec(&kept)?);
-    }
+    let kept = Said { claim: claim.sha.clone(), line: line.clone() };
+    // Best effort, as the board line it spares a read for is.
+    let _ = converged(fleet, issue).and_then(|(db, key)| keep(&db, &key, issue, &kept));
     found.handed_on.push((issue, line));
     Ok(json!({"issue": issue, "pr": pr, "worktree": path, "branch": started["branch"],
         "terminal": started["terminal"], "patch": handed.patch, "reds": handed.reds.len()}))

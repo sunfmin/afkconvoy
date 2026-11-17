@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,6 +37,8 @@ pub mod blockers;
 pub mod board;
 mod candidates;
 pub mod caster;
+pub mod census;
+mod chain_store;
 pub mod checkout;
 pub mod checkout_list;
 pub mod checkouts;
@@ -45,8 +48,10 @@ mod codex_launch;
 pub mod concurrency;
 pub mod config;
 pub mod copies;
+pub mod host_db;
 pub use afkconvoy_host_reading::cpu;
 pub mod cut;
+pub mod cut_holder;
 pub mod daybook;
 mod delivery;
 pub mod disk;
@@ -87,7 +92,10 @@ pub mod hot;
 pub mod human_wait;
 pub mod instance;
 pub mod intake;
+mod issue;
+pub mod issue_import;
 pub mod issue_updates;
+pub mod issues;
 pub mod jev;
 pub mod judge;
 pub mod kept;
@@ -115,6 +123,7 @@ mod plan;
 pub mod probe;
 mod process;
 mod process_scope;
+mod promote;
 pub mod published;
 pub mod queue;
 pub mod queue_share;
@@ -178,10 +187,10 @@ use host_settings::{
     ACCOUNT_LIMIT_ENV, ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
     AGENT_GUARDS_ENV, AGENT_INSTRUCTIONS_ENV, AGENT_SKILLS_ENV, BUSY_SHARE_ENV,
     EXCLUSIVE_SECONDS_ENV, GITHUB_SHARE_ENV, HOST_NAME_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV,
-    HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, MAX_SHARE_OF_CORES_ENV, MAX_SHARE_OF_MEMORY_ENV,
-    NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV, jev_key_command_or_default,
-    notify_command_or_default, percent_or_default, port_or_default, thousandths_or_default,
-    watch_dir_or_default, watch_every_or_default, whole_or_default,
+    HOT_SPAWNS_ENV, HOT_WRITTEN_ENV, JEV_KEY_COMMAND_ENV, MAX_SHARE_OF_CORES_ENV,
+    MAX_SHARE_OF_MEMORY_ENV, NOTIFY_COMMAND_ENV, To, WATCH_DIR_ENV, WATCH_EVERY_ENV,
+    jev_key_command_or_default, notify_command_or_default, percent_or_default, port_or_default,
+    thousandths_or_default, watch_dir_or_default, watch_every_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -209,14 +218,14 @@ const READER: &str = "Run by whoever reads this manual";
 // below, the guide: the text an agent reads to learn the tool. `help` is this
 // crate's own, not clap's: it prints a topic too, and `help all` the whole
 // manual. The listing opens with usage, then commands, so `-h` stays one screen.
-/// afkconvoy works ready GitHub issues unattended. `afkconvoy run` starts one host runner with a fleet instance per repo. Each dispatches a coding agent per issue in its own git worktree, gates finished PRs and lands them on the configured base or a task's selected target. Fleet state lives in GitHub and the remote.
+/// afkconvoy works ready issues unattended. `afkconvoy run` starts one host runner with a fleet instance per repo. Each dispatches a coding agent per issue in its own git worktree, gates finished PRs and lands them on the configured base or a task's selected target. Fleet state lives in the tracker, host database and remote.
 ///
 /// `afkconvoy --help` answers the index: this guide, each command by who runs it, and each topic's first sentence. `afkconvoy help all` answers the whole manual. `afkconvoy -h` lists commands on one screen.
 ///
 /// ## What it needs
 ///
 /// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}. A repo whose config names a team is a bound repo: its workflows say how issues are worked. One whose config names none is unbound: one worker per issue, then a turn that lands its PR.
-/// - A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
+/// - A tracker: the host's local tracker, `local/<host>` (`afkconvoy issue`), unless `run --tracker <owner>/<repo>` names a private GitHub repo. Settle a first start with the user: [`afkconvoy help first-start`](help:first-start).
 /// - {const:FIRST_START_SETTINGS}
 /// - `gh` logged in as a user who may push to the repo.
 /// - `orca` on the PATH, or Orca's SSH remote runtime as is, its CLI at `~/.orca/cli/bin/orca`: it starts every worker. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
@@ -248,9 +257,9 @@ const READER: &str = "Run by whoever reads this manual";
 ///
 /// Read `afkconvoy <command> --help` before first running it. Commands are grouped by who runs them:
 ///
-/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` picks a task's target; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `hold` for one PR; `queue` for the exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` old ones; `kit`, `cast`, `switch` for harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something; `takeover` takes another instance's claims; `daybook` records what an agent did off any issue.
+/// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` picks a task's target; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `hold` for one PR; `promote` for a proving branch; `queue` for the exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` old ones; `kit`, `cast`, `switch` for harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something; `takeover` takes another instance's claims; `daybook` records what an agent did off any issue.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
-/// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
+/// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels; `issue` reads and writes them. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
 /// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `watched`, `asked`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 /// - **{const:HUMAN}** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
@@ -267,7 +276,7 @@ const READER: &str = "Run by whoever reads this manual";
 /// - A flag of the command's own, including `--instance` and `--run`, does not move the checkout to `-C`. The checkout is a path after the command whenever that command's usage line shows `[CHECKOUT]`, and `-C <checkout>` only when that command's usage line shows `-C`. A fix line and a hand-typed command use that form.
 /// - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
 /// - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
-/// - Between ticks a fleet instance sleeps {const:TICK_BUSY_SECONDS} seconds while it has work, or {const:TICK_IDLE_MINUTES} minutes after {const:TICK_IDLE_AFTER} empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads GitHub and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
+/// - Between ticks a fleet instance sleeps {const:TICK_BUSY_SECONDS} seconds while it has work, or {const:TICK_IDLE_MINUTES} minutes after {const:TICK_IDLE_AFTER} empty ticks. Commands that change fleet state wake it sooner, including a worker's last `afkconvoy wake`. When a fleet on this host closes an issue or sees it closed, it also wakes every other fleet on the same tracker whose open issues it blocked. That next tick reads the tracker and takes up an issue whose last open blocker closed; its tick log names the closed issue and the fleet instance that saw it. After changing issues with `gh`, run `afkconvoy wake <checkout>` on the fleet's host: `gh` sends no wake.
 /// - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A known harness with no entry or command is discovered in the worker login shell, checked, and appended to the latest kit without model probes; an explicit command always wins. A running fleet reads command edits at its next worker launch.
 /// - In a bound repo the worker launch command must end in its harness — Claude Code, pi, Codex, DSH, Kimi Code or Grok — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 ///
@@ -403,14 +412,24 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
+    /// Read and write the tracker's issues
+    #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment, long_about = issue::HELP,
+        override_usage = "afkconvoy issue [-C <CHECKOUT>] <create|view|list|comment|edit|close|reopen|block|unblock|import> [ARGS]")]
+    Issue {
+        #[command(subcommand)]
+        verb: issue::Verb,
+        #[command(flatten)]
+        at: AtEveryFlag,
+    },
     /// End the sleep of this host's `run` for this repo: its next tick starts now (after opening issues with `gh`, and as a worker's last command)
     #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment, long_about = wake::HELP)]
     Wake {
         #[command(flatten)]
         at: At,
     },
-    /// Append one after-the-fact entry to the daybook: what an agent did or decided outside any issue
+    /// Record what an agent did or decided outside any issue, on this host
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = daybook::HELP)]
+    #[command(group(clap::ArgGroup::new("span").args(["lessons", "read"]).multiple(false)))]
     Daybook {
         /// What was done, put under `Did`; or say each heading with its flag
         #[arg(conflicts_with = "did")]
@@ -431,26 +450,29 @@ enum Command {
         #[arg(long = "link", value_name = "URL")]
         links: Vec<String>,
         /// List the lessons of a span of days instead of writing an entry
-        #[arg(long, requires = "since", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links"])]
+        #[arg(long, requires = "since", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "repo", "read"])]
         lessons: bool,
+        /// Print the entries of a day or a span of days [default: today's] instead of writing one
+        #[arg(long, conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "repo"])]
+        read: bool,
+        /// The one day `--read` prints
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "read", conflicts_with_all = ["since", "until"], value_parser = daybook::day_named)]
+        day: Option<String>,
         /// Record a distillation said in this JSON file: check it carries each lesson of its span once, then write its one entry
-        #[arg(long, value_name = "FILE", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "distill"])]
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "read", "distill"])]
         distilled: Option<PathBuf>,
         /// Ask the host's watch to distill the daybook at its next look, without waiting out its week
-        #[arg(long, conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "repo", "tracker"])]
+        #[arg(long, conflicts_with_all = ["text", "did", "why", "undo", "lesson", "links", "lessons", "read", "repo"])]
         distill: bool,
-        /// The first day of the span `--lessons` lists
-        #[arg(long, value_name = "YYYY-MM-DD", requires = "lessons", value_parser = daybook::day_named)]
+        /// The first day of the span `--lessons` or `--read` lists
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "span", value_parser = daybook::day_named)]
         since: Option<String>,
-        /// The last day of the span `--lessons` lists [default: none, to today]
-        #[arg(long, value_name = "YYYY-MM-DD", requires = "lessons", value_parser = daybook::day_named)]
+        /// The last day of the span `--lessons` or `--read` lists [default: none, to today]
+        #[arg(long, value_name = "YYYY-MM-DD", requires = "since", value_parser = daybook::day_named)]
         until: Option<String>,
         /// The repo the entry is of [default: the one the checkout's remote names]
         #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_named)]
         repo: Option<RepoName>,
-        /// The tracker whose daybook it is [default: the checkout's tracker on this host's checkout list]
-        #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_named)]
-        tracker: Option<RepoName>,
         #[command(flatten)]
         at: AtFlag,
     },
@@ -554,11 +576,13 @@ enum Command {
         /// where `doctor` says it is ignored; `default` drops it
         #[arg(long, value_name = "CLAIMS", value_parser = concurrency::claims_or_default)]
         concurrency: Option<To<NonZeroUsize>>,
-        /// The private repo this checkout's fleet reads and writes its issues in: required
-        /// on its first `run`; kept on this host and never pushed. `default` says its own repo
-        /// explicitly, which must be private; omitted on later runs, its saved choice holds
-        #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_or_default)]
-        tracker: Option<To<RepoName>>,
+        /// Where this checkout's fleet reads and writes its issues: `local` — the default —
+        /// this host's local tracker, `local/<host>`, read and written with `afkconvoy issue`;
+        /// or a private GitHub repo, `<owner>/<repo>`, the checkout's own among them. Kept on
+        /// this host and never pushed. `default` says the local tracker again; omitted, the
+        /// saved choice holds
+        #[arg(long, value_name = "OWNER/REPO|local", value_parser = tracker::repo_or_default)]
+        tracker: Option<To<afkconvoy_core::tracker::Said>>,
         /// The harness this checkout's workers start on, from its next tick. `default` follows
         /// the host kit again. A word that is not a harness, or a harness the host kit does not
         /// hold, is an error and writes nothing
@@ -595,6 +619,11 @@ enum Command {
         /// one GiB at the least]
         #[arg(long, env = HOT_WRITTEN_ENV, value_name = "GIB", value_parser = thousandths_or_default)]
         hot_written: Option<To<u64>>,
+        /// The processes a second a worker's processes and the orphans of its commands may
+        /// create before it turns hot, held two minutes: a host setting; `default` changes it
+        /// back [default: 25 for each core of this host, 200 at the least]
+        #[arg(long, env = HOT_SPAWNS_ENV, value_name = "PER_SECOND", value_parser = whole_or_default)]
+        hot_spawns: Option<To<u64>>,
         /// The load, a whole percent of this host's cores, past which no tick starts a new
         /// worker: a host setting; `default` changes it back [default: 200]
         #[arg(long, env = ADMIT_LOAD_ENV, value_name = "PERCENT", value_parser = whole_or_default)]
@@ -1044,6 +1073,15 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
+    /// Slow-gate the proving branch, then move the base branch to it
+    #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = promote::HELP)]
+    Promote {
+        /// The host its gate runs and is recorded as on [default: this machine's name]
+        #[arg(long)]
+        host: Option<String>,
+        #[command(flatten)]
+        at: At,
+    },
     /// Run a heavy command in this host's worker lanes (a worker's command)
     #[command(next_help_heading = WORKER, verbatim_doc_comment, long_about = exclusive::HELP)]
     Exclusive {
@@ -1305,6 +1343,15 @@ struct AtFlag {
     checkout: Option<PathBuf>,
 }
 
+/// The checkout a command with subcommands is about, named with `-C` before
+/// or after the subcommand.
+#[derive(clap::Args)]
+struct AtEveryFlag {
+    /// The checkout it is about, or a directory in it [default: the one it is run in]
+    #[arg(short = 'C', value_name = "CHECKOUT", global = true)]
+    checkout: Option<PathBuf>,
+}
+
 /// The id of the argument of `At` and of `AtFlag`: a command that has it is
 /// about one repo, and one that has neither is about none.
 const CHECKOUT_ARG: &str = "checkout";
@@ -1503,7 +1550,7 @@ fn kind(name: &str) -> Kind {
         | "claim" | "release" | "heartbeat" | "patrol-now" | "hold" => Kind::ACTS,
         "takeover" => Kind { worktree: Worktree::Reads(Some("from")), ..Kind::ACTS },
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
-        | "intake" | "lock" | "over" | "cut" | "wake" | "rewrite-accounts" => worker_acts,
+        | "intake" | "lock" | "over" | "cut" | "wake" | "rewrite-accounts" | "issue" => worker_acts,
         "tick" => Kind { starts: true, ..Kind::ACTS },
         "doctor" | "show" | "exclusive" | "daybook" => Kind::WORKERS,
         "plan" => Kind { starts: true, ..Kind::WORKERS },
@@ -1613,23 +1660,37 @@ fn checkout_help(name: &str, positional: bool) -> String {
 /// (`Some(true)`), with `-C` (`Some(false)`), or takes none (`None`). The
 /// same fact `checkout_help` writes into the manual: a fix line uses it, so
 /// the line and a command typed by hand name the checkout the same way.
+/// Asked from deep in a fleet's threads, the command line is built on a
+/// thread of its own, whose stack holds clap's whole tree however deep the
+/// asker is.
 pub(crate) fn positional_checkout(name: &str) -> Option<bool> {
     use std::collections::HashMap;
     use std::sync::OnceLock;
     static FORMS: OnceLock<HashMap<String, bool>> = OnceLock::new();
+    let forms = || -> HashMap<String, bool> {
+        cli()
+            .get_subcommands()
+            .filter_map(|command| {
+                let arg = command.get_arguments().find(|arg| arg.get_id() == CHECKOUT_ARG)?;
+                Some((command.get_name().to_string(), arg.is_positional()))
+            })
+            .collect()
+    };
     FORMS
         .get_or_init(|| {
-            cli()
-                .get_subcommands()
-                .filter_map(|command| {
-                    let arg = command.get_arguments().find(|arg| arg.get_id() == CHECKOUT_ARG)?;
-                    Some((command.get_name().to_string(), arg.is_positional()))
-                })
-                .collect()
+            std::thread::scope(|scope| {
+                let built =
+                    std::thread::Builder::new().stack_size(CLI_STACK).spawn_scoped(scope, forms);
+                built.map_or_else(|_| forms(), |built| issues::beside(built))
+            })
         })
         .get(name)
         .copied()
 }
+
+/// The stack a thread that builds the command line is given: clap's tree,
+/// built in a debug build, outgrows the 2 MiB of a thread's default.
+const CLI_STACK: usize = 16 << 20;
 
 /// The manual: `--help` answers its index, `help all` it whole, and `help
 /// <topic>` one topic of it. Its text is the guide (`Cli`'s doc comment), each
@@ -1649,6 +1710,7 @@ pub fn manual() -> agent_help::Help {
         .topic::<Example>()
         .topic::<ExampleRun>()
         .topic::<Cache>()
+        .topic::<Data>()
         .topic::<TickLog>()
         .topic::<WorkerLaunch>()
         .topic::<WorkerCodex>()
@@ -1664,6 +1726,7 @@ pub fn manual() -> agent_help::Help {
         .constant("REMOTE_READS", remote::reads_help())
         .constant("GH_IN_TRANSIT", gh::in_transit_help())
         .constant("PANEL_PORT", host_settings::PANEL_PORT)
+        .constant("BACKUPS_KEPT", host_db::BACKUPS_KEPT)
         .constant("FIRST_START_SETTINGS", first_start::settings_help())
         .constant("FIRST_START_QUESTIONS", first_start::help())
         .constant("EXCLUSIVE_SECONDS", exclusive::SECONDS)
@@ -1671,7 +1734,6 @@ pub fn manual() -> agent_help::Help {
         .constant("EXCLUSIVE_BOUND_CODE", exclusive::BOUND_CODE)
         .constant("NOTIFY_SECONDS", watch_notify::SECONDS)
         .constant("NOTIFY_FAILURES", watch_notify::FAILURES)
-        .constant("DAYBOOK_RETRY_MAX", watch_daybook::RETRY_MAX)
         .constant("WATCH_EVERY", host_settings::WATCH_EVERY)
         .constant("WATCH_TITLE", watch_terminal::TITLE)
         .constant("WATCH_CHECKOUT", host_watch::CHECKOUT)
@@ -1791,6 +1853,15 @@ fn asks_for_text(args: &[OsString]) -> Option<&str> {
         }
     }
     long.then(|| first_word(args)).flatten()
+}
+
+/// The subcommand of the command `name` that `args` name after it, where
+/// it has subcommands: `afkconvoy issue view --help` asks for `view`'s text.
+fn nested<'a>(args: &'a [OsString], name: &str) -> Option<&'a str> {
+    let command = cli().find_subcommand(name)?.clone();
+    let mut words = args.iter().filter_map(|arg| arg.to_str());
+    words.find(|word| *word == name)?;
+    words.filter(|word| !word.starts_with('-')).find(|word| command.find_subcommand(word).is_some())
 }
 
 /// What `help` prints: the index with no name, the whole manual for `all`,
@@ -2028,6 +2099,7 @@ fn start_of(
         hot_cores,
         hot_memory,
         hot_written,
+        hot_spawns,
         admit_load,
         admit_memory,
         admit_disk,
@@ -2062,6 +2134,7 @@ fn start_of(
         hot_cores,
         hot_memory,
         hot_written,
+        hot_spawns,
         admit_load,
         admit_memory,
         admit_disk,
@@ -2189,7 +2262,10 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Ok(parsed) => parsed,
         // A command's `--help` is its text in the manual.
         Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => {
-            let text = asks_for_text(&args).and_then(|name| help(Some(name)).ok());
+            let text = asks_for_text(&args).and_then(|name| match nested(&args, name) {
+                Some(sub) => manual().command_help(&[name, sub]).ok(),
+                None => help(Some(name)).ok(),
+            });
             match text {
                 Some(text) => {
                     print!("{text}");
@@ -2221,6 +2297,9 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         _ => {}
     }
     let fixed_now = cli.now.flatten();
+    if let Some(now) = fixed_now {
+        let _ = TOLD_NOW.set(now);
+    }
     if let Command::Guard { terminal_input_only } = cli.command {
         return guard::guard(terminal_input_only);
     }
@@ -2347,6 +2426,17 @@ fn clock() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
 }
 
+/// The time this process's command was told it acts at (`--now`), where it
+/// was: kept once, as the command starts.
+static TOLD_NOW: OnceLock<u64> = OnceLock::new();
+
+/// The time a write this command makes is stamped with, where it stamps its
+/// own — the host's local tracker's: the time it was told it acts at
+/// (`--now`), else the clock's now. GitHub stamps its own writes.
+pub(crate) fn acting_now() -> u64 {
+    TOLD_NOW.get().copied().unwrap_or_else(clock)
+}
+
 /// A name no other thread of this process makes: the pid and a counter. A
 /// file or a directory named with it is one thread's own, however many fleet
 /// instances work in the process.
@@ -2430,6 +2520,9 @@ impl Command {
             Command::Cut { now: true, .. } => Acting::new("cut").on("now".to_string()),
             Command::Cut { .. } => Acting::new("cut").saying_start(),
             Command::Wake { .. } => Acting::new("wake").on_own_issue(),
+            Command::Issue { verb, .. } if verb.writes() => {
+                Acting::new("issue").on_issue(verb.number())
+            }
             Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
             // Its kind says it does not act (`kind`).
@@ -2482,19 +2575,20 @@ fn run(
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
         }
+        Command::Issue { verb, .. } => issue::issue(&checkout?, verb),
         Command::Daybook { distill: true, .. } => host_watch::ask_distillation(now),
-        Command::Daybook { distilled: Some(file), repo, tracker, .. } => {
-            daybook::distilled(checkout, repo, tracker, &file)
+        Command::Daybook { distilled: Some(file), repo, .. } => {
+            daybook::distilled(checkout, repo, &file)
         }
-        Command::Daybook { lessons: true, since, until, tracker, .. } => daybook::lessons(
-            checkout,
-            tracker,
-            since.as_deref().unwrap_or_default(),
-            until.as_deref(),
-        ),
-        Command::Daybook { text, did, why, undo, lesson, links, repo, tracker, .. } => {
+        Command::Daybook { lessons: true, since, until, .. } => {
+            daybook::lessons(since.as_deref().unwrap_or_default(), until.as_deref())
+        }
+        Command::Daybook { read: true, day, since, until, .. } => {
+            daybook::read(day.as_deref(), since.as_deref(), until.as_deref())
+        }
+        Command::Daybook { text, did, why, undo, lesson, links, repo, .. } => {
             let said = daybook::Said { did: did.or(text), why, undo, lesson, links };
-            daybook::daybook(checkout, daybook::Asked { said, repo, tracker })
+            daybook::daybook(checkout, daybook::Asked { said, repo })
         }
         Command::Skill => Ok(Value::String(skill::SKILL.to_string())),
         Command::Draft { dir, team, yes } => draft::draft(dir, team, yes),
@@ -2853,6 +2947,9 @@ fn run(
         }
         // `Acting::end` sends it, as it does for every command that acts.
         Command::Wake { .. } => Ok(json!({})),
+        Command::Promote { host, .. } => {
+            promote::promote(&checkout?, &host.unwrap_or_else(this_host), now)
+        }
         Command::Scan { .. } => Ok(Scan::read_said(&checkout?)?.json()),
         Command::Claim { issue, who, .. } => {
             let repo = checkout?;
@@ -2917,10 +3014,10 @@ mod tests {
     /// does not.
     #[test]
     fn the_help_never_names_a_closed_document() {
-        let cited = "so a repo config names none (`docs/adr/0025`).\nThe rest stays.\n";
+        let cited = "so a repo config names none (`docs/adr/0020`).\nThe rest stays.\n";
         assert_eq!(names_closed_adr(cited), Some(1));
         assert_eq!(names_closed_adr("so a repo config names none.\n"), None);
-        let later = "The rule.\nSee docs/adr/0027.\n";
+        let later = "The rule.\nSee docs/adr/0091.\n";
         assert_eq!(names_closed_adr(later), Some(2));
         let rendered = manual().manual().unwrap();
         assert_eq!(
@@ -3028,7 +3125,7 @@ mod tests {
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--hot-cores", "0"]).is_err());
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--admit-load", "5%"]).is_err());
         assert!(asked(&[]).1.is_empty(), "named none, it changes none");
-        // host sleep is gone: its flags are no flags (docs/adr/0050)
+        // host sleep is gone: its flags are no flags
         for gone in ["--no-host-sleep", "--host-sleep", "--host-sleep-after"] {
             assert!(Cli::try_parse_from(["afkconvoy", "run", gone]).is_err(), "{gone}");
         }

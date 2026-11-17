@@ -1,5 +1,5 @@
 //! The exclusive queue's share of the host's CPU, averaged over the minute
-//! the load average is (docs/adr/0078, sunfmin/control#1069). Admission
+//! the load average is (docs/adr/0107, sunfmin/control#1069). Admission
 //! apportions the host's one-minute load by it: the load lags the work that
 //! made it by about a minute, and one instant's share does not, so a gate
 //! between two of its phases left its whole lagging load counted as other

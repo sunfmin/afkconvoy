@@ -18,7 +18,7 @@ pub const CPU_HELD: u64 = 120;
 
 /// How long, in seconds, a process of a worker must have taken no CPU and
 /// had no child, holding build-directory locks, for its worker to turn
-/// stalled (docs/adr/0088): three minutes. A build waiting on one that runs
+/// stalled (docs/adr/0082): three minutes. A build waiting on one that runs
 /// waits on a holder that takes CPU or has children, so it never stalls.
 pub const STALL_HELD: u64 = 180;
 
@@ -36,6 +36,18 @@ pub const WRITTEN_WITHIN: u64 = 600;
 /// stop being hot: five minutes. That ends its episode.
 pub const COOLS_AFTER: u64 = 300;
 
+/// How long, in seconds, a process a worker's command left behind — handed to
+/// pid 1, working in its worktree — may run before it is named on the
+/// worker's issue and ended: five minutes.
+pub const ORPHAN_AFTER: u64 = 300;
+
+/// The least the process creation limit is, in processes a second, however
+/// few cores the host has.
+pub const SPAWNS_FLOOR: u64 = 200;
+
+/// The processes a second the limit allows each core of the host.
+pub const SPAWNS_PER_CORE: u64 = 25;
+
 /// The least the disk-written limit is, in bytes, however little disk the
 /// host has free: 1 GiB.
 pub const WRITTEN_FLOOR: u64 = 1 << 30;
@@ -49,18 +61,24 @@ pub struct Limits {
     pub resident: u64,
     /// Bytes written to disk: more than this within `WRITTEN_WITHIN`.
     pub written: u64,
+    /// Processes created a second, by its processes and their orphans: more
+    /// than this, held `CPU_HELD`. Process creation is paid in the kernel and
+    /// in the daemons each exec wakes, outside any worker's tree.
+    pub spawns: u64,
 }
 
 impl Limits {
     /// The limits on a host of `cores` cores, `memory` bytes of memory and
     /// `free` bytes of disk free, each a share of it: half its cores, but
     /// never under one; a quarter of its memory; a tenth of its free disk,
-    /// but never under `WRITTEN_FLOOR`.
+    /// but never under `WRITTEN_FLOOR`; `SPAWNS_PER_CORE` processes a second for each
+    /// core, but never under `SPAWNS_FLOOR`.
     pub fn of_host(cores: u64, memory: u64, free: u64) -> Limits {
         Limits {
             millicores: cores.saturating_mul(500).max(1000),
             resident: memory / 4,
             written: (free / 10).max(WRITTEN_FLOOR),
+            spawns: cores.saturating_mul(SPAWNS_PER_CORE).max(SPAWNS_FLOOR),
         }
     }
 }
@@ -91,6 +109,9 @@ pub struct Sample {
     /// The bytes they wrote to disk since the sample before; `None` at the
     /// first.
     pub written: Option<u64>,
+    /// The processes a second they created, over the last samples; `None`
+    /// where it cannot be told.
+    pub spawns: Option<u64>,
     /// What the worker's worktree holds, measured with this sample; `None`
     /// when it was not, for measuring it is slow: the measure before stands.
     pub held: Option<Built>,
@@ -133,6 +154,8 @@ pub enum Why {
     Memory,
     /// They wrote more to disk than the limit, within `WRITTEN_WITHIN`.
     Written,
+    /// They created more processes a second than the limit, for `CPU_HELD`.
+    Spawns,
     /// Its worktree has outgrown its fresh build (`landing::outgrown`).
     Held,
     /// A process of it has waited on build-directory locks at no CPU, with
@@ -148,6 +171,7 @@ impl Why {
             Why::Cpu => "CPU",
             Why::Memory => "memory",
             Why::Written => "disk written",
+            Why::Spawns => "process creation",
             Why::Held => "disk held",
             Why::Stalled => "stalled",
         }
@@ -162,6 +186,9 @@ pub struct Episode {
     pub why: Why,
     /// The most CPU taken in one sample, in thousandths of a core.
     pub millicores: u64,
+    /// The most processes created a second in one sample.
+    #[serde(default)]
+    pub spawns: u64,
     /// The most memory held resident in one sample, in bytes.
     pub resident: u64,
     /// The most written to disk within `WRITTEN_WITHIN`, in bytes.
@@ -192,6 +219,10 @@ pub enum Turned {
 pub struct Watch {
     /// Since when its CPU has been past the limit, sample after sample.
     cpu_since: Option<u64>,
+    /// Since when its process creation has been past the limit, sample after
+    /// sample.
+    #[serde(default)]
+    spawn_since: Option<u64>,
     /// The host's pressure at level 2 or above, sample after sample.
     #[serde(default)]
     pressed: Option<Pressed>,
@@ -230,6 +261,14 @@ impl Watch {
         };
         let cpu_held =
             self.cpu_since.is_some_and(|since| sample.at.saturating_sub(since) >= CPU_HELD);
+        let spawn_over = sample.spawns.is_some_and(|made| made > limits.spawns);
+        self.spawn_since = match self.spawn_since {
+            Some(since) if spawn_over => Some(since),
+            None if spawn_over => Some(sample.at.saturating_sub(every)),
+            _ => None,
+        };
+        let spawn_held =
+            self.spawn_since.is_some_and(|since| sample.at.saturating_sub(since) >= CPU_HELD);
         let level = sample.pressure.filter(|level| *level >= 2);
         self.pressed = match (self.pressed, level) {
             (_, None) => None,
@@ -275,6 +314,8 @@ impl Watch {
             Some(Why::Stalled)
         } else if cpu_held {
             Some(Why::Cpu)
+        } else if spawn_held {
+            Some(Why::Spawns)
         } else if memory_over {
             Some(Why::Memory)
         } else if written_over {
@@ -285,12 +326,14 @@ impl Watch {
             None
         };
         let taken = sample.millicores.unwrap_or(0);
+        let made = sample.spawns.unwrap_or(0);
         let Some(mut episode) = self.hot else {
             let why = why?;
             let started = Episode {
                 since: sample.at,
                 why,
                 millicores: taken,
+                spawns: made,
                 resident: sample.resident,
                 written,
                 held,
@@ -301,6 +344,7 @@ impl Watch {
             return Some(Turned::Hot(started));
         };
         episode.millicores = episode.millicores.max(taken);
+        episode.spawns = episode.spawns.max(made);
         episode.resident = episode.resident.max(sample.resident);
         episode.written = episode.written.max(written);
         episode.held = episode.held.max(held);
@@ -308,7 +352,12 @@ impl Watch {
             episode.pressed = counting;
         }
         self.hot = Some(episode);
-        let under = !cpu_over && !memory_over && !written_over && !outgrown && !sample.stalled;
+        let under = !cpu_over
+            && !spawn_over
+            && !memory_over
+            && !written_over
+            && !outgrown
+            && !sample.stalled;
         if !under {
             self.under_since = None;
             return None;
@@ -328,7 +377,8 @@ mod tests {
     use super::*;
 
     const GIB: u64 = 1 << 30;
-    const LIMITS: Limits = Limits { millicores: 4000, resident: 8 * GIB, written: 4 * GIB };
+    const LIMITS: Limits =
+        Limits { millicores: 4000, resident: 8 * GIB, written: 4 * GIB, spawns: 300 };
 
     fn sample(at: u64, millicores: u64, resident: u64) -> Sample {
         Sample {
@@ -338,6 +388,7 @@ mod tests {
             exclusive: 0,
             pressure: None,
             written: Some(0),
+            spawns: Some(0),
             held: None,
             stalled: false,
         }
@@ -369,14 +420,14 @@ mod tests {
     fn the_limits_are_shares_of_the_host() {
         assert_eq!(
             Limits::of_host(14, 48 * GIB, 200 * GIB),
-            Limits { millicores: 7000, resident: 12 * GIB, written: 20 * GIB }
+            Limits { millicores: 7000, resident: 12 * GIB, written: 20 * GIB, spawns: 350 }
         );
         // one core at the least, on a host of one
         assert_eq!(Limits::of_host(1, 4 * GIB, 0).millicores, 1000);
         // a GiB written at the least, on a host with its disk full
         assert_eq!(
             Limits::of_host(0, 0, 0),
-            Limits { millicores: 1000, resident: 0, written: WRITTEN_FLOOR }
+            Limits { millicores: 1000, resident: 0, written: WRITTEN_FLOOR, spawns: SPAWNS_FLOOR }
         );
     }
 
@@ -401,6 +452,7 @@ mod tests {
                 since: 1110,
                 why: Why::Cpu,
                 millicores: 6000,
+                spawns: 0,
                 resident: GIB,
                 written: 0,
                 held: 0,
@@ -432,6 +484,7 @@ mod tests {
             exclusive: 0,
             pressure: None,
             written: None,
+            spawns: None,
             held: None,
             stalled: false,
         };
@@ -451,6 +504,7 @@ mod tests {
                     since: 1000,
                     why: Why::Memory,
                     millicores: 100,
+                    spawns: 0,
                     resident: 9 * GIB,
                     written: 0,
                     held: 0,
@@ -576,6 +630,7 @@ mod tests {
             since: 1000,
             why: Why::Memory,
             millicores: 100,
+            spawns: 0,
             resident: 10 * GIB,
             written: 0,
             held: 0,
@@ -690,5 +745,27 @@ mod tests {
         // its build moves again: under every limit for five minutes, it cools
         let turned = run(&mut watch, 1020, 1020 + COOLS_AFTER, 0, GIB);
         assert_eq!(turned.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [1020 + COOLS_AFTER]);
+    }
+
+    #[test]
+    fn a_worker_creating_processes_past_the_limit_for_two_minutes_turns_hot_by_its_rate() {
+        let mut watch = Watch::default();
+        let spawning = |at, rate| Sample { spawns: Some(rate), ..sample(at, 0, GIB) };
+        // a rate under the limit is nothing, however long
+        for at in (1000..1300).step_by(SAMPLE_EVERY as usize) {
+            assert_eq!(watch.sampled(&spawning(at, 300), &LIMITS, SAMPLE_EVERY), None);
+        }
+        // past it from 1290, the start of the sample at 1300: hot at 1410
+        let mut turned = vec![];
+        for at in (1300..=1500).step_by(SAMPLE_EVERY as usize) {
+            turned
+                .extend(watch.sampled(&spawning(at, 1500), &LIMITS, SAMPLE_EVERY).map(|t| (at, t)));
+        }
+        let [(at, Turned::Hot(episode))] = turned[..] else { panic!("{turned:?}") };
+        assert_eq!((at, episode.why, episode.spawns), (1410, Why::Spawns, 1500));
+        // a sample that cannot be told resets nothing it did not count
+        let blip = Sample { spawns: None, ..spawning(1510, 0) };
+        assert_eq!(watch.sampled(&blip, &LIMITS, SAMPLE_EVERY), None);
+        assert_eq!(Why::Spawns.word(), "process creation");
     }
 }

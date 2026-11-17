@@ -1,4 +1,4 @@
-//! The gate and the exclusive queue (docs/adr/0059), with no fleet concept
+//! The gate and the exclusive queue (docs/adr/0058), with no fleet concept
 //! in their API: what a repo declares of its gate, the evidence a gate run
 //! leaves on record, and the queue in which a host runs its heavy commands
 //! one lane at a time. afkconvoy depends on it, and so may another program,

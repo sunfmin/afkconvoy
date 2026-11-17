@@ -122,7 +122,7 @@ pub fn keep_under(
 /// `keep_under`, for a worker on the account `login`, where it starts on
 /// one: the directory is that account's own, named `<harness>@<account>`
 /// (`kept_name`), and its login links the account's, in its home, in place
-/// of the host user's (docs/adr/0088).
+/// of the host user's (docs/adr/0086).
 fn keep_under_on(
     cache: &Path,
     home: Option<&Path>,
@@ -258,7 +258,7 @@ fn keep_at_with_dsh_homes(
 }
 
 /// The directories under a role's `.claude/skills`. Grok ignores a host skill
-/// of each of these names so the role's copy is the one that loads (ADR-0043).
+/// of each of these names so the role's copy is the one that loads (ADR-0009).
 fn role_skill_names(role_dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(role_dir.join(SKILLS)) else { return vec![] };
     let mut names: Vec<String> = entries
@@ -346,7 +346,7 @@ fn configure(
 /// role configuration gets a role-specific home so concurrent roles share none.
 /// A worker whose worktree's note names an account's refreshing login
 /// (`engine_accounts::login_of`) gets a directory of that account's, which
-/// links its login (docs/adr/0088): the note is kept before this is asked.
+/// links its login (docs/adr/0086): the note is kept before this is asked.
 pub fn for_worker(
     harness: Harness,
     host_user: bool,

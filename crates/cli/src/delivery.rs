@@ -4,7 +4,7 @@
 //! a human.
 use std::time::Duration;
 
-use afkconvoy_core::candidate::{Chain, Phase};
+use afkconvoy_core::candidate::Phase;
 use afkconvoy_core::gate::{GateCommand, Tree};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ struct Receipt {
 }
 
 /// A task pins the definition's object identity, not copies of its policy.
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Reference {
     pub identity: String,
@@ -500,15 +500,8 @@ fn result_of(blocking: &[String]) -> String {
 }
 
 fn candidate_blocks(repo: &Repo, issue: u64) -> Result<Vec<String>> {
-    let prefix = repo.layout().under("candidates/");
     let mut reasons = vec![];
-    for record in repo.remote().records(&[&format!("{prefix}*")], Fresh::Process)? {
-        let chain: Chain = serde_json::from_str(&record.subject).with_context(|| {
-            format!(
-                "unreadable candidate record {}; restore it before a delivery handoff",
-                record.name
-            )
-        })?;
+    for (_, chain) in crate::chain_store::all(repo)? {
         let Some(last) = chain.candidates.iter().rfind(|c| c.note.issue == Some(issue)) else {
             continue;
         };
@@ -555,6 +548,7 @@ fn retained_work(repo: &Repo, issue: u64, tip: &str) -> Result<Option<String>> {
 }
 
 fn assess(repo: &Repo, gh: &GitHub, delivery: &Delivery) -> Result<Snapshot> {
+    let issues = crate::issues::of(gh);
     let delivery_head = repo
         .remote()
         .fetched(&format!("refs/heads/{}", delivery.branch), Fresh::Process)?
@@ -577,7 +571,7 @@ fn assess(repo: &Repo, gh: &GitHub, delivery: &Delivery) -> Result<Snapshot> {
             format!("unreadable attached task {name}; restore its target record")
         })?;
         let mut blocking = vec![];
-        let read = gh.issue(number)?;
+        let read = issues.issue(number)?;
         let landed = joins.iter().any(|join| join.issue() == Some(number));
         match read.state_reason.as_deref() {
             Some("not_planned") => {
@@ -601,7 +595,7 @@ fn assess(repo: &Repo, gh: &GitHub, delivery: &Delivery) -> Result<Snapshot> {
         for pr in prs {
             blocking.push(format!("{name} has open internal PR #{pr}"));
         }
-        let mut blockers = gh.open_blockers(number)?;
+        let mut blockers = issues.open_blockers(number)?;
         blockers.sort_unstable();
         for blocker in blockers {
             blocking.push(format!("{name} is blocked by #{blocker}"));
@@ -1181,7 +1175,7 @@ pub fn command(
 
 /// Covers the crash window between task publication and final PR creation.
 /// Acting ticks alone call this; plans and inspection remain read-only. The
-/// deliveries are those of the tick's listing of the remote (docs/adr/0043):
+/// deliveries are those of the tick's listing of the remote (the `look` module):
 /// one written since is reconciled by the next tick.
 pub fn reconcile(fleet: &Fleet) -> Result<()> {
     let (repo, gh) = (&fleet.repo, &fleet.gh);

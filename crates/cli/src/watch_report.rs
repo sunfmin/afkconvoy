@@ -47,7 +47,7 @@ pub fn issue_url(watch: &crate::host_watch::Watch, condition: &str) -> Option<St
 }
 
 /// One decision a watch made by its recommended answer rather than leave
-/// it with a human (docs/adr/0073): what it chose, why, and how to undo it.
+/// it with a human (docs/adr/0040): what it chose, why, and how to undo it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Decided {
@@ -166,7 +166,7 @@ The host's watch, in its watch directory, as the last step of each round in its 
 
 It reads the running watch on this host and the report file, and atomically keeps the report in the host cache. It needs no repo or GitHub login. The same report may be submitted again; a different report cannot replace it. A missing part (`decided` excepted, which a round briefed before it may leave out), unknown key, empty entry, wrong watch or expired hour is refused with {error} and nonzero exit; fix the JSON or use the running watch's brief.
 
-Once the host runner reads the report, it appends one entry for the round to the daybook (`afkconvoy daybook --help`), of session kind `watch`: what held work back under `Why`; the actions, each decision, what was verified and what was left under `Did`; how to undo each decision under `Undo`; and the issues and PRs the report links under `Links`. Each human question still goes to the asking session; the entry notes only that it was raised, with its link, and asks nothing. The entry is written later and retried until it is: it never holds the round, or the next one, back; one not written is a `doctor` finding.
+Once the host runner reads the report, it appends one entry for the round to the daybook (`afkconvoy daybook --help`), of session kind `watch`: what held work back under `Why`; the actions, each decision, what was verified and what was left under `Did`; how to undo each decision under `Undo`; and the issues and PRs the report links under `Links`. Each human question still goes to the asking session; the entry notes only that it was raised, with its link, and asks nothing. The entry is written at once, to this host's daybook, and once however often the report is read; one that cannot be written holds no round back and is a `watch: daybook entry not written` line of the host runner's log.
 
 Recording completes only the named round and keeps the healthy resident Agent and Terminal available for later rounds. It does not finish queued work or another active round. `doctor.host.watch` and later briefs show the report; an ended watch with no report says `reported: false`.
 

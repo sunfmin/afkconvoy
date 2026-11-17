@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -587,7 +587,7 @@ pub fn ask_login_shell_again(dir: &Path, script: &str) -> Option<(bool, String)>
 }
 
 /// The login shell's answer to one question in one directory, asked once in
-/// this look (docs/adr/0043). A tick asked `type` and the flags question of
+/// this look (the `look` module). A tick asked `type` and the flags question of
 /// its default harness twice, once for the fleet's view of what it can start
 /// and once for the agent that starts it: a login shell each. In a sample of
 /// the slow gate's tests, 787 of 2,186 questions were asked again in the
@@ -669,7 +669,7 @@ fn run_login_shell(
     env: &[(OsString, OsString)],
 ) -> std::io::Result<Option<Vec<u8>>> {
     let (stdout, stderr, read) = crate::process::merged_stdio()?;
-    let mut command = Command::new(shell);
+    let mut command = crate::census::command(shell);
     command
         .args(["-lic", script])
         .current_dir(dir)
@@ -740,7 +740,7 @@ fn ask_shell(
     timeout: Duration,
     env: Option<&[(OsString, OsString)]>,
 ) -> Option<(bool, Vec<u8>)> {
-    let mut shell = Command::new(login_shell_program());
+    let mut shell = crate::census::command(login_shell_program());
     shell.args(["-lic", script]).current_dir(dir);
     if let Some(env) = env {
         shell.env_clear().envs(env.iter().map(|(name, value)| (name, value)));
@@ -919,8 +919,9 @@ mod tests {
         assert_eq!(answer, None);
         // Ended before it wrote its pid, on a loaded host, it left nothing.
         if let Ok(pid) = std::fs::read_to_string(&pidfile) {
-            let alive =
-                || Command::new("kill").args(["-0", pid.trim()]).status().unwrap().success();
+            let alive = || {
+                crate::census::command("kill").args(["-0", pid.trim()]).status().unwrap().success()
+            };
             afkconvoy_patience::until_true("the sleep was left running", || !alive());
         }
     }
@@ -943,7 +944,7 @@ mod tests {
         .unwrap()
         .unwrap();
         if let Ok(pid) = std::fs::read_to_string(&pidfile) {
-            let _ = Command::new("kill").arg(pid.trim()).status();
+            let _ = crate::census::command("kill").arg(pid.trim()).status();
         }
         let text = String::from_utf8_lossy(&answer);
         assert!(text.contains("done"), "{text}");

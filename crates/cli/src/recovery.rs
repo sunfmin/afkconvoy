@@ -28,7 +28,7 @@ pub struct Survey {
 /// the issue, and the branch of `worktree`. An error when the remote cannot be
 /// read — which is never "nothing survived".
 pub fn own_heads(fleet: &Fleet, number: u64, worktree: Option<&Worktree>) -> Result<Vec<String>> {
-    let comments = fleet.gh.comments(number)?;
+    let comments = fleet.issues.comments(number)?;
     let recorded = recorded_branches(comments.iter().map(|c| c.body.as_str()));
     let heads = fleet.remote.heads(Fresh::Process)?;
     Ok(own_branches(&heads, &recorded, worktree.map(|worktree| worktree.branch.as_str())))

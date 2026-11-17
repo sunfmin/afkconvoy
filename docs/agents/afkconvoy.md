@@ -64,7 +64,7 @@ Apple's shim, twelve tests at a time, it took 665 seconds there
 
 How many claims are at work at once is no key here, nor anywhere: admission
 alone decides each start, by what the host and its accounts can carry now
-(`docs/adr/0072`).
+(`docs/adr/0107`).
 
 This repo names no `team`, so it is unbound. A bound repo's three keys more —
 `team`, `patrols`, `intake_limit` — are in `afkconvoy config --help`.
@@ -72,7 +72,7 @@ This repo names no `team`, so it is unbound. A bound repo's three keys more —
 The gate checks the core crate with Flux, and `./verify.sh` checks it with
 Homebrew's `sunfmin/tap/flux-toolchain`, and refuses to while it is not
 installed or is older than the newest the tap has, the tap read fresh for
-the check (sunfmin/control#735, ADR-0067). The tap builds
+the check (sunfmin/control#735, ADR-0007). The tap builds
 it every day, with the `cargo-flux`, `fixpoint` and `z3` it runs, so nothing
 here pins or builds any of them. So a host without it is refused at the
 startup probe, and its work goes to a host that has it (ADR-0053). The check
@@ -116,7 +116,7 @@ checks:
 One gate fills the host by itself: its Flux, clippy and test builds run one
 rustc job per core, and its tests run as many at a time as
 `.config/nextest.toml` says, or two to each core `afkconvoy exclusive` gives
-the gate as its share (ADR-0077), each starting the CLI and the `git`, `gh`
+the gate as its share (ADR-0047), each starting the CLI and the `git`, `gh`
 and `orca` it runs. Two gates side by side already reach the
 load at which admission holds new workers back, twice the host's cores (#426).
 So the gate runs through the host's exclusive queue (ADR-0019), in every
@@ -126,7 +126,7 @@ has room for it, its cores under the busy share by their CPU reading, and one
 at a time while the host is busy (ADR-0088). The workers keep editing while
 their gates wait. A worker's fast gate, `afkconvoy gate --fast`, is held apart
 from none of these: it runs beside the other fast gates, whatever their repo,
-as the host's room allows (ADR-0049).
+as the host's room allows (ADR-0047).
 
 - Run `afkconvoy gate` as it is. Never wrap it in another `afkconvoy exclusive`:
   its own would wait behind it, on itself, until the gate limit.

@@ -1,5 +1,5 @@
 //! What is left of a checkout's concurrency: nothing bounds a fleet's workers
-//! any more, and admission alone decides each start (docs/adr/0072). A `run`
+//! any more, and admission alone decides each start (docs/adr/0107). A `run`
 //! still accepts `--concurrency` for one release, and keeps what it says with
 //! the checkout's entry on the checkout list, where it changes nothing:
 //! `doctor` says it is ignored, and `--concurrency default` drops it. After
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn the_checkout_on_the_list_says_its_own_and_one_not_on_it_yet_what_its_run_asked() {
         let dir = tempfile::tempdir().unwrap();
-        let list = List::at(dir.path().join("checkouts.json"));
+        let list = List::at(dir.path().join(crate::host_db::FILE));
         let (listed, starting) = (dir.path().join("listed"), dir.path().join("starting"));
         let entry = Entry {
             checkout: listed.clone(),

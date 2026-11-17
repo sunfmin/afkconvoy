@@ -121,6 +121,9 @@ pub enum What {
     /// A worker turned hot (`crate::hot`): `worker` is `#7`, or its worktree's
     /// name; `why` and what it `held` as it did, in words.
     Hot { worker: String, why: String, held: String },
+    /// Processes a command of a worker left behind, handed to pid 1 and
+    /// working in its worktree, were told to end (`crate::hot`).
+    Orphans { worker: String, ended: Vec<String> },
     /// A worker hot `since` then stopped being hot: under the limits for five
     /// minutes, or `gone` with its worktree. `held` is the most it took.
     Cooled {
@@ -160,6 +163,9 @@ pub enum What {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         asked: bool,
     },
+    /// A tick's due cut started nothing: another cut, `said`, holds the
+    /// cut checkout it would remove and cut again (sunfmin/control#1331).
+    CutHeld { said: String },
     /// A tick ended the cut of `version`: `said` is what it did — its PR,
     /// where it landed, and each step it took with its seconds. `failed`, of
     /// one that ended short, says at which step, why, the issue that says so
@@ -192,6 +198,7 @@ pub fn cut_said(what: &What) -> Option<String> {
         What::CutEnded { version, failed: Some(failed), .. } => {
             Some(format!("the cut of v{version} FAILED {failed}"))
         }
+        What::CutHeld { said } => Some(format!("the due cut waits, and starts nothing: {said}")),
         _ => None,
     }
 }
@@ -265,6 +272,9 @@ impl Entry {
             What::Hot { worker, why, held } => {
                 format!("hot: {worker} is hot: {why} · it holds {held}")
             }
+            What::Orphans { worker, ended } => {
+                format!("hot: {worker} left behind {}: told to end", ended.join("; "))
+            }
             What::Cooled { worker, since, held, gone } => {
                 let why = if *gone {
                     "its worktree is gone".to_string()
@@ -294,7 +304,7 @@ impl Entry {
                 round.as_deref().unwrap_or("none"),
                 pending.join(", ")
             ),
-            What::CutStarted { .. } | What::CutEnded { .. } => {
+            What::CutStarted { .. } | What::CutEnded { .. } | What::CutHeld { .. } => {
                 format!("cut: {}", cut_said(&self.what).unwrap_or_default())
             }
         }
@@ -337,11 +347,14 @@ impl Entry {
                 Some(("watch", format!("{outcome} · {said}")))
             }
             What::WatchFailed { said } => Some(("watch", said.clone())),
-            What::CutStarted { .. } | What::CutEnded { .. } => Some(("cut", cut_said(&self.what)?)),
+            What::CutStarted { .. } | What::CutEnded { .. } | What::CutHeld { .. } => {
+                Some(("cut", cut_said(&self.what)?))
+            }
             What::TickStarted { .. }
             | What::Tick(_)
             | What::Command { .. }
             | What::Hot { .. }
+            | What::Orphans { .. }
             | What::Cooled { .. }
             | What::WatchStarted { .. }
             | What::WatchState { .. }

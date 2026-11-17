@@ -3,7 +3,7 @@
 //! terminal, never as one run of a prompt: the fleet sends to, nudges and
 //! wakes a worker after it starts. It has no way to be told to leave the host
 //! user's configuration out, so it is given a user directory of the fleet's
-//! own (docs/adr/0013). It writes its configuration file in that directory
+//! own (docs/adr/0020). It writes its configuration file in that directory
 //! by itself: what the fleet says to it is said on the line that starts it,
 //! and in no shared file — each session's user directory is private, so a
 //! saved /model choice cannot affect a later worker. The hooks that ask the
@@ -15,8 +15,8 @@
 //! the fleet's copy of a role links the one to the other. No flag has it look
 //! nowhere else, so it also loads the skills of the host user's home, wherever
 //! its user directory is: the one thing of the host user's a worker is left
-//! with where it is given none of the others (docs/adr/0013). Given them
-//! (docs/adr/0017), it finds the host user's skills and rules where it finds a
+//! with where it is given none of the others (docs/adr/0020). Given them
+//! (docs/adr/0009), it finds the host user's skills and rules where it finds a
 //! user's, in its user directory, linked there; of two skills of one name it
 //! shows both, so the fleet turns off the host user's where a role's stands
 //! for it.
@@ -238,7 +238,7 @@ const RULES_FILES: &str = "project_doc_fallback_filenames";
 /// Has Codex load the rules of the directory it starts in alone. It loads
 /// those of every directory from the root of a project down, and with no
 /// file that marks a root there is none: nothing above a role's directory is
-/// the role's (docs/adr/0014).
+/// the role's (docs/adr/0009).
 const NO_ROOT: &str = "project_root_markers=[]";
 /// The key of Codex's configuration whose text is put before the model as a
 /// developer's: the one way Codex is given rules from outside the directory
@@ -473,7 +473,7 @@ pub(super) fn watch(command: &str, worktree: &str, kept: &str, model: Option<&st
 
 /// Codex keeps each session apart from every other. These names are the
 /// facts a worker start, the directory the host keeps and a watch start
-/// ask the harness for (docs/adr/0013).
+/// ask the harness for (docs/adr/0020).
 pub(super) const SESSION: super::Session = super::Session {
     fresh: "codex",
     note: HOME_NOTE,
@@ -711,7 +711,7 @@ pub(super) fn goal_row_query(thread: &str) -> Option<String> {
     })
 }
 
-/// The row as `sqlite3` answers `goal_row_query`: nothing where the session
+/// The row as `sqlite3 -readonly` prints its answer to `goal_row_query`: nothing where the session
 /// has none, as a cleared goal has not.
 pub(super) fn goal_row(answer: &str) -> Option<Option<super::GoalRow>> {
     let answer = answer.trim();
@@ -1191,6 +1191,44 @@ pub(super) fn limit_event(value: &serde_json::Value) -> Option<Limit> {
         _ => return None,
     };
     Some(Limit { kind, window: None, resets_at: None })
+}
+
+/// How Codex is asked for its account's windows now: its app server's
+/// `account/rateLimits/read` (codex-cli 0.169.0), which refreshes the login
+/// of the home it is pointed at as a session would and spends no turn. The
+/// app server ends on its input's end before it answers a request still in
+/// flight, so its input is held open, through a fifo, by the reader of its
+/// answer until the answer to request 1 comes.
+pub(super) const WINDOWS_QUESTION: super::WindowsQuestion = super::WindowsQuestion {
+    line: r#"d=$(mktemp -d) && mkfifo "$d/in" && codex app-server <"$d/in" 2>/dev/null | (exec 3>"$d/in"; printf '%s\n' '{"id":0,"method":"initialize","params":{"clientInfo":{"name":"afkconvoy","version":"0"}}}' '{"method":"initialized"}' '{"id":1,"method":"account/rateLimits/read","params":{"excludeResetCreditDetails":true}}' >&3; sed -n '/^{.*"id":1[,}]/{p;q;}'); rm -rf "$d""#,
+    spends_turn: false,
+};
+
+/// The windows the app server's answer to `account/rateLimits/read` says:
+/// its `rateLimits`, whose `primary` and `secondary` each say
+/// `usedPercent`, `windowDurationMins` and `resetsAt` in unix seconds — the
+/// windows a session's `token_count` line names the same.
+pub(super) fn windows_answer(printed: &str) -> Vec<Window> {
+    let Some(limits) = printed
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|answer| answer["id"] == 1)
+        .map(|answer| answer["result"]["rateLimits"].clone())
+    else {
+        return Vec::new();
+    };
+    WINDOWS
+        .into_iter()
+        .filter_map(|name| {
+            let window = &limits[name];
+            Some(Window {
+                name: name.to_string(),
+                used_percent: window::number(&window["usedPercent"])?,
+                minutes: window["windowDurationMins"].as_u64(),
+                resets_at: window::seconds(&window["resetsAt"]),
+            })
+        })
+        .collect()
 }
 
 /// What Codex calls the windows of its `rate_limits`.

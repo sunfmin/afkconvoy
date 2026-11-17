@@ -40,8 +40,9 @@ impl Unheld {
             );
         }
         let gh = GitHub::of(repo)?;
-        let labels = gh.issue(number)?.labels;
-        let bodies = gh.comments(number)?.into_iter().map(|comment| comment.body).collect();
+        let issues = crate::issues::of(&gh);
+        let labels = issues.issue(number)?.labels;
+        let bodies = issues.comments(number)?.into_iter().map(|comment| comment.body).collect();
         Ok(Unheld { gh, number, labels, bodies })
     }
 
@@ -72,6 +73,7 @@ impl Unheld {
 
     /// Writes the record a human leaves about `stage`, with what they said.
     fn leave(&self, stage: &str, stated: Stated, text: String) -> Result<()> {
+        let issues = crate::issues::of(&self.gh);
         let record = StageRecord {
             stage: stage.to_string(),
             stated,
@@ -79,7 +81,7 @@ impl Unheld {
             blocked_by: Default::default(),
             text,
         };
-        self.gh.comment(self.number, &record.comment())
+        issues.comment(self.number, &record.comment())
     }
 
     /// The labels that hand the issue back to the fleet as one that follows
@@ -92,12 +94,13 @@ impl Unheld {
     /// whether a label was moved. The record is written first: an issue
     /// that carries its flow label is the fleet's to act on at once.
     fn hand_back(&self, team: &Team, workflow: &Workflow) -> Result<bool> {
+        let issues = crate::issues::of(&self.gh);
         let back = self.back(team, workflow);
         if let Some(label) = &back.add {
-            self.gh.add_label(self.number, label)?;
+            issues.add_label(self.number, label)?;
         }
         for label in &back.remove {
-            self.gh.remove_label(self.number, label)?;
+            issues.remove_label(self.number, label)?;
         }
         Ok(!back.done())
     }

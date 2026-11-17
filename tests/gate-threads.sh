@@ -10,6 +10,7 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/home/.cargo/bin" "$tmp/repo/.config"
 cp "$root/gate.sh" "$tmp/repo/gate.sh"
 cp "$root/.config/nextest.toml" "$tmp/repo/.config/nextest.toml"
+cp "$root/.config/process-bound" "$tmp/repo/.config/process-bound"
 : > "$tmp/repo/.config/slow-tests"
 cat > "$tmp/home/.cargo/bin/cargo" <<'MOCK'
 #!/bin/sh

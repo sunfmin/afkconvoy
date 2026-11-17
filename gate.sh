@@ -8,7 +8,7 @@
 # It is two gates, run one after the other (docs/adr/0047):
 #   ./gate.sh fast   the fast gate, which a worker passes before it opens or
 #                    updates its PR: fmt, Flux, clippy, the manual, the build
-#                    of every test, and the tests that start no process
+#                    of every test, and the tests that start few processes
 #   ./gate.sh slow   the slow gate: every other test, and nothing the fast
 #                    gate checks
 #   ./gate.sh        both: the whole gate, which a landing turn runs
@@ -53,7 +53,7 @@ export PATH RUSTUP_TOOLCHAIN
 AFKCONVOY_BUILD_COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
 export AFKCONVOY_BUILD_COMMIT
 # Each step's seconds, said as the gate ends, green or red: the fleet times
-# only the whole gate (docs/adr/0024), and which step grew is for its log to
+# only the whole gate (docs/adr/0047), and which step grew is for its log to
 # say. A red gate says the steps it finished.
 began=$(date +%s)
 echo "gate: ${1:-fast and slow} gate started $(date -u '+%Y-%m-%dT%H:%M:%SZ') on $(hostname), commit $(git rev-parse HEAD)" >&2
@@ -73,9 +73,13 @@ else
     echo "gate: $target_dir absent; shared compiler and dependency caches may still be warm" >&2
 fi
 took=
+# The processes the step's tests started, when it ran tests: said beside its
+# seconds (see `census_report`).
+processes=
 step() {
     now=$(date +%s)
-    took="$took $1 $((now - began))s"
+    took="$took $1 $((now - began))s${processes:+ $processes processes}"
+    processes=
     began=$now
 }
 steps() {
@@ -147,8 +151,8 @@ left_behind() {
 }
 # The cores the gate is given are not its tests' threads. `afkconvoy
 # exclusive` says a gate's share of the host as NEXTEST_TEST_THREADS, in
-# cores: those afkconvoy may use where the host caps its share (ADR-0075),
-# fewer beside another lane (ADR-0049). nextest would run one test to a core,
+# cores: those afkconvoy may use where the host caps its share (ADR-0107),
+# fewer beside another lane (ADR-0047). nextest would run one test to a core,
 # and a test of the CLI waits on the processes it starts: on Studio64, 154
 # slow tests took 199, 98 and 55 seconds at 4, 8 and 16 at a time, in about
 # the same CPU, 16 at a time keeping 5.9 cores busy (sunfmin/control#965,
@@ -165,15 +169,52 @@ test_threads() {
 # deep TMPDIR, into "$test_log/output" → tests_status, which also fails on a
 # process the tests left behind.
 nextest_run() {
+    # Every process a test starts through afkconvoy's own code is written, a
+    # line each, to a file of that test in this directory (census.rs).
+    rm -rf "$test_log/census"
+    mkdir -p "$test_log/census"
     # Keep nextest's output live and retain its own exit status through tee.
     # shellcheck disable=SC2086
-    (if TMPDIR="$tests_tmpdir" cargo nextest run --workspace --cargo-quiet $threads --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
+    (if TMPDIR="$tests_tmpdir" AFKCONVOY_PROCESS_CENSUS_DIR="$test_log/census" cargo nextest run --workspace --cargo-quiet $threads --status-level fail --final-status-level slow --show-progress none --no-tests=pass --profile "$1" -E "$2"; then
         echo 0 >"$test_log/status"
     else
         echo "$?" >"$test_log/status"
     fi) 2>&1 | tee "$test_log/output"
     tests_status=$(cat "$test_log/status")
     left_behind || [ "$tests_status" -ne 0 ] || tests_status=1
+}
+# The processes the tests of the run just ended started, counted by afkconvoy's
+# own code as each is started (crates/cli/src/census.rs): not the kernel's
+# count, which on a host shared with other gates says nothing of these tests
+# (sunfmin/control#1347). A test's file is `<binary>@<name>`, one line to a
+# process. Says the total and the ten tests that started most as the run
+# ends, green or red, and leaves the total in `processes` for `step`.
+census_report() {
+    census="$test_log/census"
+    processes=$(find "$census" -type f -exec cat {} + 2>/dev/null | wc -l | tr -d ' ')
+    echo "gate: the $1 tests started $processes processes; the most each started:" >&2
+    awk '{ n[FILENAME]++ } END { for (f in n) { name = f; sub(/^.*\//, "", name); sub(/@/, " ", name); print n[f], name } }' "$census"/* 2>/dev/null |
+        sort -rn | head -10 | sed 's/^/gate:     /' >&2 || true
+}
+# The bound on the processes one fast-gate test starts: one number, written in
+# .config/process-bound, past which a test belongs in .config/slow-tests, as
+# one past the 2s line does (sunfmin/control#1347). Fails by name, as a test
+# past the line does, each test of the run `$1` started more.
+check_process_bound() {
+    bound=$(awk '/^[[:space:]]*(#|$)/ { next } { print $1; exit }' .config/process-bound)
+    case "$bound" in
+    "" | *[!0-9]*)
+        echo "gate: .config/process-bound names no number" >&2
+        return 1
+        ;;
+    esac
+    # A fixture's file (`fixture@…`, census::as_fixture) is no test's.
+    over=$(awk -v bound="$bound" '{ n[FILENAME]++ } END { for (f in n) if (n[f] > bound && f !~ /\/fixture@[^\/]*$/) { name = f; sub(/^.*\//, "", name); sub(/@/, " ", name); print n[f], name } }' "$1"/* 2>/dev/null | sort -rn)
+    [ -n "$over" ] || return 0
+    printf '%s\n' "$over" | while read -r count name; do
+        echo "gate: $name started $count processes in the fast gate, more than the bound of $bound (.config/process-bound). Name it in .config/slow-tests as its binary and name, or make it start fewer." >&2
+    done
+    return 1
 }
 # The tests nextest's output `$1` names TIMEOUT, as `<binary> <name>` lines.
 timed_out() {
@@ -202,6 +243,7 @@ run_tests() {
     [ -z "$threads" ] ||
         echo "gate: the $1 tests run ${threads#--test-threads } at a time, two to each of the $NEXTEST_TEST_THREADS cores this gate was given" >&2
     nextest_run "$1" "$2"
+    census_report "$1"
     # A fast gate red only on TIMEOUTs on a loaded host says nothing of the
     # tests: their 6 seconds are the line between the gates, not a hang, and
     # a host loaded from outside the fleet — another user's simulators on
@@ -218,6 +260,7 @@ run_tests() {
             timed_out=$(timed_out "$test_log/output")
             echo "gate: the fast tests ran red only on TIMEOUTs, on a loaded host (load ${load:-unknown}, CPUs ${cpus:-unknown}): they run again under the limit for one test, which only a hang reaches" >&2
             nextest_run fast-loaded "$2"
+            census_report fast
             if [ "$tests_status" -eq 0 ]; then
                 printf '%s\n' "$timed_out" | while read -r binary name; do
                     echo "gate: flagged: $binary $name timed out in the fast gate and passed under the limit for one test, unclassified on a loaded host" >&2
@@ -225,9 +268,24 @@ run_tests() {
             fi
         fi
     fi
+    # Red only on TIMEOUTs, each of which alone on a quiet host is still past
+    # the line and is a test the change did not touch, is a green gate: the
+    # tests are named in an issue, not paid for by this change
+    # (sunfmin/control#1307).
+    untouched_only=
+    if [ "$tests_status" -ne 0 ] && [ "$1" = fast ] && only_timeouts "$test_log/output"; then
+        check_fast_timeouts "$test_log/output" || true
+        if [ -n "$untouched_only" ]; then
+            tests_status=0
+            rm -rf "$test_log"
+            return
+        fi
+    elif [ "$tests_status" -ne 0 ] && [ "$1" = fast ]; then
+        check_fast_timeouts "$test_log/output" || true
+    fi
     if [ "$tests_status" -ne 0 ]; then
         if [ "$1" = fast ]; then
-            check_fast_timeouts "$test_log/output" || true
+            :
         elif grep -q 'TIMEOUT' "$test_log/output"; then
             echo "gate: a test listed above as TIMEOUT ran too long: it was ended at the limit for one test, which .config/nextest.toml gives" >&2
         fi
@@ -240,6 +298,10 @@ run_tests() {
     # checked alone, as a TIMEOUT is, and one still past the line on a quiet
     # host fails the gate. One a loaded host cannot classify is flagged.
     if [ "$1" = fast ] && ! check_fast_timeouts "$test_log/output"; then
+        rm -rf "$test_log"
+        exit 1
+    fi
+    if [ "$1" = fast ] && ! check_process_bound "$test_log/census"; then
         rm -rf "$test_log"
         exit 1
     fi
@@ -262,6 +324,8 @@ check_fast_timeouts() {
     timeouts=$(awk '/(TIMEOUT|SLOW)[[:space:]]*\[/ { sub(/^.*(TIMEOUT|SLOW)[[:space:]]*\[[^]]*\][[:space:]]*/, ""); if (NF >= 2) print $1, $2 }' "$1" | sort -u)
     [ -n "$timeouts" ] || return 0
     : >"$1.past-the-line"
+    : >"$1.untouched"
+    untouched_only=
     cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
     load=$(host_load)
     if ! quiet_host "$load" "$cpus"; then
@@ -289,8 +353,13 @@ check_fast_timeouts() {
         elif grep -q 'TIMEOUT' "$check_log"; then
             after=$(host_load)
             if quiet_host "$after" "$cpus"; then
-                echo "gate: $binary $name was still TIMEOUT at 2s on a quiet host. Name it in .config/slow-tests as its binary and name, or make it fast." >&2
-                echo "$binary $name" >>"$1.past-the-line"
+                if change_touches "$name"; then
+                    echo "gate: $binary $name was still TIMEOUT at 2s on a quiet host. Name it in .config/slow-tests as its binary and name, or make it fast." >&2
+                    echo "$binary $name" >>"$1.past-the-line"
+                else
+                    echo "gate: $binary $name is past the 2s line and was not touched by this change" >&2
+                    echo "$binary $name" >>"$1.untouched"
+                fi
             else
                 echo "gate: host overloaded during the check (load ${after:-unknown}, CPUs $cpus); cannot classify $binary $name." >&2
             fi
@@ -302,7 +371,77 @@ check_fast_timeouts() {
     done
     past=$(cat "$1.past-the-line")
     rm -f "$1.past-the-line"
+    if [ -s "$1.untouched" ]; then
+        report_untouched "$1.untouched"
+        # Every test past the line was alone past it, and untouched.
+        [ "$(wc -l <"$1.untouched" | tr -d ' ')" = "$(printf '%s\n' "$timeouts" | wc -l | tr -d ' ')" ] &&
+            [ -z "$past" ] && untouched_only=yes
+    fi
+    rm -f "$1.untouched"
     [ -z "$past" ]
+}
+# The change under test is the diff from where the branch left the base
+# branch; for a candidate or a round, a merge commit, it is the diff from the
+# base tip it was merged onto, the merge's first parent (sunfmin/control#1307).
+# A test is touched when a line the diff adds or removes names it, or when a
+# hunk lies inside its function. Where the diff cannot be read, every test is
+# touched: the line fails, as it did before.
+change_base() {
+    if git rev-parse --verify --quiet HEAD^2 >/dev/null 2>&1; then
+        git rev-parse HEAD^1
+    else
+        git merge-base HEAD "origin/${AFKCONVOY_BASE_BRANCH:-main}" 2>/dev/null ||
+            git merge-base HEAD "${AFKCONVOY_BASE_BRANCH:-main}" 2>/dev/null
+    fi
+}
+change_touches() {
+    leaf=${1##*::}
+    if [ -z "${change_diff+x}" ]; then
+        change_diff=
+        change_diff_ok=
+        if base=$(change_base) && [ -n "$base" ]; then
+            attrs="$PWD/.afkconvoy-tmp/diff-attributes"
+            echo '*.rs diff=rustfn' >"$attrs"
+            if change_diff=$(git -c core.attributesFile="$attrs" \
+                -c 'diff.rustfn.xfuncname=^[[:space:]]*(pub[^[:space:]]*[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[A-Za-z0-9_]+' \
+                diff --no-ext-diff -U0 "$base" HEAD 2>/dev/null); then
+                change_diff_ok=yes
+            fi
+            rm -f "$attrs"
+        fi
+    fi
+    [ -n "$change_diff_ok" ] || return 0
+    printf '%s\n' "$change_diff" | grep -Eq "^([+-]|@@.*@@).*(^|[^A-Za-z0-9_])$leaf([^A-Za-z0-9_]|\$)"
+}
+# Each test past the line that the change did not touch is named in one open
+# issue, never a red: a second sighting adds to that issue and opens no other.
+# This is the path a slow gate takes (ADR-0047): the issue carries the ready
+# label, and the fleet works it. It is opened in the checkout's tracker, the
+# host's local one unless the checkout names a GitHub repo, through
+# `afkconvoy issue` (ADR-0091). Where the tracker cannot be reached, or the
+# installed afkconvoy has no `issue`, the line printed above is all there is,
+# and the gate is not red for it.
+report_untouched() {
+    command -v afkconvoy >/dev/null 2>&1 || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    label=slow-test
+    listed=$(afkconvoy issue list --state open --label "$label" --json number 2>/dev/null) || return 0
+    found=$(printf '%s' "$listed" | jq -r '.issues[0].number // empty' 2>/dev/null) || return 0
+    if [ -z "$found" ]; then
+        body="Tests past the fast gate's 2s line, alone on a quiet host, that the change under test did not touch (sunfmin/control#1307). Move each to .config/slow-tests as its binary and name, or make it fast, then close this issue."
+        while read -r binary name; do
+            body="$body
+- \`$binary $name\`"
+        done <"$1"
+        afkconvoy issue create --title "Tests are past the fast gate's 2s line: move them to .config/slow-tests or make them fast" --label "$label" --label ready-for-agent --body "$body" >/dev/null 2>&1 || true
+        return 0
+    fi
+    viewed=$(afkconvoy issue view "$found" --json body,comments 2>/dev/null) || return 0
+    text=$(printf '%s' "$viewed" | jq -r '.body, (.comments[].body)' 2>/dev/null) || return 0
+    while read -r binary name; do
+        case "$text" in *"$binary $name"*) continue ;; esac
+        afkconvoy issue comment "$found" --body "Seen again past the 2s line, untouched by the change under test: \`$binary $name\`" >/dev/null 2>&1 || true
+    done <"$1"
 }
 if [ -z "$nextest" ] && [ -n "${1:-}" ]; then
     echo "gate: the fast gate and the slow gate are told apart by nextest's filter, and cargo-nextest is not installed: run ./gate.sh, the whole gate" >&2
@@ -318,10 +457,33 @@ if [ -n "$tracked_tmp" ]; then
     exit 1
 fi
 step tracked-temp
+# An ADR states its decision as it stands: a later decision rewrites the ADR
+# it changes, or deletes it, and never piles an amendment or a "superseded
+# by" on it (docs/agents/domain.md). Every ADR a tracked file cites by number
+# exists, so deleting or folding one moves its citations with it.
+if [ -d docs/adr ]; then
+    piled=$(grep -lE '^(status:.*(amended|superseded)|#+ .*[Aa]mend)' docs/adr/*.md || true)
+    if [ -n "$piled" ]; then
+        echo "gate: an ADR changed by a later decision is rewritten to state it, not marked amended or superseded; rewrite these, or delete them and move their citations:" >&2
+        printf '%s\n' "$piled" >&2
+        exit 1
+    fi
+    dangling=$(git ls-files -z -- ':!:**/recorded/**' ':!:*.jsonl' |
+        xargs -0 grep -noE '(ADR-|docs/adr/)[0-9]{4}([^-0-9]|$)' 2>/dev/null |
+        awk -v known="$(ls docs/adr | cut -c1-4 | tr '\n' ' ')" '
+            BEGIN { n = split(known, k, " "); for (i = 1; i <= n; i++) have[k[i]] = 1 }
+            { if (match($0, /[0-9][0-9][0-9][0-9][^0-9]*$/) && !(substr($0, RSTART, 4) in have)) print }')
+    if [ -n "$dangling" ]; then
+        echo "gate: these cite an ADR docs/adr/ does not have; cite the ADR that holds the decision now:" >&2
+        printf '%s\n' "$dangling" >&2
+        exit 1
+    fi
+fi
+step adrs
 cargo fmt --all --check
 step fmt
 # Every function of the core crate and of the harness, gate and landing
-# crates it depends on (docs/adr/0058, docs/adr/0059, docs/adr/0060) is
+# crates it depends on (docs/adr/0058) is
 # checked: none is taken on trust.
 # Flux says so itself, in the summary that ends its run on a crate, so an
 # exemption counts however it is written. Flux summarises every dependency:

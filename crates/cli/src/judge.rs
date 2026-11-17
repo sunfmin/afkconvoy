@@ -323,8 +323,8 @@ pub(crate) fn escalate_claim(
 ) -> Result<Option<Left>> {
     let issue = claim.number;
     let leaving = worktree.map(|worktree| leaving(fleet, claim.number, worktree)).transpose()?;
-    let labels = fleet.gh.issue(issue)?.labels;
-    let comments = fleet.gh.comments(issue)?;
+    let labels = fleet.issues.issue(issue)?.labels;
+    let comments = fleet.issues.comments(issue)?;
     let bodies = || comments.iter().map(|c| c.body.as_str());
     let said = escalation_begun(bodies(), &claim.id);
     // A bound repo's escalate label is its team's to name.
@@ -379,14 +379,14 @@ pub(crate) fn escalate_claim(
                     }
                     None => escalation_comment(&claim.id, flow.as_deref(), &reason),
                 };
-                fleet.gh.comment(issue, &comment)?
+                fleet.issues.comment(issue, &comment)?
             }
             EscalateStep::Relabel => {
                 if let Some(label) = &swap.add {
-                    fleet.gh.add_label(issue, label)?;
+                    fleet.issues.add_label(issue, label)?;
                 }
                 for label in &swap.remove {
-                    fleet.gh.remove_label(issue, label)?;
+                    fleet.issues.remove_label(issue, label)?;
                 }
             }
             EscalateStep::Board => {
@@ -457,7 +457,7 @@ pub(crate) fn close_claim(
     let issue = claim.number;
     transition::close(issue, workless, |step| {
         match step {
-            CloseStep::CloseIssue => fleet.gh.close_issue(issue)?,
+            CloseStep::CloseIssue => fleet.issues.close_issue(issue)?,
             CloseStep::Board => last_word(fleet, claim, Stage::Closed, None, &[])?,
             CloseStep::Account => {
                 crate::account::leave(&fleet.repo, &fleet.gh, issue, End::Closed, fleet.now)?
@@ -545,8 +545,8 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64, look: Look) -> Result<Option<As
     if look == Look::Reporting && !past_grace {
         return Ok(Some(Asked::Settled(Route::Leave)));
     }
-    let comments = fleet.gh.comments(issue)?;
-    let verdict = crate::gh::verdict_since(&comments, claim.since);
+    let comments = fleet.issues.comments(issue)?;
+    let verdict = crate::issues::verdict_since(&comments, claim.since);
     let said =
         verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
     let verdict = standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref());
@@ -559,6 +559,18 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64, look: Look) -> Result<Option<As
     };
     let route = route(state, &progress, verdict.as_ref(), nudged, (handed, background), fleet.now);
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, verdict, said, route }))))
+}
+
+/// Whether a verdict of the worker of my claim on `issue` stands, uncarried:
+/// what it waits on is no reason to leave it, as carrying it out changes the
+/// claim's state and starts no turn.
+pub(crate) fn declared(fleet: &Fleet, me: &Me, issue: u64, worktree: &Worktree) -> Result<bool> {
+    let Some(claim) = mine(fleet, me, issue)? else { return Ok(false) };
+    let comments = fleet.issues.comments(issue)?;
+    let verdict = crate::issues::verdict_since(&comments, claim.since);
+    let said =
+        verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
+    Ok(standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref()).is_some())
 }
 
 /// Ends the goal of the busy worker in `worktree` once a verdict of its
@@ -574,8 +586,8 @@ fn end_goal_past_verdict(fleet: &Fleet, claim: &Claim, worktree: &Worktree) -> R
     if !crate::goal::continued(worktree, harness, since)? {
         return Ok(());
     }
-    let comments = fleet.gh.comments(claim.number)?;
-    let verdict = crate::gh::verdict_since(&comments, claim.since);
+    let comments = fleet.issues.comments(claim.number)?;
+    let verdict = crate::issues::verdict_since(&comments, claim.since);
     let said =
         verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
     if standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref()).is_some() {
@@ -826,13 +838,9 @@ pub(crate) fn own_background(
     // keeps its own time: past one gate's limit, as a round's members wait
     // for its slow gate, it is not silent. On 2026-10-29 a member restarted
     // so ended its round's slow gate (sunfmin/control#244).
-    let prefix = fleet.repo.layout().under("candidates/");
     if waiting
-        && crate::candidates::landing(
-            &fleet.records_at_open(&format!("{prefix}*")),
-            &prefix,
-            &worktree.branch,
-        )
+        && crate::chain_store::all(&fleet.repo)
+            .is_ok_and(|chains| crate::candidates::landing(&chains, &worktree.branch))
     {
         return Ok(Some(Background { since: fleet.now, limit }));
     }

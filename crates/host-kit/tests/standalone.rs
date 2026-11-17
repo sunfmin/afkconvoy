@@ -1,4 +1,4 @@
-//! The host kit crate as another program uses it (docs/adr/0062): through its
+//! The host kit crate as another program uses it (docs/adr/0058): through its
 //! public API alone, with no afkconvoy beside it. A program gives a machine
 //! the declared instructions, skills and guards for every harness it finds,
 //! installs tmux on a Guild machine, and reads back where the machine differs

@@ -4,9 +4,9 @@
 use std::collections::BTreeMap;
 
 use afkconvoy_core::claims::{
-    Beat, CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, OVER_KIND, Owner, RunClaim,
-    WAIT_KIND, claim_ref, claim_steps, heartbeat_ref, over_ref, read_heartbeat, read_over,
-    releasable, run_ref, wait_ref, write_heartbeat, write_over,
+    Beat, CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, OVER_KIND, Owner, Pin,
+    RunClaim, WAIT_KIND, claim_ref, claim_steps, heartbeat_ref, over_ref, read_heartbeat,
+    read_over, releasable, run_ref, wait_ref, write_heartbeat, write_over,
 };
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::patrol::{
@@ -114,9 +114,10 @@ impl Scan {
     /// `read`, for a command an operator runs on the claims themselves —
     /// `scan`, `release`: where the checkout says no tracker at all, being on
     /// no checkout list of this host, and the remote holds claims on the
-    /// issues of another tracker, an error saying the tracker is not said.
-    /// Read as its own repo's, a claim named for that tracker would be
-    /// reported absent, or released when it is not.
+    /// issues of another tracker than the default (`Said::DEFAULT`), an
+    /// error saying the tracker is not said. Read as the default's, a claim
+    /// named for that tracker would be reported absent, or released when it
+    /// is not.
     pub fn read_said(repo: &Repo) -> Result<Scan> {
         let list = crate::checkout_list::List::of_host()?;
         if crate::checkout_list::said(&list, repo)?.is_some() {
@@ -124,11 +125,12 @@ impl Scan {
         }
         let layout = repo.layout();
         let records = repo.remote().records(&[&layout.every("")], Fresh::Process)?;
+        let tracker = crate::checkout_list::tracker_for(None, repo)?;
         let elsewhere: Vec<&str> = records
             .iter()
             .filter_map(|record| layout.kept(&record.name)?.strip_prefix(CLAIM_KIND))
-            .filter(|key| key.contains('/') && Tracker::Own.claimed(key) == Claimed::Elsewhere)
-            .filter_map(|key| key.rsplit_once('/').map(|(tracker, _)| tracker))
+            .filter(|key| tracker.claimed(key) == Claimed::Elsewhere)
+            .map(|key| key.rsplit_once('/').map_or("its own repo", |(tracker, _)| tracker))
             .collect();
         if let Some(tracker) = elsewhere.first() {
             bail!(
@@ -139,7 +141,7 @@ impl Scan {
                 repo.dir.display()
             );
         }
-        Ok(Scan::among(layout, Tracker::Own, records))
+        Ok(Scan::among(layout, tracker, records))
     }
 
     /// The claims, heartbeats and runs among `records`: the fleet's refs
@@ -336,13 +338,21 @@ enum Put {
 /// Puts the claim ref `refname` in my name with one atomic push, behind a
 /// fresh heartbeat of mine. A push that failed for any reason but a lost race
 /// is an error.
-fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Result<Put> {
+/// A claim on an issue carries its task's `pin` (sunfmin/control#1327).
+fn put(
+    repo: &Repo,
+    scan: &mut Scan,
+    me: &Me,
+    refname: &str,
+    how: Take,
+    pin: Option<&Pin>,
+) -> Result<Put> {
     let owner = Owner { instance: me.instance.to_string(), host: me.host.clone(), ts: me.now };
-    let subject = match how {
-        Take::Fresh | Take::Run(_) => owner.write(),
-        Take::From(taken) => owner.write_over(taken),
+    let subject = match (&how, pin) {
+        (Take::Fresh, Some(pin)) => owner.write_pinned(pin),
+        (Take::Fresh | Take::Run(_), _) => owner.write(),
+        (Take::From(taken), pin) => owner.write_over(taken, pin),
     };
-    let subject = crate::target::stamp_claim(repo, &scan.tracker, refname, subject)?;
     let sha = repo.record_commit(&subject)?;
     let last_beat = scan.last_beat(me.instance.as_str());
     // Mine if a refused attempt's earlier one took; else lost only if
@@ -393,9 +403,13 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
 /// any other reason is an error.
 pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Result<Value> {
     let config = crate::config::load(&repo.dir.join(crate::config::FILE))?;
-    crate::target::pin(repo, &config, number, None)?;
+    let taken = match &how {
+        Take::From(taken) => Some(*taken),
+        _ => None,
+    };
+    let pin = crate::target::for_claim(repo, &config, number, taken)?;
     let refname = claim_ref(repo.layout(), &scan.tracker, number);
-    match put(repo, scan, me, &refname, how)? {
+    match put(repo, scan, me, &refname, how, Some(&pin))? {
         Put::Won { sha, subject, .. } => {
             scan.written(number, Some(Claim::read(number, &subject, sha.clone())));
             Ok(json!({"won": true, "issue": number, "ref": refname, "sha": sha,
@@ -411,11 +425,27 @@ pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Re
     }
 }
 
+/// Carries `pin` into `claim`'s own record, its owner unchanged, only while
+/// its ref still points where it was read → whether it took
+/// (sunfmin/control#1327). A claim that names nobody is left as it is.
+pub fn repin(repo: &Repo, scan: &mut Scan, claim: &Claim, pin: &Pin) -> Result<bool> {
+    let Some(owner) = &claim.owner else { return Ok(false) };
+    let subject = owner.write_over(claim, Some(pin));
+    let sha = repo.record_commit(&subject)?;
+    let refname = claim_ref(repo.layout(), &scan.tracker, claim.number);
+    let push = Push::set(&sha, &refname).leased(&claim.sha);
+    if !repo.remote().try_push_retried(&push, None, || Ok(true))?.ok {
+        return Ok(false);
+    }
+    scan.written(claim.number, Some(Claim::read(claim.number, &subject, sha)));
+    Ok(true)
+}
+
 /// Takes a human wait with the same atomic push and heartbeat ordering as a
 /// worker claim. Even a lost race updates the scan with the actual holder.
 pub fn take_wait(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Result<()> {
     let name = wait_ref(repo.layout(), &scan.tracker, number);
-    let claim = match put(repo, scan, me, &name, how)? {
+    let claim = match put(repo, scan, me, &name, how, None)? {
         Put::Won { sha, subject, .. } => Some(Claim::read(number, &subject, sha)),
         Put::Lost { there, .. } => {
             let claim = there.map(|r| Claim::read(number, &r.subject, r.sha));
@@ -456,7 +486,7 @@ fn put_run(
 ) -> Result<Option<RunClaim>> {
     let refname = run_ref(repo.layout(), key);
     scan.runs.retain(|run| run.key != key);
-    let (claim, won) = match put(repo, scan, me, &refname, how)? {
+    let (claim, won) = match put(repo, scan, me, &refname, how, None)? {
         Put::Won { owner, sha, .. } => {
             (Some(RunClaim { key: key.to_string(), owner: Some(owner), sha, over: false }), true)
         }

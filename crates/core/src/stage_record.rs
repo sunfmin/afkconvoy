@@ -5,7 +5,6 @@
 //! it, and nothing else reads it.
 
 use flux_rs::attrs::*;
-use flux_rs::macros::qualifier;
 
 use crate::blocked::BlockedOn;
 use crate::harness::Harness;
@@ -36,7 +35,7 @@ pub enum Stated {
     /// stage runs again.
     LockClosed,
     /// The fleet saw the stage's worker fail so, and hands the issue on: to
-    /// the stage's consult, where it names one (docs/adr/0018).
+    /// the stage's consult, where it names one (docs/adr/0005).
     Failed(Failure),
 }
 
@@ -356,106 +355,167 @@ pub fn history<'w>(workflow: &'w Workflow, records: Vec<StageRecord>) -> History
     let mut readings = vec![];
     let mut rounds = vec![];
     for (nth, record) in records.iter().enumerate() {
-        // What stays true of the place on every turn, which Flux does not
-        // find alone: the stage it is at, while at one, is the workflow's.
-        qualifier!(at_stage: bool, of: int, n: int; at_stage => of == n);
-        let at = place.position.stage();
-        let reading = if record.claim().is_some_and(|claim| spent.contains(&claim)) {
-            Reading::ClaimSpent
-        } else if record.stage == LAND {
-            if !place.position.landing() {
-                Reading::OtherStage
-            } else if record.puts() {
-                place.position = Position::Landing;
-                Reading::Verdict
-            } else if let Stated::Declared(declared) = record.stated {
-                if let Some(claim) = record.claim() {
-                    spent.push(claim);
-                }
-                place = place.after(declared);
-                Reading::Verdict
-            } else {
-                Reading::OtherStage
-            }
-        } else if let Some(named) = workflow.place_of(&record.stage) {
-            let own = at.filter(|stage| stage.at() == named);
-            let consulted = matches!(place.position, Position::Consult(..));
-            if record.stated == Stated::Sent && !record.puts() {
-                // A consult's sending: only while the issue is with it, and once
-                // under its claim.
-                if !consulted {
-                    Reading::OtherStage
-                } else {
-                    if let Some(claim) = record.claim() {
-                        spent.push(claim);
-                    }
-                    let had = place.rework();
-                    place = place.sent_by_consult(workflow.stage(named));
-                    if place.rework() > had || place.position.breaker().is_some() {
-                        rounds.push(nth);
-                    }
-                    Reading::Verdict
-                }
-            } else if record.stated == Stated::Sent {
-                place = place.put(workflow.stage(named));
-                rounds.clear();
-                Reading::Sent
-            } else if let Stated::Failed(failure) = record.stated {
-                if own.is_some() {
-                    place = place.failed(failure);
-                    Reading::Failed
-                } else if refuted.take() == Some(named) {
-                    place = place.refuted(workflow.stage(named), failure);
-                    Reading::Failed
-                } else {
-                    Reading::OtherStage
-                }
-            } else if own.is_none() {
-                Reading::OtherStage
-            } else if let Some(stage) = own.filter(|_| record.puts()) {
-                // A human rules wherever the issue stopped: an escalation is not
-                // always one its records show.
-                place = place.put(stage);
-                rounds.clear();
-                Reading::Verdict
-            } else if record.stated == Stated::LockClosed {
-                place = place.again();
-                Reading::LockClosed
-            } else if let Stated::Declared(declared) = record.stated {
-                if let Some(claim) = record.claim() {
-                    spent.push(claim);
-                }
-                let before = place.position;
-                let had = place.rework();
-                if matches!(record.by, Author::Worker { consult: false, .. }) {
-                    refuted = Some(named);
-                }
-                place = place.after(declared);
-                // The counts are the one account of what is rework: a round is
-                // what raised the total, or what a breaker refused to count. A
-                // human's ruling starts the rounds over with the counts.
-                let escalated = matches!(place.position, Position::Escalating(..));
-                if matches!(before, Position::Escalating(..)) {
-                    if !escalated {
-                        rounds.clear();
-                    }
-                } else if place.rework() > had || place.position.breaker().is_some() {
-                    rounds.push(nth);
-                }
-                Reading::Verdict
-            } else {
-                // A sending: read above, whatever stage it names.
-                Reading::Sent
-            }
-        } else {
-            // Handed on from the stage it was at: an issue already with a
-            // human, or past its stages, stays as it is.
-            place = place.changed();
-            Reading::UnknownStage
-        };
+        let (after, reading) =
+            read(workflow, place, &mut spent, &mut refuted, &mut rounds, nth, record);
+        place = after;
         readings.push(reading);
     }
     History { place, readings, rounds, records }
+}
+
+/// How the `nth` stage record reads at `place`, and where it leaves the
+/// issue: what `history` reads of each record in turn, given the claims
+/// `spent` so far, the stage `refuted` a failure is handed on from and the
+/// `rounds` of rework so far, which it updates.
+#[spec(fn(&Workflow[@w], Place[w.n, w.roles], &mut Vec<&str>, &mut Option<usize>, &mut Vec<usize>, usize, &StageRecord) -> (Place[w.n, w.roles], Reading))]
+fn read<'w, 'r>(
+    workflow: &'w Workflow,
+    place: Place<'w>,
+    spent: &mut Vec<&'r str>,
+    refuted: &mut Option<usize>,
+    rounds: &mut Vec<usize>,
+    nth: usize,
+    record: &'r StageRecord,
+) -> (Place<'w>, Reading) {
+    if record.claim().is_some_and(|claim| spent.contains(&claim)) {
+        (place, Reading::ClaimSpent)
+    } else if record.stage == LAND {
+        read_landing(place, spent, record)
+    } else if let Some(named) = workflow.place_of(&record.stage) {
+        read_at_stage(workflow, place, spent, refuted, rounds, nth, record, named)
+    } else {
+        // Handed on from the stage it was at: an issue already with a
+        // human, or past its stages, stays as it is.
+        (place.changed(), Reading::UnknownStage)
+    }
+}
+
+/// How a record naming the landing stage reads at `place`.
+#[spec(fn(Place[@p], &mut Vec<&str>, &StageRecord) -> (Place[p], Reading))]
+fn read_landing<'w, 'r>(
+    mut place: Place<'w>,
+    spent: &mut Vec<&'r str>,
+    record: &'r StageRecord,
+) -> (Place<'w>, Reading) {
+    if !place.position.landing() {
+        (place, Reading::OtherStage)
+    } else if record.puts() {
+        place.position = Position::Landing;
+        (place, Reading::Verdict)
+    } else if let Stated::Declared(declared) = record.stated {
+        if let Some(claim) = record.claim() {
+            spent.push(claim);
+        }
+        (place.after(declared), Reading::Verdict)
+    } else {
+        (place, Reading::OtherStage)
+    }
+}
+/// How a record naming the workflow's stage at `named` reads at `place`.
+#[spec(fn(&Workflow[@w], Place[w.n, w.roles], &mut Vec<&str>, &mut Option<usize>, &mut Vec<usize>, usize, &StageRecord, named: usize{named < w.n}) -> (Place[w.n, w.roles], Reading))]
+#[allow(clippy::too_many_arguments)]
+fn read_at_stage<'w, 'r>(
+    workflow: &'w Workflow,
+    place: Place<'w>,
+    spent: &mut Vec<&'r str>,
+    refuted: &mut Option<usize>,
+    rounds: &mut Vec<usize>,
+    nth: usize,
+    record: &'r StageRecord,
+    named: usize,
+) -> (Place<'w>, Reading) {
+    let own = place.position.stage().filter(|stage| stage.at() == named);
+    if record.stated == Stated::Sent && !record.puts() {
+        read_consult_sending(workflow, place, spent, rounds, nth, record, named)
+    } else if record.stated == Stated::Sent {
+        rounds.clear();
+        (place.put(workflow.stage(named)), Reading::Sent)
+    } else if let Stated::Failed(failure) = record.stated {
+        if own.is_some() {
+            (place.failed(failure), Reading::Failed)
+        } else if refuted.take() == Some(named) {
+            (place.refuted(workflow.stage(named), failure), Reading::Failed)
+        } else {
+            (place, Reading::OtherStage)
+        }
+    } else if own.is_none() {
+        (place, Reading::OtherStage)
+    } else if let Some(stage) = own.filter(|_| record.puts()) {
+        // A human rules wherever the issue stopped: an escalation is not
+        // always one its records show.
+        rounds.clear();
+        (place.put(stage), Reading::Verdict)
+    } else if record.stated == Stated::LockClosed {
+        (place.again(), Reading::LockClosed)
+    } else if let Stated::Declared(declared) = record.stated {
+        read_declared(place, spent, refuted, rounds, nth, record, named, declared)
+    } else {
+        // A sending: read above, whatever stage it names.
+        (place, Reading::Sent)
+    }
+}
+
+/// How a consult's sending to the workflow's stage at `named` reads at
+/// `place`: only while the issue is with it, and once under its claim.
+#[spec(fn(&Workflow[@w], Place[w.n, w.roles], &mut Vec<&str>, &mut Vec<usize>, usize, &StageRecord, named: usize{named < w.n}) -> (Place[w.n, w.roles], Reading))]
+fn read_consult_sending<'w, 'r>(
+    workflow: &'w Workflow,
+    place: Place<'w>,
+    spent: &mut Vec<&'r str>,
+    rounds: &mut Vec<usize>,
+    nth: usize,
+    record: &'r StageRecord,
+    named: usize,
+) -> (Place<'w>, Reading) {
+    if !matches!(place.position, Position::Consult(..)) {
+        return (place, Reading::OtherStage);
+    }
+    if let Some(claim) = record.claim() {
+        spent.push(claim);
+    }
+    let had = place.rework();
+    let place = place.sent_by_consult(workflow.stage(named));
+    if place.rework() > had || place.position.breaker().is_some() {
+        rounds.push(nth);
+    }
+    (place, Reading::Verdict)
+}
+
+/// How what the stage at `named`, the one the issue is at, declared reads
+/// at `place`.
+#[spec(fn(Place[@p], &mut Vec<&str>, &mut Option<usize>, &mut Vec<usize>, usize, &StageRecord, usize, Declared) -> (Place[p], Reading))]
+#[allow(clippy::too_many_arguments)]
+fn read_declared<'w, 'r>(
+    place: Place<'w>,
+    spent: &mut Vec<&'r str>,
+    refuted: &mut Option<usize>,
+    rounds: &mut Vec<usize>,
+    nth: usize,
+    record: &'r StageRecord,
+    named: usize,
+    declared: Declared,
+) -> (Place<'w>, Reading) {
+    if let Some(claim) = record.claim() {
+        spent.push(claim);
+    }
+    let before = place.position;
+    let had = place.rework();
+    if matches!(record.by, Author::Worker { consult: false, .. }) {
+        *refuted = Some(named);
+    }
+    let place = place.after(declared);
+    // The counts are the one account of what is rework: a round is what
+    // raised the total, or what a breaker refused to count. A human's ruling
+    // starts the rounds over with the counts.
+    let escalated = matches!(place.position, Position::Escalating(..));
+    if matches!(before, Position::Escalating(..)) {
+        if !escalated {
+            rounds.clear();
+        }
+    } else if place.rework() > had || place.position.breaker().is_some() {
+        rounds.push(nth);
+    }
+    (place, Reading::Verdict)
 }
 
 impl History<'_> {
@@ -524,7 +584,7 @@ impl History<'_> {
 }
 
 /// What an issue already handed to a human calls for, where no consult saw
-/// what handed it over (docs/adr/0018).
+/// what handed it over (docs/adr/0005).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unconsulted {
     /// Its records have it with its stage's consult: it goes back to the

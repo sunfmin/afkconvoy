@@ -294,7 +294,7 @@ impl Account {
     /// Its own home under the user's home `user_home`: a refreshing login's
     /// harness's user configuration, pointed at by that harness's variable
     /// (`Harness::config_dir`). A Claude Code account's session is given
-    /// none (docs/adr/0087).
+    /// none (docs/adr/0086).
     pub fn home(&self, user_home: &Path) -> PathBuf {
         user_home.join(HOMES).join(&self.name)
     }
@@ -334,7 +334,7 @@ impl Account {
     /// home being `user_home`: a Claude Code token goes in its environment
     /// alone, and the session keeps the configuration directory it would
     /// have — where its sessions, status line, rules and skills are, which
-    /// whoever started it reads (docs/adr/0087); a login, on its machine, is
+    /// whoever started it reads (docs/adr/0086); a login, on its machine, is
     /// its home, found logged in by its login file there.
     pub fn session(&self, here: &str, user_home: &Path) -> Session {
         let home = self.home(user_home);
@@ -367,22 +367,35 @@ fn home_text(home: &Path) -> String {
 }
 
 /// This machine's name, as `hostname -s` says it: what an account's
-/// `MACHINE` names.
+/// `MACHINE` names. The system's name up to its first `.`.
 pub fn this_machine() -> Result<String, String> {
-    let ran = Command::new("hostname")
-        .arg("-s")
-        .output()
-        .map_err(|e| format!("could not run hostname: {e}"))?;
-    let name = String::from_utf8_lossy(&ran.stdout).trim().to_string();
-    if !ran.status.success() || name.is_empty() {
-        return Err(format!("`hostname -s` named no machine ({})", ran.status));
+    let system = gethostname::gethostname();
+    let system = system.to_string_lossy();
+    let name = short_name(&system);
+    if name.is_empty() {
+        return Err(format!("the system names no machine ({system:?})"));
     }
-    Ok(name)
+    Ok(name.to_string())
+}
+
+/// `name` as `hostname -s` prints it: trimmed, and cut at its first `.`.
+fn short_name(name: &str) -> &str {
+    let name = name.trim();
+    name.split_once('.').map_or(name, |(short, _)| short)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn this_machine_is_named_as_hostname_s_names_it() {
+        assert_eq!(short_name("macs-Mac-Mini.local\n"), "macs-Mac-Mini");
+        assert_eq!(short_name("box"), "box");
+        assert_eq!(short_name(".local"), "");
+        let ran = Command::new("hostname").arg("-s").output().unwrap();
+        assert_eq!(this_machine().unwrap(), String::from_utf8_lossy(&ran.stdout).trim());
+    }
 
     struct Held {
         list: &'static str,

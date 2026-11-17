@@ -2,9 +2,9 @@
 //! share of its load, below its share of available memory, or low on free disk
 //! (docs/adr/0019) — while a usage window of the account it would start on
 //! would run out before it resets, or while the host's exclusive queue would
-//! take longer than its bound to drain (docs/adr/0072), or — for one repo —
+//! take longer than its bound to drain (docs/adr/0107), or — for one repo —
 //! while its candidate chain has had more conflicts than landings in the last
-//! hour (docs/adr/0076). It alone decides each
+//! hour (docs/adr/0107). It alone decides each
 //! start: no number of workers bounds a fleet. Whether admission holds is decided here, from what the
 //! effect layer read of the host and the shares it is held to; reading the
 //! host is the effect layer's.
@@ -36,7 +36,7 @@ pub struct Shares {
 pub const SHARES: Shares = Shares { load: 200, memory: 10, disk: 1 };
 
 /// The share of the host's cores, in percent, past which their being busy
-/// lets a load past its share hold (docs/adr/0084). macOS counts in its
+/// lets a load past its share hold (docs/adr/0107). macOS counts in its
 /// load average more than the threads that want a core: another account's
 /// idle simulators keep it near 100 on a host whose cores are mostly idle.
 pub const CPU_BUSY: u64 = 90;
@@ -51,7 +51,7 @@ pub struct Reading {
     pub load: Option<u64>,
     /// The share of its cores' time busy over the reading's window, in
     /// percent, as the kernel's CPU ticks say it; `None`: not read, and the
-    /// load alone decides (docs/adr/0084).
+    /// load alone decides (docs/adr/0107).
     pub cpu_busy: Option<u64>,
     /// The share of its memory free, in percent: what the kernel counts as
     /// available, so that it falls as memory pressure rises.
@@ -433,7 +433,7 @@ mod tests {
             [Hold::Load { load: 20_000, limit: 3200, busy: Some(95) }]
         );
         // Busy cores under a load within its share hold nothing: the queue's
-        // own gates may take every core (docs/adr/0050).
+        // own gates may take every core (docs/adr/0107).
         let gates = Reading { load: Some(1000), cpu_busy: Some(100), ..idle() };
         assert_eq!(holds(SHARES, &gates), []);
     }

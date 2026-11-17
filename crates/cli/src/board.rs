@@ -35,16 +35,16 @@ pub fn post(fleet: &Fleet, claim: &Claim, board: &Board) -> Result<bool> {
     if std::fs::read_to_string(&file).is_ok_and(|last| last == memo) {
         return Ok(false);
     }
-    let comments = fleet.gh.comments(issue)?;
+    let comments = fleet.issues.comments(issue)?;
     let found = board_comment(comments.iter().map(|c| c.body.as_str()));
     let written = match found.and_then(|at| comments.get(at)) {
         Some(comment) if comment.body.trim() == text.trim() => false,
         Some(comment) => {
-            fleet.gh.edit_comment(comment.id, &text)?;
+            fleet.issues.edit_comment(comment.id, &text)?;
             true
         }
         None => {
-            fleet.gh.comment(issue, &text)?;
+            fleet.issues.comment(issue, &text)?;
             true
         }
     };

@@ -41,8 +41,7 @@ fn checkout_gone(world: &World, checkout: &Path, answer: &serde_json::Value) {
     let local = git(&world.clone, &["branch", "--list", BRANCH]);
     assert_eq!(local, "", "its local branch is gone");
     assert!(!world.remote(&["rev-parse", &format!("refs/heads/{BRANCH}")]).is_empty());
-    let text = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
-    let chain: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let chain = world.chain("main");
     for candidate in chain["candidates"].as_array().unwrap() {
         let path = PathBuf::from(candidate["worktree"].as_str().unwrap());
         assert!(!path.exists() && !crate::common::worktree_listed(&listed, &path), "{listed}");
@@ -240,7 +239,7 @@ fn left(checkout: &Path, file: &str, age: u64) {
     std::fs::write(checkout.join(file), "left\n").unwrap();
     git(checkout, &["add", file]);
     let date = format!("@{at} +0000");
-    let ran = std::process::Command::new("git")
+    let ran = afkconvoy::census::command("git")
         .current_dir(checkout)
         .args(["commit", "-q", "-m", "left"])
         .env("GIT_COMMITTER_DATE", &date)
@@ -251,7 +250,7 @@ fn left(checkout: &Path, file: &str, age: u64) {
     git(checkout, &["push", "-q", "origin", "HEAD"]);
     let reflog = git(checkout, &["rev-parse", "--path-format=absolute", "--git-path", "logs/HEAD"]);
     let stamp =
-        std::process::Command::new("touch").args(["-t", &stamp_of(at), &reflog]).status().unwrap();
+        afkconvoy::census::command("touch").args(["-t", &stamp_of(at), &reflog]).status().unwrap();
     assert!(stamp.success());
 }
 
@@ -261,7 +260,7 @@ fn now() -> u64 {
 
 /// `at`, as `touch -t` takes it, in local time.
 fn stamp_of(at: u64) -> String {
-    let out = std::process::Command::new("date")
+    let out = afkconvoy::census::command("date")
         .args(["-r", &at.to_string(), "+%Y%m%d%H%M.%S"])
         .output()
         .unwrap();

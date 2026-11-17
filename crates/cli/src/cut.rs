@@ -6,7 +6,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::blocked::CutWait;
@@ -41,12 +41,12 @@ use crate::stage::Flows;
 /// and a running cut's claim. Without declared steps only its claim remains.
 /// An open failure issue holds no cut back; the same failure `REPEATS` times
 /// in a row, with nothing landed past the last one's base, does
-/// (docs/adr/0072): what the issue and its comments, in `open`, record.
+/// (docs/adr/0028): what the issue and its comments, in `open`, record.
 pub fn seen(
     fleet: &Fleet,
     read: &Flows,
     issues: &[Issue],
-    open: &crate::gh::OpenIssues,
+    open: &crate::issues::OpenIssues,
     base: &str,
 ) -> Result<Option<Seen>> {
     let claim = fleet.scan.runs.iter().find(|run| run.key == CLAIM_KEY).cloned();
@@ -306,7 +306,7 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
 /// in a terminal of it, under the host kit's first harness's worker
 /// environment, as a caster is. A checkout an earlier cut left is removed
 /// first, and every branch an earlier cut pushed but the one this cut takes
-/// up is deleted: a failed cut's leftovers do not pile up (docs/adr/0072).
+/// up is deleted: a failed cut's leftovers do not pile up (docs/adr/0028).
 /// `Lost` when a peer claimed it, or nothing is left to cut.
 ///
 /// A step that fails after the claim gives the claim back and is an error:
@@ -331,10 +331,27 @@ pub fn start(
     }
     // Before the claim: a host kit that holds no harness starts nothing.
     let first = fleet.first_harness()?;
+    // Before the claim too: a kept checkout another cut runs in — one going
+    // on by hand with `--from` — is neither removed nor cut again while it
+    // runs (sunfmin/control#1331). Held here until the start removed it.
+    let source = Source::of(&fleet.repo)?;
+    let left = Worktree::named(&source, CHECKOUT)?;
+    let _held = match &left {
+        Some(left) => match crate::cut_holder::take(left, me.now)? {
+            Ok(held) => Some(held),
+            Err(holder) => {
+                found
+                    .cut_said
+                    .push(What::CutHeld { said: crate::cut_holder::said(left, holder.as_ref()) });
+                return Ok(Outcome::Nothing);
+            }
+        },
+        None => None,
+    };
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, CLAIM_KEY)? else {
         return Ok(Outcome::Lost);
     };
-    let started = started(fleet, me, agent, first);
+    let started = started(fleet, me, agent, first, left);
     if !matches!(started, Ok(Some(_)))
         && let Err(kept) = drop_run(&fleet.repo, &mut fleet.scan, &claim)
     {
@@ -363,11 +380,18 @@ pub fn start(
 
 /// What `start` does once it holds the claim → the cut's record, its
 /// checkout cut and its terminal started; `None` where nothing is left to cut.
-fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Option<Record>> {
+/// `left` is the checkout an earlier cut kept, which it removes.
+fn started(
+    fleet: &Fleet,
+    me: &Me,
+    agent: &Agent,
+    first: Harness,
+    left: Option<Worktree>,
+) -> Result<Option<Record>> {
     let base = fleet.base_tip()?;
     let Some(record) = pick(fleet, &base, me.now)? else { return Ok(None) };
     let source = Source::of(&fleet.repo)?;
-    if let Some(left) = Worktree::named(&source, CHECKOUT)? {
+    if let Some(left) = left {
         left.remove()?;
     }
     clear_local_branches(&fleet.repo)?;
@@ -424,7 +448,7 @@ fn clear_branches(fleet: &Fleet, version: &str, base: &str) -> Result<()> {
 /// it in a comment — and keeps its checkout until the next cut starts, its
 /// terminal closed. The issue holds no cut back; the `cut::REPEATS`th
 /// failure of the same way in a row makes it a ticket of the fleet's, under
-/// the ready label (docs/adr/0072). A cut whose checkout is gone from here,
+/// the ready label (docs/adr/0028). A cut whose checkout is gone from here,
 /// and a peer's presumed dead, ended short as well, out of sight: each opens
 /// that issue too, named by the version its branch says, and is unclaimed.
 /// Unclaimed without that issue, the next idle tick would start the same
@@ -515,14 +539,14 @@ pub fn end(fleet: &mut Fleet, found: &mut Found, me: &Me, row: &Row) -> Result<O
             }
             let report = cut::failure_report(&said, &failure, &me.host, kept, &line);
             // One issue stands for the failures until a cut publishes; each
-            // later one adds to it (docs/adr/0072).
+            // later one adds to it (docs/adr/0028).
             let issue = match row.failure {
                 Some(open) => {
-                    fleet.gh.comment(open, &report)?;
+                    fleet.issues.comment(open, &report)?;
                     ticket(fleet, open)?;
                     open
                 }
-                None => fleet.gh.open_report(
+                None => fleet.issues.open_report(
                     &cut::failure_title(&version),
                     &report,
                     &format!("the step `{}` failed: {}", failure.step.word(), failure.why.trim()),
@@ -552,16 +576,16 @@ pub fn end(fleet: &mut Fleet, found: &mut Found, me: &Me, row: &Row) -> Result<O
 /// row: an ordinary ticket, not a human's. One a watch handed to a human,
 /// under the escalate label, or already a ticket, is left as it is.
 fn ticket(fleet: &Fleet, issue: u64) -> Result<()> {
-    let read = fleet.gh.issue(issue)?;
+    let read = fleet.issues.issue(issue)?;
     let ready = &fleet.config.ready_label;
     if read.labels.iter().any(|label| label == ready || *label == fleet.config.escalate_label) {
         return Ok(());
     }
-    let comments = fleet.gh.comments(issue)?;
+    let comments = fleet.issues.comments(issue)?;
     let bodies = read.body.as_deref().into_iter().chain(comments.iter().map(|c| c.body.as_str()));
     let Some(run) = cut::repeats(bodies).filter(cut::Repeats::ticketed) else { return Ok(()) };
-    fleet.gh.add_label(issue, ready)?;
-    fleet.gh.comment(issue, &cut::ticket_said(run.times, &run.way))
+    fleet.issues.add_label(issue, ready)?;
+    fleet.issues.comment(issue, &cut::ticket_said(run.times, &run.way))
 }
 
 /// Takes the label that waits on the next cut (`cut::WAITING_LABEL`) off
@@ -569,8 +593,8 @@ fn ticket(fleet: &Fleet, issue: u64) -> Result<()> {
 /// cut since the rebuild returns too. Each returns to the frontier at the
 /// stage it left.
 fn release_waiting(fleet: &Fleet) -> Result<()> {
-    for issue in fleet.gh.open_with(cut::WAITING_LABEL)? {
-        fleet.gh.remove_label(issue, cut::WAITING_LABEL)?;
+    for issue in fleet.issues.open_with(cut::WAITING_LABEL)? {
+        fleet.issues.remove_label(issue, cut::WAITING_LABEL)?;
     }
     Ok(())
 }
@@ -634,7 +658,7 @@ fn branch_of(fleet: &Fleet, version: &str, base: &str) -> Result<Option<cut::Bra
 /// it pushed, the base branch at `base`. `None` where nothing is a report.
 pub fn failed(
     fleet: &Fleet,
-    open: &crate::gh::OpenIssues,
+    open: &crate::issues::OpenIssues,
     issue: u64,
     base: &str,
     held: bool,
@@ -761,6 +785,16 @@ pub fn run(
     clock: impl Fn() -> u64,
 ) -> Result<Value> {
     let checkout = cut_checkout(repo)?;
+    // Held as long as this process runs: a second cut of this checkout
+    // would share its `target/` and TMPDIR, and kill its tests as leaks.
+    let _held = match crate::cut_holder::take(&checkout, clock())? {
+        Ok(held) => held,
+        Err(holder) => bail!(
+            "{}: a second cut of one checkout runs nothing while it runs, and goes on once it \
+             has ended",
+            crate::cut_holder::said(&checkout, holder.as_ref())
+        ),
+    };
     let Some(mut record) = checkout.cut_record()? else {
         bail!(
             "{} says no cut: only the checkout a fleet started a cut in takes its steps",
@@ -775,6 +809,7 @@ pub fn run(
         )
     })?;
     let gh = GitHub::of(repo)?;
+    let issues = crate::issues::of(&gh);
     let mut cutting =
         Cutting { repo, config, steps: &steps, gh: &gh, host, checkout: &checkout, red: None };
     let first = from.unwrap_or_else(|| record.step());
@@ -825,7 +860,7 @@ pub fn run(
         checkout.record_cut(&record)?;
         eprintln!("[afkconvoy] cut: {} passed after {seconds}s", step.word());
     }
-    let open = gh.open_issues()?;
+    let open = issues.open_issues(None)?.issues;
     let closed: Vec<u64> = open
         .rows
         .iter()
@@ -833,8 +868,8 @@ pub fn run(
         .map(|issue| issue.number)
         .collect();
     for issue in &closed {
-        gh.comment(*issue, &cut::published_said(&record.version))?;
-        gh.close_issue(*issue)?;
+        issues.comment(*issue, &cut::published_said(&record.version))?;
+        issues.close_issue(*issue)?;
     }
     Ok(json!({"version": record.version, "tag": format!("v{}", record.version),
         "prs": record.prs, "branch": record.branch, "commit": record.commit, "took": record.took,
@@ -1252,7 +1287,7 @@ impl Cutting<'_> {
         let mut output = File::open(&file)?;
         output.seek(SeekFrom::End(0))?;
         let mut child = crate::process::spawn(
-            Command::new("sh")
+            crate::census::command("sh")
                 .args(["-e", "-c", lines])
                 .current_dir(&self.repo.dir)
                 .env(cut::VERSION_ENV, version)
@@ -1436,11 +1471,12 @@ With `--from <step>` it takes that step and those after it, the record kept as i
 
 {"version", "tag", "prs", "branch", "commit", "took", "closed", "said"} — the cut took every step: `took` is each step with its seconds, `closed` the issues it closed. {"version", "stopped": "tag", "why", "said"} — a minor landing superseded the patch; nothing was tagged or published, and the fleet cuts the minor next. {"version", "failed", "why", "said", "log"} — it failed at the step `failed`.
 
-Errors: the checkout is no cut's, or keeps no cut's record; the repo names no cut steps; `--from` names no step.
+Errors: another cut holds the checkout (its pid, step and since); the checkout is no cut's, or keeps no cut's record; the repo names no cut steps; `--from` names no step.
 
 ## What trips you up
 
 - One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, which opens the failure issue for it, or adds to the one open. A fleet lock holds a new one back; an open cut failure does not, but where the same failure repeated {const:CUT_REPEATS} times with nothing landed since.
+- One cut of a checkout runs at a time: `afkconvoy cut` holds its checkout for as long as it runs, and a second — the fleet's, or one run by hand with `--from` — refuses at once, naming the one that holds it (its pid, the step it is at, since when), and runs nothing: two at once would share its `target/` and the tests' TMPDIR, and each would kill the other's tests as leaks. A tick whose due cut would remove a checkout another cut holds starts nothing, and its line says so; the next tick asks again. A holder whose process is gone holds nothing: the next cut takes its checkout over.
 - A cut interrupted after tagging goes on from the tag; one interrupted before, from its branch. A cut started again for the same version takes up that commit, and pushes no second branch.
 - Cut records and serial barriers that earlier versions left on the remote candidate chain are read as before, and drain: nothing new names a cut there.
 - `sh -e` fails a step at a line whose command fails, not at one whose command it tests: a command of an `if` or `while` test, on the left of `&&` or `||`, after `!`, or before the last of a pipe fails nothing. `./packaging/release.sh publish "$VERSION" | tee published` passes whatever `release.sh` did.

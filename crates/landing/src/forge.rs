@@ -1,5 +1,5 @@
 //! What a landing needs of the forge its changes are asked on: the program
-//! that lands says it, by implementing `Forge` (docs/adr/0060). afkconvoy's
+//! that lands says it, by implementing `Forge` (docs/adr/0058). afkconvoy's
 //! is GitHub's pull requests and the issues they close; another program's
 //! may be Forgejo's, or its own tasks. Nothing here names either.
 

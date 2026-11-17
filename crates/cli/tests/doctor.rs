@@ -300,6 +300,7 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
             "host",
             "issues",
             "kept_at_settle",
+            "legacy_candidate_chains",
             "refusals",
             "targets",
             "waiting_on_human"
@@ -1323,14 +1324,13 @@ fn watching_pages_prs_and_comments_and_withholds_until_when_a_source_fails() {
 /// Names `harness` on `checkout` in this world's checkout list.
 fn name_harness(world: &World, checkout: &std::path::Path, harness: &str) {
     world.list_checkout(checkout);
-    let file = world.cache().join("afkconvoy/checkouts.json");
-    let mut list: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let mut list = world.checkout_list();
     for entry in list["checkouts"].as_array_mut().unwrap() {
         if entry["checkout"] == json!(checkout) {
             entry["harness"] = json!(harness);
         }
     }
-    std::fs::write(file, list.to_string()).unwrap();
+    world.write_checkout_list(&list);
 }
 
 fn clear_shell(world: &World) {

@@ -65,7 +65,7 @@ fn stage_of(
 /// casting is gone. A stage says whether its model label was followed.
 pub fn status(
     fleet: &Fleet,
-    open: &crate::gh::OpenIssues,
+    open: &crate::issues::OpenIssues,
     team: Option<&Team>,
 ) -> Vec<ModelStatus> {
     let source = Source::of(&fleet.repo).ok();

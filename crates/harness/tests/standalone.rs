@@ -202,6 +202,169 @@ fn kimi_code_s_usage_answer_says_its_windows_and_its_session_none() {
     }
 }
 
+#[test]
+fn each_engine_that_reports_windows_is_asked_for_them_without_a_run() {
+    for harness in Harness::ALL {
+        assert_eq!(
+            harness.windows_question().is_some(),
+            harness.reports_windows(),
+            "{}",
+            harness.key()
+        );
+    }
+    // Only Claude Code, which offers a token's account no usage query,
+    // spends a turn.
+    let spends: Vec<Harness> = Harness::ALL
+        .into_iter()
+        .filter(|h| h.windows_question().is_some_and(|q| q.spends_turn))
+        .collect();
+    assert_eq!(spends, [Harness::ClaudeCode]);
+}
+
+#[test]
+fn claude_code_s_one_turn_says_its_windows() {
+    let printed = include_str!("recorded/claude-code-windows-question.jsonl");
+    assert_eq!(
+        said(&Harness::ClaudeCode.windows_answer(printed)),
+        [("five_hour", 7.0, None, Some(1794884400)), ("seven_day", 45.0, None, Some(1795345200))]
+    );
+    let line = Harness::ClaudeCode.windows_question().unwrap().line;
+    assert!(line.starts_with("claude -p --model haiku --output-format stream-json"), "{line}");
+    assert!(!line.contains("  "), "{line}");
+}
+
+#[test]
+fn codex_s_app_server_says_its_windows_or_that_it_is_logged_out() {
+    let printed = include_str!("recorded/codex-rate-limits-read.jsonl");
+    assert_eq!(
+        said(&Harness::Codex.windows_answer(printed)),
+        [
+            ("primary", 42.0, Some(300), Some(1794884400)),
+            ("secondary", 9.0, Some(10080), Some(1795345200)),
+        ]
+    );
+    let logged_out = include_str!("recorded/codex-rate-limits-logged-out.jsonl");
+    assert!(Harness::Codex.windows_answer(logged_out).is_empty());
+}
+
+#[test]
+fn kimi_code_s_usages_answer_says_its_windows() {
+    let printed = include_str!("recorded/kimi-usages.json");
+    assert_eq!(
+        said(&Harness::Kimi.windows_answer(printed)),
+        [("limit_5h", 25.0, None, Some(1794495600)), ("limit_7d", 50.0, None, Some(1794787200))]
+    );
+    // A refused token: curl printed nothing.
+    assert!(Harness::Kimi.windows_answer("").is_empty());
+    for harness in [Harness::Pi, Harness::Dsh, Harness::Grok] {
+        assert!(harness.windows_answer(printed).is_empty(), "{}", harness.key());
+    }
+}
+
+/// A directory of its own under the system's temporary one, for `name`.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("harness-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Writes an executable `program` into `bin` that runs `script` with `sh`.
+fn fake(bin: &std::path::Path, program: &str, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = bin.join(program);
+    std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// What `line` printed, run by `sh` with `bin` first on the path and `env`
+/// set, failing if it has not ended within ten seconds.
+fn asked(line: &str, bin: &std::path::Path, env: &[(&str, &std::path::Path)]) -> String {
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let mut command = std::process::Command::new("sh");
+    command.arg("-c").arg(line).env("PATH", path).stdout(std::process::Stdio::piped());
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let mut child = command.spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("`{line}` did not end once answered");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut printed = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut printed).unwrap();
+    printed
+}
+
+#[test]
+fn codex_s_question_ends_once_its_app_server_answers_request_1() {
+    let dir = scratch("codex-windows");
+    let answer = dir.join("answer.jsonl");
+    std::fs::write(&answer, include_str!("recorded/codex-rate-limits-read.jsonl")).unwrap();
+    // An app server that answers each request as it reads it and ends at
+    // its input's end, as codex-cli 0.169.0's does.
+    fake(
+        &dir,
+        "codex",
+        "[ \"$1\" = app-server ] || exit 2\n\
+         while IFS= read -r line; do\n\
+           case $line in *'\"id\":0,'*) sed -n 1,2p \"$ANSWER\";; \
+         *'\"method\":\"account/rateLimits/read\"'*) sed -n 3p \"$ANSWER\";; esac\n\
+         done\n",
+    );
+    let line = Harness::Codex.windows_question().unwrap().line;
+    let printed = asked(line, &dir, &[("ANSWER", &answer)]);
+    assert_eq!(printed.lines().count(), 1, "{printed}");
+    assert_eq!(
+        said(&Harness::Codex.windows_answer(&printed)),
+        [
+            ("primary", 42.0, Some(300), Some(1794884400)),
+            ("secondary", 9.0, Some(10080), Some(1795345200)),
+        ]
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn kimi_code_s_question_hands_curl_its_homes_token_on_stdin() {
+    let dir = scratch("kimi-windows");
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join("credentials")).unwrap();
+    // As Kimi Code 2.5.3 writes it: `JSON.stringify(token, null, 2)`.
+    std::fs::write(
+        home.join("credentials/kimi-code.json"),
+        "{\n  \"access_token\": \"tok-1\",\n  \"refresh_token\": \"ref-1\",\n  \
+         \"expires_at\": 1794884400,\n  \"scope\": \"\",\n  \"token_type\": \"Bearer\",\n  \
+         \"expires_in\": 900\n}\n",
+    )
+    .unwrap();
+    let answer = dir.join("answer.json");
+    std::fs::write(&answer, include_str!("recorded/kimi-usages.json")).unwrap();
+    let seen = dir.join("seen");
+    fake(
+        &dir,
+        "curl",
+        "printf '%s\\n' \"$@\" >\"$SEEN.args\"\ncat >\"$SEEN.stdin\"\ncat \"$ANSWER\"\n",
+    );
+    let line = Harness::Kimi.windows_question().unwrap().line;
+    let printed =
+        asked(line, &dir, &[("KIMI_CODE_HOME", &home), ("ANSWER", &answer), ("SEEN", &seen)]);
+    assert_eq!(
+        said(&Harness::Kimi.windows_answer(&printed)),
+        [("limit_5h", 25.0, None, Some(1794495600)), ("limit_7d", 50.0, None, Some(1794787200))]
+    );
+    let stdin = std::fs::read_to_string(dir.join("seen.stdin")).unwrap();
+    assert_eq!(stdin, "Authorization: Bearer tok-1\n");
+    let args = std::fs::read_to_string(dir.join("seen.args")).unwrap();
+    assert!(!args.contains("tok-1"), "{args}");
+    assert!(args.lines().any(|arg| arg == "https://api.kimi.com/coding/v1/usages"), "{args}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A session nobody types at, as Claude Code's started with its brief: the
 /// start line ends its flags and gives the brief pointer as its first prompt,
 /// and the session that prompt starts is the one found handed that brief.
@@ -311,8 +474,8 @@ fn a_harness_that_cannot_continue_a_session_has_no_resume_line() {
     }
 }
 
-/// What the crate depends on: Flux's attributes, serde and TOML — never
-/// afkconvoy-core, whose fleet concepts its API is to stay free of.
+/// What the crate depends on: Flux's attributes, serde, TOML and the
+/// system's host name — never afkconvoy-core, whose fleet concepts its API is to stay free of.
 #[test]
 fn the_crate_depends_on_nothing_of_the_fleet() {
     let manifest: toml::Table =
@@ -320,7 +483,10 @@ fn the_crate_depends_on_nothing_of_the_fleet() {
     let mut names: Vec<&str> =
         manifest["dependencies"].as_table().unwrap().keys().map(String::as_str).collect();
     names.sort_unstable();
-    assert_eq!(names, ["flux-alloc", "flux-core", "flux-rs", "serde", "serde_json", "toml"]);
+    assert_eq!(
+        names,
+        ["flux-alloc", "flux-core", "flux-rs", "gethostname", "serde", "serde_json", "toml"]
+    );
 }
 
 /// Each line of a recorded file of hook payloads, as `harness` says its

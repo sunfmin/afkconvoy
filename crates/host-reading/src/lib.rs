@@ -1,5 +1,5 @@
 //! How busy a host is, as the holder of its exclusive queue starts a command
-//! by it (docs/adr/0088, docs/adr/0089): its cores by the kernel's CPU ticks
+//! by it (docs/adr/0088, docs/adr/0058): its cores by the kernel's CPU ticks
 //! over the last minute, or the load average over its cores where those
 //! cannot be read; and its memory free, where it is under a floor its caller
 //! says. afkconvoy's host runner reads its host through it, and so may
@@ -7,6 +7,7 @@
 //! one reader of the kernel's ticks. Its API names no fleet concept.
 
 pub mod cpu;
+pub mod spawn;
 
 use std::process::{Command, Stdio};
 

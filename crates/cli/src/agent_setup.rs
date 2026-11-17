@@ -18,7 +18,7 @@
 //! settings (`afkconvoy_host_kit::guards`).
 //!
 //! What each part does is the host kit crate's (`afkconvoy_host_kit`, which
-//! Guild calls too, docs/adr/0062): this module says where afkconvoy keeps the
+//! Guild calls too, docs/adr/0058): this module says where afkconvoy keeps the
 //! declaration and the record of what was given, and runs the crate's lines
 //! in the login shell a worker gets.
 

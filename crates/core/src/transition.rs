@@ -233,7 +233,7 @@ pub fn skips_consult(body: &str) -> bool {
 
 /// A hand-off caused by the fleet, its harness or its host, before a worker
 /// took its brief or after the landing machinery stopped. These go straight
-/// to a human: a consult may not fix the host (docs/adr/0030).
+/// to a human: a consult may not fix the host (docs/adr/0005).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FleetFault {
     WorkerStart,

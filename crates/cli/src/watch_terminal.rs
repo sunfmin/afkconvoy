@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{copies::cache, host_watch::Watch, orca::Worktree};
+use crate::{host_watch::Watch, orca::Worktree};
 
 pub(crate) const TITLE: &str = "afkconvoy watch";
 const FILE: &str = "watch/terminal.json";
@@ -46,28 +46,21 @@ pub(crate) struct Record {
     pub execution_evidence: Option<Value>,
 }
 
-fn file() -> Result<PathBuf> {
-    Ok(cache()?.join(FILE))
-}
+/// The watch's launch and delivery journal, whole, in the host's database:
+/// the one row of `watch_terminal`. It was `watch/terminal.json` in the
+/// cache directory.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: FILE,
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("watch_terminal"),
+};
 
 pub(crate) fn read() -> Result<Option<Record>> {
-    let path = file()?;
-    match std::fs::read(&path) {
-        Ok(bytes) => Ok(Some(
-            serde_json::from_slice(&bytes)
-                .with_context(|| format!("cannot read watch association {}", path.display()))?,
-        )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
+    crate::host_db::read(&STORE).context("cannot read the watch association")
 }
 
 pub(crate) fn save(record: &Record) -> Result<()> {
-    let path = file()?;
-    std::fs::create_dir_all(path.parent().expect("association parent"))?;
-    let temporary = path.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(record)?)?;
-    std::fs::rename(temporary, path)?;
+    crate::host_db::put(&STORE, record)?;
     // Keep each round's delivery evidence after the resident journal moves
     // to another round. This is an archive of the journal, never a second
     // source from which the scheduler sends input.
@@ -296,7 +289,7 @@ fn reincarnated(saved: &Value, row: &Value) -> bool {
 /// survived, then its pane, which is ours by ptyId and would otherwise
 /// block the next creation by its title. The journal records the session
 /// ended, so its confirmed terminal is absent (None) and a fresh watch
-/// may start (ADR-0070). Nothing is adopted and nothing is resent.
+/// may start (ADR-0096). Nothing is adopted and nothing is resent.
 fn retire(worktree: &Worktree, mut record: Record, row: &Value) -> Result<Option<String>> {
     crate::host_watch::stop_marked(&crate::host_watch::session_identity(&record.watch))?;
     let handle = row["handle"].as_str().context("watch terminal has no handle")?;
@@ -367,7 +360,7 @@ pub(crate) fn json() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     fn watch(directory: PathBuf) -> Watch {
@@ -387,7 +380,7 @@ mod tests {
             Line::new().fixed("printf 'executed\\n' >> ").word(&output.display().to_string()).own();
         let line = launch_line(&watch, &line);
         let spawn = || {
-            Command::new("sh")
+            crate::census::command("sh")
                 .args(["-c", &line])
                 .env("ORCA_TERMINAL_HANDLE", "own-terminal")
                 .stdout(Stdio::null())
@@ -409,7 +402,7 @@ mod tests {
         let watch = watch(dir.path().into());
         let output = dir.path().join("executions");
         let line = Line::new().fixed("touch ").word(&output.display().to_string()).own();
-        Command::new("sh")
+        crate::census::command("sh")
             .args(["-c", &launch_line(&watch, &line)])
             .env_remove("ORCA_TERMINAL_HANDLE")
             .output()
@@ -431,7 +424,7 @@ mod tests {
             .unwrap()
             .to_path_buf();
         let mut watch = watch(directory.clone());
-        watch.transcript = cache().unwrap().join("smoke-session.log");
+        watch.transcript = crate::copies::cache().unwrap().join("smoke-session.log");
         let worktree = Worktree::at(directory, String::new());
         let marker = format!("afkconvoy-watch-session-{}-1", watch.id);
         let command = afkconvoy_core::host_watch::session(
@@ -451,7 +444,7 @@ mod tests {
         assert_eq!(locate(&watch).unwrap().unwrap(), terminal);
         watch.terminal = terminal.clone();
         set_status(&watch, LaunchState::Running).unwrap();
-        let sent = Command::new("orca")
+        let sent = crate::census::command("orca")
             .args([
                 "terminal",
                 "send",

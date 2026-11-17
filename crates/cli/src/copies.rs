@@ -3,10 +3,10 @@
 //! one, so a push is the only way a change to a role reaches a worker, and
 //! the checkout a human edits is another. A repo is fetched once per commit,
 //! and each directory is taken out of that fetch on its own: a worker is
-//! given its role's directory and nothing else of its repo (docs/adr/0014).
+//! given its role's directory and nothing else of its repo (docs/adr/0009).
 //! What a harness needs in the directory it starts in, and a role does not
 //! hold for it, is in the copy that harness's workers start in: the fleet's,
-//! and never the role's repo's (docs/adr/0013).
+//! and never the role's repo's (docs/adr/0020).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -47,6 +47,37 @@ fn cache_home() -> Result<PathBuf> {
 fn cache_home() -> Result<PathBuf> {
     thread_local! {
         static OWN: tempfile::TempDir = tempfile::tempdir().expect("a unit test's own cache");
+    }
+    Ok(OWN.with(|own| own.path().to_path_buf()))
+}
+
+/// Where on this host this user's fleets keep what nothing else can give
+/// back: their data directory (`afkconvoy help data`), beside the cache
+/// directory and never in it. The host's database is in it (`host_db`).
+pub fn data() -> Result<PathBuf> {
+    Ok(data_home()?.join("afkconvoy"))
+}
+
+/// The directory the data directory is in: this user's, as XDG_DATA_HOME
+/// or HOME says it.
+#[cfg(not(test))]
+fn data_home() -> Result<PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    Ok(match (set("XDG_DATA_HOME"), set("HOME")) {
+        (Some(data), _) => PathBuf::from(data),
+        (None, Some(home)) => PathBuf::from(home).join(".local/share"),
+        (None, None) => bail!(
+            "neither XDG_DATA_HOME nor HOME says where the fleet's data directory is: \
+             `afkconvoy help data`"
+        ),
+    })
+}
+
+/// The same, of a unit test: one of its own, as its cache directory is.
+#[cfg(test)]
+fn data_home() -> Result<PathBuf> {
+    thread_local! {
+        static OWN: tempfile::TempDir = tempfile::tempdir().expect("a unit test's own data");
     }
     Ok(OWN.with(|own| own.path().to_path_buf()))
 }

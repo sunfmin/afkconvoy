@@ -3,6 +3,11 @@
 //! the ticks it holds — not the processes it starts. Its job is a look every
 //! few minutes; between looks it should cost almost nothing
 //! (sunfmin/control#938). `doctor` says it when it is past the budget.
+//!
+//! The runner's start-up is not counted: it brings up its fleets and takes
+//! over claims in a burst that says nothing of its steady state
+//! (sunfmin/control#1320). The average starts at the first reading taken
+//! `SETTLED` after the first one, and covers at most `WINDOW` from there.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -17,8 +22,8 @@ pub const BUDGET_PERMILLE: u64 = 50;
 /// The span the average is over.
 pub const WINDOW: Duration = Duration::from_secs(3600);
 
-/// The least span an average is said over: a runner just started has not
-/// shown its steady state yet.
+/// The start-up span left out of the average, and the least span an average
+/// is said over: a runner just started has not shown its steady state yet.
 pub const SETTLED: Duration = Duration::from_secs(600);
 
 /// How often a reading is kept.
@@ -45,16 +50,23 @@ impl Average {
 
 /// Readings of the process's CPU time, each at a wall second, the oldest
 /// first, none older than `WINDOW` before the newest but the one that
-/// starts it.
+/// starts it. None is kept from the first `SETTLED` after the first one
+/// offered: that is the start-up.
 #[derive(Debug, Default)]
 pub struct Window {
+    /// The wall second of the first reading offered, the process's start.
+    began: Option<u64>,
     readings: VecDeque<(u64, Duration)>,
 }
 
 impl Window {
     /// Keeps the reading `used` at `at`, once `NOTED_EVERY` passed since the
-    /// last one.
+    /// last one and the start-up is over.
     pub fn note(&mut self, at: u64, used: Duration) {
+        let began = *self.began.get_or_insert(at);
+        if at < began + SETTLED.as_secs() {
+            return;
+        }
         if self.readings.back().is_some_and(|(last, _)| at < last + NOTED_EVERY.as_secs()) {
             return;
         }
@@ -119,15 +131,58 @@ mod tests {
     fn the_average_is_the_cpu_time_spent_over_the_wall_time_kept() {
         let mut window = Window::default();
         assert_eq!(window.average(AT, Duration::ZERO), None, "nothing read yet");
-        window.note(AT, Duration::from_secs(10));
+        window.note(AT, Duration::ZERO);
+        assert_eq!(window.average(AT + 60, Duration::ZERO), None, "the start-up is not kept");
+        let start = AT + SETTLED.as_secs();
+        window.note(start, Duration::from_secs(10));
         // 30 s of CPU over 600 s: 5% of a core, the budget, not past it.
-        let average = window.average(AT + 600, Duration::from_secs(40)).unwrap();
+        let average = window.average(start + 600, Duration::from_secs(40)).unwrap();
         assert_eq!((average.permille, average.over_seconds), (50, 600));
         assert!(!average.over_budget());
-        let past = window.average(AT + 600, Duration::from_secs(41)).unwrap();
+        let past = window.average(start + 600, Duration::from_secs(41)).unwrap();
         assert!(past.over_budget(), "{past:?}");
-        let young = window.average(AT + 60, Duration::from_secs(40)).unwrap();
+        let young = window.average(start + 60, Duration::from_secs(40)).unwrap();
         assert!(!young.over_budget(), "a minute says no steady state: {young:?}");
+    }
+
+    /// Notes a runner minute by minute until `minutes`, `used_at` giving its
+    /// CPU time at a second since start; the average at each of `looks`.
+    fn looks(used_at: impl Fn(u64) -> u64, looks: &[u64]) -> Vec<Average> {
+        let mut window = Window::default();
+        let mut found = Vec::new();
+        for minute in 0..=*looks.iter().max().unwrap() {
+            let at = minute * 60;
+            window.note(AT + at, Duration::from_secs(used_at(at)));
+            if looks.contains(&minute)
+                && let Some(a) = window.average(AT + at, Duration::from_secs(used_at(at)))
+            {
+                found.push(a);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_start_up_burst_is_not_counted() {
+        // 70 s of CPU in the first 2 minutes, 1% after.
+        let used = |s: u64| if s <= 120 { s * 70 / 120 } else { 70 + (s - 120) / 100 };
+        let found = looks(used, &[13, 30, 60]);
+        assert_eq!(found.len(), 3);
+        for a in &found {
+            assert!(!a.over_budget(), "{a:?}");
+        }
+        assert!(found.iter().all(|a| a.permille <= 20), "{found:?}");
+    }
+
+    #[test]
+    fn a_steady_overrun_is_said_once_settled_past_the_start_up() {
+        let used = |s: u64| s * 8 / 100;
+        let found = looks(used, &[5, 15, 30]);
+        // At 5 minutes nothing is kept yet; at 15 only 5 minutes are averaged.
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(!found[0].over_budget(), "{:?}", found[0]);
+        let late = looks(used, &[21, 30]);
+        assert!(late.iter().all(|a| a.over_budget()), "{late:?}");
     }
 
     #[test]

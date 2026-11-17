@@ -178,7 +178,7 @@ impl Kit {
     /// the kit's order; then each other that reports none, in the kit's
     /// order — a harness whose account's use the host cannot see is spent
     /// only after those it can, unless the operator put it first
-    /// (docs/adr/0088).
+    /// (docs/adr/0086).
     fn choosing(&self) -> impl Iterator<Item = &Held> {
         let (first, rest) =
             self.harnesses.split_first().map_or((None, &[][..]), |(f, r)| (Some(f), r));
@@ -564,7 +564,7 @@ pub fn give_every_agent_setup(now: u64) -> Value {
 /// Runs a targeted refresh in a process detached from the switch's answer.
 /// The caller invokes this only after writing that answer to stdout.
 pub fn refresh_after_answer(harness: Harness) -> Result<()> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = crate::census::command(std::env::current_exe()?);
     command
         .args(["kit", "--harness", harness.key()])
         .stdin(std::process::Stdio::null())
@@ -1220,7 +1220,7 @@ Writing the kit sends no prompt to any listed model. A listed model that fails w
 
 ## It stays current
 
-A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a newly listed model waits for the watch, and a model no longer listed is dropped. A harness that cannot be found or listed is kept, and a pause leaves it out, as above. An operator removal survives this refresh and every other relisting. A harness merely left out by a hand edit is read as absent, but only `kit --remove` records the removal that survives a refresh; the next relisting may add a hand-omitted installed harness back. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its cache: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
+A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a newly listed model waits for the watch, and a model no longer listed is dropped. A harness that cannot be found or listed is kept, and a pause leaves it out, as above. An operator removal survives this refresh and every other relisting. A harness merely left out by a hand edit is read as absent, but only `kit --remove` records the removal that survives a refresh; the next relisting may add a hand-omitted installed harness back. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its database: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
 
 ## The agent setup
 
@@ -1329,7 +1329,7 @@ mod tests {
 
     #[test]
     fn dsh_server_models_are_listed_and_held_without_the_credentials() {
-        let node = std::process::Command::new("node").arg("--version").output();
+        let node = crate::census::command("node").arg("--version").output();
         if !node.is_ok_and(|out| out.status.success()) {
             eprintln!("skipped: no `node` on PATH to run the DSH plugin with");
             return;
@@ -1352,7 +1352,7 @@ mod tests {
         .unwrap();
         for mode in ["list", "key", "refused", "truncated", "none", "malformed", "redirect"] {
             let run = crate::process::output(
-                std::process::Command::new("node").arg(root.path().join("test.mjs")).arg(mode),
+                crate::census::command("node").arg(root.path().join("test.mjs")).arg(mode),
             )
             .unwrap();
             assert!(run.status.success(), "{mode}: {}", String::from_utf8_lossy(&run.stderr));

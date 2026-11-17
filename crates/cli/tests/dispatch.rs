@@ -284,16 +284,14 @@ fn the_steps_run_in_order() {
     let world = ready_world();
     world.watch_pushes(None);
     dispatch(&world, "7").ok();
-    assert_eq!(
-        world.pushes(),
-        ["refs/convoy/target/7", "refs/convoy/heartbeat/alpha", "refs/convoy/claim/7"]
-    );
+    // the claim carries its target: no ref of its own is pushed
+    assert_eq!(world.pushes(), ["refs/convoy/heartbeat/alpha", "refs/convoy/claim/7"]);
     let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(
         calls,
         [
             // what survived is read first, under the claim; the repo list is
-            // the look's one (docs/adr/0043)
+            // the look's one (the `look` module)
             "repo list",
             "worktree list",
             "worktree create",
@@ -311,9 +309,7 @@ fn the_steps_run_in_order() {
             "worktree ps"
         ]
     );
-    let delivered =
-        std::fs::read_to_string(world.cache().join("afkconvoy/watch/delivered.json")).unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&delivered).unwrap(), json!(["claude-code"]));
+    assert_eq!(world.kept("watch/delivered.json"), json!(["claude-code"]));
 }
 
 #[test]

@@ -100,7 +100,7 @@ fn two_claude_code_accounts_give_two_environments_and_no_value_is_written_or_pri
         assert!(matches!(found.credential, Credential::Token(_)));
         assert_eq!(found.machine(), None);
         // A token is used on any machine, and is the whole of its
-        // environment: the session keeps its configuration (docs/adr/0087).
+        // environment: the session keeps its configuration (docs/adr/0086).
         let Session::Ready(env) = found.session("anywhere", &home) else {
             panic!("{found:?} is not ready")
         };

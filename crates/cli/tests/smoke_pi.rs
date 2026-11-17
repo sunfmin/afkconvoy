@@ -1,7 +1,7 @@
 //! The one test against real pi. Every other test starts a pi worker in a
 //! stand-in orca and runs the fleet's extension under a stand-in pi, which
 //! proves the fleet builds the right line — not that pi answers it as
-//! assumed (docs/adr/0013). This one runs that line for real, in a throwaway
+//! assumed (docs/adr/0020). This one runs that line for real, in a throwaway
 //! role with a throwaway project as its worktree, under a throwaway home that
 //! holds everything of a host user's a worker must not load, and has the
 //! worker try what its role's own limit and the guard refuse.
@@ -21,7 +21,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 use afkconvoy::kept::keep_under;
@@ -203,7 +203,7 @@ fn real_pi_started_in_a_role_sees_the_role_and_the_project_and_nothing_of_the_us
         },
     };
     let line = format!("{} -p --no-session --offline 'go'", start.in_role(Harness::Pi, &launch));
-    let out = Command::new("/bin/sh")
+    let out = afkconvoy::census::command("/bin/sh")
         .args(["-c", &line])
         .env("HOME", &home)
         .stdin(Stdio::null())

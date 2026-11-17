@@ -133,7 +133,7 @@ pub fn changing_tree(state: Option<WorkerState>, answered: &Answered) -> bool {
 }
 
 /// How many red turns of one PR in a row, with no green or conflicting turn
-/// between them, hand it to a new worker in a new worktree (docs/adr/0088).
+/// between them, hand it to a new worker in a new worktree (docs/adr/0114).
 pub const RED_TURNS_IN_A_ROW: usize = 2;
 
 /// How one turn's ending, `outcome`, changes a PR's red turns in a row

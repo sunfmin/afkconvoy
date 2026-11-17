@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -56,29 +56,22 @@ struct Sending {
     outcome: String,
 }
 
+/// The outbox of human decisions, whole, in the host's database: the one
+/// row of `notify_outbox`. It was `watch/notify.json` in the cache
+/// directory, with `watch/notify.lock` beside it.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: "watch/notify.json",
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("notify_outbox"),
+};
+
+/// Changes the outbox by `f`, in one transaction of the host's database.
 fn change<T>(f: impl FnOnce(&mut Outbox) -> T) -> Result<T> {
-    let directory = crate::copies::cache()?.join("watch");
-    std::fs::create_dir_all(&directory)?;
-    let lock = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.join("notify.lock"))?;
-    lock.lock()?;
-    let mut outbox = read()?;
-    let answer = f(&mut outbox);
-    let temporary = directory.join(format!("notify-{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(&outbox)?)?;
-    std::fs::rename(temporary, directory.join("notify.json"))?;
-    Ok(answer)
+    crate::host_db::change(&STORE, f)
 }
 
 fn read() -> Result<Outbox> {
-    match std::fs::read(crate::copies::cache()?.join("watch/notify.json")) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Outbox::default()),
-        Err(error) => Err(error.into()),
-    }
+    crate::host_db::read(&STORE)
 }
 
 /// Replaying one report is harmless. Only observed recovery ends an episode;
@@ -236,7 +229,7 @@ fn step(ended: &AtomicBool, panel: Option<&str>, bound: Duration) -> Result<()> 
 }
 
 fn send(command: &str, payload: &Value, ended: &AtomicBool, bound: Duration) -> Result<()> {
-    let mut child = Command::new("sh")
+    let mut child = crate::census::command("sh")
         .args(["-c", command])
         .process_group(0)
         .stdin(Stdio::piped())

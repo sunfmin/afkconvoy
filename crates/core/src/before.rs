@@ -145,7 +145,14 @@ mod tests {
 
     fn claim(number: u64, id: &str, instance: &str, ts: u64) -> Claim {
         let owner = Owner { instance: instance.into(), host: format!("{instance}-host"), ts };
-        Claim { number, owner: Some(owner), sha: format!("{id}-now"), id: id.into(), since: None }
+        Claim {
+            number,
+            owner: Some(owner),
+            sha: format!("{id}-now"),
+            id: id.into(),
+            since: None,
+            pin: None,
+        }
     }
 
     fn held(number: u64, id: &str) -> Held {

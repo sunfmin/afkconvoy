@@ -191,7 +191,7 @@ fn worktree_create(st: &mut State) -> ! {
     let path = format!("{root}/{}", name.replace('/', "-"));
     let branch = format!("tester/{name}");
     let base = st.doc["stale_base"].as_str().or(st.opt("--base-branch")).unwrap().to_string();
-    let made = std::process::Command::new("git")
+    let made = afkconvoy::census::command("git")
         .args(["-C", source, "worktree", "add", "-q", "-b", &branch, &path, &base])
         .output()
         .unwrap();
@@ -327,7 +327,7 @@ fn worktree_rm(st: &mut State) -> ! {
     if Path::new(&path).is_dir() {
         let source = st.doc["repos"][0]["path"].as_str().unwrap().to_string();
         let branch = fake::git(&["-C", &path, "symbolic-ref", "-q", "--short", "HEAD"]);
-        let removed = std::process::Command::new("git")
+        let removed = afkconvoy::census::command("git")
             .args(["-C", &source, "worktree", "remove", "--force", &path])
             .output()
             .unwrap();
@@ -389,15 +389,10 @@ fn terminal_create(st: &mut State) -> ! {
     // the same lost-create-receipt recovery path without starting a model.
     if matches!(title.as_deref(), Some("afkconvoy watch" | "afkconvoy asks")) {
         let asking = title.as_deref() == Some("afkconvoy asks");
-        let journal = std::env::var_os("XDG_CACHE_HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap()
-            .join(if asking {
-                "afkconvoy/asking/terminal.json"
-            } else {
-                "afkconvoy/watch/terminal.json"
-            });
-        let record: Value = serde_json::from_slice(&std::fs::read(journal).unwrap()).unwrap();
+        // The launch record, as the host's database keeps it.
+        let db = afkconvoy::host_db::path().unwrap();
+        let store = if asking { "asking/terminal.json" } else { "watch/terminal.json" };
+        let record = afkconvoy::host_db::kept(&db, store).unwrap().unwrap();
         let owner = if asking { "session" } else { "watch" };
         let transcript = Path::new(record[owner]["transcript"].as_str().unwrap());
         std::fs::create_dir(transcript.with_extension("claim")).unwrap();
@@ -421,7 +416,7 @@ fn asked(st: &mut State, script: String) -> ! {
         fail(st, "selector_not_found");
     }
     let shell = std::env::var("SHELL").expect("SHELL");
-    let ran = std::process::Command::new(shell)
+    let ran = afkconvoy::census::command(shell)
         .args(["-lic", &script])
         .stdin(std::process::Stdio::null())
         .output()

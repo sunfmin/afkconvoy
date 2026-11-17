@@ -47,6 +47,11 @@ pub struct Asks {
     pub change: u64,
     pub branch: String,
     pub head: String,
+    /// The PR that closed this one as carried while its turn still asked
+    /// (`Chain::carried`): that turn ends at its next step, answering
+    /// `carried` (sunfmin/control#1349).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_by: Option<u64>,
 }
 
 /// One PR of a round, as its turn asked it to land.
@@ -597,7 +602,8 @@ impl<N: Clone> Chain<N> {
         for place in self.pending.drain(..) {
             match place.asks.clone() {
                 Some(asks)
-                    if !taken.contains(&asks.change)
+                    if asks.carried_by.is_none()
+                        && !taken.contains(&asks.change)
                         && !asked.iter().any(|a| a.asks.change == asks.change) =>
                 {
                     asked.push(Ask {
@@ -1146,7 +1152,14 @@ impl<N: Clone> Chain<N> {
             }
             ready = ready && a.candidate.is_some();
         }
-        Some(if ready { RoundNext::Assign } else { RoundNext::Wait })
+        // A pair cancelled and not yet stopped holds the candidate window
+        // (`Chain::can_assign`): the root waits for its gate to stop, rather
+        // than its turn answering the window held.
+        let mut stopping = false;
+        for c in &self.candidates {
+            stopping = stopping || (c.is_pair() && c.active() && !c.valid());
+        }
+        Some(if ready && !stopping { RoundNext::Assign } else { RoundNext::Wait })
     }
 
     /// What the round's last-asked PR carries where its round gated red
@@ -1184,6 +1197,51 @@ impl<N: Clone> Chain<N> {
         }
         let by = c.cancelled_by.as_deref()?;
         self.candidates.iter().find(|t| t.id == by).map(|t| t.change)
+    }
+
+    /// PR `change` is closed as carried by PR `by` (docs/adr/0083): each
+    /// place of it, pending or in a round, open or stacked, says so, and its
+    /// turn ends at its next step answering `carried` (`carried_by`); each
+    /// pair it gates and has not passed is cancelled `carried`, a gate of it
+    /// waiting or running with it. A turn that asked again before it was
+    /// carried gates no pair of it, and its round carries on without it as
+    /// it leaves (sunfmin/control#1349).
+    pub fn carried(&mut self, change: u64, by: u64) {
+        for place in &mut self.pending {
+            if let Some(asks) = place.asks.as_mut().filter(|a| a.change == change) {
+                asks.carried_by = Some(by);
+            }
+        }
+        for round in self.round.iter_mut().chain(self.stacked.iter_mut()) {
+            for ask in round.asked.iter_mut().filter(|a| a.asks.change == change) {
+                ask.asks.carried_by = Some(by);
+            }
+        }
+        let mut pairs: Vec<String> = vec![];
+        for c in &self.candidates {
+            if c.is_pair() && c.change == change && c.valid() && c.phase != Phase::Green {
+                pairs.push(c.id.clone());
+            }
+        }
+        for pair in pairs {
+            self.invalidate(&pair, "carried");
+        }
+    }
+
+    /// The PR that carries the PR whose place is `id`, pending or in a
+    /// round, where one closed it as carried (`carried`).
+    pub fn carried_by(&self, id: &str) -> Option<u64> {
+        for place in &self.pending {
+            if place.id == id {
+                return place.asks.as_ref().and_then(|a| a.carried_by);
+            }
+        }
+        for round in self.rounds() {
+            if let Some(ask) = round.asked.iter().find(|a| a.id == id) {
+                return ask.asks.carried_by;
+            }
+        }
+        None
     }
 
     /// The round's PR whose place is `id` leaves it: `why`.
@@ -1276,6 +1334,7 @@ mod tests {
                     change,
                     branch: format!("b{change}"),
                     head: format!("h{change}"),
+                    carried_by: None,
                 }),
             });
         }
@@ -1531,7 +1590,12 @@ mod tests {
                 id: id.into(),
                 owner: owner(3),
                 since: Some(9),
-                asks: Some(Asks { change: 3, branch: "b3".into(), head: "h3+h1".into() }),
+                asks: Some(Asks {
+                    change: 3,
+                    branch: "b3".into(),
+                    head: "h3+h1".into(),
+                    carried_by: None,
+                }),
             });
             chain.rejoin(id)
         };
@@ -1574,7 +1638,12 @@ mod tests {
             id: "t9".into(),
             owner: owner(4),
             since: Some(9),
-            asks: Some(Asks { change: 4, branch: "b4".into(), head: "h4".into() }),
+            asks: Some(Asks {
+                change: 4,
+                branch: "b4".into(),
+                head: "h4".into(),
+                carried_by: None,
+            }),
         });
         assert!(chain.rejoin("t9"));
         gate(&mut chain, &level[0].1, true);
@@ -1618,7 +1687,12 @@ mod tests {
             id: "t5".into(),
             owner: owner(5),
             since: Some(5),
-            asks: Some(Asks { change: 5, branch: "b5".into(), head: "h5".into() }),
+            asks: Some(Asks {
+                change: 5,
+                branch: "b5".into(),
+                head: "h5".into(),
+                carried_by: None,
+            }),
         });
         gate(&mut chain, &level0[0].1, true);
         pair(&mut chain, |_, _| true);
@@ -1650,6 +1724,46 @@ mod tests {
         assert_eq!(root(&chain).unwrap().changes, [1]);
     }
 
+    /// A PR closed as carried while its turn holds a pair
+    /// (sunfmin/control#1349): its turn is told who carries it, its pair is
+    /// cancelled `carried`, and its partner's turn waits for that pair's gate
+    /// to stop before it assigns; its turn gone, the round goes on without it.
+    #[test]
+    fn a_pr_carried_while_its_turn_holds_a_pair_is_told_and_its_pair_cancelled() {
+        let mut chain = asking(2);
+        chain.open_round("r");
+        pair(&mut chain, |_, _| true);
+        let (owner, pair_id) = gating(&chain)[0].clone();
+        assert_eq!(owner, 2);
+        assert_eq!(chain.carried_by("t2"), None);
+        chain.carried(2, 9);
+        assert_eq!(chain.carried_by("t2"), Some(9));
+        assert_eq!(chain.carried_by("t1"), None, "its partner is not carried");
+        let p = chain.candidates.iter().find(|c| c.id == pair_id).unwrap();
+        assert_eq!(p.cause.as_deref(), Some("carried"));
+        assert!(gating(&chain).is_empty(), "no turn gates it");
+        chain.advance_round();
+        assert_eq!(chain.round_next("t1"), Some(RoundNext::Wait), "its gate still stopping");
+        chain.candidates.iter_mut().filter(|c| c.id == pair_id).for_each(|c| c.stopped = true);
+        assert_eq!(chain.round_next("t1"), Some(RoundNext::Assign));
+        chain.leave_round(|a| a.id == "t2");
+        assert_eq!(root(&chain).unwrap().changes, [1]);
+    }
+
+    /// A pending turn whose PR was carried is taken into no round: its turn
+    /// ends at its next step.
+    #[test]
+    fn a_pending_pr_carried_is_taken_into_no_round() {
+        let mut chain = asking(2);
+        chain.carried(2, 9);
+        assert_eq!(chain.carried_by("t2"), Some(9));
+        assert!(chain.open_round("r"));
+        let asked: Vec<u64> =
+            chain.round.as_ref().unwrap().asked.iter().map(|a| a.asks.change).collect();
+        assert_eq!(asked, [1]);
+        assert_eq!(chain.carried_by("t2"), Some(9), "still pending, still told");
+    }
+
     #[test]
     fn a_group_whose_earlier_pr_left_after_its_gate_still_groups_at_the_next_level() {
         let mut chain = asking(4);
@@ -1674,7 +1788,12 @@ mod tests {
             id: format!("t{n}"),
             owner: owner(n),
             since: Some(n),
-            asks: Some(Asks { change: n, branch: format!("b{n}"), head: format!("h{n}") }),
+            asks: Some(Asks {
+                change: n,
+                branch: format!("b{n}"),
+                head: format!("h{n}"),
+                carried_by: None,
+            }),
         });
     }
 

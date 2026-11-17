@@ -1,4 +1,4 @@
-//! A workflow ends in the landing train (docs/adr/0004, as amended): once the
+//! A workflow ends in the landing train (docs/adr/0047, as amended): once the
 //! last stage passes to `land`, a worker in the workflow's landing role gates
 //! the issue's PR and joins the train — and from there on the train, its
 //! worker and a joining worker's silences are what they are in an unbound repo.
@@ -235,8 +235,7 @@ fn a_builder_with_an_open_pr_still_needs_its_workflow_and_worker_health() {
     assert_eq!(status(&world), "at_stage");
     assert_eq!(world.labels(7), ["flow:feature", "stage:build"]);
     assert_eq!(world.claims(), [(7, "alpha".into())]);
-    let path = world.cache().join("afkconvoy/worker-health.json");
-    let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let book = world.kept("worker-health.json");
     assert_eq!(book["workers"][0]["path"], json!(dir), "{book}");
     assert_eq!(book["workers"][0]["action"], "observing", "{book}");
 }
@@ -261,8 +260,7 @@ fn landing_verdict(world: &World, verdict: &str, blocked_by: &[&str]) {
 }
 
 fn no_worker_health(world: &World) {
-    let file = world.cache().join("afkconvoy/worker-health.json");
-    let book: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    let book = world.kept("worker-health.json");
     assert!(book["workers"].as_array().unwrap().is_empty(), "{book}");
 }
 
@@ -417,7 +415,7 @@ fn a_faulted_landing_worker_continues_in_its_role_without_consuming_a_restart() 
     tick(&world, now + 90);
     let started = worker(&world, &dir);
     assert!(started.contains(" AFKCONVOY_STAGE='land' AFKCONVOY_ROLE='lander' "), "{started}");
-    // Codex reports its windows: it comes before pi (docs/adr/0088).
+    // Codex reports its windows: it comes before pi (docs/adr/0086).
     assert!(started.contains(" && codex "), "{started}");
     assert_eq!(world.claims(), claims);
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);

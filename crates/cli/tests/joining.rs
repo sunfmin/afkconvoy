@@ -98,10 +98,7 @@ fn an_idle_unbound_codex_worker_has_its_waiting_turn_asked_again_without_a_harne
     assert!(did(&ticked).contains(&"watch 7 asked".to_string()), "{ticked}");
     assert!(notes.join("convoy-turn.log").exists());
     assert_eq!(open_terminals(&world, &dir), terminals);
-    let health: Value = serde_json::from_slice(
-        &std::fs::read(world.cache().join("afkconvoy/worker-health.json")).unwrap(),
-    )
-    .unwrap();
+    let health = world.kept("worker-health.json");
     assert!(
         health["workers"].as_array().unwrap().iter().all(|worker| worker["path"] != json!(dir)),
         "{health}"
@@ -545,8 +542,7 @@ fn a_landing_workers_turn_wait_retires_health_without_an_operator_finding() {
         let dir = worktree(&world);
         tick(&world, 1300);
         tick(&world, 1600);
-        let path = world.cache().join("afkconvoy/worker-health.json");
-        let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let book = world.kept("worker-health.json");
         assert_eq!(book["workers"][0]["action"], "waiting for operator", "{book}");
         let before = world.afk(&["doctor", "--all", "--now", "1600"]).json;
         assert!(
@@ -576,7 +572,7 @@ fn a_landing_workers_turn_wait_retires_health_without_an_operator_finding() {
         );
 
         tick(&world, 1900);
-        let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let book = world.kept("worker-health.json");
         assert_eq!(book["workers"], json!([]), "{outcome}: {book}");
         assert_eq!(book["observations_failed"], json!([]), "{outcome}: {book}");
         assert!(!world.root.join("typesafe-request").exists());
@@ -650,15 +646,14 @@ fn landing_retires_existing_health_even_when_its_recovery_window_has_expired() {
         let world = gated();
         let dir = worktree(&world);
         tick(&world, 1300);
-        let path = world.cache().join("afkconvoy/worker-health.json");
-        let mut book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut book = world.kept("worker-health.json");
         assert_eq!(book["workers"][0]["path"], json!(dir), "{book}");
         if waiting {
             book["workers"][0]["action"] = json!("waiting for operator");
             book["workers"][0]["operator_reason"] = json!("no Jev key command is set");
         }
         book["observations_failed"] = json!([[dir, "old diagnosis failure", 1600]]);
-        std::fs::write(&path, serde_json::to_vec(&book).unwrap()).unwrap();
+        world.keep("worker-health.json", &book);
         let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1350"]).ok();
         assert_eq!(joined["outcome"], "merged", "{joined}");
         if broken_gitdir {
@@ -667,7 +662,7 @@ fn landing_retires_existing_health_even_when_its_recovery_window_has_expired() {
         }
         let ticked = tick(&world, next_tick);
         assert_eq!(ticked["errors"], json!([]), "{ticked}");
-        let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let book = world.kept("worker-health.json");
         assert_eq!(book["workers"], json!([]), "{book}");
         assert_eq!(book["observations_failed"], json!([]), "{book}");
         assert!(!world.root.join("typesafe-request").exists());
@@ -682,10 +677,9 @@ fn a_landing_pushed_before_closing_the_issue_also_retires_expired_health() {
     let world = gated();
     let dir = worktree(&world);
     tick(&world, 1300);
-    let path = world.cache().join("afkconvoy/worker-health.json");
-    let mut book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut book = world.kept("worker-health.json");
     book["workers"][0]["action"] = json!("waiting for operator");
-    std::fs::write(&path, serde_json::to_vec(&book).unwrap()).unwrap();
+    world.keep("worker-health.json", &book);
     let joined = world.afk_in(&dir, &["land", "--issue", "7", "--now", "1350"]).ok();
     assert_eq!(joined["outcome"], "merged", "{joined}");
     // Simulate interruption after the base push, before closing the issue.
@@ -698,7 +692,7 @@ fn a_landing_pushed_before_closing_the_issue_also_retires_expired_health() {
     assert_eq!(world.state(7), "closed");
     assert_eq!(world.claims(), []);
     assert_eq!(world.labels(7), ["ready-for-agent", "bug"]);
-    let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let book = world.kept("worker-health.json");
     assert_eq!(book["workers"], json!([]), "{book}");
     assert!(!world.root.join("typesafe-request").exists());
 }
@@ -714,8 +708,7 @@ fn a_landing_that_closed_the_issue_before_the_next_tick_also_retires_health() {
 
     let ticked = tick(&world, 5000);
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
-    let path = world.cache().join("afkconvoy/worker-health.json");
-    let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let book = world.kept("worker-health.json");
     assert_eq!(book["workers"], json!([]), "{book}");
     assert!(!world.root.join("typesafe-request").exists());
     assert_eq!(world.claims(), []);
@@ -745,8 +738,7 @@ fn a_stopped_screen_and_a_complete_judgment_do_not_exempt_unfinished_work() {
         for now in [1300, 1600, 1900, 2200, 2500] {
             tick(&world, now);
         }
-        let path = world.cache().join("afkconvoy/worker-health.json");
-        let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let book = world.kept("worker-health.json");
         let worker =
             book["workers"].as_array().unwrap().iter().find(|w| w["path"] == json!(dir)).unwrap();
         assert_eq!(worker["diagnosis"]["class"], "complete", "{book}");
@@ -841,7 +833,7 @@ impl BareShell {
                 std::ffi::CStr::from_ptr(name.as_ptr()).to_string_lossy().into_owned(),
             )
         };
-        let mut command = std::process::Command::new("/bin/sh");
+        let mut command = afkconvoy::census::command("/bin/sh");
         command
             .args(["-c", "sleep 60"])
             .stdin(Stdio::from(slave.try_clone().unwrap()))
@@ -862,7 +854,7 @@ impl BareShell {
         let until = afkconvoy_patience::deadline();
         loop {
             let on =
-                std::process::Command::new("ps").args(["-o", "pid=", "-t", &bare.tty]).output();
+                afkconvoy::census::command("ps").args(["-o", "pid=", "-t", &bare.tty]).output();
             if String::from_utf8_lossy(&on.unwrap().stdout).trim() == bare.shell.id().to_string() {
                 return bare;
             }

@@ -1,4 +1,4 @@
-//! The landing crate as another program uses it (docs/adr/0060): from
+//! The landing crate as another program uses it (docs/adr/0058): from
 //! outside, through its public API alone, with a fake forge and no fleet
 //! beside it. Changes land on a local bare repo in a round through its
 //! pairing tree (docs/adr/0083) — each pair fast-gated, the pairs of a level
@@ -287,7 +287,7 @@ fn two_changes_land_in_one_round_through_one_pair_and_one_whole_gate() {
     assert!(chained(&chain).iter().all(|c| c.phase == Phase::Landed && c.stopped && c.batch));
     // The pair joins the two heads, and its fast gate ran; the root merged
     // onto the tip holds the pair's tree, so the whole gate's fast part is
-    // the pair's run, reused (docs/adr/0069), and the slow part runs once.
+    // the pair's run, reused (docs/adr/0037), and the slow part runs once.
     let parents = |commit: &str| git(&work, &["show", "-s", "--format=%P", commit]);
     assert_eq!(parents(&pair.commit), format!("{} {}", heads.0, heads.1));
     assert_eq!(pair.change, 2, "the later-asked PR's turn gates it");

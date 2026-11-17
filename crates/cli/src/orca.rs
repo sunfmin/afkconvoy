@@ -7,13 +7,11 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
-use afkconvoy_core::config::RepoName;
 use afkconvoy_core::cut;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::{Harness, Keystroke};
@@ -22,7 +20,7 @@ use afkconvoy_core::legacy::TRAIN_WORKTREE;
 use afkconvoy_core::line::niced;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, Tool, add_checkout};
-use afkconvoy_core::tracker::Tracker;
+use afkconvoy_core::tracker::{Said, Tracker};
 use afkconvoy_core::worker::{WorkerState, is_worktree_named, short_branch, worker_state};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -155,7 +153,7 @@ struct Ending {
 impl Ending {
     fn observe(proc: &crate::hot::Proc, clock: &TerminationTime) -> Self {
         let pid = proc.pid.to_string();
-        let metadata = crate::process::output(Command::new("ps").args([
+        let metadata = crate::process::output(crate::census::command("ps").args([
             "-ww",
             "-p",
             &pid,
@@ -186,7 +184,8 @@ impl Ending {
     fn signal(&mut self, pid: u32, forced: bool) {
         self.forced = forced;
         let signal = if forced { "-KILL" } else { "-TERM" };
-        let sent = crate::process::output(Command::new("kill").args([signal, &pid.to_string()]));
+        let sent =
+            crate::process::output(crate::census::command("kill").args([signal, &pid.to_string()]));
         match sent {
             Ok(out) if out.status.success() => self.sent = true,
             Ok(out) => {
@@ -200,7 +199,9 @@ impl Ending {
     /// Resumes `pid`, so that a signal pending on it is delivered. Soft:
     /// the SIGKILL that follows needs no resume.
     fn resume(pid: u32) {
-        let _ = crate::process::output(Command::new("kill").args(["-CONT", &pid.to_string()]));
+        let _ = crate::process::output(
+            crate::census::command("kill").args(["-CONT", &pid.to_string()]),
+        );
     }
 
     /// One line of the tick log, under `command`, saying the end of this
@@ -507,7 +508,7 @@ impl Asked {
     fn of(args: &[&str]) -> Result<Asked> {
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
         let out = crate::process::output(
-            Command::new("orca").args(args).arg("--json").current_dir(asked_from()),
+            crate::census::command("orca").args(args).arg("--json").current_dir(asked_from()),
         )
         .with_context(|| format!("orca {what} could not run"))?;
         Ok(Asked {
@@ -645,7 +646,7 @@ pub(crate) fn listed_repos() -> Result<BTreeSet<PathBuf>> {
 pub(crate) fn repos_listed_by(program: &Path) -> Result<BTreeSet<PathBuf>> {
     let shown = program.display();
     let out = crate::process::output(
-        Command::new(program).args(["repo", "list", "--json"]).current_dir(asked_from()),
+        crate::census::command(program).args(["repo", "list", "--json"]).current_dir(asked_from()),
     )
     .with_context(|| format!("{shown} repo list could not run"))?;
     let answer = read_answer(&out.stdout).unwrap_or(Value::Null);
@@ -1669,14 +1670,24 @@ impl Worktree {
     /// (`tracker`), whether or not the checkout list holds its checkout yet.
     pub fn keep_tracker(&self, tracker: &Tracker) -> Result<()> {
         let file = self.note(TRACKER_FILE)?;
-        let named = tracker.named().map(RepoName::as_str).unwrap_or_default();
-        std::fs::write(&file, named).with_context(|| format!("cannot write {}", file.display()))
+        let said = match tracker {
+            // Its own repo by name; by nothing where its remote names none,
+            // which says its own repo all the same (`checkout_list::said`).
+            Tracker::Own => crate::checkout_list::named_repo(&Repo::new(self.path.clone()))
+                .map(|named| named.to_string())
+                .unwrap_or_default(),
+            Tracker::Other { tracker, .. } => tracker.to_string(),
+            Tracker::Local { .. } => Said::Local.to_string(),
+        };
+        std::fs::write(&file, said).with_context(|| format!("cannot write {}", file.display()))
     }
 
     /// The tracker the fleet that started the worker here kept
-    /// (`keep_tracker`): the repo it names, `Some(None)` for the checkout's
-    /// own, `None` where none was kept. One that names no repo is an error.
-    pub fn tracker(&self) -> Result<Option<Option<RepoName>>> {
+    /// (`keep_tracker`): the repo it names, or the host's local tracker;
+    /// `Some(None)` for the checkout's own, as a fleet kept it by keeping
+    /// nothing before a checkout that says none worked the local tracker;
+    /// `None` where none was kept. One that names no tracker is an error.
+    pub fn tracker(&self) -> Result<Option<Option<Said>>> {
         let file = self.note(TRACKER_FILE)?;
         let kept = match std::fs::read_to_string(&file) {
             Ok(kept) => kept,
@@ -1687,7 +1698,7 @@ impl Worktree {
         };
         match kept.trim() {
             "" => Ok(Some(None)),
-            named => match RepoName::read(named) {
+            named => match Said::read(named) {
                 Some(named) => Ok(Some(Some(named))),
                 None => bail!(
                     "{} says the tracker of the worker here is {named:?}, which names no repo, \

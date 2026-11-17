@@ -80,28 +80,50 @@ fn decide_on_host(
             return Ok(Some(why));
         }
     }
-    let heavy = heavy_commands(std::env::var_os("TMPDIR").as_deref().map(std::path::Path::new))?;
+    let worktree = worktree_of(std::env::var_os("TMPDIR").as_deref().map(std::path::Path::new));
+    let heavy = heavy_commands(worktree.as_deref())?;
     if let Some(why) = afkconvoy_core::guard::heavy(&call, &heavy) {
         return Ok(Some(why));
     }
     if terminal_input_only {
         return Ok(None);
     }
-    decide(harness, described, |name| std::env::var(name).ok(), processes)
+    let local = on_local_tracker(worktree.as_deref())?;
+    decide(harness, described, |name| std::env::var(name).ok(), local, processes)
 }
 
-/// The heavy commands of the repo whose worktree the worker's `tmp`, its
-/// `TMPDIR`, is: the link the fleet made to the worktree's own
-/// (`worker_tmp`), read off that worktree's config as it stands. None where
-/// `tmp` is no worker's — a watch, or a session the fleet did not start —
-/// or its worktree has no config. An error is a declaration that cannot be
-/// read: a guard allows nothing unread.
-fn heavy_commands(tmp: Option<&std::path::Path>) -> Result<Vec<String>, String> {
-    let Some(own) = tmp.and_then(|tmp| std::fs::read_link(tmp).ok()) else { return Ok(vec![]) };
+/// The worktree of the worker whose `TMPDIR` is `tmp`: the one the link the
+/// fleet made to the worktree's own (`worker_tmp`) is in. None where `tmp`
+/// is no worker's — a watch, or a session the fleet did not start.
+fn worktree_of(tmp: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    let own = std::fs::read_link(tmp?).ok()?;
     if own.file_name() != Some(crate::worker_tmp::TMP_DIR.as_ref()) {
-        return Ok(vec![]);
+        return None;
     }
-    let Some(worktree) = own.parent() else { return Ok(vec![]) };
+    own.parent().map(std::path::Path::to_path_buf)
+}
+
+/// Whether the fleet that started the worker in `worktree` works its host's
+/// local tracker, as it kept in the worktree as it started it
+/// (`Worktree::keep_tracker`): the one place the worker's tracker is said.
+/// None kept, or no worker's worktree — no git checkout at all — is a GitHub
+/// tracker's worker, as it was before there were local trackers. A note
+/// that cannot be read is an error: a guard allows nothing unread.
+fn on_local_tracker(worktree: Option<&std::path::Path>) -> Result<bool, String> {
+    let Some(worktree) = worktree.filter(|worktree| worktree.join(".git").exists()) else {
+        return Ok(false);
+    };
+    let kept = Worktree::at(worktree.to_path_buf(), String::new()).tracker();
+    let kept = kept.map_err(|error| format!("{error:#}"))?;
+    Ok(matches!(kept, Some(Some(afkconvoy_core::tracker::Said::Local))))
+}
+
+/// The heavy commands of the repo of the worker's `worktree`
+/// (`worktree_of`), read off that worktree's config as it stands. None of
+/// no worker's worktree, or one with no config. An error is a declaration
+/// that cannot be read: a guard allows nothing unread.
+fn heavy_commands(worktree: Option<&std::path::Path>) -> Result<Vec<String>, String> {
+    let Some(worktree) = worktree else { return Ok(vec![]) };
     crate::config::heavy_commands_of(&worktree.join(crate::config::FILE))
         .map_err(|error| format!("{error:#}"))
 }
@@ -123,13 +145,16 @@ fn decide(
     harness: Harness,
     described: &str,
     var: impl Fn(&str) -> Option<String>,
+    local_tracker: bool,
     processes: &impl Fn(u32) -> Process,
 ) -> Result<Option<String>, String> {
     let unread = |error| format!("what it was handed describes no tool call: {error}");
     let mut described = serde_json::Deserializer::from_str(described);
     let call = harness.call(&mut described).map_err(unread)?;
     described.end().map_err(unread)?;
-    Ok(refused(&call, &Limits::read(var)?, processes))
+    let limits = Limits::read(var)?;
+    let limits = if local_tracker { limits.on_local_tracker() } else { limits };
+    Ok(refused(&call, &limits, processes))
 }
 
 /// The processes of this host the fleets of this host started
@@ -200,7 +225,8 @@ The host's processes, as `ps` says them, and the host runner's pid, as its lock 
 Refused for every worker:
 
 - input to the asking session's Terminal (`orca terminal send`, including raw text, Enter, interrupts and retried prompts). The current handle comes from the asking launch record, never its title or directory. The host runner's own deliveries run outside worker hooks; the asking session itself is exempt by its runtime Terminal identity. Input to another Terminal is unchanged.
-- adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
+- adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, `afkconvoy issue` with the same flags, and any write of an issue's labels through `gh api`)
+- of a worker whose fleet works its host's local tracker, as the fleet kept in the worktree its `TMPDIR` links to as it started it: `gh issue …`, `gh api` on a path of `/issues`, and `gh api graphql` that reads or writes an issue — `gh` reaches the GitHub repo's own issues, not the fleet's. The reason names the `afkconvoy issue` line to run instead. A tracker kept there that cannot be read refuses every shell call
 - writing a stage record by hand: only `afkconvoy verdict` writes one
 - writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
 - writing a work account or a worker start by hand: the fleet writes each, and a worker writes neither
@@ -271,18 +297,19 @@ mod tests {
     fn one_call_is_refused_for_the_same_reason_whichever_harness_describes_it() {
         let claude = r#"{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}"#;
         let pi = r#"{"toolName":"bash","input":{"command":"git commit -m x"}}"#;
-        let why = decide(Harness::ClaudeCode, claude, facts, &nobody).unwrap().expect("a refusal");
+        let why =
+            decide(Harness::ClaudeCode, claude, facts, false, &nobody).unwrap().expect("a refusal");
         assert!(why.contains("`writes: false`: `git commit` is refused"), "{why}");
-        assert_eq!(decide(Harness::Pi, pi, facts, &nobody), Ok(Some(why)));
+        assert_eq!(decide(Harness::Pi, pi, facts, false, &nobody), Ok(Some(why)));
         // A call described in another harness's words cannot be read.
         assert!(
-            decide(Harness::Pi, claude, facts, &nobody)
+            decide(Harness::Pi, claude, facts, false, &nobody)
                 .unwrap_err()
                 .contains("describes no tool call")
         );
-        assert!(decide(Harness::ClaudeCode, pi, facts, &nobody).is_err());
+        assert!(decide(Harness::ClaudeCode, pi, facts, false, &nobody).is_err());
         let allowed = r#"{"toolName":"bash","input":{"command":"ls"}}"#;
-        assert_eq!(decide(Harness::Pi, allowed, facts, &nobody), Ok(None));
+        assert_eq!(decide(Harness::Pi, allowed, facts, false, &nobody), Ok(None));
     }
 
     #[test]
@@ -293,22 +320,30 @@ mod tests {
         std::fs::create_dir_all(worktree.join("docs/agents")).unwrap();
         let tmp = dir.path().join("link");
         std::os::unix::fs::symlink(worktree.join(crate::worker_tmp::TMP_DIR), &tmp).unwrap();
-        assert_eq!(heavy_commands(Some(&tmp)), Ok(vec![]), "a worktree with no config");
+        assert_eq!(
+            heavy_commands(worktree_of(Some(&tmp)).as_deref()),
+            Ok(vec![]),
+            "a worktree with no config"
+        );
         std::fs::write(
             worktree.join(crate::config::FILE),
             "```yaml heavy-commands\ncommands: [cargo nextest, ./gate.sh]\n```\n",
         )
         .unwrap();
-        let heavy = heavy_commands(Some(&tmp)).unwrap();
+        let heavy = heavy_commands(worktree_of(Some(&tmp)).as_deref()).unwrap();
         assert_eq!(heavy, ["cargo nextest", "./gate.sh"]);
         assert_eq!(heavy_commands(None), Ok(vec![]));
-        assert_eq!(heavy_commands(Some(&worktree)), Ok(vec![]), "no worker's link");
+        assert_eq!(worktree_of(Some(&worktree)), None, "no worker's link");
         std::fs::write(
             worktree.join(crate::config::FILE),
             "```yaml heavy-commands\nnope: 1\n```\n",
         )
         .unwrap();
-        assert!(heavy_commands(Some(&tmp)).unwrap_err().contains("heavy-commands"));
+        assert!(
+            heavy_commands(worktree_of(Some(&tmp)).as_deref())
+                .unwrap_err()
+                .contains("heavy-commands")
+        );
     }
 
     #[test]

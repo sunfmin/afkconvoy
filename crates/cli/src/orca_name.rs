@@ -74,9 +74,9 @@ impl Shown<'_> {
 /// `control#1, #2` of another tracker, `#1, #2` of the repo's own; `?`
 /// where none is known.
 fn issues(tracker: &Tracker, numbers: &[u64]) -> String {
-    let named = match tracker {
-        Tracker::Own => String::new(),
-        Tracker::Other { tracker, .. } => {
+    let named = match tracker.named() {
+        None => String::new(),
+        Some(tracker) => {
             let name = tracker.as_str();
             name.rsplit('/').next().unwrap_or(name).to_string()
         }

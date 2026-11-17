@@ -46,8 +46,10 @@ impl FixtureProcess {
     }
 
     fn state(pid: u32) -> Option<char> {
-        let out =
-            Command::new("ps").args(["-p", &pid.to_string(), "-o", "stat="]).output().unwrap();
+        let out = afkconvoy::census::command("ps")
+            .args(["-p", &pid.to_string(), "-o", "stat="])
+            .output()
+            .unwrap();
         assert!(
             out.status.success() || (out.status.code() == Some(1) && out.stderr.is_empty()),
             "cannot observe fixture process {pid}"
@@ -88,7 +90,8 @@ impl Drop for FixtureProcess {
         unsafe { libc::kill(root as libc::pid_t, libc::SIGSTOP) };
         Self::wait_for(root, true);
         loop {
-            let listed = Command::new("ps").args(["-axo", "pid=,ppid="]).output().unwrap();
+            let listed =
+                afkconvoy::census::command("ps").args(["-axo", "pid=,ppid="]).output().unwrap();
             assert!(listed.status.success(), "cannot discover fixture descendants");
             let children: Vec<u32> = String::from_utf8_lossy(&listed.stdout)
                 .lines()
@@ -248,17 +251,12 @@ impl World {
         let dir = TempDir::new().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let (bare, clone, bin) = (root.join("remote.git"), root.join("clone"), root.join("bin"));
-        git(&root, &["init", "-q", "--bare", "-b", BASE, bare.to_str().unwrap()]);
-        // git takes a pusher's config off before it starts the remote's side:
-        // the remote is told by itself to do no housekeeping (`GIT_ENV`).
-        append(&bare.join("config"), "[maintenance]\n\tauto = false\n");
-        git(&root, &["clone", "-q", bare.to_str().unwrap(), clone.to_str().unwrap()]);
-        std::fs::write(clone.join("README.md"), "widgets\n").unwrap();
-        std::fs::create_dir_all(clone.join("docs/agents")).unwrap();
-        std::fs::write(clone.join("docs/agents/afkconvoy.md"), CONFIG).unwrap();
-        git(&clone, &["add", "."]);
-        git(&clone, &["commit", "-q", "-m", "initial"]);
-        git(&clone, &["push", "-q", "origin", BASE]);
+        // The remote and its clone are one seed, built once and copied: a
+        // world starts no git of its own (sunfmin/control#1347).
+        let seed = publish_seed(&[], &["world"], include_str!("mod.rs"), create_world_seed);
+        copy_repository(&seed.join("remote.git"), &bare);
+        copy_repository(&seed.join("clone"), &clone);
+        point_origin_at(&clone, &bare);
 
         std::fs::create_dir(&bin).unwrap();
         let built = Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap().join("examples");
@@ -291,6 +289,17 @@ impl World {
             clone,
             bin,
         };
+        // The library this test calls in process resolves the host's cache
+        // and data directories as a command does: they are this world's, never
+        // those of the host the tests run on. A test that read the checkout
+        // list through the library once took the host's real checkouts.json
+        // into a host.db in its real data directory (2026-11-17). Each test is
+        // a process of its own under nextest, so its environment is its own.
+        // SAFETY: set before this world starts any thread of its own.
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", world.cache());
+            std::env::set_var("XDG_DATA_HOME", world.data());
+        }
         world.write_gh(&json!({"bare": world.bare, "base": BASE, "issues": [], "prs": [],
             "comments": {}, "labels": ["ready-for-agent"], "calls": [], "envs": []}));
         world.write_orca(&json!({"repos": [{"id": "repo-1", "path": world.clone}],
@@ -410,15 +419,17 @@ impl World {
         std::fs::write(self.root.join("probes-answer"), "").unwrap();
     }
 
-    /// Where this host keeps the harnesses paused on it.
-    pub fn paused_path(&self) -> PathBuf {
-        self.cache().join("afkconvoy/paused.json")
-    }
-
     /// The harnesses paused on this host, as it keeps them.
     pub fn paused(&self) -> Value {
-        std::fs::read(self.paused_path())
-            .map_or(json!([]), |bytes| serde_json::from_slice(&bytes).unwrap())
+        match self.kept("paused.json") {
+            Value::Null => json!([]),
+            paused => paused,
+        }
+    }
+
+    /// Makes the harnesses paused on this host `paused`, through their store.
+    pub fn write_paused(&self, paused: &Value) {
+        self.keep("paused.json", paused);
     }
 
     /// Pauses `harness` on this host since `since`, for `why`, as a fleet
@@ -429,8 +440,7 @@ impl World {
             .as_array_mut()
             .unwrap()
             .push(json!({"harness": harness, "since": since, "why": why}));
-        std::fs::create_dir_all(self.paused_path().parent().unwrap()).unwrap();
-        std::fs::write(self.paused_path(), serde_json::to_vec(&paused).unwrap()).unwrap();
+        self.write_paused(&paused);
     }
 
     /// The last prompt a caster sent; empty when none was.
@@ -441,7 +451,7 @@ impl World {
     /// A command with the stand-ins first on PATH and nothing of the caller's
     /// git or GitHub setup leaking in.
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
-        let mut cmd = Command::new(program);
+        let mut cmd = afkconvoy::census::command(program);
         // A gate a worker runs inherits its stage's facts (AFKCONVOY_HARNESS,
         // AFKCONVOY_ISSUE, …): none is the world's (sunfmin/control#495). What
         // the world means to say, it sets below.
@@ -470,6 +480,7 @@ impl World {
             .envs(self.login_env())
             .env("SHELL", self.bin.join("shell"))
             .env("XDG_CACHE_HOME", self.cache())
+            .env("XDG_DATA_HOME", self.data())
             .env_remove("XDG_CONFIG_HOME")
             .env("HOME", self.home())
             .env_remove("ANTHROPIC_BASE_URL");
@@ -510,8 +521,14 @@ impl World {
             // How busy the host's cores are, as `cores_busy` says it: none
             // said, and admission's load is judged alone.
             ("AFKCONVOY_FAKE_CPU_BUSY".to_string(), shown(&self.root.join("host-cpu-busy"))),
+            // The host's process creation rate: none read, so two answers of
+            // one world agree, and admission judges without it.
+            ("AFKCONVOY_FAKE_PID_COUNTER".to_string(), shown(&self.root.join("host-pid-counter"))),
         ];
         env.extend(GIT_ENV.iter().map(|(name, value)| (name.to_string(), value.to_string())));
+        // The host's data directory, its local tracker in it: the world's,
+        // in every command and login shell, whatever the caller's says.
+        env.push(("XDG_DATA_HOME".to_string(), shown(&self.data())));
         // No checkout above the world is one of its: a test's directory
         // is in this repo's, when a worker's TMPDIR is in its worktree.
         env.push(("GIT_CEILING_DIRECTORIES".to_string(), shown(self.root.parent().unwrap())));
@@ -537,6 +554,45 @@ impl World {
         self.root.join("cache")
     }
 
+    /// Where this world's fleet keeps what nothing else gives back: the
+    /// host's database is in it.
+    pub fn data(&self) -> PathBuf {
+        data_beside(self.cache())
+    }
+
+    /// This world's host database (docs/adr/0117).
+    pub fn host_db(&self) -> PathBuf {
+        self.data().join("afkconvoy/host.db")
+    }
+
+    /// Makes the store of the host database whose old file in the cache
+    /// directory was `file` hold `value`, as that file held it: through the
+    /// store itself, as afkconvoy keeps it.
+    pub fn keep(&self, file: &str, value: &Value) {
+        afkconvoy::host_db::keep(&self.host_db(), file, value).unwrap();
+    }
+
+    /// What the store of the host database whose old file in the cache
+    /// directory was `file` holds, as that file held it; `Null` where it
+    /// holds nothing.
+    pub fn kept(&self, file: &str) -> Value {
+        afkconvoy::host_db::kept(&self.host_db(), file).unwrap().unwrap_or(Value::Null)
+    }
+
+    /// The same, `{}` where the store holds nothing.
+    pub fn kept_object(&self, file: &str) -> Value {
+        match self.kept(file) {
+            Value::Null => json!({}),
+            kept => kept,
+        }
+    }
+
+    /// Makes the store of the host database whose old file in the cache
+    /// directory was `file` hold nothing, as that file removed did.
+    pub fn forget(&self, file: &str) {
+        afkconvoy::host_db::forget(&self.host_db(), file).unwrap();
+    }
+
     /// Puts a Claude Code account of each of `names` in the world's
     /// mytokens, each holding the token `sk-ant-<name>`.
     pub fn claude_accounts(&self, names: &[&str]) {
@@ -553,8 +609,6 @@ impl World {
     /// `accounts` last recorded its `five_hour` window: `used` percent,
     /// resetting at `resets_at`.
     pub fn account_book(&self, accounts: &[(&str, u64, u64)]) {
-        let dir = self.cache().join("afkconvoy/accounts");
-        std::fs::create_dir_all(&dir).unwrap();
         let mut book = serde_json::Map::new();
         for (name, used, resets_at) in accounts {
             book.insert(
@@ -563,7 +617,7 @@ impl World {
                     "resets_at": resets_at}]}),
             );
         }
-        std::fs::write(dir.join("book.json"), json!({"accounts": book}).to_string()).unwrap();
+        self.keep("accounts/book.json", &json!({"accounts": book}));
     }
 
     /// Puts the engine account `name` in the world's mytokens, holding
@@ -619,11 +673,9 @@ impl World {
 
     /// Set the Jev key command directly in the host's checkout-list settings.
     pub fn jev_key_command(&self, command: &str) {
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut listed = self.checkout_list();
         listed["settings"]["jev_key_command"] = json!(command);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, serde_json::to_vec(&listed).unwrap()).unwrap();
+        self.write_checkout_list(&listed);
     }
 
     /// Has the host name a Jev key command, and Jev answer the next check: no
@@ -1331,6 +1383,71 @@ impl World {
     pub fn remote(&self, args: &[&str]) -> String {
         git(&self.bare, args)
     }
+
+    /// The candidate chain of `branch` as this world's host holds it
+    /// (docs/adr/0117), `Null` where it holds none.
+    pub fn chain(&self, branch: &str) -> Value {
+        let path = self.host_db();
+        if !path.exists() {
+            return Value::Null;
+        }
+        let db = rusqlite::Connection::open(path).unwrap();
+        let found = db.query_row("SELECT chain FROM chains WHERE branch = ?1", [branch], |row| {
+            row.get::<_, String>(0)
+        });
+        match found {
+            Ok(text) => serde_json::from_str(&text).unwrap(),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Value::Null,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// Makes the host's database refuse every write of a chain whose text
+    /// holds `fragment`, with `reason`: what a remote hook refused a record
+    /// with, before the chain was the host's.
+    pub fn refuse_chain_writes(&self, fragment: &str, reason: &str) {
+        let db = rusqlite::Connection::open(self.host_db()).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        let like = fragment.replace('\'', "''");
+        let reason = reason.replace('\'', "''");
+        db.execute_batch(&format!(
+            "CREATE TRIGGER refuse BEFORE UPDATE ON chains WHEN instr(NEW.chain, '{like}') > 0 \
+             BEGIN SELECT RAISE(ABORT, '{reason}'); END"
+        ))
+        .unwrap();
+    }
+
+    /// Edits the candidate chain of `branch` on this world's host with
+    /// `edit`, which is given `Null` where the host holds none, one revision
+    /// later, in one transaction as another process of the host would.
+    pub fn edit_chain(&self, branch: &str, edit: impl FnOnce(&mut Value)) {
+        std::fs::create_dir_all(self.host_db().parent().unwrap()).unwrap();
+        let db = rusqlite::Connection::open(self.host_db()).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert!(version > 0, "the host database is made by afkconvoy first");
+        let common = std::fs::canonicalize(self.clone.join(".git")).unwrap();
+        let repo = format!("{:016x}", afkconvoy_core::gate::key(&common.to_string_lossy()));
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let found = db.query_row(
+            "SELECT chain FROM chains WHERE repo = ?1 AND branch = ?2",
+            rusqlite::params![repo, branch],
+            |row| row.get::<_, String>(0),
+        );
+        let mut chain = match found {
+            Ok(text) => serde_json::from_str(&text).unwrap(),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Value::Null,
+            Err(error) => panic!("{error}"),
+        };
+        edit(&mut chain);
+        db.execute(
+            "INSERT INTO chains (repo, branch, revision, chain) VALUES (?1, ?2, 1, ?3)
+             ON CONFLICT (repo, branch) DO UPDATE SET revision = revision + 1, chain = ?3",
+            rusqlite::params![repo, branch, chain.to_string()],
+        )
+        .unwrap();
+        db.execute_batch("COMMIT").unwrap();
+    }
 }
 
 fn create_repository(dir: &Path, files: &[(&str, &str)]) {
@@ -1368,9 +1485,20 @@ const SEED_GENERATIONS: usize = 64;
 /// the same one-rename publish under the next generation's name. A seed is
 /// never moved, so a path handed to a reader stays valid.
 pub(crate) fn publish_repository_template(files: &[(&str, &str)], builder: &str) -> PathBuf {
+    publish_seed(files, &[], builder, |dir| create_repository(dir, files))
+}
+
+/// The seed of one kind and one input: `create` fills a directory with what
+/// it holds, once, and the seed's own directory is answered.
+pub(crate) fn publish_seed(
+    files: &[(&str, &str)],
+    kind: &[&str],
+    builder: &str,
+    create: impl Fn(&Path),
+) -> PathBuf {
     use std::hash::{DefaultHasher, Hash, Hasher};
     use std::os::unix::fs::PermissionsExt;
-    let manifest = serde_json::to_vec(&(BASE, files)).unwrap();
+    let manifest = serde_json::to_vec(&(BASE, files, kind)).unwrap();
     let mut hash = DefaultHasher::new();
     manifest.hash(&mut hash);
     builder.hash(&mut hash);
@@ -1387,18 +1515,57 @@ pub(crate) fn publish_repository_template(files: &[(&str, &str)], builder: &str)
             n => templates.join(format!("{name}-{n}")),
         };
         if !kept.exists() {
-            let scratch = tempfile::tempdir_in(&templates).unwrap();
-            create_repository(&scratch.path().join("repo"), files);
-            std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
-            let inventory = serde_json::to_vec(&inventory(&scratch.path().join("repo"))).unwrap();
-            std::fs::write(scratch.path().join("inventory.json"), inventory).unwrap();
-            publish_scratch(scratch.path(), &kept);
+            // Built by whichever test needs it first, or by several racing:
+            // counted as the seed's, not as theirs (census::as_fixture). The
+            // git found once a process stays the test's either way.
+            std::sync::LazyLock::force(&REAL_GIT_DIR);
+            afkconvoy::census::as_fixture(&format!("seed:{name}"), || {
+                let scratch = tempfile::tempdir_in(&templates).unwrap();
+                create(&scratch.path().join("repo"));
+                std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
+                let inventory =
+                    serde_json::to_vec(&inventory(&scratch.path().join("repo"))).unwrap();
+                std::fs::write(scratch.path().join("inventory.json"), inventory).unwrap();
+                publish_scratch(scratch.path(), &kept);
+            });
         }
         if seed_is_complete(&kept, &manifest) {
             return kept.join("repo");
         }
     }
     panic!("{SEED_GENERATIONS} seeds of {name} in {} are broken; remove them", templates.display());
+}
+
+/// What every world starts with: a bare remote, and a clone of it that holds
+/// the config on the base branch, pushed.
+fn create_world_seed(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let (bare, clone) = (dir.join("remote.git"), dir.join("clone"));
+    git(dir, &["init", "-q", "--bare", "-b", BASE, bare.to_str().unwrap()]);
+    // git takes a pusher's config off before it starts the remote's side:
+    // the remote is told by itself to do no housekeeping (`GIT_ENV`).
+    append(&bare.join("config"), "[maintenance]\n\tauto = false\n");
+    git(dir, &["clone", "-q", bare.to_str().unwrap(), clone.to_str().unwrap()]);
+    std::fs::write(clone.join("README.md"), "widgets\n").unwrap();
+    std::fs::create_dir_all(clone.join("docs/agents")).unwrap();
+    std::fs::write(clone.join("docs/agents/afkconvoy.md"), CONFIG).unwrap();
+    git(&clone, &["add", "."]);
+    git(&clone, &["commit", "-q", "-m", "initial"]);
+    git(&clone, &["push", "-q", "origin", BASE]);
+}
+
+/// The copy of a seed's clone names the copy of its remote, not the seed's.
+fn point_origin_at(clone: &Path, bare: &Path) {
+    let config = clone.join(".git/config");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let pointed: String = text
+        .lines()
+        .map(|line| match line.trim_start().strip_prefix("url = ") {
+            Some(_) => format!("\turl = {}\n", bare.display()),
+            None => format!("{line}\n"),
+        })
+        .collect();
+    std::fs::write(config, pointed).unwrap();
 }
 
 /// Every path under `repo`, relative to it, directories included.
@@ -1433,12 +1600,14 @@ fn seed_is_complete(kept: &Path, manifest: &[u8]) -> bool {
 /// Freezes `scratch` and publishes it as `kept` by one rename. A publisher
 /// that loses the race thaws its own scratch so the scratch can be removed.
 pub(crate) fn publish_scratch(scratch: &Path, kept: &Path) {
-    let frozen = Command::new("chmod").args(["-R", "a-w"]).arg(scratch).status().unwrap();
+    let frozen =
+        afkconvoy::census::command("chmod").args(["-R", "a-w"]).arg(scratch).status().unwrap();
     assert!(frozen.success(), "freezing the repository template");
     if let Err(error) = std::fs::rename(scratch, kept) {
         // Another complete seed may have won. Open our scratch again so it
         // can be removed, including when the failure was real.
-        let thawed = Command::new("chmod").args(["-R", "u+w"]).arg(scratch).status().unwrap();
+        let thawed =
+            afkconvoy::census::command("chmod").args(["-R", "u+w"]).arg(scratch).status().unwrap();
         assert!(thawed.success(), "thawing the losing repository template");
         assert!(kept.is_dir(), "cannot publish repository template: {error}");
     }
@@ -1590,7 +1759,8 @@ impl Drop for World {
         while self.runner_lock_held() && Instant::now() < until {
             // Its keeper first, which would start it again.
             for pid in [self.keeper(), self.host_runner()].into_iter().flatten() {
-                let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+                let _ =
+                    afkconvoy::census::command("kill").args(["-KILL", &pid.to_string()]).status();
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -1610,7 +1780,8 @@ impl Drop for World {
 /// whose tests leave one behind in a way no world's end reaches.
 fn end_left_behind(root: &Path) {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let Ok(listed) = Command::new("/bin/ps").args(["-axo", "pid=,ppid="]).output() else {
+    let Ok(listed) = afkconvoy::census::command("/bin/ps").args(["-axo", "pid=,ppid="]).output()
+    else {
         return;
     };
     let rows: Vec<(u32, u32)> = String::from_utf8_lossy(&listed.stdout)
@@ -1728,12 +1899,53 @@ impl World {
         again
     }
 
+    /// Has `checkout` say its tracker is this host's local tracker, with its
+    /// entry on this world's checkout list, as `run --tracker local` keeps it.
+    pub fn say_local_tracker(&self, checkout: &Path) {
+        self.say_said_tracker(checkout, "local");
+    }
+
+    /// Has `checkout` say `said` of its tracker — `local`, a repo, or null
+    /// for none — with its entry on this world's checkout list.
+    pub fn say_said_tracker(&self, checkout: &Path, said: impl Into<Value>) {
+        let said = said.into();
+        let mut list = self.checkout_list();
+        let entries = list["checkouts"].as_array_mut().unwrap();
+        match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
+            Some(entry) => entry["tracker"] = said,
+            None => entries.push(json!({"checkout": checkout, "tracker": said})),
+        }
+        self.write_checkout_list(&list);
+    }
+
+    /// Takes `checkout` off this world's checkout list.
+    pub fn unlist_checkout(&self, checkout: &Path) {
+        let mut list = self.checkout_list();
+        let entries = list["checkouts"].as_array_mut().unwrap();
+        entries.retain(|entry| entry["checkout"] != json!(checkout));
+        self.write_checkout_list(&list);
+    }
+
+    /// This world's host's local tracker, as every command of the world
+    /// opens it.
+    pub fn local_tracker(&self) -> afkconvoy_issues::Store {
+        let path = self.data().join("afkconvoy/issues.db");
+        afkconvoy::issues::local::open_store(&path).unwrap()
+    }
+
     /// This host's checkout list, as the host runner keeps it: none yet is
     /// an empty one.
     pub fn checkout_list(&self) -> Value {
-        let file = self.cache().join("afkconvoy/checkouts.json");
-        std::fs::read(file)
-            .map_or(json!({"checkouts": []}), |bytes| serde_json::from_slice(&bytes).unwrap())
+        match self.kept("checkouts.json") {
+            Value::Null => json!({"checkouts": []}),
+            list => list,
+        }
+    }
+
+    /// Makes this host's checkout list `list`, as the host runner keeps it:
+    /// through its store in the host database.
+    pub fn write_checkout_list(&self, list: &Value) {
+        self.keep("checkouts.json", list);
     }
 
     /// Has this world's host say `settings`, as a `run` that named them would
@@ -1743,43 +1955,37 @@ impl World {
     /// other: never on the host's own default, 7070, where the real host
     /// runner of the host the tests run on serves it (sunfmin/control#820).
     pub fn say_host_settings(&self, mut settings: Value) {
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         if let Some(said) = settings.as_object_mut() {
             said.entry("panel").or_insert(json!(0));
         }
         assert_ne!(settings["panel"], PANEL_PORT, "no test serves the panel on {PANEL_PORT}");
         list["settings"] = settings;
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, list.to_string()).unwrap();
+        self.write_checkout_list(&list);
     }
 
     /// Has `checkout` say `claims` of its concurrency on this world's host,
     /// as a `run` that named `--concurrency` keeps it: with its entry on the
     /// checkout list, which it puts there where the list holds none of it.
     pub fn say_concurrency(&self, checkout: &Path, claims: u64) {
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         let entries = list["checkouts"].as_array_mut().unwrap();
         match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
             Some(entry) => entry["concurrency"] = json!(claims),
             None => entries.push(json!({"checkout": checkout, "concurrency": claims})),
         }
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, list.to_string()).unwrap();
+        self.write_checkout_list(&list);
     }
 
     /// Puts `checkout` on this world's checkout list, as a `run` of it does,
     /// saying nothing of it: its tracker is its own repo.
     pub fn list_checkout(&self, checkout: &Path) {
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         let entries = list["checkouts"].as_array_mut().unwrap();
         if !entries.iter().any(|entry| entry["checkout"] == json!(checkout)) {
             entries.push(json!({"checkout": checkout}));
         }
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, list.to_string()).unwrap();
+        self.write_checkout_list(&list);
     }
 
     /// Has the remote of `checkout` be named as the repo `repo` (`owner/repo`)
@@ -1798,15 +2004,13 @@ impl World {
     /// checkout list.
     pub fn say_tracker(&self, checkout: &Path, tracker: &str) {
         self.put_tracker(tracker);
-        let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         let entries = list["checkouts"].as_array_mut().unwrap();
         match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
             Some(entry) => entry["tracker"] = json!(tracker),
             None => entries.push(json!({"checkout": checkout, "tracker": tracker})),
         }
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, list.to_string()).unwrap();
+        self.write_checkout_list(&list);
     }
 
     /// Puts the repo `tracker` (`owner/repo`) on the stand-in GitHub, its
@@ -1954,10 +2158,14 @@ impl World {
             && signal != "INT"
             && let Some(keeper) = self.keeper()
         {
-            let ended = Command::new("kill").args(["-KILL", &keeper.to_string()]).status();
+            let ended =
+                afkconvoy::census::command("kill").args(["-KILL", &keeper.to_string()]).status();
             assert!(ended.unwrap().success(), "kill -KILL {keeper}, the keeper");
         }
-        let sent = Command::new("kill").arg(format!("-{signal}")).arg(pid.to_string()).status();
+        let sent = afkconvoy::census::command("kill")
+            .arg(format!("-{signal}"))
+            .arg(pid.to_string())
+            .status();
         assert!(sent.unwrap().success(), "kill -{signal} {pid}");
         let until = Instant::now() + PATIENCE;
         while self.runner_lock_held() {
@@ -2198,7 +2406,7 @@ exit 2
 "#;
 
 /// The stand-in `pmset`: what it is asked is written to `pmset.log`, and it
-/// puts nothing to sleep. No fleet asks it anything (docs/adr/0050).
+/// puts nothing to sleep. No fleet asks it anything.
 const PMSET: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../pmset.log"
 "#;
@@ -2284,9 +2492,14 @@ impl World {
     }
 
     /// The stand-in host's cores are `percent` busy, as admission reads
-    /// them; unsaid, how busy they are is not read.
+    /// them; unsaid, how busy they are is not read. The file is replaced
+    /// whole: one read while it is written finds it empty, and reads the
+    /// host's load in its place (sunfmin/control#1348).
     pub fn cores_busy(&self, percent: u64) {
-        std::fs::write(self.root.join("host-cpu-busy"), percent.to_string()).unwrap();
+        let file = self.root.join("host-cpu-busy");
+        let written = self.root.join("host-cpu-busy.new");
+        std::fs::write(&written, percent.to_string()).unwrap();
+        std::fs::rename(written, file).unwrap();
     }
 
     /// What the named host command stand-in was asked, one call a line.
@@ -2466,8 +2679,7 @@ pub fn stopped_candidates_gone(world: &World, source: &Path) {
     assert!(source.is_dir(), "the source worktree stays: {}", source.display());
     let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
     assert!(worktree_listed(&listed, source), "the source worktree stays listed:\n{listed}");
-    let text = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
-    let chain: Value = serde_json::from_str(&text).unwrap();
+    let chain = world.chain("main");
     for candidate in chain["candidates"].as_array().unwrap() {
         let phase = candidate["phase"].as_str().unwrap();
         if !matches!(phase, "landed" | "red" | "cancelled") {
@@ -2513,7 +2725,7 @@ static REAL_GIT_DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock:
     if first? != Path::new("/usr/bin/git") {
         return None;
     }
-    let found = Command::new("xcrun").args(["--find", "git"]).output().ok()?;
+    let found = afkconvoy::census::command("xcrun").args(["--find", "git"]).output().ok()?;
     let real = PathBuf::from(String::from_utf8(found.stdout).ok()?.trim());
     (found.status.success() && real.is_file()).then(|| real.parent().unwrap().to_path_buf())
 });
@@ -2533,8 +2745,12 @@ pub fn git_program() -> PathBuf {
 
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.
 pub fn git(cwd: &Path, args: &[&str]) -> String {
-    let out =
-        Command::new(git_program()).current_dir(cwd).args(args).envs(GIT_ENV).output().unwrap();
+    let out = afkconvoy::census::command(git_program())
+        .current_dir(cwd)
+        .args(args)
+        .envs(GIT_ENV)
+        .output()
+        .unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -2558,7 +2774,9 @@ pub fn refusing_a_workers_worktree(brief: &str) -> Vec<String> {
     named.sort();
     named.dedup();
     named.retain(|name| {
-        let help = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args([name, "--help"]).output();
+        let help = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
+            .args([name, "--help"])
+            .output();
         let help = help.unwrap();
         // A word that is no command answers no help.
         let text = String::from_utf8_lossy(&help.stdout);
@@ -2610,7 +2828,7 @@ impl World {
         let _ = std::fs::remove_file(&png);
         let named = std::env::var("CONVOY_BROWSER").ok();
         let drew = named.iter().map(String::as_str).chain(BROWSERS).any(|browser| {
-            let browser = Command::new(browser)
+            let browser = afkconvoy::census::command(browser)
                 .args(["--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run"])
                 .args(["--force-prefers-reduced-motion", "--force-device-scale-factor=2"])
                 .arg(format!("--user-data-dir={}", self.root.join("browser").display()))
@@ -2707,4 +2925,13 @@ pub fn niced(world: &World, dir: &Path, line: &str) -> String {
 pub fn unniced(command: &str) -> &str {
     let at = command.find(" >/dev/null && ").unwrap_or_else(|| panic!("not niced: {command}"));
     &command[at + " >/dev/null && ".len()..]
+}
+
+/// The data directory of a world whose cache directory is `cache`: beside
+/// it, `<cache>-data`, so a world of another cache is a host of its own.
+pub fn data_beside(cache: impl AsRef<Path>) -> PathBuf {
+    let cache = cache.as_ref();
+    let mut name = cache.file_name().unwrap_or_default().to_os_string();
+    name.push("-data");
+    cache.with_file_name(name)
 }

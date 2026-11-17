@@ -1,6 +1,6 @@
 //! pi, as a harness: everything of a worker's start, and of the guard's
 //! asking, that is pi's own. It loads a role's rules from the directory it
-//! starts in, and little else of what a worker is to have (docs/adr/0013), so
+//! starts in, and little else of what a worker is to have (docs/adr/0020), so
 //! the fleet adds the rest: the role's skills, named; the answer to the
 //! question pi asks before it loads a role's own files; a user directory of
 //! the fleet's own, since pi has no way to be told to leave the host user's

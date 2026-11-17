@@ -67,6 +67,9 @@ enum Failed {
 enum Cleanup {
     /// The worktrees of stopped candidates (`candidates::remove_listed`).
     Candidates,
+    /// The remote chain records of an afkconvoy before docs/adr/0117
+    /// (`candidates::retire_legacy`).
+    LegacyChains,
     /// The removals orca answered success for that left the directory
     /// (`orca::finish_failed_removals`).
     FailedRemovals,
@@ -84,6 +87,7 @@ impl Cleanup {
     fn word(self) -> &'static str {
         match self {
             Cleanup::Candidates => "remove_candidates",
+            Cleanup::LegacyChains => "remove_legacy_chains",
             Cleanup::FailedRemovals => "finish_removals",
             Cleanup::Kept => "remove_kept",
             Cleanup::WatchLeft => "remove_watch_left",
@@ -253,13 +257,17 @@ pub fn tick(
     // itself still runs.
     // Each cleanup's failures are the tick log's, each with its worktree
     // (sunfmin/control#1204); a later tick tries each again.
-    let candidates = repo.layout().under("candidates/");
-    let records = fleet.records_at_open(&format!("{candidates}*"));
-    let mut cleanup_failures =
-        Cleanup::Candidates.failures(crate::candidates::remove_listed(repo, &records));
+    let chains = crate::chain_store::all(repo);
+    let mut cleanup_failures = Cleanup::Candidates
+        .failures(chains.and_then(|chains| crate::candidates::remove_listed(repo, &chains)));
+    // The remote chain record of an older afkconvoy, once no turn of this
+    // host holds a place on it (docs/adr/0117).
+    let old = fleet.records_at_open(&format!("{}*", repo.layout().under("candidates/")));
+    cleanup_failures
+        .extend(Cleanup::LegacyChains.failures(crate::candidates::retire_legacy(repo, &old)));
     // A removal orca already answered success for, while the directory remains.
     // No claim is required: the settle that met it has already released its own.
-    let base = &fleet.config.base_branch;
+    let base = fleet.config.lands_on();
     cleanup_failures.extend(
         Cleanup::FailedRemovals.failures(crate::orca::finish_failed_removals(&fleet.repo, base)),
     );
@@ -278,6 +286,11 @@ pub fn tick(
     let delivery_failure = crate::delivery::reconcile(&fleet).err();
     if let Err(error) = crate::legacy::retire_proposals(&mut fleet, me) {
         eprintln!("warning: legacy proposal retirement will retry: {error:#}");
+    }
+    // Separate target records an earlier release left: each is carried into
+    // where a target lives now and removed (sunfmin/control#1327).
+    if let Err(error) = crate::target::carry_legacy(&mut fleet, &me.instance) {
+        eprintln!("warning: carrying legacy target records will retry: {error:#}");
     }
     let migration = crate::legacy::migrate(repo, &fleet.config, &fleet.gh, &me.host, me.now);
     if !matches!(&migration, Ok(answer) if answer["outcome"] == "idle") {
@@ -305,6 +318,12 @@ pub fn tick(
     }
     if crate::repair::tend(&mut fleet, me)? == Outcome::Done {
         (fleet, open) = Fleet::read(repo, me.now)?;
+    }
+    // A proving branch ahead of the base branch is promoted, by a process
+    // of its own, detached from the tick (docs/adr/0090). One that cannot
+    // be started costs the tick nothing: the next tries again.
+    if let Err(error) = crate::promote::tend(&fleet.repo, &fleet.config, &fleet.gh.tracker) {
+        eprintln!("warning: the promotion will retry: {error:#}");
     }
     let mut updates = crate::issue_updates::reconcile(&fleet, &me.host, &open.issues);
     for issue in &open.issues.rows {
@@ -344,7 +363,7 @@ pub fn tick(
         let unmatched = afkconvoy_core::casting::unmatched_models(team, &kit.range());
         let _ = crate::roster_issue::open(&fleet.gh, &bound.team.repo, &unmatched);
     }
-    // What no consult saw goes to one first (docs/adr/0018), and is read
+    // What no consult saw goes to one first (docs/adr/0005), and is read
     // again as the fleet's. A team that does not load puts nothing: the
     // rebuild says why of each issue.
     let put = crate::stage::put_to_consults(&fleet, &flows, &open.issues).unwrap_or_default();
@@ -353,9 +372,9 @@ pub fn tick(
         (set, flows, claimed) = fleet.rebuild(&open, Some(&me.instance))?;
     }
     // A busy host, an account that would run out or a long exclusive queue
-    // starts no new worker this tick (docs/adr/0019, docs/adr/0072).
+    // starts no new worker this tick (docs/adr/0019, docs/adr/0107).
     // The candidate chain is read once a tick: its answers come from turns
-    // that take longer than a pass (docs/adr/0076).
+    // that take longer than a pass (docs/adr/0107).
     let landing = crate::admission::landing_of(&fleet.repo.dir, fleet.now);
     let mut admission = admission_of(&fleet, &set, 0, landing)?;
     set.held_back = admission.holds();
@@ -505,7 +524,7 @@ impl Failure {
 struct Read<'r> {
     set: &'r WorkingSet,
     flows: &'r Flows,
-    issues: &'r crate::gh::OpenIssues,
+    issues: &'r crate::issues::OpenIssues,
 }
 
 /// Carries out `step` → how it ended, and what it found besides in `found`.
@@ -537,7 +556,7 @@ fn carry_out(
             _ => Ok(None),
         };
         let incomplete = crate::dispatch::incomplete(fleet, issue);
-        let held = held(fleet, issue);
+        let held = held(fleet, me, issue);
         let seen = Seen {
             answered: fact(turn.as_ref().map(Option::is_some)),
             incomplete: fact(incomplete.as_ref().copied()),
@@ -743,12 +762,16 @@ fn fact(read: Result<bool, &anyhow::Error>) -> Fact {
 }
 
 /// The worktree of `issue` on this host and the state of its worker, where
-/// that worker, not gone, is on a harness worker health holds. Reads only.
-fn held(fleet: &Fleet, issue: u64) -> Result<Option<(Worktree, WorkerState)>> {
+/// that worker, not gone, is on a harness worker health holds, and has
+/// declared nothing the tick has yet to carry out: what a worker waits on
+/// holds no verdict of its own back. Reads only.
+fn held(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<(Worktree, WorkerState)>> {
     let source = crate::orca::Source::of(&fleet.repo)?;
     let Some(worktree) = Worktree::of_issue(&source, issue)? else { return Ok(None) };
     let state = worktree.state(fleet.now)?;
-    let held = state != WorkerState::Gone && crate::health::holding(&worktree);
+    let held = state != WorkerState::Gone
+        && crate::health::holding(&worktree)
+        && (state == WorkerState::Busy || !crate::judge::declared(fleet, me, issue, &worktree)?);
     Ok(held.then_some((worktree, state)))
 }
 
@@ -1599,8 +1622,8 @@ impl hot::Hears for Said {
 /// hot (`hot::watch`, docs/adr/0019). Resource conditions are kept for the
 /// host watch's next look. It says how it stands as each tick begins and
 /// ends, among the others its host runner holds (`Standing`, docs/adr/0023),
-/// and begins no tick while a move holds them back (docs/adr/0032). It never
-/// puts the host to sleep (docs/adr/0050). It obeys `holder`'s stop — whoever holds the
+/// and begins no tick while a move holds them back (docs/adr/0023). It never
+/// puts the host to sleep. It obeys `holder`'s stop — whoever holds the
 /// process listens for the signals — and says each line to its echo. It
 /// ends in an error as its tracker is found public (`probe::public_tracker`).
 pub fn run(
@@ -1652,14 +1675,14 @@ pub fn run(
         }
         // Each tick is a look of its own: what a look reads once, it reads
         // once in this tick, not once in the runner's life, so what a `run`
-        // registered since is seen (docs/adr/0043).
+        // registered since is seen (the `look` module).
         crate::look::begin();
         // A tracker made public ends this fleet instance before it works
         // anything more — within the hour a check that found it private
         // stands, and at once of one said anew — as a start's probe refuses
         // one: it is broken, and each start of it again
         // is refused until the tracker is private or another is said
-        // (docs/adr/0027). A check that cannot be made costs nothing: the
+        // (docs/adr/0091). A check that cannot be made costs nothing: the
         // tick reads GitHub too, and says why that fails.
         if let Ok(Some(why)) = crate::probe::public_tracker(repo, clock(), true) {
             return Err(See::Troubleshooting.refusal(why));
@@ -1702,7 +1725,11 @@ pub fn run(
                 // Wake routing is best effort, like a command's wake: a
                 // name this host cannot read never fails a completed tick.
                 if let Ok(tracker) = tracker {
-                    watching.saw(&tracker, ticked.blockers.iter().copied(), &fleet.gh.closed());
+                    watching.saw(
+                        &tracker,
+                        ticked.blockers.iter().copied(),
+                        &fleet.issues.seen_closed(),
+                    );
                 }
                 let panel = served.then(|| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))

@@ -5,15 +5,15 @@
 //! only read and typed.
 
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
 use afkconvoy_core::harness::{Goal, Harness};
 use anyhow::{Context, Result, bail};
 
 use crate::orca::Worktree;
 
-/// The program that answers a goal store's query.
-const SQLITE: &str = "sqlite3";
+/// How long a read waits on a goal store its harness is writing.
+const BUSY: Duration = Duration::from_millis(250);
 
 /// The goal of the worker in `worktree` and the harness it runs on. `None`:
 /// its harness keeps no goal, or its store cannot be read — which is not a
@@ -32,9 +32,7 @@ fn read(cwd: &Path, harness: Harness) -> Option<Goal> {
     if !file.exists() {
         return Some(Goal::Unset);
     }
-    let answered = Command::new(SQLITE).arg("-readonly").arg(&file).arg(store.query).output();
-    let answered = answered.ok().filter(|answered| answered.status.success())?;
-    harness.goal(&String::from_utf8_lossy(&answered.stdout))
+    harness.goal(&answer(&file, store.query)?)
 }
 
 /// Whether the worker in `worktree`, running on `harness`, has been
@@ -82,9 +80,39 @@ fn row(
         return None;
     }
     let query = harness.goal_row_query(thread?)?;
-    let answered = Command::new(SQLITE).arg("-readonly").arg(&file).arg(query).output();
-    let answered = answered.ok().filter(|answered| answered.status.success())?;
-    harness.goal_row(&String::from_utf8_lossy(&answered.stdout))
+    harness.goal_row(&answer(&file, &query)?)
+}
+
+/// The answer to `query` of the store `file`, opened read-only, as
+/// `sqlite3 -readonly` prints it, which the harness reads: a line a row,
+/// its columns `|`-separated, a NULL empty. `None`: the store cannot be
+/// opened or read, or the query fails.
+fn answer(file: &Path, query: &str) -> Option<String> {
+    use rusqlite::{Connection, OpenFlags, types::ValueRef};
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let db = Connection::open_with_flags(file, flags).ok()?;
+    db.busy_timeout(BUSY).ok()?;
+    let mut statement = db.prepare(query).ok()?;
+    let columns = statement.column_count();
+    let mut rows = statement.query([]).ok()?;
+    let mut text = String::new();
+    while let Some(row) = rows.next().ok()? {
+        for column in 0..columns {
+            if column > 0 {
+                text.push('|');
+            }
+            match row.get_ref(column).ok()? {
+                ValueRef::Null => {}
+                ValueRef::Integer(value) => text.push_str(&value.to_string()),
+                ValueRef::Real(value) => text.push_str(&value.to_string()),
+                ValueRef::Text(value) | ValueRef::Blob(value) => {
+                    text.push_str(&String::from_utf8_lossy(value));
+                }
+            }
+        }
+        text.push('\n');
+    }
+    Some(text)
 }
 
 #[cfg(test)]
@@ -136,10 +164,69 @@ mod tests {
                  1000000, {used}, 0, 0, 0);"
             ));
         }
-        let made =
-            Command::new(SQLITE).arg(home.join("goals_1.sqlite")).arg(&sql).status().unwrap();
-        assert!(made.success());
+        rusqlite::Connection::open(home.join("goals_1.sqlite"))
+            .unwrap()
+            .execute_batch(&sql)
+            .unwrap();
         (dir, cwd)
+    }
+
+    /// A goal store at `file` made by `sql`.
+    fn store(file: &Path, sql: &str) {
+        rusqlite::Connection::open(file).unwrap().execute_batch(sql).unwrap();
+    }
+
+    #[test]
+    fn a_goal_store_answers_as_sqlite3_prints_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("goals_1.sqlite");
+        store(
+            &file,
+            &format!(
+                "{SCHEMA} insert into thread_goals values ('a', 'g', 'o', 'active', null, 7, 0, 0, 2); \
+                 insert into thread_goals values ('b', 'g', 'o', 'complete', 1000000, 9, 0, 0, 1);"
+            ),
+        );
+        let codex = Harness::Codex;
+        let store = codex.goal_store().unwrap();
+        assert_eq!(answer(&file, store.query).as_deref(), Some("active\n"));
+        let both = "select status, tokens_used, token_budget from thread_goals order by thread_id";
+        assert_eq!(answer(&file, both).as_deref(), Some("active|7|\ncomplete|9|1000000\n"));
+        assert_eq!(answer(&file, &codex.goal_row_query("c").unwrap()).as_deref(), Some(""));
+        assert_eq!(answer(&file, "select nothing from nowhere"), None, "a failing query");
+
+        let read = |thread: &str| codex.goal_row(&answer(&file, &codex.goal_row_query(thread)?)?);
+        let row = read("a").unwrap().unwrap();
+        assert_eq!((row.status, row.tokens_used, row.token_budget), (Goal::Active, 7, None));
+        let row = read("b").unwrap().unwrap();
+        assert_eq!(row.token_budget, Some(1_000_000));
+        assert_eq!(read("c"), Some(None), "a session with no row");
+
+        let missing = dir.path().join("missing.sqlite");
+        assert_eq!(answer(&missing, store.query), None);
+        assert!(!missing.exists(), "a read creates no store");
+        let unreadable = dir.path().join("not-a-db.sqlite");
+        std::fs::write(&unreadable, "not a database").unwrap();
+        assert_eq!(answer(&unreadable, store.query), None);
+    }
+
+    #[test]
+    fn a_store_its_harness_is_writing_is_not_waited_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("goals_1.sqlite");
+        store(
+            &file,
+            &format!(
+                "{SCHEMA} insert into thread_goals values ('a', 'g', 'o', 'active', null, 0, 0, 0, 0);"
+            ),
+        );
+        let writer = rusqlite::Connection::open(&file).unwrap();
+        writer
+            .execute_batch("begin exclusive; update thread_goals set status = 'paused';")
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(answer(&file, Harness::Codex.goal_store().unwrap().query), None);
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
     }
 
     #[test]

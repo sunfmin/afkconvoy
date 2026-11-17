@@ -1,4 +1,4 @@
-// afkconvoy's extension for pi (docs/adr/0013): what the fleet adds to a pi
+// afkconvoy's extension for pi (docs/adr/0020): what the fleet adds to a pi
 // worker that pi takes on no flag. The tool carries this file, keeps it in
 // the fleet's own user directory for pi, and names it on the line that
 // starts the worker; nothing else loads it.

@@ -5,7 +5,7 @@
 //! input: it is in no file, argument, answer or log line.
 
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::worker_health::{self, Decision, Evidence};
@@ -67,7 +67,7 @@ pub fn judge(screen: &[String]) -> Outcome {
 /// or does not end within `TIMEOUT` is an error, which never holds what it
 /// printed.
 fn key(command: &str) -> Result<String> {
-    let mut child = Command::new("sh")
+    let mut child = crate::census::command("sh")
         .args(["-c", command])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -116,7 +116,7 @@ fn post(key: &str, request: &Value) -> Result<Value> {
         quoted(&format!("Authorization: Bearer {key}")),
         quoted(&serde_json::to_string(request)?),
     );
-    let mut child = Command::new("curl")
+    let mut child = crate::census::command("curl")
         .args(["--silent", "--show-error", "--fail-with-body", "--max-time"])
         .arg(TIMEOUT.as_secs().to_string())
         .args(["--config", "-"])

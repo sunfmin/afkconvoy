@@ -1,6 +1,6 @@
-# Issue tracker: GitHub
+# Issue tracker
 
-Issues and specs for this repo live as GitHub issues in its **tracker** (`GLOSSARY.md`, `docs/adr/0027`): the repo whose issues the fleet of this checkout works. Whose issues a fleet works is a fact of its host, never pushed, so this file names no tracker: ask the host. Use the `gh` CLI for all operations.
+Issues and specs for this repo live in its **tracker** (`GLOSSARY.md`, `docs/adr/0091`, `docs/adr/0091`): by default its host's **local tracker**, `local/<host>`, a database on the host; or a GitHub repo the checkout names. Whose issues a fleet works is a fact of its host, never pushed, so this file names no tracker: ask the host. `afkconvoy issue` reads and writes either kind, with `gh issue`'s verbs and flags (`afkconvoy issue --help`); `gh issue` reaches a GitHub tracker only.
 
 ## Find the tracker
 
@@ -9,20 +9,24 @@ afkconvoy checkouts | jq -rn --arg root "$(dirname "$(git rev-parse --path-forma
   'input | if .error then error(.error) else [.checkouts[] | select(.checkout == $root) | .tracker][0] // "none" end'
 ```
 
-It prints the `tracker` that `afkconvoy checkouts` answers for this checkout, whose entry is its main worktree's: the fleet reads it the same way from any worktree of it. Two cases, which differ only in the repo label:
+It prints the `tracker` that `afkconvoy checkouts` answers for this checkout, whose entry is its main worktree's: the fleet reads it the same way from any worktree of it. Four cases:
 
-- **It names a tracker**, `<owner>/<repo>`: the issues are there, among other repos' issues. This repo's carry its **repo label**, `repo:sunfmin/afkconvoy`. An issue there without it is no issue of this repo, and no fleet works it.
-- **It prints `none`**: the checkout's entry says no tracker, or the checkout is on no checkout list of this host. The tracker is this repo itself, and no repo label is used. An issue here that carries a repo label is the issue of the repo that label names, not this one's.
+- **It prints `local/<host>`**: the host's local tracker, the default. Every operation is `afkconvoy issue`, run in the checkout on this host — `gh issue` would act on this repo's own GitHub issue of that number. An issue's repo is a field of it, not a label: `afkconvoy issue create` opens one of this repo, and `--repo <owner>/<repo>` one of another repo this host has a checkout of. The `afkconvoy issue` forms are given beside each operation below.
+- **It names this repo**, `sunfmin/afkconvoy`: the tracker is this repo itself on GitHub, and no repo label is used. An issue here that carries a repo label is the issue of the repo that label names, not this one's.
+- **It names another repo**, `<owner>/<repo>`: the issues are there, among other repos' issues. This repo's carry its **repo label**, `repo:sunfmin/afkconvoy`. An issue there without it is no issue of this repo, and no fleet works it.
+- **It prints `none`**: the checkout is on no checkout list of this host. Its fleet would work the host's local tracker, which `afkconvoy issue` reads off the checkout.
 
 Where it fails instead, `afkconvoy checkouts` gave no answer, and the tracker is unknown: open, list and change no issue until it answers.
 
-Below, `<tracker>` is the tracker it names, or this repo, as its `origin` remote names it.
+Below, `<tracker>` is the GitHub repo it names.
 
 ## Conventions
 
-Every operation on an issue goes to the tracker: put `--repo <tracker>` on each `gh issue` command below, and `repos/<tracker>` in each `gh api` path of an issue. Run in the checkout without it, `gh` acts on this repo's own issue of that number.
+Of a local tracker, each `gh issue <verb> <n> --repo <tracker>` below is `afkconvoy issue <verb> <n>` with the same flags and no `--repo`; blocking is `afkconvoy issue block <n> --by <m>` and `afkconvoy issue unblock <n> --by <m>`, by number; reading is `afkconvoy issue view <n> --comments` (its `--json` takes `number,title,body,labels,comments,state` as gh's does, and `blockedBy`) and `afkconvoy issue list --label <l> --state open`. A label needs no making there, and there are no sub-issues: put `Part of local/<host>#<parent>` at the top of the child body. A worker's guard refuses `gh issue` and `gh api …/issues…` where its fleet's tracker is local.
 
-The tracker refuses a label it lacks, on a new issue or an old one: where `gh label list --repo <tracker>` does not have a label a skill asks for (`needs-triage`, `epic`, `wayfinder:map`, …), make it first with `gh label create <label> --repo <tracker>`.
+Of a GitHub tracker, every operation on an issue goes to the tracker: put `--repo <tracker>` on each `gh issue` command below, and `repos/<tracker>` in each `gh api` path of an issue. Run in the checkout without it, `gh` acts on this repo's own issue of that number.
+
+A GitHub tracker refuses a label it lacks, on a new issue or an old one: where `gh label list --repo <tracker>` does not have a label a skill asks for (`needs-triage`, `epic`, `wayfinder:map`, …), make it first with `gh label create <label> --repo <tracker>`.
 
 - **Create an issue**: run `afkconvoy flows` in the checkout, once for all the issues you open. Its `line` (`flows --help`) opens an issue in the tracker, with the repo label where the tracker is another repo. The tracker is the one this host's checkout list says; in a checkout the list does not hold (another account, a fresh clone) `flows` refuses until `--tracker <owner>/<repo>` names it. Give it a title and a body file. The ready label on that line hands the issue to the fleet: for an issue not ready to be worked (`needs-triage`, an epic, a wayfinder map), put the label the skill asks for in its place, and keep `--repo` and the repo label.
 - **Read an issue**: `gh issue view <number> --repo <tracker> --json number,title,body,labels,comments`.
@@ -41,7 +45,7 @@ The tracker refuses a label it lacks, on a new issue or an old one: where `gh la
 
 ## Naming an issue
 
-In the tracker, in an issue's body or comment, `#<n>` is the tracker's issue `<n>`. In this repo, in a PR, a commit or a doc, `#<n>` alone is this repo's own issue or PR: name a tracker's issue `<tracker>#<n>`, and close one from a PR with `Closes <tracker>#<n>`.
+In the tracker, in an issue's body or comment, `#<n>` is the tracker's issue `<n>`. In this repo, in a PR, a commit or a doc, `#<n>` alone is this repo's own issue or PR: name a tracker's issue `<tracker>#<n>`, and close one from a PR with `Closes <tracker>#<n>` — of a local tracker, `Closes local/<host>#<n>`, which the landing turn of that host closes.
 
 ## Pull requests as a triage surface
 

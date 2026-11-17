@@ -1,4 +1,4 @@
-//! Landing with plain git (docs/adr/0060), for a program that has no runner
+//! Landing with plain git (docs/adr/0058), for a program that has no runner
 //! of its own: one process takes its changes into a round, pairs them and
 //! fast-gates each pair, its pairs' gates of one level at once, merges the
 //! round's root onto the target tip, gates it whole once and lands the round
@@ -829,6 +829,7 @@ where
                             change: place.change.number,
                             branch: place.change.source.clone(),
                             head: place.head.clone(),
+                            carried_by: None,
                         }),
                     });
                 }

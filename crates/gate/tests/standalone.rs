@@ -1,4 +1,4 @@
-//! The gate crate as another program uses it (docs/adr/0059): from outside,
+//! The gate crate as another program uses it (docs/adr/0058): from outside,
 //! through its public API alone, with no fleet beside it. A host process
 //! embeds a queue holder, runs a repo's fast gate on a scratch repo, and
 //! reads back the recorded gate run; heavy commands wait their turn in the

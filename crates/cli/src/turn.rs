@@ -21,6 +21,12 @@ pub fn base(repo: &Repo, config: &Config) -> Result<String> {
     base_as(repo, config, Fresh::Process)
 }
 
+/// The base branch asked of the remote now, its objects brought here: what a
+/// candidate is built on and published at.
+pub(crate) fn base_live(repo: &Repo, config: &Config) -> Result<String> {
+    base_as(repo, config, Fresh::Live)
+}
+
 /// The base branch read as `fresh` says, its objects brought here.
 fn base_as(repo: &Repo, config: &Config, fresh: Fresh) -> Result<String> {
     repo.remote()
@@ -28,9 +34,17 @@ fn base_as(repo: &Repo, config: &Config, fresh: Fresh) -> Result<String> {
         .ok_or_else(|| anyhow!("the remote has no branch {:?}", config.base_branch))
 }
 
-/// The base branch's own gate declaration certifies its tip.
-pub(crate) fn tip_config(repo: &Repo, tip: &str) -> Result<Config> {
-    crate::config::parse(&repo.git_raw(&["show", &format!("{tip}:{}", crate::config::FILE)])?)
+/// The base branch's own gate declaration certifies its tip. On the proving
+/// branch it declares, `target`, a tip and what lands on it gate the fast
+/// gate as their whole gate: the slow gate runs at a promotion
+/// (docs/adr/0090).
+pub(crate) fn tip_config(repo: &Repo, tip: &str, target: &str) -> Result<Config> {
+    let declared =
+        crate::config::parse(&repo.git_raw(&["show", &format!("{tip}:{}", crate::config::FILE)])?)?;
+    Ok(match declared.proves_on(target) {
+        true => declared.fast_as_whole(),
+        false => declared,
+    })
 }
 
 /// How the base tip's gate run alone came out.
@@ -186,7 +200,7 @@ fn take(
         }
         let fresh = if red_since.is_some() { Fresh::Live } else { Fresh::Process };
         let tip = base_as(repo, config, fresh)?;
-        let mut declared = tip_config(repo, &tip)?;
+        let mut declared = tip_config(repo, &tip, &config.base_branch)?;
         declared.base_branch = config.base_branch.clone();
         let command = GateCommand::new(&declared.gate_command);
         let tree = Tree::named(&repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?);
@@ -395,7 +409,7 @@ pub fn land(
         let asked = json!({"issue": issue});
         return crate::turn_answer::noted(repo, Some(issue), now, || Ok(held(asked, &hold)));
     }
-    let looked = crate::target::once(repo, config, &gh.tracker, issue)?;
+    let looked = crate::target::once(repo, config, gh, issue)?;
     let mut answer = crate::turn_answer::noted(repo, Some(issue), now, || {
         land_task(repo, gh, issue, host, now, looked)
     })?;
@@ -411,6 +425,7 @@ fn land_task(
     now: u64,
     looked: crate::target::Seen,
 ) -> Result<Value> {
+    let issues = crate::issues::of(gh);
     let mut routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
     // The claim, target and base were checked before the turn's receipt.
     // Finding no PR does not read any of those again.
@@ -432,8 +447,8 @@ fn land_task(
             .rev()
             .find(|pr| pr.issue() == Some(issue))
         {
-            if !gh.issue(issue)?.is_closed() {
-                gh.close_issue(issue)?;
+            if !issues.issue(issue)?.is_closed() {
+                issues.close_issue(issue)?;
             }
             crate::account::leave(repo, gh, issue, End::Landed, now)?;
             return Ok(
@@ -500,6 +515,7 @@ fn run(
     (host, now, on_red): (&str, u64, OnRedBase),
 ) -> Result<Value> {
     let gh = GitHub::of(repo)?;
+    let issues = crate::issues::of(&gh);
     let issue = match of {
         Of::Issue(n) => Some(*n),
         _ => None,
@@ -511,7 +527,13 @@ fn run(
     let mut routed;
     let config = if let Some(issue) = issue {
         routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
-        routed.base_branch = crate::target::pin(repo, config, issue, None)?;
+        routed.base_branch = crate::target::branch(repo, config, issue)?;
+        &routed
+    } else if config.proving_branch.is_some() {
+        // A watch's and a cut's change land on the proving branch too: the
+        // base branch moves only by promotion (docs/adr/0090).
+        routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
+        routed.base_branch = config.lands_on().to_string();
         &routed
     } else {
         config
@@ -534,8 +556,8 @@ fn run(
     let current = base(repo, config)?;
     if repo.within(&here, &current)? {
         if let Some(n) = issue {
-            if !gh.issue(n)?.is_closed() {
-                gh.close_issue(n)?;
+            if !issues.issue(n)?.is_closed() {
+                issues.close_issue(n)?;
             }
             crate::account::leave(repo, &gh, n, End::Landed, now)?;
         }
@@ -545,7 +567,7 @@ fn run(
     }
     // A closed issue asks for no turn: nothing lands for it.
     if let Some(n) = issue
-        && gh.issue(n)?.is_closed()
+        && issues.issue(n)?.is_closed()
     {
         bail!(closed(n));
     }
@@ -635,6 +657,8 @@ A turn preserves the PR's original head and atomically assigns a candidate merge
 
 A turn that is no barrier lands through a round. It is on the candidate record as pending while no round is open, with the PR head it asks to land; once none is open, no barrier waits and no gate of the chain runs, a round opens of every pending turn, in the order they asked, and a PR that asks meanwhile waits for the next. The round is a pairing tree: in asking order, each PR pairs with the first later one whose head `git merge-tree` merges with its own cleanly, and each pair's merge is fast-gated alone — where its commit declares a ```yaml gates block (`afkconvoy config --help`), the fast gate, otherwise `gate_command` — in a worktree and worker lane of its own, by the turn of the pair's later-asked PR; the pairs of a level gate at once, and pairs pair the same way, level by level, until one node is left, the root. A node left without a partner at a level goes up unpaired. A pair red on its fast gate stops no other pair, and both its sides leave the round: its later-asked PR carries every other PR of it. Its turn fast-forwards its branch to the pair's commit, pushes it, and answers `gate_red` with `gate` fast, `pair` — the pair's commit and the PRs it was merged with — and `carrying`; each of those PRs' turns answers `carried`, naming it as `carried_by`. The last-asked node that conflicts with every other of its level carries the earliest-asked of them that no pair took: its turn merges that one's commit into its branch and answers `conflict` with `carrying`, the merge left to resolve. Every turn first carries each open PR whose head its own head holds and the base does not: it closes that PR, commented "carried by #…", deletes its branch, tells its issues which PR carries them and on which branch, and rewrites its own PR's description to hold that PR's with every `Closes`; its answer lists them as `carried`, and landing closes their issues with its own. A carrying PR that asks again before any PR of the root has its candidate rejoins the round; a PR whose pair said nothing of its tree waits pending for the next round. The root lands as each of its PRs' heads merged onto the certified base one after another, in asking order — a candidate of each, gated alone by none, `batched` — each turn assigning its own once those before it have; a merge that conflicts answers `conflict`, or `speculative_conflict` onto the candidates ahead, its merge left in the worker's worktree to resolve. The turn of the last, the round's last-asked PR, runs the whole gate once on its commit: a green run on record of its tree on this kind of machine answers for it, otherwise the fast gate in a worker lane and, green, the slow gate in a slow lane. Green, the whole gate is put on record for the tip's tree, and one atomic push lands every candidate of the root; each of their turns answers `merged` and closes its own issue. Red is not split to find whose change failed: it is fixed on the spot by the round's last-asked PR, the tip's, which carries the round. Its turn answers `gate_red` with `gate`, `round`, the round's PRs and issues, and `carrying`, the others of them; it fast-forwards its branch to the round's tip, pushes it and carries every other PR of the round at once, as it carries any PR its head holds, listing them as `carried`, so its worker fixes the round from those issues and the failing tests and asks again, and its landing closes every issue of the round. Where bringing its branch up conflicts, the merge is left in its worktree to resolve, and its next turn carries. Every other candidate of the round answers `round_red`, naming the tip's PR as `round_pr` and `carried_by`, and stops. A turn that ends takes its PR out of the round, and a pair it would gate is cancelled. A chain is piled while this host's `land` turns of the repo answered `speculative_conflict` in the last hour at least three times and more often than `merged`: behind a valid candidate a turn then answers `waiting_for_capacity`, its `detail` saying the chain is piled, before it takes a pending place. If a whole-green candidate's owner exits on this host after its gate processes are confirmed stopped, the next turn of the same PR and original head takes it up with its recorded evidence; a running gate is never adopted. A barrier — a cut, a watch, a fleet-lock repair — lands alone on a candidate of its own: where its commit declares a ```yaml gates block, its fast gate, then the slow gate once at it.
 
+In a repo whose config names a `proving_branch` (`afkconvoy config --help`), a task's target branch is the proving branch unless it is pinned to another: its worker is cut from it and opens its PR against it, and a watch, a cut and a fleet-lock repair land on it too. A landing on the proving branch runs the fast gate alone: the pairs as above, and the root merged onto the proving branch's tip and gated by the fast gate only, its green run put on record for the tip's tree; green, the proving branch fast-forwards to it, each PR of the round answers `merged` and its issue closes. A proving tip with no record is gated alone by the fast gate. The base branch does not move: a promotion runs the slow gate on the proving branch's tip and fast-forwards the base branch to it once it is green (`afkconvoy promote --help`).
+
 Candidate worktrees are kept in `candidates/<repo-key>/<candidate-id>` under the host's cache directory (`afkconvoy help cache`), outside the checkout: a gate's tools discover the candidate's own configuration without finding the checkout's above it. The repo key hashes the canonical common git directory, so all worktrees of one repository share a root and separate clones have separate roots.
 A cache configured inside any checkout is refused before reserving a turn or assigning a candidate. Choose a cache outside every checkout (`afkconvoy help cache`) and run `afkconvoy land` again.
 
@@ -721,8 +745,7 @@ mod tests {
     fn a_merge_commits_a_message_past_arg_max_and_each_parent_once() {
         let root = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            let out =
-                std::process::Command::new("git").current_dir(root.path()).args(args).output();
+            let out = crate::census::command("git").current_dir(root.path()).args(args).output();
             let out = out.unwrap();
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
             String::from_utf8_lossy(&out.stdout).trim().to_string()

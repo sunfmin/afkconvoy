@@ -212,7 +212,7 @@ impl Loaded {
 }
 
 /// Whether `dir`, less each of `without`, holds at the commit `head` of its
-/// repo anything else than at `since` (docs/adr/0014): asked of the fleet's
+/// repo anything else than at `since` (docs/adr/0009): asked of the fleet's
 /// copies of the two, and of nobody else. A commit this host keeps no copy
 /// of — no stage started under it here — is taken to have held something
 /// else: two commits are then all there is to go by.
@@ -287,8 +287,10 @@ fn held(loaded: &Loaded) -> Vec<Fault> {
 /// — or, where there is none or its config cannot be read, the labels a repo
 /// that names none has. A team with a fault fails with `Refused`.
 pub fn load(from: From, checkout: Option<&Repo>) -> Result<Loaded> {
+    // `gh` reads the team's repo and its roles' — no issue — so the
+    // checkout's tracker is not asked for.
     let gh = match checkout {
-        Some(repo) => GitHub::of(repo)?,
+        Some(repo) => GitHub::new(repo.dir.clone(), crate::gh::Tracker::Own),
         None => GitHub::in_no_checkout(),
     };
     let copies = Copies::of_host()?;
@@ -565,7 +567,7 @@ const SETTINGS: &str = ".claude";
 /// Each `CLAUDE.md` and `.claude/` a directory above `dir` holds in `copy`,
 /// the copy of its repo, as a path from the repo's root: what Claude Code
 /// loads for a session started in `dir` of a checkout, and a worker is not
-/// given (docs/adr/0014). The rules of the directory of `team`, the team the
+/// given (docs/adr/0009). The rules of the directory of `team`, the team the
 /// role is read for, are none of them: a worker is given the team rules.
 fn above(copy: &Copy, dir: &RepoDir, team: Option<&RepoDir>) -> Vec<String> {
     let mut found = vec![];
@@ -668,7 +670,7 @@ impl Kept {
     /// The copy of the directory of `role`, and of nothing else of its repo:
     /// what a worker of `harness` in it starts in (`Copies::role`), taken
     /// out of the copy of its repo unless one of that commit is here
-    /// (docs/adr/0014). `Unreached` of a role GitHub could not be reached
+    /// (docs/adr/0009). `Unreached` of a role GitHub could not be reached
     /// for.
     pub fn role(&self, role: &team::Role, harness: Harness) -> Result<Copy> {
         let repo = &role.dir.repo;
@@ -687,7 +689,7 @@ impl Kept {
 /// `.claude/` at its top. The team's copy is added to every worker, and what
 /// a harness loads from an added directory is then the `CLAUDE.md` at its top
 /// alone: the team rules, and neither a neighbour's rules nor the skills and
-/// settings a repo's root holds for a human (docs/adr/0014).
+/// settings a repo's root holds for a human (docs/adr/0009).
 fn left_out(dir: &RepoDir, loaded: &Team) -> Vec<PathBuf> {
     let inside = loaded.roles.iter().filter(|role| dir.holds(&role.dir) && role.dir != *dir);
     let roles = inside.map(|role| {

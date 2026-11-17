@@ -178,10 +178,8 @@ fn runner_opens_one_report_starts_its_watch_and_closes_on_a_live_heartbeat() {
     assert!(report["labels"].as_array().unwrap().contains(&json!("ready-for-human")), "{report}");
     let body = report["body"].as_str().unwrap();
     assert!(body.contains("acme/control#7") && body.contains("no heartbeat"), "{body}");
-    let state_file = world.cache().join("afkconvoy/watch/state.json");
     let watch = until(&world, || {
-        let bytes = std::fs::read(&state_file).ok()?;
-        let state: Value = serde_json::from_slice(&bytes).ok()?;
+        let state = world.kept("watch/state.json");
         state["running"].as_object()?;
         state["running"]["items"]
             .as_array()?

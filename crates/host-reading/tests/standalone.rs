@@ -1,5 +1,5 @@
 //! The host reading crate as another program uses it: through its public API
-//! alone, beside the gate crate and no fleet (docs/adr/0089).
+//! alone, beside the gate crate and no fleet (docs/adr/0058).
 
 use afkconvoy_gate::exclusive::{By, Reading};
 use afkconvoy_host_reading::{Minute, cpu};

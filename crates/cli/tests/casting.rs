@@ -127,7 +127,7 @@ fn a_paused_harness_falls_through_and_the_label_stays() {
     let world = cast(&["model:haiku"]);
     world.pause("claude-code", 900, "refused");
     let planned = world.afk(&PLAN).ok();
-    // Codex reports its windows: it comes before pi (docs/adr/0088).
+    // Codex reports its windows: it comes before pi (docs/adr/0086).
     assert_eq!(planned["frontier"][0]["cast"]["harness"], "codex");
     assert_eq!(planned["frontier"][0]["cast"]["model"], Value::Null);
     assert_eq!(planned["frontier"][0]["cast"]["why"], "user_default");
@@ -136,7 +136,7 @@ fn a_paused_harness_falls_through_and_the_label_stays() {
     assert_eq!(commands.len(), 1);
     assert!(commands[0].contains(Harness::Codex.stock()), "{}", commands[0]);
     assert_eq!(world.labels(7), ["ready-for-agent", "model:haiku"]);
-    std::fs::remove_file(world.paused_path()).unwrap();
+    world.write_paused(&json!([]));
     let planned = world.afk(&PLAN).ok();
     assert_eq!(planned["casting"][0]["stages"][0]["model"], "haiku");
     assert!(planned["casting"][0]["running"]["model"].is_null());

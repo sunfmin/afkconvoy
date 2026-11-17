@@ -81,25 +81,27 @@ struct State {
     unavailable: Option<String>,
 }
 
+/// The asking session's state, whole, in the host's database: the one row
+/// of `asking_state`. It was `asking/state.json` in the cache directory.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: STATE,
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("asking_state"),
+};
+
 fn read() -> Result<State> {
-    let file = crate::copies::cache()?.join(STATE);
-    match std::fs::read(&file) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("cannot read the asking session's state {}", file.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-        Err(error) => Err(error.into()),
-    }
+    crate::host_db::read(&STORE).context("cannot read the asking session's state")
 }
 
 fn save(state: &State) -> Result<()> {
-    let file = crate::copies::cache()?.join(STATE);
-    std::fs::create_dir_all(file.parent().expect("asking state parent"))?;
-    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(state)?)?;
-    std::fs::rename(temporary, file)?;
-    Ok(())
+    crate::host_db::put(&STORE, state)
 }
 
+/// The lease of a step of the asking session, held across the whole step —
+/// which starts, asks and types at Orca terminals — and by `asked` while it
+/// records a report. It is a kernel lock in the cache directory, not a
+/// transaction of the host's database, which no writer may hold across that
+/// work. Each read and save of the state is a transaction of its own.
 pub(crate) fn state_lock() -> Result<std::fs::File> {
     let path = crate::copies::cache()?.join("asking/state.lock");
     std::fs::create_dir_all(path.parent().expect("asking state parent"))?;
@@ -145,15 +147,16 @@ pub fn run(ended: &AtomicBool, say: impl Fn(String)) {
     }
 }
 
-/// What a step reads of the asking session's own files, the watch's
-/// outbox of questions and the reports written: a step on the same reads
-/// and the same terminal does the same.
+/// What a step reads of the asking session's own state and journal, the
+/// watch's outbox of questions and the reports written: a step on the same
+/// reads and the same terminal does the same.
 fn inputs() -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     let Ok(cache) = crate::copies::cache() else { return 0 };
-    for file in [STATE, asking_terminal::FILE, "watch/notify.json"] {
-        std::fs::read(cache.join(file)).ok().hash(&mut hash);
+    for store in [&STORE, &asking_terminal::STORE, &crate::watch_notify::STORE] {
+        let held = crate::host_db::value(store).ok().flatten();
+        held.map(|held| held.to_string()).hash(&mut hash);
     }
     if let Ok(reports) = std::fs::read_dir(cache.join("asking/reports")) {
         let mut reported: Vec<_> = reports

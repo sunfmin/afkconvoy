@@ -1,4 +1,4 @@
-//! What every build the fleet starts runs with (docs/adr/0088): the worker's
+//! What every build the fleet starts runs with (docs/adr/0082): the worker's
 //! terminal exports it, and the gate's command is started with it.
 
 /// cargo's opt-out of its fine-grain unit locks, by name and value. With

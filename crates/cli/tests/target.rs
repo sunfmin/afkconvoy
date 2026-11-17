@@ -123,16 +123,122 @@ fn wrong_base_missing_branch_and_lost_or_corrupt_records_refuse_without_fallback
     let missing = world.afk_in(&dir, &["land", "--issue", "7"]).error();
     assert!(missing.contains("delivery/ABC-123") && missing.contains("missing"), "{missing}");
     git(&world.clone, &["push", "-q", "origin", "HEAD:delivery/ABC-123"]);
-    let target = world.remote(&["rev-parse", "refs/convoy/target/7"]);
-    git(&world.clone, &["push", "-q", "origin", ":refs/convoy/target/7"]);
+    // The claim carries the target; no separate record is written.
+    let claim = world.remote(&["show", "-s", "--format=%s", "refs/convoy/claim/7"]);
+    assert!(claim.contains("target_branch=delivery/ABC-123"), "{claim}");
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty()
+    );
+    // A claim an older afkconvoy made names a separate record: lost, it refuses.
+    let repo = afkconvoy::git::Repo::new(world.clone.clone());
+    let target = repo.record_commit(r##"{"issue":"#7","branch":"delivery/ABC-123"}"##).unwrap();
+    let old = claim.replace("target_branch=delivery/ABC-123", &format!("target={target}"));
+    let old = repo.record_commit(&old).unwrap();
+    git(&world.clone, &["push", "-q", "--force", "origin", &format!("{old}:refs/convoy/claim/7")]);
     let lost = world.afk(&["recovery", "--issue", "7"]).error();
     assert!(lost.contains("missing or contradictory pinned target"), "{lost}");
     git(&world.clone, &["push", "-q", "origin", &format!("{target}:refs/convoy/target/7")]);
-    world.afk(&["recovery", "--issue", "7"]).ok();
+    assert_eq!(world.afk(&["recovery", "--issue", "7"]).ok()["base"], "delivery/ABC-123");
     git(&world.clone, &["push", "-q", "--force", "origin", "HEAD:refs/convoy/target/7"]);
     let corrupt = world.afk(&["target", "--issue", "7"]).error();
     assert!(corrupt.contains("contradictory pinned target"), "{corrupt}");
     assert_eq!(world.gh()["issues"][0]["state"], "open");
+}
+
+/// A host that died holding a task pinned to a non-base branch: the host
+/// that takes the claim over reads the target from the claim, keeps it, and
+/// lands there; once the claim ends nothing of the target is on the remote.
+#[test]
+fn a_takeover_by_another_host_keeps_the_claims_target_and_lands_on_it() {
+    let world = World::new();
+    world.set_gate("true");
+    world.list_checkout(&world.clone);
+    let main = world.remote(&["rev-parse", "refs/heads/main"]);
+    let selected = branch(&world);
+    world.issue(7, &["ready-for-agent"]);
+    world.afk(&["target", "--issue", "7", "--branch", "delivery/ABC-123"]).ok();
+    let args = ["claim", "--issue", "7", "--instance", "dead", "--host", "h2", "--now", "1000"];
+    assert_eq!(world.afk(&args).ok()["won"], true);
+    // Only the claim says where the task lands now.
+    world.with_gh(|gh| gh["comments"]["7"] = json!([]));
+    let first = world.remote(&["rev-parse", "refs/convoy/claim/7"]);
+    let later = (1000 + afkconvoy_core::lease::LEASE + 1).to_string();
+    let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &later]).ok();
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+    let claim = world.remote(&["show", "-s", "--format=%s", "refs/convoy/claim/7"]);
+    assert!(claim.contains("host=h1"), "{claim}");
+    assert!(claim.contains("target_branch=delivery/ABC-123"), "{claim}");
+    assert!(claim.contains(&format!("first={first}")), "{claim}");
+    let orca = world.orca();
+    let row = orca["worktrees"].as_array().unwrap().iter().find(|w| w["linkedIssue"] == 7);
+    let dir = PathBuf::from(row.unwrap()["path"].as_str().unwrap());
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), selected);
+    assert!(brief(&dir).contains("gh pr create --base delivery/ABC-123"));
+    commit(&dir, "work.txt", "task seven\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    let head = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    world.pr(70, 7, &head);
+    world.with_gh(|gh| gh["prs"][0]["baseRefName"] = json!("delivery/ABC-123"));
+    let landed = world.afk_in(&dir, &["land", "--issue", "7"]).ok();
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(landed["target_branch"], "delivery/ABC-123");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), main);
+    assert_eq!(world.remote(&["show", "refs/heads/delivery/ABC-123:work.txt"]), "task seven");
+    let after = (1000 + afkconvoy_core::lease::LEASE + 100).to_string();
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &after]).ok();
+    assert!(world.claims().is_empty());
+    let left = world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/"]);
+    assert!(!left.contains("/target/") && !left.contains("/claim/7"), "{left}");
+}
+
+/// Separate target records an earlier release left are read once: an open
+/// claimed task's becomes its claim's pin, an open unclaimed task's selected
+/// branch its selection comment, and a closed task's is removed. `doctor`
+/// says while any are left.
+#[test]
+fn legacy_target_records_are_carried_once_and_removed() {
+    let world = World::new();
+    world.set_gate("true");
+    world.list_checkout(&world.clone);
+    branch(&world);
+    for issue in [7, 8, 9] {
+        world.issue(issue, &[]);
+    }
+    let repo = afkconvoy::git::Repo::new(world.clone.clone());
+    let legacy = |issue: u64, branch: &str| {
+        let record = json!({"issue": format!("#{issue}"), "branch": branch}).to_string();
+        let sha = repo.record_commit(&record).unwrap();
+        git(&world.clone, &["push", "-q", "origin", &format!("{sha}:refs/convoy/target/{issue}")]);
+        sha
+    };
+    // #7 claimed by an older afkconvoy, its claim naming the record.
+    let seven = legacy(7, "main");
+    let owner =
+        afkconvoy_core::claims::Owner { instance: "alpha".into(), host: "h1".into(), ts: 1000 };
+    let claim = repo.record_commit(&format!("{} target={seven}", owner.write())).unwrap();
+    git(&world.clone, &["push", "-q", "origin", &format!("{claim}:refs/convoy/claim/7")]);
+    legacy(8, "delivery/ABC-123");
+    legacy(9, "delivery/ABC-123");
+    world.close(9, "completed");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
+    let found =
+        doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "legacy_targets");
+    assert!(found, "{doctor}");
+    let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"]);
+    assert!(!ticked.stderr.contains("legacy target"), "{}", ticked.stderr);
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty()
+    );
+    let claim = world.remote(&["show", "-s", "--format=%s", "refs/convoy/claim/7"]);
+    assert!(claim.contains("target_branch=main") && claim.contains("instance=alpha"), "{claim}");
+    assert!(world.comments(8).iter().any(|c| c.contains("convoy:target branch=delivery/ABC-123")));
+    assert!(!world.comments(9).iter().any(|c| c.contains("convoy:target")));
+    assert_eq!(world.afk(&["target", "--issue", "8"]).ok()["target_branch"], "delivery/ABC-123");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1100"]).json;
+    let found =
+        doctor["findings"].as_array().unwrap().iter().any(|f| f["kind"] == "legacy_targets");
+    assert!(!found, "{doctor}");
 }
 
 #[test]

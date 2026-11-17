@@ -91,17 +91,15 @@ fn paused(world: &World, harness: &str, why: &str) {
 fn unpaused(world: &World, harness: &str) {
     let mut paused = world.paused();
     paused.as_array_mut().unwrap().retain(|row| row["harness"] != harness);
-    std::fs::write(world.paused_path(), paused.to_string()).unwrap();
+    world.write_paused(&paused);
 }
 
 fn watch_state(world: &World) -> Value {
-    std::fs::read(world.cache().join("afkconvoy/watch/state.json"))
-        .map_or(json!({}), |bytes| serde_json::from_slice(&bytes).unwrap())
+    world.kept_object("watch/state.json")
 }
 
 fn asking_state(world: &World) -> Value {
-    std::fs::read(world.cache().join("afkconvoy/asking/state.json"))
-        .map_or(json!({}), |bytes| serde_json::from_slice(&bytes).unwrap())
+    world.kept_object("asking/state.json")
 }
 
 fn watch_running(world: &World) -> Option<Value> {
@@ -255,8 +253,7 @@ fn takeover_fences_outbox(notify: bool) {
     command.args(["host-runner", "--kept-by", "0"]);
     let _restarted = FixtureProcess::spawn(&mut command);
     until(&world, "taken wait dropped without another look", || {
-        let path = world.cache().join("afkconvoy/watch/notify.json");
-        let outbox: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let outbox = world.kept("watch/notify.json");
         outbox["entries"].as_object()?.values().all(|e| e["condition"] != wait).then_some(())
     });
     until(&world, "asking queue drops taken wait", || {
@@ -545,10 +542,7 @@ fn first_delivered(world: &World) -> (String, String) {
 }
 
 fn journal(world: &World) -> Value {
-    serde_json::from_slice(
-        &std::fs::read(world.cache().join("afkconvoy/asking/terminal.json")).unwrap(),
-    )
-    .unwrap()
+    world.kept("asking/terminal.json")
 }
 
 /// The asking session's marked executor, as its wrapper is in a real pane:
@@ -560,7 +554,7 @@ impl Executor {
         let marker = format!("afkconvoy-watch-session-{session}");
         // One process, its command line carrying the marker: killing it
         // leaves no child behind.
-        let child = std::process::Command::new("perl")
+        let child = afkconvoy::census::command("perl")
             .args(["-e", "sleep 120", &marker])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())

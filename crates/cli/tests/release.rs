@@ -3,7 +3,7 @@
 //! Mac, as the cut steps of this repo's config say.
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packaging/release.sh");
@@ -16,7 +16,7 @@ const README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../RE
 mod build;
 
 fn release(dist: &Path, args: &[&str]) -> Output {
-    Command::new(SCRIPT).args(args).env("DIST", dist).output().unwrap()
+    afkconvoy::census::command(SCRIPT).args(args).env("DIST", dist).output().unwrap()
 }
 
 fn stdout(out: &Output) -> String {
@@ -25,7 +25,7 @@ fn stdout(out: &Output) -> String {
 }
 
 fn sha256(file: &Path) -> String {
-    let out = Command::new("shasum").args(["-a", "256"]).arg(file).output().unwrap();
+    let out = afkconvoy::census::command("shasum").args(["-a", "256"]).arg(file).output().unwrap();
     stdout(&out).split_whitespace().next().unwrap().to_string()
 }
 
@@ -81,7 +81,7 @@ fn the_formula_installs_what_was_packaged_and_names_the_users_tools() {
     // it is Ruby, where there is a ruby to ask
     let file = dist.path().join("afkconvoy.rb");
     std::fs::write(&file, &formula).unwrap();
-    if let Ok(checked) = Command::new("ruby").arg("-c").arg(&file).output() {
+    if let Ok(checked) = afkconvoy::census::command("ruby").arg("-c").arg(&file).output() {
         assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
     }
 }
@@ -89,7 +89,7 @@ fn the_formula_installs_what_was_packaged_and_names_the_users_tools() {
 #[test]
 fn a_build_with_no_stable_toolchain_says_how_to_get_it() {
     let home = tempfile::tempdir().unwrap();
-    let refused = Command::new(SCRIPT)
+    let refused = afkconvoy::census::command(SCRIPT)
         .arg("build")
         .env_clear()
         .env("HOME", home.path())
@@ -131,7 +131,11 @@ fn a_version_is_set_in_cargo_toml_and_in_cargo_lock_for_the_workspace_s_crates()
     at("Cargo.lock", "version = 4\n\n[[package]]\nname = \"afkconvoy\"\nversion = \"0.5.16\"\n");
 
     let set = |args: &[&str]| {
-        Command::new(&script).args(args).env("CARGO_NET_OFFLINE", "true").output().unwrap()
+        afkconvoy::census::command(&script)
+            .args(args)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+            .unwrap()
     };
     stdout(&set(&["set", "0.5.17"]));
     assert_eq!(stdout(&set(&["version"])).trim(), "0.5.17");
@@ -215,13 +219,17 @@ fn a_build_says_the_release_alone_only_at_its_tag_or_with_no_git() {
 
 #[test]
 fn the_binary_prints_what_it_was_built_from() {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).arg("--version").output().unwrap();
+    let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
+        .arg("--version")
+        .output()
+        .unwrap();
     let said = stdout(&out);
     assert_eq!(said.trim(), format!("afkconvoy {}", afkconvoy::VERSION));
 
     // In a checkout it is the commit checked out, and with no git the release.
     let here = env!("CARGO_MANIFEST_DIR");
-    let git = |args: &[&str]| Command::new("git").args(args).current_dir(here).output();
+    let git =
+        |args: &[&str]| afkconvoy::census::command("git").args(args).current_dir(here).output();
     let in_checkout = git(&["rev-parse", "--show-prefix"])
         .is_ok_and(|out| out.status.success() && out.stdout == b"crates/cli/\n");
     if !in_checkout {
@@ -252,7 +260,7 @@ fn a_build_sharing_a_target_directory_says_the_commit_it_is_built_from() {
     let other = tmp.path().join("other");
     let target = tmp.path().join("target");
     let git = |dir: &Path, args: &[&str]| -> String {
-        let out = Command::new("git")
+        let out = afkconvoy::census::command("git")
             .args(args)
             .current_dir(dir)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -305,7 +313,7 @@ fn a_build_sharing_a_target_directory_says_the_commit_it_is_built_from() {
     // What a build in `dir` says, and what it should, with the commit the
     // gate names to it, or none.
     let build = |dir: &Path, commit: Option<&str>| -> (String, String) {
-        let mut cargo = Command::new(env!("CARGO"));
+        let mut cargo = afkconvoy::census::command(env!("CARGO"));
         cargo
             .args(["run", "--quiet", "--manifest-path", "crates/cli/Cargo.toml"])
             .current_dir(dir)
@@ -389,7 +397,7 @@ fn a_workers_build_after_its_candidates_in_its_target_directory_builds_its_own_c
     );
     // What a gate's build in `dir` says, at `commit`, as `./gate.sh` names it.
     let build = |dir: &Path, commit: &str| -> String {
-        let out = Command::new(env!("CARGO"))
+        let out = afkconvoy::census::command(env!("CARGO"))
             .args(["run", "--quiet", "--offline", "-p", "app"])
             .current_dir(dir)
             .env("CARGO_TARGET_DIR", &target)
@@ -414,7 +422,7 @@ fn a_workers_build_after_its_candidates_in_its_target_directory_builds_its_own_c
 /// (sunfmin/control#1114, #838).
 #[test]
 fn every_package_of_the_workspace_is_built_again_at_each_commit_the_gate_names() {
-    let out = Command::new(env!("CARGO"))
+    let out = afkconvoy::census::command(env!("CARGO"))
         .args(["metadata", "--no-deps", "--offline", "--format-version", "1"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()

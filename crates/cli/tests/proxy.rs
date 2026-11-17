@@ -1,6 +1,5 @@
 //! The worker's terminal, rather than the fleet's environment, supplies its
 //! inherited bypasses. Execute the generated line in a real shell too.
-use std::process::Command;
 
 use crate::common::{World, write};
 use afkconvoy_core::{harness::Harness, proxy};
@@ -14,7 +13,7 @@ fn the_worker_shell_extends_both_spellings_and_preserves_every_other_proxy() {
             "printf '%s\\n' \"$no_proxy\" \"$NO_PROXY\" \"$http_proxy\" \"$https_proxy\" \"$all_proxy\"",
             addition,
         );
-        let output = Command::new("/bin/sh")
+        let output = afkconvoy::census::command("/bin/sh")
             .args(["-c", &command])
             .env("no_proxy", "localhost")
             .env("NO_PROXY", "internal")
@@ -31,7 +30,7 @@ fn the_worker_shell_extends_both_spellings_and_preserves_every_other_proxy() {
         );
     }
     let literal = "a'$(exit 7);host";
-    let output = Command::new("/bin/sh")
+    let output = afkconvoy::census::command("/bin/sh")
         .args(["-c", &proxy::line("printf '%s' \"$no_proxy\"", Some(literal))])
         .env_remove("no_proxy")
         .env_remove("NO_PROXY")

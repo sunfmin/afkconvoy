@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -43,12 +43,12 @@ const FAILED_CUT: &str = afkconvoy_core::cut::FAILED_LABEL;
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
 /// What every watch leaves with a human, in either directory: spending
-/// money, and nothing else (docs/adr/0073).
+/// money, and nothing else (docs/adr/0040).
 pub(crate) const HUMAN_KINDS: &str = "- spending money.";
 
 /// What every watch decides itself, by the recommended answer, and how it
 /// records each decision; and how a step only a person can do is listed
-/// without holding the rest back (docs/adr/0073).
+/// without holding the rest back (docs/adr/0040).
 pub(crate) const DECIDES: &str = "\
 Decide everything else by its recommended answer, as the operator would, and act on it:\n\
 what cannot be undone, taking a secret or private data off the host, and changing what a\n\
@@ -226,6 +226,9 @@ struct Queued {
 
 /// Serializes round transitions with the report command. No read/validate/
 /// write race may accept a report after a timeout or against another round.
+/// A lease held across a look or a check, which start and type at Orca
+/// terminals: a kernel lock in the cache directory, not a transaction of the
+/// host's database, which no writer may hold across that work.
 pub(crate) fn state_lock() -> Result<std::fs::File> {
     let path = cache()?.join("watch/state.lock");
     std::fs::create_dir_all(path.parent().expect("watch state parent"))?;
@@ -340,41 +343,33 @@ impl State {
     }
 }
 
+/// The watch's state, whole, in the host's database: the one row of
+/// `watch_state`. It was `watch/state.json` in the cache directory.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: STATE,
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("watch_state"),
+};
+
 fn read() -> Result<State> {
-    let file = cache()?.join(STATE);
-    match std::fs::read(&file) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("cannot read the watch's state {}", file.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-        Err(error) => Err(error.into()),
-    }
+    crate::host_db::read(&STORE).context("cannot read the watch's state")
 }
 
-/// Writes the state compact, and not at all when it is what the file holds
+/// Writes the state, and not at all when it is what the database holds
 /// already: the host runner's steady state costs what changed, not the size
 /// of its record. Only the running round keeps its look; the resident
 /// session, the last round and the history keep what later rounds read from
-/// them, and a round's look is in its brief already.
+/// them, and a round's look is in its brief already. Its writers hold the
+/// state lease (`state_lock`).
 fn write(state: &mut State) -> Result<()> {
     for watch in state.resident.iter_mut().chain(state.last.iter_mut()).chain(&mut state.history) {
         watch.look = Value::Null;
     }
-    let file = cache()?.join(STATE);
-    let bytes = serde_json::to_vec(state)?;
-    match std::fs::read(&file) {
-        Ok(held) if held == bytes => return Ok(()),
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(dir) = file.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-        }
-        Err(error) => return Err(error.into()),
+    let value = serde_json::to_value(&*state)?;
+    if crate::host_db::value(&STORE)?.as_ref() == Some(&value) {
+        return Ok(());
     }
-    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, bytes)?;
-    std::fs::rename(temporary, &file)?;
-    Ok(())
+    crate::host_db::put(&STORE, &value)
 }
 
 /// `afkconvoy daybook --distill`: asks the host's watch to distill the daybook
@@ -427,7 +422,6 @@ pub struct HostWatch {
     thread: Option<std::thread::JoinHandle<()>>,
     sender: Option<std::thread::JoinHandle<()>>,
     asking: Option<std::thread::JoinHandle<()>>,
-    daybook: Option<std::thread::JoinHandle<()>>,
 }
 
 impl HostWatch {
@@ -444,13 +438,6 @@ impl HostWatch {
         let sender = std::thread::spawn(move || {
             crate::watch_notify::run(&sender_ended, panel.as_deref(), |said| {
                 sender_say(What::WatchFailed { said })
-            });
-        });
-        let daybook_ended = Arc::clone(&ended);
-        let daybook_say = Arc::clone(&say);
-        let daybook = std::thread::spawn(move || {
-            crate::watch_daybook::run(&daybook_ended, |said| {
-                daybook_say(What::WatchFailed { said });
             });
         });
         let asking_ended = Arc::clone(&ended);
@@ -472,7 +459,6 @@ impl HostWatch {
             thread: Some(std::thread::spawn(move || watcher.run())),
             sender: Some(sender),
             asking: Some(asking),
-            daybook: Some(daybook),
         }
     }
 }
@@ -488,9 +474,6 @@ impl Drop for HostWatch {
         }
         if let Some(asking) = self.asking.take() {
             let _ = asking.join();
-        }
-        if let Some(daybook) = self.daybook.take() {
-            let _ = daybook.join();
         }
     }
 }
@@ -538,7 +521,8 @@ impl Watcher {
             if checking {
                 next_check = now + CHECK_EVERY;
                 let checked = self.check();
-                self.checking.said(checked, &self.say);
+                let old = crate::watch_daybook::take_in_old_queue();
+                self.checking.said(checked.and(old), &self.say);
             }
             let queued = checking
                 && read().is_ok_and(|s| {
@@ -908,11 +892,11 @@ impl Watcher {
                     said: format!("human decision report not queued: {error:#}"),
                 });
             }
-            // The daybook is written later, by its own thread; a failure to
-            // queue it never holds the round open.
+            // The daybook is written at once; a failure to write it never
+            // holds the round open.
             if let Err(error) = crate::watch_daybook::reported(&watch, &report) {
                 (self.say)(What::WatchFailed {
-                    said: format!("daybook entry not queued: {error:#}"),
+                    said: format!("daybook entry not written: {error:#}"),
                 });
             }
             // Pressure from another account is left with the operator now.
@@ -1292,7 +1276,9 @@ pub(crate) fn stop_marked(identity: &str) -> Result<()> {
         }
         let signal = if began.elapsed() >= Duration::from_secs(1) { "-KILL" } else { "-TERM" };
         for pid in &pids {
-            let _ = crate::process::output(Command::new("kill").args([signal, &pid.to_string()]));
+            let _ = crate::process::output(
+                crate::census::command("kill").args([signal, &pid.to_string()]),
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -1573,12 +1559,12 @@ fn brief(watch: &Watch) -> String {
          `placed`, `settled` and updated doctor answer; record what you placed or settled \
          and what remains unplaced.\n\n\
          ## Distill the daybook's lessons into their lasting homes\n\n\
-         A `{DISTILL}<tracker>:<since>:<until>` item is the week's distillation of that \
-         tracker's daybook; take it after anything holding work up. Read \
+         A `{DISTILL}<since>:<until>` item is the week's distillation of this host's \
+         daybook; take it after anything holding work up. Read \
          `afkconvoy daybook --help`. List the span's lessons with `afkconvoy daybook \
-         --lessons --since <since> --until <until> --tracker <tracker>`, and read the span's \
-         day discussions in the tracker's `Daybook` category for patterns that recur across \
-         entries without a lesson, the same fault twice. Decide each one's lasting home and \
+         --lessons --since <since> --until <until>`, and read the span's entries with \
+         `afkconvoy daybook --read --since <since> --until <until>` for patterns that recur \
+         across entries without a lesson, the same fault twice. Decide each one's lasting home and \
          propose it there through that home's normal path:\n\n\
          - a repeated mistake: first a mechanism — a hook, a gate check, a tool fix — as a \
          ticket to the repo that owns it;\n\
@@ -1594,8 +1580,9 @@ fn brief(watch: &Watch) -> String {
          the home: a lesson its home already holds is `covered`, with a link to where. Keep \
          nothing of your own — no memory, precedent or proposal list: the proposal is the \
          record. Then write a JSON file carrying every lesson of the span exactly once, and \
-         each pattern from its entries, and record the run with `afkconvoy daybook \
-         --distilled <file> --tracker <tracker> --repo <tracker>`: it checks the file against \
+         each pattern from its entries, each entry by its `url`, and record the run with \
+         `afkconvoy daybook --distilled <file>` (`--repo <owner/repo>` where you run in no \
+         checkout): it checks the file against \
          the span and writes the run's one daybook entry mapping each lesson to its outcome. \
          A refusal names what is wrong: correct the file and run it again. The daybook's \
          entries are left to age out.\n\n\
@@ -1692,14 +1679,16 @@ fn answering(look: &Value) -> String {
     let mut lines = vec![];
     for checkout in look["checkouts"].as_array().into_iter().flatten() {
         let doctor = &checkout["doctor"];
+        // Null: the checkout's own repo (`FleetReport`); else a tracker's name.
         let tracker = match &doctor["fleet"]["tracker"] {
             Value::Null => Tracker::Own,
             Value::String(named) => {
-                let Some(tracker) = RepoName::read(named) else { continue };
+                let Some(named) = RepoName::read(named) else { continue };
                 let Some(repo) = checkout["repo"].as_str().and_then(RepoName::read) else {
                     continue;
                 };
-                Tracker::Other { tracker, repo }
+                let host = crate::host_settings::host_name();
+                afkconvoy_core::tracker::Said::named(named, &host).tracker(&host, repo)
             }
             _ => continue,
         };
@@ -1739,7 +1728,7 @@ fn doctor_look(until: Option<u64>, ended: &AtomicBool) -> Result<Value> {
     if let Some(until) = until {
         args.extend(["--since".to_string(), until.to_string()]);
     }
-    let mut child = Command::new(program)
+    let mut child = crate::census::command(program)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1987,8 +1976,8 @@ mod tests {
             |state: &State| -> Vec<Value> { state.history.iter().map(watch_json).collect() };
         let before = digest(&state);
         write(&mut state).unwrap();
-        let file = cache().unwrap().join(STATE);
-        let size = std::fs::metadata(&file).unwrap().len();
+        let file = crate::host_db::path().unwrap();
+        let size = crate::host_db::value(&STORE).unwrap().unwrap().to_string().len();
         assert!(size < 1 << 20, "{size} bytes with {HISTORY} rounds in history");
         let read = read().unwrap();
         assert_eq!(read.running.as_ref().unwrap().look, big, "the running round keeps its look");
@@ -1996,15 +1985,12 @@ mod tests {
         assert!(read.last.as_ref().unwrap().look.is_null());
         assert!(read.history.iter().all(|watch| watch.look.is_null()));
         assert_eq!(digest(&read), before, "doctor's rounds read the same");
-        // Unchanged: the file is not written again.
-        let marked = std::fs::read(&file).unwrap();
-        std::fs::write(&file, &marked).unwrap();
+        // Unchanged: the database is not written again.
         let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
-        let inode = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&file).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let mut again = read;
         write(&mut again).unwrap();
         let after = std::fs::metadata(&file).unwrap();
-        assert_eq!(std::os::unix::fs::MetadataExt::ino(&after), inode, "not replaced");
         assert_eq!(after.modified().unwrap(), modified, "not written");
         // Changed: it is.
         again.looked = Some(7);
@@ -2319,8 +2305,9 @@ mod tests {
                 .fixed("; exec sleep 30")
                 .own()
         );
-        let mut terminal = Command::new("sh").args(["-c", &line]).spawn().unwrap();
-        let mut operator = Command::new("sleep").arg("30").current_dir(dir.path()).spawn().unwrap();
+        let mut terminal = crate::census::command("sh").args(["-c", &line]).spawn().unwrap();
+        let mut operator =
+            crate::census::command("sleep").arg("30").current_dir(dir.path()).spawn().unwrap();
         let deadline = afkconvoy_patience::deadline();
         while !ready.exists() {
             assert!(Instant::now() < deadline, "harness never started");
@@ -2344,13 +2331,16 @@ mod tests {
 
     #[test]
     fn each_waiting_issue_gets_answering_commands_for_its_own_tracker() {
+        let local = afkconvoy_core::tracker::local_name(&crate::host_settings::host_name());
         let look = json!({"checkouts": [
             {"checkout": "/one", "repo": "acme/one", "doctor": {
                 "fleet": {"tracker": "acme/tracker"}, "waiting_on_human": [
                     {"issue": 7, "answer": "afkconvoy rule --issue 7 --text-file <file>"}]}},
             {"checkout": "/two", "repo": "acme/two", "doctor": {
                 "fleet": {"tracker": null}, "waiting_on_human": [
-                    {"issue": 8, "answer": "gh issue edit 8 --add-label ready --remove-label human"}]}}
+                    {"issue": 8, "answer": "gh issue edit 8 --add-label ready --remove-label human"}]}},
+            {"checkout": "/three", "repo": "acme/three", "doctor": {
+                "fleet": {"tracker": local.as_str()}, "waiting_on_human": [{"issue": 9}]}}
         ]});
         let commands = answering(&look);
         for expected in [
@@ -2362,9 +2352,13 @@ mod tests {
             "In `/two`, issue #8:",
             "gh issue close 8 --comment <why>",
             "gh issue edit 8 --add-label ready --remove-label human",
+            &format!("In `/three`, issue {local}#9:"),
+            "afkconvoy issue close 9 --comment <why>",
+            "afkconvoy issue block 9 --by <blocker>",
         ] {
             assert!(commands.contains(expected), "{expected}: {commands}");
         }
+        assert!(!commands.contains("gh issue close 9"), "{commands}");
         assert!(!commands.contains("<n>"));
         assert!(!commands.contains("close 8 --repo acme/tracker"));
     }

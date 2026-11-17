@@ -338,6 +338,6 @@ fn the_help_says_the_rule_as_the_core_has_it() {
 
 /// What the binary prints for `args`, outside any repo.
 fn world_free(args: &[&str]) -> String {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output();
+    let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output();
     String::from_utf8(out.unwrap().stdout).unwrap()
 }

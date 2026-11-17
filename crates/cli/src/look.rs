@@ -1,4 +1,4 @@
-//! A look begins here (docs/adr/0043).
+//! A look begins here.
 //!
 //! A look reads each source once. The mechanics are this module's: a
 //! [`Reading`] is read through one shared cell per key, a second ask waits on

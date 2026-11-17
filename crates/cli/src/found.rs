@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use afkconvoy_core::cut::Held;
 use afkconvoy_core::left::Kept;
 
-use crate::gh::Gone;
+use crate::issues::Gone;
 use crate::log::What;
 
 /// What one step, or the work of a tick before its pass, found.

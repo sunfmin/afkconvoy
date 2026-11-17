@@ -11,7 +11,7 @@
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -88,7 +88,7 @@ pub fn put_back(entry: &Path, path: &Path) -> Result<()> {
 /// on it but a thread reaping it: the deletion is the child's own CPU. A
 /// child that cannot start leaves the entry to the next `sweep`.
 pub fn delete_detached(entry: &Path) {
-    let child = Command::new("nice")
+    let child = crate::census::command("nice")
         .args(["-n", "20", "/bin/sh", "-c", DELETE, "sh"])
         .arg(entry)
         .current_dir("/")
@@ -123,38 +123,36 @@ fn give_write(path: &Path) {
     }
 }
 
-fn known_file() -> Option<PathBuf> {
-    crate::copies::cache().ok().map(|cache| cache.join(KNOWN))
-}
+/// Each trash directory ever used, in the host's database: a row each of
+/// `trash_dirs`. It was `trash-dirs` in the cache directory, a line each.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: KNOWN,
+    old: crate::host_db::Old::Lines,
+    layout: crate::host_db::Layout::Rows("trash_dirs", |dir| dir.as_str().unwrap_or("").into()),
+};
 
-/// The trash directories named in the known file that are still there.
+/// The trash directories known that are still there.
 fn known() -> Vec<PathBuf> {
-    let Some(file) = known_file() else { return Vec::new() };
-    let read = std::fs::read_to_string(file).unwrap_or_default();
-    let mut dirs: Vec<PathBuf> =
-        read.lines().filter(|line| !line.is_empty()).map(PathBuf::from).collect();
+    let mut dirs: Vec<PathBuf> = crate::host_db::read(&STORE).unwrap_or_default();
     dirs.sort();
     dirs.dedup();
     dirs.retain(|dir| dir.is_dir());
     dirs
 }
 
-/// Names `trash` in the known file, where it is not yet. Best effort: a trash
-/// not named there is still deleted by its own child, and is only missed by
-/// a sweep.
+/// Names `trash` among those known, where it is not yet. Best effort: a
+/// trash not named there is still deleted by its own child, and is only
+/// missed by a sweep.
 fn remember(trash: &Path) {
-    use std::io::Write;
-    let Some(file) = known_file() else { return };
-    let line = trash.display().to_string();
-    if std::fs::read_to_string(&file).is_ok_and(|read| read.lines().any(|known| known == line)) {
+    let known: Vec<PathBuf> = crate::host_db::read(&STORE).unwrap_or_default();
+    if known.iter().any(|known| known == trash) {
         return;
     }
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(mut known) = std::fs::OpenOptions::new().create(true).append(true).open(&file) {
-        let _ = writeln!(known, "{line}");
-    }
+    let _ = crate::host_db::change(&STORE, |known: &mut Vec<PathBuf>| {
+        if !known.iter().any(|known| known == trash) {
+            known.push(trash.to_path_buf());
+        }
+    });
 }
 
 #[cfg(test)]

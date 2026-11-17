@@ -9,7 +9,6 @@ use crate::common;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use common::World;
 
@@ -18,7 +17,8 @@ const README: &str = include_str!("../../../README.md");
 
 /// What the binary prints for `args`, which must exit 0 and leave stderr empty.
 fn asked(args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
+    let out =
+        afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
     assert!(out.status.success(), "{args:?} exits 0");
     assert!(out.stderr.is_empty(), "{args:?} prints to stdout only");
     String::from_utf8(out.stdout).unwrap()
@@ -41,7 +41,8 @@ fn land_help_and_a_missing_issue_name_the_same_forms() {
     let forms = "afkconvoy land <n> | afkconvoy land --issue <n>";
     let help = asked(&["land", "--help"]);
     assert!(help.contains(forms), "{help}");
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).arg("land").output().unwrap();
+    let out =
+        afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy")).arg("land").output().unwrap();
     assert!(!out.status.success());
     let said = String::from_utf8(out.stdout).unwrap();
     assert!(said.contains(forms), "{said}");
@@ -69,7 +70,9 @@ fn help_explains_the_idle_wait_and_a_closed_blockers_wake() {
 }
 
 /// The most the index may be: what an agent's harness shows whole, with room.
-const INDEX_MOST: usize = 21 * 1024;
+/// Raised by a quarter KiB for `promote` (sunfmin/control#1308), as `hold`
+/// took a line of the short help.
+const INDEX_MOST: usize = 21 * 1024 + 256;
 
 /// The lines of `text` from the one starting with `from` up to the one
 /// starting with `to`, both left out.
@@ -311,7 +314,9 @@ fn the_manual_holds_the_topics_there_are_and_no_other() {
 
 #[test]
 fn help_refuses_a_name_that_is_neither_a_command_nor_a_topic() {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(["help", "nosuch"]).output();
+    let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
+        .args(["help", "nosuch"])
+        .output();
     let out = out.unwrap();
     assert_eq!(out.status.code(), Some(2));
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -539,6 +544,10 @@ fn flagged(text: &str) -> Vec<(&str, &str)> {
     flagged
 }
 
+/// The verbs of `afkconvoy issue`, each a subcommand of its own.
+const ISSUE_VERBS: [&str; 9] =
+    ["create", "view", "list", "comment", "edit", "close", "reopen", "block", "unblock"];
+
 /// Each way the fleet stops for a human, by the heading `humans` gives it.
 const STOPS: [&str; 5] = [
     "An escalation",
@@ -566,7 +575,12 @@ fn humans_names_for_each_way_the_fleet_stops_a_command_with_the_flags_its_help_g
     let mut seen = 0;
     for (topic, text) in topic_files() {
         for (command, flag) in flagged(&text).into_iter().filter(|(_, flag)| *flag != "--help") {
-            let given = asked(&[command, "-h"]);
+            // `issue` gives its flags on the verb the line names:
+            // `afkconvoy issue close <n> --comment`.
+            let given = match command {
+                "issue" => ISSUE_VERBS.map(|verb| asked(&[command, verb, "-h"])).join("\n"),
+                _ => asked(&[command, "-h"]),
+            };
             let gives = given.split_whitespace().any(|word| word.trim_end_matches(',') == flag);
             assert!(gives, "{topic}: `afkconvoy {command} -h` gives no {flag}");
             seen += 1;
@@ -768,7 +782,8 @@ fn fix_from_usage(usage: &str) -> String {
 /// `(exit, error)` of `args`. A usage refusal is exit 2; a checkout the
 /// command cannot take is exit 1. Stderr stays empty either way.
 fn ran(args: &[&str]) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
+    let out =
+        afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
     assert!(out.stderr.is_empty(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     let error = serde_json::from_str::<serde_json::Value>(&stdout)
@@ -946,7 +961,7 @@ fn the_guide_teaches_the_loop_that_designs_a_team() {
 }
 
 /// One repo for a team and its roles is the layout a new team starts from
-/// (docs/adr/0014): `scaffold` shows it before a role on its own.
+/// (docs/adr/0009): `scaffold` shows it before a role on its own.
 #[test]
 fn scaffold_shows_a_team_and_its_roles_in_one_repo_first() {
     let said = asked(&["scaffold", "--help"]);
@@ -971,7 +986,8 @@ fn the_readme_points_to_the_help_as_the_whole_manual() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 60, "{short}");
+    // A line more for `issue` (docs/adr/0091).
+    assert!(short.lines().count() <= 62, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -1127,11 +1143,13 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     // Nor is opening issues the operator's: whoever has work for the fleet does.
     // Waking the fleet after opening them is theirs too, and a worker's last.
     let hands = group(&long, "Run by whoever hands the fleet work");
-    assert_eq!(hands, ["flows", "wake"]);
+    assert_eq!(hands, ["flows", "issue", "wake"]);
     for command in &hands {
         assert!(who(command).contains("hands the fleet work"), "{command}");
     }
-    assert!(who("wake").contains("worker") && who("wake").contains("in its own worktree"));
+    for command in ["wake", "issue"] {
+        assert!(who(command).contains("worker") && who(command).contains("in its own worktree"));
+    }
     // Nor is giving an agent of one's own the skill file.
     let sets_up = group(&long, "Run by whoever sets an agent up");
     assert_eq!(sets_up, ["skill"]);
@@ -1426,7 +1444,7 @@ fn the_retired_train_commands_and_lanes_are_absent_from_public_help() {
 /// (sunfmin/control#495). The command and its mentions stay gone.
 #[test]
 fn the_removed_no_node_command_is_refused_and_absent_from_the_manual() {
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
+    let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
         .args(["no-node", "--", "true"])
         .output()
         .unwrap();

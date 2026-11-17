@@ -4,7 +4,7 @@
 //! to test (`afkconvoy_core::guard`); here it is what the subcommand answers.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde_json::json;
 
@@ -38,8 +38,13 @@ fn guard_at(
     home: &std::path::Path,
     terminal_only: bool,
 ) -> Answered {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
-    command.arg("guard").env_clear().env("HOME", home).env("XDG_CACHE_HOME", home);
+    let mut command = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"));
+    command
+        .arg("guard")
+        .env_clear()
+        .env("HOME", home)
+        .env("XDG_CACHE_HOME", home)
+        .env("XDG_DATA_HOME", crate::common::data_beside(home));
     if terminal_only {
         command.arg("--terminal-input-only");
     }
@@ -188,6 +193,7 @@ fn a_targeted_worker_cannot_push_either_destination_or_rewrite_its_target_record
         "git push origin HEAD:convoy-target/7",
         "git push origin HEAD:refs/convoy/delivery/abcd",
         "git push origin HEAD:convoy-delivery/abcd",
+        "git push origin HEAD:refs/convoy/delivery-tasks/abcd",
         "git push origin HEAD:refs/convoy/delivery-pr/abcd",
         "git push origin HEAD:convoy-delivery-pr/abcd",
         "git push origin HEAD:refs/convoy/delivery-evidence/abcd",
@@ -338,5 +344,42 @@ fn a_repo_s_heavy_command_is_refused_outside_afkconvoy_exclusive_for_bound_and_u
             let allowed = guard_at(described, &facts, home.path(), terminal_only);
             assert_eq!(allowed.code, 0, "{}", allowed.stderr);
         }
+    }
+}
+
+#[test]
+fn a_worker_of_a_local_tracker_is_refused_gh_issue_and_one_of_a_github_tracker_is_not() {
+    let home = tempfile::tempdir().unwrap();
+    // A worker's worktree, whose git dir keeps the tracker its fleet said as
+    // it started the worker, and the `TMPDIR` link the fleet made to it.
+    let worker = |kept: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let (worktree, git_dir) = (dir.path().join("worktree"), dir.path().join("git"));
+        std::fs::create_dir_all(worktree.join(".afkconvoy-tmp")).unwrap();
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", git_dir.display())).unwrap();
+        std::fs::write(git_dir.join("convoy-worker-tracker"), kept).unwrap();
+        let tmp = dir.path().join("tmp-link");
+        std::os::unix::fs::symlink(worktree.join(".afkconvoy-tmp"), &tmp).unwrap();
+        (dir, tmp)
+    };
+    let call = |line: &str| json!({"tool_name":"Bash", "tool_input":{"command":line}}).to_string();
+    let comment = call("gh issue comment 7 --body done");
+    let (_local, local) = worker("local");
+    let mut facts = FACTS.to_vec();
+    facts.push(("TMPDIR", local.to_str().unwrap()));
+    let refused = guard_at(&comment, &facts, home.path(), false);
+    assert_eq!(refused.code, 2, "{}", refused.stderr);
+    assert!(refused.stderr.contains("local tracker"), "{}", refused.stderr);
+    assert!(refused.stderr.contains("`afkconvoy issue comment`"), "{}", refused.stderr);
+    let instead =
+        guard_at(&call("afkconvoy issue comment 7 --body done"), &facts, home.path(), false);
+    assert_eq!(instead.code, 0, "{}", instead.stderr);
+    for kept in ["acme/tracker", ""] {
+        let (_github, github) = worker(kept);
+        let mut facts = FACTS.to_vec();
+        facts.push(("TMPDIR", github.to_str().unwrap()));
+        let allowed = guard_at(&comment, &facts, home.path(), false);
+        assert_eq!(allowed.code, 0, "{kept}: {}", allowed.stderr);
     }
 }

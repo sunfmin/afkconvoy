@@ -5,7 +5,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
@@ -53,12 +52,15 @@ impl Local {
     /// Host settings that say the busy share `share`, beside an old count
     /// of worker lanes, which reads and counts for nothing (docs/adr/0088).
     fn settings(&self, share: u64) {
-        std::fs::write(
-            self.cache().join("checkouts.json"),
-            json!({"settings": {"busy_share": share, "gate_lanes": 3}, "checkouts": []})
-                .to_string(),
-        )
-        .unwrap();
+        self.keep(json!({"settings": {"busy_share": share, "gate_lanes": 3}, "checkouts": []}));
+    }
+
+    /// Makes the host's checkout list `listed`, through its store in the
+    /// host's database.
+    fn keep(&self, listed: Value) {
+        let data = crate::common::data_beside(self.root.path().join("cache"));
+        let db = data.join("afkconvoy").join(afkconvoy::host_db::FILE);
+        afkconvoy::host_db::keep(&db, "checkouts.json", &listed).unwrap();
     }
 
     fn serve(&self, reply: impl FnOnce(UnixStream) + Send + 'static) -> Receiver<Value> {
@@ -82,9 +84,10 @@ impl Local {
 
     fn query(&self) -> (i32, Value) {
         let before = files(self.root.path());
-        let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
+        let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
             .env_clear()
             .env("XDG_CACHE_HOME", self.root.path().join("cache"))
+            .env("XDG_DATA_HOME", crate::common::data_beside(self.root.path().join("cache")))
             .env("HOME", self.root.path())
             .env("PATH", self.root.path().join("bin"))
             .env("CALLED", self.root.path().join("called"))
@@ -424,10 +427,10 @@ fn failed_or_unsupported_observations_never_fabricate_an_empty_queue() {
         assert!(answer["error"].as_str().unwrap().contains("retry `afkconvoy queue`"));
     }
     let local = Local::new();
-    std::fs::write(local.cache().join("checkouts.json"), "unreadable settings").unwrap();
+    local.keep(json!({"settings": {"busy_share": "unreadable"}}));
     let (code, answer) = local.query();
     assert_ne!(code, 0, "{answer}");
-    assert!(answer["error"].as_str().unwrap().contains("checkouts.json"));
+    assert!(answer["error"].as_str().unwrap().contains("checkout list"), "{answer}");
     let local = Local::new();
     std::fs::create_dir(local.cache().join("host-runner.sock")).unwrap();
     assert_ne!(local.query().0, 0, "an inaccessible socket is not an absent runner");
@@ -506,7 +509,10 @@ fn the_real_scheduler_admits_another_repo_while_a_same_repo_waits_with_room() {
 #[test]
 fn queue_is_discoverable_in_operator_help_and_its_contract_is_complete() {
     let help = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output().unwrap();
+        let out = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"))
+            .args(args)
+            .output()
+            .unwrap();
         assert!(out.status.success());
         String::from_utf8(out.stdout).unwrap()
     };

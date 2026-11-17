@@ -45,12 +45,20 @@ fn first_task_lands_only_on_delivery_and_opens_one_human_owned_draft() {
     assert!(delivery["final_pr"]["pending"].as_str().unwrap().contains("no meaningful diff"));
     let branch = delivery["branch"].as_str().unwrap();
     assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), main);
+    // The delivery's one task record names the task; it stores a reference,
+    // not branch settings, and no ref of the task's own is written.
+    let id = delivery["delivery"].as_str().unwrap();
+    let tasks = format!("refs/convoy/delivery-tasks/{id}");
     let record: Value =
-        serde_json::from_str(&world.remote(&["show", "-s", "--format=%s", "refs/convoy/target/7"]))
-            .unwrap();
-    assert!(record.get("branch").is_none(), "child stores a reference, not branch settings");
-    assert_eq!(record["delivery"]["identity"], delivery["delivery"]);
-    assert!(record["delivery"]["record"].is_string());
+        serde_json::from_str(&world.remote(&["show", "-s", "--format=%s", &tasks])).unwrap();
+    assert_eq!(record["tasks"], json!(["#7"]));
+    assert_eq!(
+        record["record"],
+        world.remote(&["rev-parse", &format!("refs/convoy/delivery/{id}")])
+    );
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty()
+    );
     let started = world
         .afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
         .ok();
@@ -340,15 +348,11 @@ fn branch_layout_and_separate_tracker_keep_one_authoritative_delivery() {
     let delivery = create(&world, Some("7"));
     assert_eq!(delivery["tasks"], json!(["acme/tracker#7"]));
     assert!(delivery["record"].as_str().unwrap().starts_with("refs/heads/convoy-delivery/"));
-    let target: Value = serde_json::from_str(&world.remote(&[
-        "show",
-        "-s",
-        "--format=%s",
-        "refs/heads/convoy-target/acme/tracker/7",
-    ]))
-    .unwrap();
-    assert_eq!(target["delivery"]["identity"], delivery["delivery"]);
-    assert!(target.get("branch").is_none());
+    let tasks =
+        format!("refs/heads/convoy-delivery-tasks/{}", delivery["delivery"].as_str().unwrap());
+    let tasks: Value =
+        serde_json::from_str(&world.remote(&["show", "-s", "--format=%s", &tasks])).unwrap();
+    assert_eq!(tasks["tasks"], json!(["acme/tracker#7"]));
     let read = world.afk(&["target", "--issue", "7"]).ok();
     assert_eq!(read["target_branch"], delivery["branch"]);
     git(
@@ -478,7 +482,7 @@ fn discussion_creation_reconstructs_three_tasks_and_lands_only_on_their_two_deli
         assert_eq!(landed["target_branch"], branch);
         assert_eq!(world.remote(&["show", &format!("refs/heads/{branch}:{file}")]), number);
         let other = if at < 2 { &second } else { &first };
-        let absent = std::process::Command::new("git")
+        let absent = afkconvoy::census::command("git")
             .args([
                 "--git-dir",
                 world.bare.to_str().unwrap(),

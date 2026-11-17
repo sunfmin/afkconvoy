@@ -123,19 +123,16 @@ fn a_claim_is_never_on_the_remote_ahead_of_its_owners_heartbeat() {
     let world = World::new();
     world.watch_pushes(None);
     claim(&world, "7", "alpha", "1000");
-    assert_eq!(world.pushes(), ["refs/convoy/target/7", "refs/convoy/heartbeat/alpha", CLAIM_7]);
+    assert_eq!(world.pushes(), ["refs/convoy/heartbeat/alpha", CLAIM_7]);
     assert_eq!(world.afk(&["scan"]).ok()["heartbeats"], json!({"alpha": 1000}));
 
     // not due: a third of the lease has not passed
     claim(&world, "8", "alpha", &(1000 + BEAT_EVERY).to_string());
-    assert_eq!(world.pushes().len(), 5, "{:?}", world.pushes());
+    assert_eq!(world.pushes().len(), 3, "{:?}", world.pushes());
     // due again
     let due = 1001 + BEAT_EVERY;
     claim(&world, "9", "alpha", &due.to_string());
-    assert_eq!(
-        world.pushes()[5..],
-        ["refs/convoy/target/9", "refs/convoy/heartbeat/alpha", "refs/convoy/claim/9"]
-    );
+    assert_eq!(world.pushes()[3..], ["refs/convoy/heartbeat/alpha", "refs/convoy/claim/9"]);
     assert_eq!(world.afk(&["scan"]).ok()["heartbeats"], json!({"alpha": due}));
 }
 

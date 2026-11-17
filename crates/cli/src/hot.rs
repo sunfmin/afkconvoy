@@ -22,14 +22,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::hot::{
-    CPU_HELD, Episode, Limits, SAMPLE_EVERY, STALL_HELD, Sample, Turned, WRITTEN_WITHIN, Watch,
-    Why, millicores,
+    CPU_HELD, Episode, Limits, ORPHAN_AFTER, SAMPLE_EVERY, STALL_HELD, Sample, Turned,
+    WRITTEN_WITHIN, Watch, Why, millicores,
 };
 use afkconvoy_core::landing::{Built, OUTGROWN_FLOOR, OUTGROWN_TIMES};
 use serde::{Deserialize, Serialize};
@@ -53,12 +52,13 @@ const LISTED_FOR: u32 = 6;
 const RESIDENT_KEPT: usize = 30;
 
 /// What the host says of the limits, where it says any: its host settings
-/// `--hot-cores`, `--hot-memory` and `--hot-written`, in bytes.
+/// `--hot-cores`, `--hot-memory`, `--hot-written` and `--hot-spawns`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Said {
     pub millicores: Option<u64>,
     pub resident: Option<u64>,
     pub written: Option<u64>,
+    pub spawns: Option<u64>,
 }
 
 /// The limits on this host for the fleet of the checkout `dir`: its shares
@@ -80,6 +80,7 @@ pub fn limits_from(said: Said, cores: u64, memory: Option<u64>, disk: Option<u64
         millicores: said.millicores.unwrap_or(shares.millicores),
         resident: said.resident.unwrap_or(shares.resident),
         written: said.written.unwrap_or(shares.written),
+        spawns: said.spawns.unwrap_or(shares.spawns),
     }
 }
 
@@ -162,7 +163,7 @@ pub(crate) fn working_directories_of(procs: &[Proc]) -> Vec<PathBuf> {
 /// working in the worktree. Nothing is left to resume one: it stays stopped
 /// for good, and a SIGTERM to it stays pending (sunfmin/control#837).
 pub(crate) fn stopped_orphans(procs: &[Proc], worktree: &Path) -> anyhow::Result<Vec<u32>> {
-    let out = crate::process::output(Command::new("ps").args(["-axo", "pid=,stat="]))?;
+    let out = crate::process::output(crate::census::command("ps").args(["-axo", "pid=,stat="]))?;
     anyhow::ensure!(out.status.success(), "cannot read which processes are stopped: ps failed");
     let stopped: HashSet<u32> = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -235,7 +236,7 @@ pub fn memory() -> Option<u64> {
 }
 
 fn sysctl(name: &str) -> Option<u64> {
-    let out = crate::process::output(Command::new("sysctl").args(["-n", name])).ok()?;
+    let out = crate::process::output(crate::census::command("sysctl").args(["-n", name])).ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
@@ -273,7 +274,7 @@ pub(crate) struct Proc {
     /// The CPU it has taken since it started, in milliseconds.
     pub(crate) cpu_ms: u64,
     /// The share of a core it takes now, as `ps` says it, in hundredths of
-    /// a percent: what admission apportions the load by (docs/adr/0050).
+    /// a percent: what admission apportions the load by (docs/adr/0107).
     pub(crate) cpu_share: u64,
     /// The bytes it has written to disk since it started.
     pub(crate) written: u64,
@@ -301,7 +302,7 @@ pub(crate) fn listed() -> Vec<Proc> {
 
 /// A failed observation must never certify that an old writer is gone.
 pub(crate) fn listed_checked() -> anyhow::Result<Vec<Proc>> {
-    let out = crate::process::output(Command::new("ps").args([
+    let out = crate::process::output(crate::census::command("ps").args([
         "axeww",
         "-o",
         "pid=,ppid=,pcpu=,rss=,time=,command=",
@@ -468,7 +469,7 @@ pub(crate) fn on_terminals() -> anyhow::Result<Vec<Proc>> {
 /// queue's share of the CPU by, every few seconds while it runs
 /// (`queue_share`). Errors: `ps` failed, or listed nothing.
 pub(crate) fn cpu_table() -> anyhow::Result<Vec<Proc>> {
-    let out = crate::process::output(Command::new("ps").args([
+    let out = crate::process::output(crate::census::command("ps").args([
         "ax",
         "-o",
         "pid=,ppid=,pcpu=,rss=,time=,comm=",
@@ -632,6 +633,77 @@ struct Watched {
     resident: VecDeque<(u64, u64)>,
     /// Its stall, as last found: `None` where none was.
     stall: Option<Stall>,
+    /// What each of the last `SPAWN_SAMPLES` samples found of process
+    /// creation (`Created`), oldest first.
+    created: VecDeque<Created>,
+    /// The commands that created the processes each of the last samples
+    /// found, by how many each: what its issue names (`spawners_of`).
+    spawners: VecDeque<Vec<(String, u64)>>,
+    /// Each process a command of it left behind (`orphans`), by when it was
+    /// first seen so, and whether it has been told to end.
+    orphans: BTreeMap<u32, Orphan>,
+}
+
+/// How many samples a worker's share of the host's process creation is read
+/// over: the span it must be held for, `CPU_HELD`. A process that lives ten
+/// milliseconds is on the list of one sample in a few: the share is of what
+/// those samples found together.
+const SPAWN_SAMPLES: usize = (CPU_HELD / SAMPLE_EVERY) as usize;
+
+/// What one sample found of process creation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Created {
+    /// The processes the host created since the sample before, by its
+    /// counter.
+    host: u64,
+    /// The processes of the host that were created then and are still here,
+    /// and those of them that are the worker's.
+    alive: u64,
+    mine: u64,
+    /// The milliseconds the sample took in.
+    wall_ms: u64,
+}
+
+/// A process a command of a worker left behind: handed to pid 1, working in
+/// its worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Orphan {
+    since: u64,
+    /// When it was told to end, where it was.
+    told: Option<u64>,
+}
+
+/// The processes a second a worker created, from what the last samples found
+/// of it: the host's creation over the time they took, by the share of the
+/// processes created in it and still here that were the worker's. `None`:
+/// no sample found a process created in it, or the time is none.
+fn spawn_rate(window: &VecDeque<Created>) -> Option<u64> {
+    let (host, alive, mine, wall_ms) = window.iter().fold((0u64, 0u64, 0u64, 0u64), |sum, c| {
+        (sum.0 + c.host, sum.1 + c.alive, sum.2 + c.mine, sum.3 + c.wall_ms)
+    });
+    if alive == 0 || wall_ms == 0 {
+        return None;
+    }
+    let made = host as f64 * mine as f64 / alive as f64;
+    Some((made * 1000.0 / wall_ms as f64).round() as u64)
+}
+
+/// A process's command, without its environment: the words of its line up
+/// to the first that names a variable, cut to 160 characters.
+fn command_of(proc: &Proc) -> String {
+    let words: Vec<&str> = proc
+        .line
+        .split(' ')
+        .take_while(|word| {
+            !word.split_once('=').is_some_and(|(name, _)| {
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            })
+        })
+        .collect();
+    words.join(" ").chars().take(160).collect()
 }
 
 impl Watched {
@@ -646,6 +718,9 @@ impl Watched {
             hottest: None,
             resident: VecDeque::new(),
             stall: None,
+            created: VecDeque::new(),
+            spawners: VecDeque::new(),
+            orphans: BTreeMap::new(),
         }
     }
 }
@@ -711,6 +786,8 @@ fn known(watched: &Watched, episode: &Episode, limits: &Limits) -> Taken {
         hottest: watched.hottest,
         resident: watched.resident.iter().copied().collect(),
         stall: watched.stall.as_ref().filter(|_| episode.why == Why::Stalled).map(Stall::said),
+        spawns: (episode.why == Why::Spawns)
+            .then(|| (episode.spawns, spawners_of(&watched.spawners))),
         issue: watched.issue,
     }
 }
@@ -741,6 +818,146 @@ struct Sampler {
     resumed: BTreeMap<PathBuf, Watch>,
     /// Since when each process of the workers has been idle.
     idle: Idle,
+    /// The host's process id counter at the sample before.
+    counter: Option<afkconvoy_host_reading::spawn::Counter>,
+}
+
+/// What one sample of the workers found.
+struct Found {
+    /// Each worker that turned hot or stopped being hot, as a line of the log.
+    turned: Vec<What>,
+    /// What is to be taken down of each worker that turned hot.
+    hot_now: Vec<(Worktree, Taken)>,
+    /// The processes a worker's commands left behind that were told to end:
+    /// the worker, its issue, and each process in words.
+    ended: Vec<(String, Option<u64>, Vec<String>)>,
+}
+
+/// What one sample found of the creation of the processes `counted` of one
+/// worker among all `procs`, the host's counter read `(before, now)`.
+fn created(
+    procs: &[Proc],
+    counted: &[&Proc],
+    (before, now): (afkconvoy_host_reading::spawn::Counter, afkconvoy_host_reading::spawn::Counter),
+    wall_ms: u64,
+) -> Created {
+    let new = |proc: &Proc| now.made_since(before, u64::from(proc.pid));
+    Created {
+        host: now.since(before),
+        alive: procs.iter().filter(|proc| new(proc)).count() as u64,
+        mine: counted.iter().filter(|proc| new(proc)).count() as u64,
+        wall_ms,
+    }
+}
+
+/// The commands that created the processes `counted` of a worker found new
+/// since `before` — each one's parent, which made it — by how many each
+/// made, the most first.
+fn spawners(
+    procs: &[Proc],
+    counted: &[&Proc],
+    (before, now): (afkconvoy_host_reading::spawn::Counter, afkconvoy_host_reading::spawn::Counter),
+) -> Vec<(String, u64)> {
+    let by_pid: HashMap<u32, &Proc> = procs.iter().map(|proc| (proc.pid, proc)).collect();
+    let mut made: BTreeMap<String, u64> = BTreeMap::new();
+    for proc in counted.iter().filter(|proc| now.made_since(before, u64::from(proc.pid))) {
+        let parent = by_pid.get(&proc.ppid).map_or_else(|| command_of(proc), |p| command_of(p));
+        *made.entry(parent).or_default() += 1;
+    }
+    let mut made: Vec<(String, u64)> = made.into_iter().collect();
+    made.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    made.truncate(5);
+    made
+}
+
+/// What the last samples found of the commands that created a worker's
+/// processes, together: the five that made the most.
+fn spawners_of(samples: &VecDeque<Vec<(String, u64)>>) -> Vec<(String, u64)> {
+    let mut made: BTreeMap<&str, u64> = BTreeMap::new();
+    for (command, count) in samples.iter().flatten() {
+        *made.entry(command).or_default() += count;
+    }
+    let mut made: Vec<(String, u64)> =
+        made.into_iter().map(|(command, count)| (command.to_string(), count)).collect();
+    made.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    made.truncate(5);
+    made
+}
+
+/// The processes working in the worktree `worktree` that were handed to
+/// pid 1, and every process under one, but those under an exclusive command
+/// and servers shared by the host (`shared`, which work outside it): what a
+/// command of the worker left behind.
+pub(crate) fn orphans_of<'a>(
+    procs: &'a [Proc],
+    worktree: &Path,
+    exclusive: &BTreeSet<u32>,
+) -> Vec<&'a Proc> {
+    let mut found: Vec<&Proc> = procs
+        .iter()
+        .filter(|proc| {
+            proc.ppid == 1
+                && !exclusive.contains(&proc.pid)
+                && proc
+                    .cwd
+                    .as_ref()
+                    .is_some_and(|cwd| occupies(std::slice::from_ref(cwd), worktree))
+        })
+        .collect();
+    let mut seen: HashSet<u32> = found.iter().map(|proc| proc.pid).collect();
+    let mut next = 0;
+    while next < found.len() {
+        let pid = found[next].pid;
+        next += 1;
+        for child in procs.iter().filter(|proc| proc.ppid == pid) {
+            if seen.insert(child.pid) {
+                found.push(child);
+            }
+        }
+    }
+    found
+}
+
+/// Ends the orphans of a worker that have outlived the command they came from
+/// by `ORPHAN_AFTER`, as `at` finds them: SIGTERM, with SIGCONT so that it is
+/// delivered, then SIGKILL at the next sample for one still here. → each one
+/// told to end, in words, for its issue.
+fn end_orphans(
+    watched: &mut Watched,
+    procs: &[Proc],
+    orphans: &[&Proc],
+    at: u64,
+) -> Option<Vec<String>> {
+    let here: HashSet<u32> = orphans.iter().map(|proc| proc.pid).collect();
+    watched.orphans.retain(|pid, _| here.contains(pid));
+    let mut ended = vec![];
+    for proc in orphans {
+        let record = watched.orphans.entry(proc.pid).or_insert(Orphan { since: at, told: None });
+        if at.saturating_sub(record.since) < ORPHAN_AFTER {
+            continue;
+        }
+        match record.told {
+            None => {
+                signal(proc.pid, libc::SIGTERM);
+                signal(proc.pid, libc::SIGCONT);
+                record.told = Some(at);
+                ended.push(format!(
+                    "pid {} (under pid 1 for {}s): `{}`",
+                    proc.pid,
+                    at.saturating_sub(record.since),
+                    command_of(proc)
+                ));
+            }
+            Some(_) => signal(proc.pid, libc::SIGKILL),
+        }
+    }
+    let _ = procs;
+    (!ended.is_empty()).then_some(ended)
+}
+
+fn signal(pid: u32, signal: libc::c_int) {
+    // SAFETY: `kill` takes a pid and a signal and touches no memory.
+    unsafe { libc::kill(pid as libc::pid_t, signal) };
 }
 
 impl Sampler {
@@ -757,7 +974,7 @@ impl Sampler {
         every: u64,
         wall_ms: u64,
         (queue, pressure): (&[Ticket], Option<u64>),
-    ) -> (Vec<What>, Vec<(Worktree, Taken)>) {
+    ) -> Found {
         let measuring = self.samples.is_multiple_of(LISTED_FOR);
         if measuring {
             // One orca could not answer leaves the workers as they were.
@@ -792,10 +1009,14 @@ impl Sampler {
         // and each one's writes read, only for a worker's tree. A fleet with
         // none listed them every sample, 116 ms of CPU each on a host of
         // 2,150 processes (sunfmin/control#1229).
+        let counter =
+            if self.listed.is_empty() { None } else { afkconvoy_host_reading::spawn::counter() };
         let procs = if self.listed.is_empty() { vec![] } else { processes() };
+        let before_counter = std::mem::replace(&mut self.counter, counter);
         let exclusive = crate::exclusive::running_work(queue, &procs).pids;
         let mut taken = vec![];
         let mut hot_now = vec![];
+        let mut ended = vec![];
         let trees: Vec<Vec<&Proc>> =
             self.listed.iter().map(|(path, ..)| tree(&procs, path)).collect();
         let worker_of: HashMap<u32, String> = (self.listed.iter().zip(&trees))
@@ -813,6 +1034,26 @@ impl Sampler {
             let idle: Vec<u32> =
                 tree.iter().map(|proc| proc.pid).filter(|pid| self.idle.held(*pid, at)).collect();
             watched.stall = stall::of(&idle, &self.idle, &procs, &worker_of, at);
+            let orphaned = orphans_of(&procs, path, &exclusive);
+            let counted: Vec<&Proc> = {
+                let mut counted = tree.clone();
+                let seen: HashSet<u32> = counted.iter().map(|proc| proc.pid).collect();
+                counted.extend(orphaned.iter().filter(|proc| !seen.contains(&proc.pid)));
+                counted
+            };
+            if let (Some(now), Some(then)) = (counter, before_counter) {
+                watched.created.push_back(created(&procs, &counted, (then, now), wall_ms));
+                if watched.created.len() > SPAWN_SAMPLES {
+                    watched.created.pop_front();
+                }
+                watched.spawners.push_back(spawners(&procs, &counted, (then, now)));
+                if watched.spawners.len() > SPAWN_SAMPLES {
+                    watched.spawners.pop_front();
+                }
+            }
+            if let Some(line) = end_orphans(watched, &procs, &orphaned, at) {
+                ended.push((watched.worker.clone(), watched.issue, line));
+            }
             let took = took(watched, tree, &exclusive);
             watched.resident.push_back((at, took.resident));
             if watched.resident.len() > RESIDENT_KEPT {
@@ -829,6 +1070,7 @@ impl Sampler {
                 exclusive: took.exclusive,
                 pressure,
                 written: took.written,
+                spawns: spawn_rate(&self.watched[&path].created),
                 held,
                 stalled,
             };
@@ -845,7 +1087,7 @@ impl Sampler {
                 None => {}
             }
         }
-        (turned, hot_now)
+        Found { turned, hot_now, ended }
     }
 
     /// The workers hot now.
@@ -875,6 +1117,9 @@ pub fn cores(millicores: u64) -> String {
 pub fn why_said(why: Why, limits: &Limits) -> String {
     let past = match why {
         Why::Cpu => format!("past {} for {}s", cores(limits.millicores), CPU_HELD),
+        Why::Spawns => {
+            format!("past {} processes created a second for {}s", limits.spawns, CPU_HELD)
+        }
         Why::Memory => format!("past {} resident", measure::said(limits.resident)),
         Why::Written => format!(
             "past {} written in {} minutes",
@@ -930,7 +1175,7 @@ fn cooled(worker: String, episode: &Episode, gone: bool) -> What {
 }
 
 /// Names a stalled worker's stall, with the holders of the locks it waits
-/// on, on its issue (docs/adr/0088): nothing else ends a deadlock, and its
+/// on, on its issue (docs/adr/0082): nothing else ends a deadlock, and its
 /// worker cannot see it. A worker turned hot for anything else, or linked to
 /// no issue, is named nowhere.
 fn name_stall(repo: &Repo, taken: &Taken) -> anyhow::Result<()> {
@@ -938,9 +1183,48 @@ fn name_stall(repo: &Repo, taken: &Taken) -> anyhow::Result<()> {
     let body = format!(
         "**afkconvoy** — this worker's build is stalled: {stall}.\n\n\
          Nothing releases these locks: end the stalled processes (SIGTERM) so their \
-         builds run again (docs/adr/0088)."
+         builds run again (docs/adr/0082)."
     );
-    crate::gh::GitHub::of(repo)?.comment(issue, &body)
+    crate::issues::of(&crate::gh::GitHub::of(repo)?).comment(issue, &body)
+}
+
+/// Names the process creation rate of a worker that turned hot for it, and
+/// the commands that made the processes, on its issue (sunfmin/control#1319):
+/// what it costs is paid in the kernel and in daemons outside its tree, and
+/// nothing else shows who spends it. A worker turned hot for anything else,
+/// or linked to no issue, is named nowhere.
+fn name_spawns(repo: &Repo, taken: &Taken) -> anyhow::Result<()> {
+    let (Some((rate, commands)), Some(issue)) = (&taken.spawns, taken.issue) else {
+        return Ok(());
+    };
+    let mut body = format!(
+        "**afkconvoy** — this worker's processes create about {rate} processes a second, held \
+         for {CPU_HELD}s: process creation is paid in the kernel and in the system daemons each \
+         exec wakes, and every command waits on the exclusive queue while it lasts \
+         (sunfmin/control#1319).\n\nThe commands that created them:\n"
+    );
+    if commands.is_empty() {
+        body.push_str("\n- (none found alive in the last two minutes of samples)");
+    }
+    for (command, made) in commands {
+        body += &format!("\n- `{command}`: {made} found alive in the last two minutes of samples");
+    }
+    crate::issues::of(&crate::gh::GitHub::of(repo)?).comment(issue, &body)
+}
+
+/// Names the processes a worker's commands left behind and that were told to
+/// end, on its issue.
+fn name_orphans(repo: &Repo, issue: Option<u64>, ended: &[String]) -> anyhow::Result<()> {
+    let Some(issue) = issue else { return Ok(()) };
+    let mut body = format!(
+        "**afkconvoy** — processes a command of this worker left behind, handed to pid 1 and \
+         still working in its worktree after {ORPHAN_AFTER}s, were told to end (SIGTERM, then \
+         SIGKILL at the next sample):\n"
+    );
+    for one in ended {
+        body += &format!("\n- {one}");
+    }
+    crate::issues::of(&crate::gh::GitHub::of(repo)?).comment(issue, &body)
 }
 
 /// Who hears what a watcher finds (`watch`): its fleet instance.
@@ -985,6 +1269,7 @@ pub fn watch(
         )
         .unwrap_or_default(),
         idle: Idle::default(),
+        counter: None,
     };
     std::thread::spawn(move || {
         let started = (clock(), Instant::now());
@@ -1016,8 +1301,21 @@ pub fn watch(
             // A queue that cannot be read leaves every process counted.
             let tickets = queue.observation().map_or_else(|_| vec![], |(tickets, _)| tickets);
             let pressure = crate::resources::pressure_level();
-            let (turned, to_take) =
+            let Found { turned, hot_now: to_take, ended } =
                 sampler.sample(source, at, SAMPLE_EVERY, wall_ms, (&tickets, pressure));
+            for (worker, issue, ended) in ended {
+                hears.turned(at, What::Orphans { worker: worker.clone(), ended: ended.clone() });
+                let (waker, hears) = (waker.clone(), Arc::clone(&hears));
+                let repo = Repo::new(repo.dir.clone());
+                std::thread::spawn(move || {
+                    if let Err(error) = name_orphans(&repo, issue, &ended) {
+                        hears.warn(&format!(
+                            "{worker}'s orphans were not named on its issue: {error:#}"
+                        ));
+                    }
+                    waker.wake();
+                });
+            }
             for turned in turned {
                 hears.turned(at, turned);
             }
@@ -1029,6 +1327,12 @@ pub fn watch(
                         let worker = &taken.worker;
                         hears.warn(&format!(
                             "what shows {worker} hot was not taken down: {error:#}"
+                        ));
+                    }
+                    if let Err(error) = name_spawns(&repo, &taken) {
+                        let worker = &taken.worker;
+                        hears.warn(&format!(
+                            "{worker}'s process creation was not named on its issue: {error:#}"
                         ));
                     }
                     if let Err(error) = name_stall(&repo, &taken) {
@@ -1263,7 +1567,7 @@ mod tests {
     #[test]
     fn what_a_hot_worker_took_is_said_by_which_of_what_is_watched() {
         assert_eq!(cores(2500), "2.5 cores");
-        let limits = Limits { millicores: 4000, resident: 8 << 30, written: 20 << 30 };
+        let limits = Limits { millicores: 4000, resident: 8 << 30, written: 20 << 30, spawns: 300 };
         assert_eq!(why_said(Why::Cpu, &limits), "CPU: past 4.0 cores for 120s");
         assert_eq!(why_said(Why::Memory, &limits), "memory: past 8.0 GiB resident");
         assert_eq!(
@@ -1278,6 +1582,7 @@ mod tests {
             since: 0,
             why: Why::Cpu,
             millicores: 6200,
+            spawns: 0,
             resident: 3 << 29,
             written: 300 << 20,
             held: 0,
@@ -1319,8 +1624,10 @@ mod tests {
     fn a_worktree_is_measured_only_once_its_fresh_build_is_on_record() {
         let dir = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            let ok = crate::process::output(Command::new("git").args(args).current_dir(dir.path()))
-                .unwrap();
+            let ok = crate::process::output(
+                crate::census::command("git").args(args).current_dir(dir.path()),
+            )
+            .unwrap();
             assert!(ok.status.success(), "{ok:?}");
         };
         git(&["init", "--quiet"]);
@@ -1332,5 +1639,162 @@ mod tests {
         assert_eq!(held(dir.path()), None, "no fresh build on record");
         measure::record_fresh(&Repo::new(dir.path().to_path_buf()), 1000).unwrap();
         assert_eq!(held(dir.path()), Some(Built { built: 3000, fresh: Some(1000) }));
+    }
+
+    /// A worktree of the tests' own, with a `TMPDIR` of its own.
+    fn world() -> (tempfile::TempDir, PathBuf, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().canonicalize().unwrap();
+        let tmp = worker_tmp::of(&worktree);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = tmp.display().to_string();
+        (dir, worktree, tmp)
+    }
+
+    /// The loop of the fixture below, run as a process of its own: `sleep
+    /// 0.01`, over and over, for a minute at the most.
+    #[test]
+    #[ignore = "a fixture of another test, run as a process of its own"]
+    fn fixture_spinning_sleeps() {
+        let until = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < until {
+            let _ = crate::census::command("sleep").arg("0.01").status();
+        }
+    }
+
+    /// A fixture spinning `sleep 0.01` under a worker creates processes at
+    /// a rate that turns it hot (sunfmin/control#1319).
+    #[test]
+    fn a_worker_spinning_sleeps_is_hot_by_its_rate_of_process_creation() {
+        use afkconvoy_host_reading::spawn::counter;
+        let (_dir, worktree, tmp) = world();
+        // A system binary's environment is not readable (SIP): the worker's
+        // own process, this test binary running the loop below, is.
+        /// Ends the fixture however the test ends: a spinner left behind is
+        /// the very thing this is about.
+        struct Spinner(std::process::Child);
+        impl Drop for Spinner {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let spinner = crate::census::command(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "hot::tests::fixture_spinning_sleeps"])
+            .current_dir(&worktree)
+            .env("TMPDIR", &tmp)
+            .spawn()
+            .unwrap();
+        let spinner = Spinner(spinner);
+        let mut watched =
+            Watched::new("#1".into(), Worktree::at(worktree.clone(), "b".into()), None);
+        let mut before = counter().unwrap();
+        let started = Instant::now();
+        let mut spinner_says = String::new();
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(100));
+            let now = counter().unwrap();
+            let procs = listed();
+            let mine = tree(&procs, &worktree);
+            let found = mine.iter().find(|proc| proc.pid == spinner.0.id());
+            spinner_says = command_of(found.unwrap_or_else(|| panic!("{mine:?}")));
+            watched.created.push_back(created(&procs, &mine, (before, now), 100));
+            watched.spawners.push_back(spawners(&procs, &mine, (before, now)));
+            before = now;
+        }
+        let rate = spawn_rate(&watched.created).expect("processes were created and found");
+        let seconds = started.elapsed().as_secs_f64();
+        drop(spinner);
+        assert!(rate >= 15, "{rate} processes a second over {seconds}s");
+        assert!(
+            spawners_of(&watched.spawners).iter().any(|(command, _)| *command == spinner_says),
+            "{:?}",
+            watched.spawners
+        );
+        // held for two minutes, past the bound, it is hot by it
+        let limits = Limits { millicores: 4000, resident: 8 << 30, written: 20 << 30, spawns: 5 };
+        let mut turned = None;
+        for at in (1000..=1000 + CPU_HELD + SAMPLE_EVERY).step_by(SAMPLE_EVERY as usize) {
+            let sample = Sample {
+                at,
+                millicores: Some(0),
+                resident: 0,
+                exclusive: 0,
+                pressure: None,
+                written: Some(0),
+                spawns: Some(rate),
+                held: None,
+                stalled: false,
+            };
+            turned = turned.or(watched.watch.sampled(&sample, &limits, SAMPLE_EVERY));
+        }
+        let Some(Turned::Hot(episode)) = turned else { panic!("{turned:?}") };
+        assert_eq!(episode.why, Why::Spawns);
+        assert_eq!(
+            why_said(Why::Spawns, &limits),
+            "process creation: past 5 processes created a second for 120s"
+        );
+    }
+
+    /// A process a command of the worker left behind, under pid 1 in its
+    /// worktree, is named once it has outlived the command by the bound, and
+    /// ended.
+    #[test]
+    fn an_orphan_outliving_its_command_is_named_and_ended() {
+        let (_dir, worktree, tmp) = world();
+        // The command: its background `sleep` outlives it, handed to pid 1.
+        let status = crate::census::command("sh")
+            .args(["-c", "(sleep 600 &) ; true"])
+            .current_dir(&worktree)
+            .env("TMPDIR", &tmp)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::thread::sleep(Duration::from_millis(300));
+        let mut watched =
+            Watched::new("#1".into(), Worktree::at(worktree.clone(), "b".into()), None);
+        let procs = listed();
+        let orphans = orphans_of(&procs, &worktree, &BTreeSet::new());
+        assert_eq!(orphans.len(), 1, "{orphans:?}");
+        let pid = orphans[0].pid;
+        // first seen: nothing to end yet
+        assert_eq!(end_orphans(&mut watched, &procs, &orphans, 1000), None);
+        assert_eq!(end_orphans(&mut watched, &procs, &orphans, 1000 + ORPHAN_AFTER - 10), None);
+        let ended = end_orphans(&mut watched, &procs, &orphans, 1000 + ORPHAN_AFTER)
+            .expect("outlived the command by the bound");
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert!(
+            ended[0].contains(&format!("pid {pid}")) && ended[0].contains("sleep 600"),
+            "{ended:?}"
+        );
+        // it is gone, as SIGTERM ends a sleep
+        let mut gone = false;
+        for _ in 0..50 {
+            if !listed().iter().any(|proc| proc.pid == pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(gone, "pid {pid} still runs");
+    }
+
+    /// A server shared by the host — handed to pid 1, working outside the
+    /// worktree — is no orphan of the worker's, nor one under an exclusive
+    /// command.
+    #[test]
+    fn a_shared_server_and_an_exclusive_command_are_no_orphans() {
+        let worktree = PathBuf::from("/w/a");
+        let procs = [
+            orphan(20, "sccache --start-server", "/"),
+            orphan(21, "sleep 600", "/w/a/target"),
+            orphan(22, "cargo test", "/w/a"),
+            proc(23, 21, "sleep 1"),
+        ];
+        let found: Vec<u32> = orphans_of(&procs, &worktree, &BTreeSet::from([22]))
+            .iter()
+            .map(|proc| proc.pid)
+            .collect();
+        assert_eq!(found, [21, 23]);
     }
 }

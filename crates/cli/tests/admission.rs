@@ -127,7 +127,7 @@ fn a_busy_host_dispatches_nothing_new_and_the_frontier_waits_for_the_next_tick()
 
 /// A load past the share with most cores idle is not the host's being
 /// busy: macOS counts another account's idle simulators in its load
-/// (docs/adr/0084, sunfmin/control#1168).
+/// (docs/adr/0107, sunfmin/control#1168).
 #[test]
 fn a_load_past_its_share_holds_only_while_the_cores_are_busy() {
     let world = backlog(&[3]);
@@ -314,12 +314,12 @@ fn a_share_said_wrong_is_refused_and_one_kept_wrong_is_an_error_not_a_default() 
     // a file mended wrong by hand holds nothing back by a default
     world.say_host_settings(json!({"hot_cores": -1}));
     let error = world.afk(&["plan", "--now", "1000"]).error();
-    assert!(error.contains("checkouts.json cannot be read"), "{error}");
+    assert!(error.contains("the checkout list in") && error.contains("cannot be read"), "{error}");
 }
 
 /// A candidate chain that had more conflicts than landings in the last hour holds new
 /// starts of its repo, and says why, while another repo on the host still
-/// starts (docs/adr/0076, sunfmin/control#914).
+/// starts (docs/adr/0107, sunfmin/control#914).
 #[test]
 fn a_chain_that_cannot_keep_up_holds_its_repo_while_another_repo_starts() {
     let world = backlog(&[]);

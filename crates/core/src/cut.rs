@@ -61,16 +61,16 @@ pub const WAITING_LABEL: &str = "convoy-waits-on-cut";
 
 /// The label on the issue a failed cut opens. It holds no cut back: the next
 /// due cut cuts again from the start, on the base tip, whether or not the
-/// issue is open, and a cut that publishes closes it (docs/adr/0072). A watch
+/// issue is open, and a cut that publishes closes it (docs/adr/0028). A watch
 /// that finds the failure needs money spent, the one kind left to a human
-/// (docs/adr/0073), swaps it for the escalate label, and only then is the
+/// (docs/adr/0040), swaps it for the escalate label, and only then is the
 /// issue a human's (sunfmin/control#801).
 pub const FAILED_LABEL: &str = "convoy-cut-failed";
 
 /// How many cuts in a row failing at the same step the same way
 /// (`Failure::way`) make the failure an ordinary ticket of the fleet's: its
 /// issue takes the ready label, and the next cut waits for a landing past the
-/// base the last of them was cut from (docs/adr/0072).
+/// base the last of them was cut from (docs/adr/0028).
 pub const REPEATS: usize = 3;
 
 /// Whether a failed cut's issue carrying `labels` is the watch's to answer.
@@ -347,7 +347,7 @@ pub struct Seen {
     pub failure: Option<u64>,
     /// That issue says the last `REPEATS` cuts failed the same way, and
     /// nothing has landed past the base the last of them was cut from: the
-    /// next cut waits for a landing (docs/adr/0072).
+    /// next cut waits for a landing (docs/adr/0028).
     pub held: bool,
     /// When an operator asked for a cut now (`afkconvoy cut --now`), while
     /// that ask stands: a due cut starts at the next tick, idle or not.
@@ -496,7 +496,7 @@ impl Serialize for Held {
 /// stands. A cut still going comes first, whoever holds it and whatever the
 /// rest says; then a repo that turns cutting off, the tags, the same failure
 /// repeated with nothing landed since, and the lock. An open failure issue
-/// alone holds nothing back (docs/adr/0072).
+/// alone holds nothing back (docs/adr/0028).
 pub fn row(
     seen: &Seen,
     me: Option<&InstanceId>,
@@ -924,7 +924,9 @@ pub fn failure_report(
         Some(checkout) => said.push_str(&format!(
             "Its checkout is kept, `{checkout}` on the host `{host}`, with what each step \
              printed in its git dir, until the next cut starts. The line that goes on from the \
-             step that failed, in it:\n\n```sh\n{goes_on}\n```\n\nNothing waits for it.\n"
+             step that failed, in it:\n\n```sh\n{goes_on}\n```\n\nNothing waits for it. \
+             It refuses at once, running nothing, while another cut runs in that checkout: one \
+             cut of a checkout runs at a time.\n"
         )),
         None => said.push_str(&format!(
             "Its checkout is gone from the host `{host}`, so no `--from` line can go on with \
@@ -1320,7 +1322,7 @@ mod tests {
         assert_eq!(standing(&Seen { past: 0, ..seen() }, false), Standing::Tagged);
         assert_eq!(standing(&Seen { newest: None, ..seen() }, false), Standing::Untagged);
         // An open failure holds no cut back; the same failure repeated with
-        // nothing landed since does (docs/adr/0072).
+        // nothing landed since does (docs/adr/0028).
         assert_eq!(standing(&Seen { failure: Some(9), ..seen() }, false), Standing::Due);
         let held = Seen { failure: Some(9), held: true, ..seen() };
         assert_eq!(standing(&held, false), Standing::Failed);

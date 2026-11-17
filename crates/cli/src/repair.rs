@@ -21,19 +21,20 @@ pub fn is_for(
     tip: &str,
     branch: &str,
 ) -> Result<bool> {
+    let issues = crate::issues::of(gh);
     let config = crate::config::load(&repo.dir.join(crate::config::FILE))?;
     if crate::target::branch(repo, &config, issue)? != branch {
         return Ok(false);
     }
     let marker = format!("<!--convoy:base-repair tip={tip}-->");
-    let read = gh.issue(issue)?;
+    let read = issues.issue(issue)?;
     Ok(read.body.is_none_or(|body| {
         !body.starts_with("<!--convoy:base-repair ") || body.starts_with(&marker)
     }))
 }
 
 /// Tends each base tip the tick's listing of the remote marks red
-/// (docs/adr/0043): a mark made since is tended by the next tick.
+/// (the `look` module): a mark made since is tended by the next tick.
 pub fn tend(fleet: &mut Fleet, me: &Me) -> Result<Outcome> {
     let prefix = red_ref(&fleet.repo, "");
     let mut outcome = Outcome::Nothing;
@@ -54,7 +55,7 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
     if fleet.remote.sha(&red_ref(&fleet.repo, branch), Fresh::Process)?.as_deref() != Some(&base) {
         return Ok(Outcome::Nothing);
     }
-    let declared = crate::turn::tip_config(&fleet.repo, &base)?;
+    let declared = crate::turn::tip_config(&fleet.repo, &base, branch)?;
     let key = if branch == fleet.config.base_branch {
         "base-repair".to_string()
     } else {
@@ -73,15 +74,15 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
     let opened = (|| {
         let config = &config;
         let label = config.ready_label.clone();
-        let labels = fleet.gh.labels()?;
+        let labels = fleet.issues.labels()?;
         for label in [label.as_str(), &config.lock_label, afkconvoy_core::plan::REPAIR_LABEL] {
             if !labels.iter().any(|known| known == label) {
-                fleet.gh.create_label(label, "afkconvoy: repair the red base branch")?;
+                fleet.issues.create_label(label, "afkconvoy: repair the red base branch")?;
             }
         }
         for issue in crate::lock::standing_locks(&fleet.gh, config)? {
             if is_for(&fleet.repo, &fleet.gh, issue, &base, branch)? {
-                let read = fleet.gh.issue(issue)?;
+                let read = fleet.issues.issue(issue)?;
                 // A repair carrying the escalate label was escalated as a
                 // repair: by its worker or by the fleet. It waits for a human
                 // answer; no tick takes that label off (sunfmin/control#498).
@@ -96,12 +97,12 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
                 // The repair label goes on last: a tick cut short before it
                 // leaves an old lock, which the next tick moves again.
                 if read.labels.contains(&config.escalate_label) {
-                    fleet.gh.remove_label(issue, &config.escalate_label)?;
+                    fleet.issues.remove_label(issue, &config.escalate_label)?;
                     changed = true;
                 }
                 for label in [config.ready_label.as_str(), afkconvoy_core::plan::REPAIR_LABEL] {
                     if !read.labels.iter().any(|known| known == label) {
-                        fleet.gh.add_label(issue, label)?;
+                        fleet.issues.add_label(issue, label)?;
                         changed = true;
                     }
                 }
@@ -112,14 +113,14 @@ fn tend_on(fleet: &mut Fleet, me: &Me, branch: &str) -> Result<Outcome> {
             "<!--convoy:base-repair tip={base}-->\nThe base branch `{}` was gated alone in a clean checkout and is red.\n\nReproduce at `{base}` with `{}`. Find the cause from the gate's log, fix it and add a regression test. Open the repair PR and run `afkconvoy land --issue <n>`. This fleet-lock issue's turn may start on the red tip; it still gates the complete merge commit before landing. Closing this issue frees ordinary turns.\n",
             config.base_branch, declared.gate_command
         );
-        let issue = fleet.gh.open_issue(
+        let issue = fleet.issues.open_issue(
             &format!("Repair the red {} tip {}", config.base_branch, &base[..12.min(base.len())]),
             &body,
             &[],
         )?;
-        crate::target::pin(&fleet.repo, config, issue, Some(branch))?;
+        crate::target::choose(&fleet.repo, issue, branch)?;
         for label in [label.as_str(), &config.lock_label, afkconvoy_core::plan::REPAIR_LABEL] {
-            fleet.gh.add_label(issue, label)?;
+            fleet.issues.add_label(issue, label)?;
         }
         Ok(Outcome::Done)
     })();

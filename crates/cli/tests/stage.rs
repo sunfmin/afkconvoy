@@ -492,7 +492,7 @@ fn a_label_that_cannot_be_derived_fails_its_step_and_nothing_else() {
 }
 
 /// A PR whose landing turns went red twice in a row is handed to a new
-/// worker in a new worktree (docs/adr/0088), and that is no way round the
+/// worker in a new worktree (docs/adr/0114), and that is no way round the
 /// Breaker: no stage record is written, so the issue's rework counts — and
 /// so where its breakers trip — are what they were.
 #[test]

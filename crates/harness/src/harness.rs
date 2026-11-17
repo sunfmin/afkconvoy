@@ -1,11 +1,11 @@
-//! A harness (docs/adr/0013): the program a worker is a session of. What the
+//! A harness (docs/adr/0020): the program a worker is a session of. What the
 //! fleet adds to a worker launch command to start a worker in its role
 //! (docs/adr/0009), the question that asks a command whether it takes that,
 //! the report to the worker backend, and how a tool call reaches the guard
 //! and is answered are each one harness's own. What is one harness's is in
 //! its module here and nowhere else: nothing outside names a flag, a
 //! variable, a hook event or a path of it, nor where it keeps its session,
-//! nor which of its lines start or end a turn (docs/adr/0044).
+//! nor which of its lines start or end a turn (docs/adr/0042).
 
 use flux_rs::attrs::*;
 use serde::{Deserialize, Deserializer};
@@ -89,7 +89,7 @@ pub struct UserHooks {
 }
 
 /// A harness that keeps each session apart, and reads the user's own model
-/// for a start the issue does not name. Codex is the one (docs/adr/0013).
+/// for a start the issue does not name. Codex is the one (docs/adr/0020).
 /// The directory, the file and the note are named here; what they mean is
 /// that harness's module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,6 +314,23 @@ pub struct Login {
     pub line: &'static str,
 }
 
+/// How a harness's engine is asked for its account's usage windows now,
+/// outside any session (`Harness::windows_question`): whoever asks runs
+/// `line` and reads what it printed with `Harness::windows_answer`. Nothing
+/// in this crate runs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsQuestion {
+    /// The shell line that asks, run in the environment a session on the
+    /// account starts with (`account::Account::session`): a Claude Code
+    /// token, or the home a refreshing login is kept in. It puts no
+    /// credential on a command line. It ends once it has its answer.
+    pub line: &'static str,
+    /// Whether asking spends a model turn: where the engine offers its
+    /// account no usage query, the windows come back with the smallest turn
+    /// it takes.
+    pub spends_turn: bool,
+}
+
 /// The directory a harness reads its user configuration from — its login,
 /// settings, skills and rules — and the variable that points it at another
 /// (`Harness::config_dir`).
@@ -478,11 +495,46 @@ impl Harness {
     /// Whether its engine reports its account's usage windows at all
     /// ([`Harness::windows`]): a harness that reports none is judged by the
     /// host alone, and comes after those that do where the host kit chooses
-    /// (docs/adr/0088).
+    /// (docs/adr/0086).
     pub const fn reports_windows(self) -> bool {
         match self {
             Harness::ClaudeCode | Harness::Codex | Harness::Kimi => true,
             Harness::Pi | Harness::Dsh | Harness::Grok => false,
+        }
+    }
+
+    /// How its engine is asked for its account's usage windows now, without
+    /// a run (sunfmin/control#1299): Codex's app server reads its account's
+    /// rate limits and Kimi Code asks its `/usages` as its `/usage` does,
+    /// neither spending a turn; Claude Code offers a token's account no usage
+    /// query, so a one-word turn on its smallest model brings its stream's
+    /// `rate_limit_event`. `None`: a harness whose engine reports no window
+    /// ([`Harness::reports_windows`]).
+    pub const fn windows_question(self) -> Option<WindowsQuestion> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::WINDOWS_QUESTION),
+            Harness::Codex => Some(codex::WINDOWS_QUESTION),
+            Harness::Kimi => Some(kimi::WINDOWS_QUESTION),
+            Harness::Pi | Harness::Dsh | Harness::Grok => None,
+        }
+    }
+
+    /// The usage windows what its [`WindowsQuestion::line`] printed says,
+    /// each with when it resets. An answer that says none — an error, a
+    /// login refused, nothing printed — gives none: no window is predicted.
+    pub fn windows_answer(self, printed: &str) -> Vec<crate::window::Window> {
+        match self {
+            Harness::ClaudeCode => printed
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .map(|record| claude_code::windows(&record))
+                .find(|windows| !windows.is_empty())
+                .unwrap_or_default(),
+            Harness::Codex => codex::windows_answer(printed),
+            Harness::Kimi => serde_json::from_str::<serde_json::Value>(printed)
+                .map(|answer| kimi::windows(&answer))
+                .unwrap_or_default(),
+            Harness::Pi | Harness::Dsh | Harness::Grok => Vec::new(),
         }
     }
 
@@ -863,7 +915,7 @@ impl Harness {
     /// rules. A harness that reads no user config ignores `user`.
     /// `role_skills` is the role's `.claude/skills` when this worker has one,
     /// and `role_skill_names` the directories in it. Grok names that directory
-    /// and ignores a host skill of the same name (ADR-0043). Every other
+    /// and ignores a host skill of the same name (ADR-0009). Every other
     /// harness ignores both.
     pub fn kept_configuration(
         self,
@@ -893,7 +945,7 @@ impl Harness {
     }
 
     /// Where a role's limits for it are written, in the role's directory, in
-    /// its own form (docs/adr/0013).
+    /// its own form (docs/adr/0020).
     pub const fn limits(self) -> &'static str {
         match self {
             Harness::ClaudeCode => claude_code::LIMITS,
@@ -968,7 +1020,7 @@ impl Harness {
     /// The role file a worker is told, from the role's directory, beside the
     /// repo's and the team's. A harness that starts in the worktree names the
     /// file, because that file is how the role's rules reach the worker
-    /// (ADR-0043). `None`: it starts in the role and loads the file itself,
+    /// (ADR-0009). `None`: it starts in the role and loads the file itself,
     /// and is told no role file.
     pub const fn role_file(self) -> Option<&'static str> {
         match self {
@@ -1245,7 +1297,7 @@ impl Harness {
     /// How this harness keeps a session of its own. `None`: the worker launch
     /// command, the fleet's model and the directory the host keeps are the
     /// whole start. Codex names a fresh directory, the user's model unless
-    /// the issue names one, and its watch line (docs/adr/0013).
+    /// the issue names one, and its watch line (docs/adr/0020).
     pub const fn session(self) -> Option<Session> {
         match self {
             Harness::Codex => Some(codex::SESSION),
@@ -1400,7 +1452,7 @@ impl Harness {
     /// backend, the host user's skills and rules where the session is given
     /// them, and the model — each in this harness's way. Every harness but
     /// Grok starts in `start.dir`. Grok's session works only in its cwd, so it
-    /// starts in the worktree (ADR-0043).
+    /// starts in the worktree (ADR-0009).
     pub fn in_role(self, command: &str, start: &Start) -> String {
         self.role_line(command, start).done()
     }
@@ -1534,6 +1586,17 @@ impl Harness {
             Harness::ClaudeCode => claude_code::shows_background(screen),
             Harness::Kimi => kimi::shows_background(screen),
             Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Grok => false,
+        }
+    }
+
+    /// Whether one session file's `text` records background work the
+    /// session's own process runs — an agent or a shell it launched — that
+    /// it has not yet been notified ended. A child session's lines do not
+    /// count. A harness whose session records none says `false`.
+    pub fn background_pending(self, text: &str) -> bool {
+        match self {
+            Harness::ClaudeCode => claude_code::background_pending(text),
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi | Harness::Grok => false,
         }
     }
 
@@ -2195,6 +2258,19 @@ mod tests {
             }
             assert_eq!(harness.noted_home(), None, "{}", harness.key());
         }
+    }
+
+    #[test]
+    fn claude_code_names_its_project_directory_with_every_punctuation_as_a_dash() {
+        let place = |cwd: &str| match Harness::ClaudeCode.note_place(cwd).layout {
+            SessionLayout::Files { dir, .. } => dir,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            place("/Users/felix/.guild/instances/x_y"),
+            "projects/-Users-felix--guild-instances-x-y"
+        );
+        assert_eq!(place("/a b/c@d+e~f/é"), "projects/-a-b-c-d-e-f--");
     }
 
     #[test]

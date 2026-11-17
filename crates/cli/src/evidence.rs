@@ -8,7 +8,6 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result};
 
@@ -44,6 +43,9 @@ pub struct Taken {
     /// Its stall in words, its lock holders named, where it turned hot
     /// stalled (`crate::stall`).
     pub stall: Option<String>,
+    /// Its process creation, in processes a second, and the commands that
+    /// made them, with how many each, where it turned hot for it.
+    pub spawns: Option<(u64, Vec<(String, u64)>)>,
     /// The issue its worktree is linked to, where it is.
     pub issue: Option<u64>,
 }
@@ -60,6 +62,15 @@ pub fn take(worktree: &Worktree, taken: &Taken) -> Result<PathBuf> {
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let mut out = head(&taken.worker, taken.since);
     let _ = write!(out, "\n\nHot for {}; it held {}.\n", taken.why, taken.held);
+    if let Some((rate, commands)) = &taken.spawns {
+        let _ = write!(out, "\n## Process creation\n\n{rate} processes a second.\n\n");
+        for (command, made) in commands {
+            let _ = writeln!(
+                out,
+                "- `{command}`: {made} found alive in the last two minutes of samples"
+            );
+        }
+    }
     if let Some(stall) = &taken.stall {
         let _ = write!(out, "\n## The build-directory locks it waits on\n\n{stall}\n");
     }
@@ -117,7 +128,7 @@ pub(crate) fn tree(pids: &[u32]) -> String {
         return "(no process left)\n".to_string();
     }
     let listed: Vec<String> = pids.iter().map(u32::to_string).collect();
-    let out = crate::process::output(Command::new("ps").args([
+    let out = crate::process::output(crate::census::command("ps").args([
         "-ww",
         "-o",
         "pid,ppid,rss,%cpu,command",
@@ -135,7 +146,9 @@ fn sample(pid: Option<u32>, file: &Path) -> String {
         return format!("The hottest process was {pid}; this host has no `sample`.\n");
     }
     let ran = crate::process::output(
-        Command::new("sample").args([&pid.to_string(), SAMPLED_FOR, "-mayDie", "-file"]).arg(file),
+        crate::census::command("sample")
+            .args([&pid.to_string(), SAMPLED_FOR, "-mayDie", "-file"])
+            .arg(file),
     );
     match ran {
         Ok(out) if out.status.success() => {
@@ -158,7 +171,7 @@ fn largest(dir: &Path) -> String {
     if paths.is_empty() {
         return "(nothing in it)\n".to_string();
     }
-    let out = crate::process::output(Command::new("du").arg("-sk").args(&paths));
+    let out = crate::process::output(crate::census::command("du").arg("-sk").args(&paths));
     let Ok(out) = out else { return "(du could not be run)\n".to_string() };
     let mut sized: Vec<(u64, String)> = String::from_utf8_lossy(&out.stdout)
         .lines()

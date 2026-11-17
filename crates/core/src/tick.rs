@@ -834,7 +834,7 @@ where
 }
 
 /// The bound a fleet runs its pass under: none. No number of workers bounds
-/// a fleet; admission alone decides each start (docs/adr/0072). A smaller
+/// a fleet; admission alone decides each start (docs/adr/0107). A smaller
 /// bound is a test's, of how a pass takes and frees its slots.
 pub const UNBOUNDED: usize = usize::MAX;
 

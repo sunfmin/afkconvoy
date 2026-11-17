@@ -111,7 +111,7 @@ fn run_command(
                 )
             })
             .transpose()?;
-    let mut shell = Command::new("sh");
+    let mut shell = crate::census::command("sh");
     crate::exclusive::inherit(&mut shell, repo)?;
     // A gate command that takes no lane of its own keeps its rustc to one
     // front-end thread as one that does (sunfmin/control#1127).
@@ -245,7 +245,9 @@ fn run_command(
                 candidate.failed(TIMED_OUT_CODE, true, started.elapsed().as_secs(), None)?;
             } else {
                 let group = format!("-{}", child.id());
-                let _ = crate::process::status(Command::new("kill").args(["-KILL", "--", &group]));
+                let _ = crate::process::status(
+                    crate::census::command("kill").args(["-KILL", "--", &group]),
+                );
             }
             let _ = child.wait();
             eprintln!("[afkconvoy] the gate reached the gate limit of {}s", limit.as_secs());
@@ -491,15 +493,18 @@ pub enum Detached {
     BaseTip,
     /// A delivery's aggregate gate.
     Delivery,
+    /// The proving branch's tip, slow-gated by a promotion (docs/adr/0090).
+    Promotion,
 }
 
 impl Detached {
-    const ALL: [Detached; 2] = [Detached::BaseTip, Detached::Delivery];
+    const ALL: [Detached; 3] = [Detached::BaseTip, Detached::Delivery, Detached::Promotion];
 
     fn name(self) -> &'static str {
         match self {
             Detached::BaseTip => "base-tip",
             Detached::Delivery => "delivery",
+            Detached::Promotion => "promotion",
         }
     }
 
@@ -575,7 +580,7 @@ pub fn detached<T>(
 /// Puts the whole gate, `whole`, on record for `tree` from the records of its
 /// two parts there, `fast` and `slow` → why it is not on record, `None` when
 /// it is. `head` is the tested commit and the new record's parent. A round's
-/// tip whose slow gate passed is a tree the whole gate passed (docs/adr/0048):
+/// tip whose slow gate passed is a tree the whole gate passed (docs/adr/0083):
 /// the target tip it becomes needs no other run.
 pub(crate) fn record_whole(
     repo: &Repo,
@@ -696,7 +701,7 @@ pub fn recorded(
 }
 
 /// The green run of `command` on `tree` on record that answers for a run of
-/// it on this kind of machine at `now` (docs/adr/0069): one `recorded`
+/// it on this kind of machine at `now` (docs/adr/0037): one `recorded`
 /// believes, which ran on this kind.
 pub fn reusable(
     repo: &Repo,

@@ -18,7 +18,7 @@ use crate::claims::Me;
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::found::Found;
-use crate::gh::Comment;
+use crate::issues::Comment;
 use crate::judge::{
     Handed, Look, escalate_claim, mine, nudge_worker, own_background, progress, where_it_stopped,
 };
@@ -119,7 +119,7 @@ pub(crate) fn turn(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Turn>> {
         return Ok(Some(Turn { worktree, answered, handoff: None, reds: vec![] }));
     }
     // Red twice in a row: not handed back to the same worker in the same
-    // worktree, whatever that worker is doing (docs/adr/0088).
+    // worktree, whatever that worker is doing (docs/adr/0114).
     let reds = crate::turn_answer::reds(&worktree)?;
     if reds.len() >= RED_TURNS_IN_A_ROW {
         return Ok(Some(Turn { worktree, answered, handoff: None, reds }));
@@ -149,7 +149,7 @@ pub(crate) fn answer_turn(
     issue: u64,
     turn: Turn,
     start: bool,
-    dependencies: &[crate::gh::BlockedBy],
+    dependencies: &[crate::issues::BlockedBy],
 ) -> Result<Outcome> {
     let Turn { worktree, answered, handoff, reds } = turn;
     if answered == Answered::Asking {

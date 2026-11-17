@@ -65,7 +65,7 @@ fn head(world: &World, repo: &str) -> String {
 fn see(fault: &Value) -> &str {
     let see = fault["see"].as_str().unwrap_or_else(|| panic!("no `see`: {fault}"));
     let topic = see.strip_prefix("afkconvoy help ").unwrap_or_else(|| panic!("{see}"));
-    let mut help = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
+    let mut help = afkconvoy::census::command(env!("CARGO_BIN_EXE_afkconvoy"));
     let printed = help.args(["help", topic]).output().unwrap();
     assert!(printed.status.success(), "`{see}` prints nothing");
     see

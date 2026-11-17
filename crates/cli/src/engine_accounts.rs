@@ -1,5 +1,5 @@
 //! The engine accounts this host's workers start on (GLOSSARY: **Account**;
-//! docs/adr/0086, docs/adr/0087): read from mytokens, their one home; what
+//! docs/adr/0086): read from mytokens, their one home; what
 //! this host last heard of each — its usage windows and a limit it met —
 //! kept in its account book; and the one a worker starts on, chosen by the
 //! core (`afkconvoy_core::engine_account::choose`).
@@ -101,36 +101,38 @@ struct Book {
     accounts: BTreeMap<String, Kept>,
 }
 
-fn book_file() -> Result<PathBuf> {
-    Ok(crate::copies::cache()?.join("accounts/book.json"))
+/// The account book in the host's database: a row each of `account_book`,
+/// by the account's name. It was `accounts/book.json` in the cache
+/// directory, with `accounts/book.lock` beside it.
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: "accounts/book.json",
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Tables { export: export_book, import: import_book },
+};
+
+fn export_book(db: &rusqlite::Connection) -> Result<Option<Value>> {
+    let rows = crate::host_db::rows(db, "account_book")?;
+    Ok((!rows.is_empty())
+        .then(|| json!({"accounts": rows.into_iter().collect::<serde_json::Map<_, _>>()})))
+}
+
+fn import_book(db: &rusqlite::Connection, book: &Value) -> Result<()> {
+    let accounts = book["accounts"].as_object().cloned().unwrap_or_default();
+    crate::host_db::put_rows(
+        db,
+        "account_book",
+        accounts.iter().map(|(name, kept)| (name.clone(), kept)),
+    )
 }
 
 fn read_book() -> Book {
-    book_file()
-        .ok()
-        .and_then(|file| std::fs::read(file).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::host_db::read(&STORE).unwrap_or_default()
 }
 
-/// Changes the book by `change`, under a lock of its own: two processes of
-/// the host never lose each other's change.
+/// Changes the book by `change`, in one transaction of the host's
+/// database: two processes of the host never lose each other's change.
 fn change_book(change: impl FnOnce(&mut Book)) -> Result<()> {
-    use std::os::fd::AsRawFd;
-    let file = book_file()?;
-    let dir = file.parent().context("the account book's directory")?;
-    std::fs::create_dir_all(dir).with_context(|| format!("cannot make {}", dir.display()))?;
-    let lock = std::fs::File::create(dir.join("book.lock"))?;
-    // SAFETY: flock on a descriptor this function owns; released on close.
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("cannot lock the account book");
-    }
-    let mut book = read_book();
-    change(&mut book);
-    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(&book)?)?;
-    std::fs::rename(&temporary, &file)?;
-    Ok(())
+    crate::host_db::change(&STORE, change).context("cannot change the account book")
 }
 
 /// Keeps what a worker on `name` recorded of its windows at `at`, unless the
@@ -180,7 +182,7 @@ pub(crate) fn account_of(worktree: &Worktree) -> Option<String> {
 /// names an account whose login is a file (Codex, Grok, Kimi Code): its name
 /// and its home, `~/.agent-accounts/<name>` under `user_home`. Its worker's
 /// kept home links that home's login in place of the host user's
-/// (`kept::for_worker`, docs/adr/0088). `None`: it started on no account,
+/// (`kept::for_worker`, docs/adr/0086). `None`: it started on no account,
 /// or on a token, which no file holds.
 pub(crate) fn login_of(worktree: &Worktree, user_home: &Path) -> Option<Login> {
     let name = account_of(worktree)?;

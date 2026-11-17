@@ -12,7 +12,7 @@
 //! after its tap has it.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -215,7 +215,7 @@ fn upgraded(keg: &Keg) -> Result<()> {
         std::fs::File::create(&log).with_context(|| format!("cannot write {}", log.display()))?;
     for args in [&["update", "--quiet"][..], &["upgrade", &keg.formula]] {
         let said = format!("`brew {}`", args.join(" "));
-        let mut command = Command::new(&keg.brew);
+        let mut command = crate::census::command(&keg.brew);
         command
             .args(args)
             .env("HOMEBREW_NO_AUTO_UPDATE", "1")

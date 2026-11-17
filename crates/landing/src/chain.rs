@@ -7,7 +7,7 @@
 //! A green successor waits on its exact predecessor, without another gate.
 //! Where the commit declares a fast gate and a slow gate, a candidate runs
 //! the fast one, and a round runs the slow one once at the chain's tip,
-//! landing every candidate up to it together (docs/adr/0048). A round of
+//! landing every candidate up to it together (docs/adr/0083). A round of
 //! PRs that asked to land is paired first (docs/adr/0083, `pairing`): its
 //! pairs are candidates of their own, beside the chain, each fast-gated
 //! alone; its root is merged onto the target tip as candidates none of which
@@ -945,7 +945,7 @@ impl<N: Clone> Chain<N> {
     /// The whole gate at `id`, a round's tip, ended with `result`, its fast
     /// gate's and, that green, its slow gate's: green, its tree passed the
     /// whole gate, and it lands with every candidate before it; red, the
-    /// round is red and not bisected (docs/adr/0048): the tip keeps the
+    /// round is red and not bisected (docs/adr/0083): the tip keeps the
     /// failure, and every other candidate of the round stops `round_red`.
     fn finish_batched(&mut self, id: &str, result: Evidence) {
         let green = result.green();

@@ -24,7 +24,7 @@ pub struct Declared {
 }
 
 /// The gate a candidate runs itself, and its limit; and the slow gate a
-/// round at it runs, where its commit splits its gate (docs/adr/0048).
+/// round at it runs, where its commit splits its gate (docs/adr/0083).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Own {
     pub command: String,
@@ -152,15 +152,11 @@ pub struct Update {
     pub new: String,
 }
 
-/// What one publication of `members` updates, all or none: every member's
-/// source ref kept at its original head, the chain's record from
-/// `record.1` to `record.2`, and the target from the first member's
-/// predecessor to the last member's commit.
-pub fn updates<N>(
-    members: &[&Candidate<N>],
-    record: (&str, &str, &str),
-    target: &str,
-) -> Vec<Update> {
+/// What one publication of `members` updates, all or none, where the chain
+/// is not a ref of the remote: every member's source ref kept at its original
+/// head, and the target from the first member's predecessor to the last
+/// member's commit.
+pub fn publication<N>(members: &[&Candidate<N>], target: &str) -> Vec<Update> {
     let mut updates: Vec<Update> = members
         .iter()
         .map(|m| Update {
@@ -169,8 +165,6 @@ pub fn updates<N>(
             new: m.original_head.clone(),
         })
         .collect();
-    let (name, old, new) = record;
-    updates.push(Update { name: name.into(), old: old.into(), new: new.into() });
     if let (Some(first), Some(last)) = (members.first(), members.last()) {
         updates.push(Update {
             name: format!("refs/heads/{target}"),
@@ -178,5 +172,20 @@ pub fn updates<N>(
             new: last.commit.clone(),
         });
     }
+    updates
+}
+
+/// What one publication of `members` updates where the chain is a record of
+/// the remote (`land`): `publication`, and the record from `record.1` to
+/// `record.2`, before the target's update.
+pub fn updates<N>(
+    members: &[&Candidate<N>],
+    record: (&str, &str, &str),
+    target: &str,
+) -> Vec<Update> {
+    let mut updates = publication(members, target);
+    let (name, old, new) = record;
+    let at = updates.len().saturating_sub(1).min(members.len());
+    updates.insert(at, Update { name: name.into(), old: old.into(), new: new.into() });
     updates
 }

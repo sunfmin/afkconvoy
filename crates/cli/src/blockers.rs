@@ -9,8 +9,9 @@ use afkconvoy_core::tracker::{Tracker, repo_labels};
 use anyhow::Result;
 
 use crate::checkout_list::{List, named_repo, repo_of};
-use crate::gh::{BlockedBy, GitHub, OpenIssues};
+use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::issues::{BlockedBy, OpenIssues};
 
 struct Checkout {
     repo: String,
@@ -28,7 +29,10 @@ fn serving(repo: &Repo, tracker: &str) -> Result<Vec<Checkout>> {
     for entry in List::of_host()?.read()?.checkouts {
         let Ok(other) = Repo::at(&entry.checkout) else { continue };
         let Ok(name) = name(&other) else { continue };
-        let uses = entry.tracker.as_ref().map_or(name.as_str(), |name| name.as_str());
+        let Ok(said) = crate::checkout_list::tracker_for(entry.tracker, &other) else {
+            continue;
+        };
+        let uses = said.named().map_or_else(|| name.clone(), ToString::to_string);
         if uses.eq_ignore_ascii_case(tracker) && !found.iter().any(|row| row.repo == name) {
             found.push(Checkout { repo: name, path: entry.checkout });
         }
@@ -57,6 +61,9 @@ pub fn unworked(
             let labels = edge.labels.as_deref().map(repo_labels);
             let target = if outside {
                 checkouts.iter().find(|checkout| checkout.repo.eq_ignore_ascii_case(of))
+            } else if let Some(work) = &edge.of {
+                // An issue whose repo is a field is that repo's, whatever it carries.
+                checkouts.iter().find(|checkout| checkout.repo.eq_ignore_ascii_case(work))
             } else {
                 labels.as_ref().filter(|labels| labels.len() == 1).and_then(|labels| {
                     checkouts.iter().find(|checkout| {
@@ -70,6 +77,22 @@ pub fn unworked(
                 && matches!(tracker, Tracker::Own)
                 && labels.as_ref().is_some_and(Vec::is_empty);
             if !outside && (labels.is_none() || target.is_some() || own_issue) {
+                continue;
+            }
+            // An issue whose repo is a field — the local tracker's — needs no
+            // label: only a checkout of its repo, which this host has none of.
+            if let Some(work) = edge.of.as_deref().filter(|_| !outside) {
+                found.push(UnworkedBlocker {
+                    issue: *issue,
+                    blocker: edge.number,
+                    repo: work.to_string(),
+                    reason: format!("of {work}, which no checkout on this host works"),
+                    fix: Line::new()
+                        .fixed("afkconvoy run <a checkout of ")
+                        .word(work)
+                        .fixed(">")
+                        .own(),
+                });
                 continue;
             }
             let reason = if outside {
@@ -156,7 +179,8 @@ pub fn can_hand_on(issue: u64, edges: &[BlockedBy], rows: &[UnworkedBlocker]) ->
 
 /// A fresh read for a consult, shared by its claim check and its brief.
 pub fn for_issue(repo: &Repo, gh: &GitHub, issue: u64) -> Result<Vec<UnworkedBlocker>> {
-    unworked(repo, &gh.tracker, &[(issue, gh.blocked_by(issue)?)])
+    let issues = crate::issues::of(gh);
+    unworked(repo, &gh.tracker, &[(issue, issues.blocked_by(issue)?)])
 }
 
 pub fn evidence(rows: &[UnworkedBlocker]) -> String {

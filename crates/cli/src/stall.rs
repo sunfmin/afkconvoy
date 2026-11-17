@@ -1,4 +1,4 @@
-//! A ed worker (docs/adr/0088): one whose build waits forever on
+//! A ed worker (docs/adr/0082): one whose build waits forever on
 //! another's build-directory locks. A process stuck on a lock takes no CPU,
 //! so no limit of a hot worker finds it (sunfmin/control#1249); this does.
 //!
@@ -13,7 +13,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::process::Command;
 
 use afkconvoy_core::hot::STALL_HELD;
 
@@ -152,9 +151,10 @@ pub(crate) fn of(
 /// What `lsof -n -P -F pn` says with `args`, or `None` where it could not
 /// run. It exits 1 where some file is held by none: that is no failure.
 fn lsof(args: &[&str]) -> Option<String> {
-    let out =
-        crate::process::output(Command::new("lsof").args(["-n", "-P", "-F", "pn"]).args(args))
-            .ok()?;
+    let out = crate::process::output(
+        crate::census::command("lsof").args(["-n", "-P", "-F", "pn"]).args(args),
+    )
+    .ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -241,7 +241,7 @@ mod tests {
     fn stand_in(lock: &std::path::Path, busy: bool) -> std::process::Child {
         let script =
             if busy { "exec 3>>\"$1\"; sleep 600; :" } else { "exec 3>>\"$1\"; exec sleep 600" };
-        Command::new("sh").args(["-c", script, "sh"]).arg(lock).spawn().unwrap()
+        crate::census::command("sh").args(["-c", script, "sh"]).arg(lock).spawn().unwrap()
     }
 
     /// Lists the host's processes until `pid` holds `lock` open as `lsof`
@@ -272,7 +272,7 @@ mod tests {
         let all = holding(building.id(), &lock);
         let waited_on = of(&[stuck.id()], &idle, &all, &worker_of, at);
         for child in [&mut stuck, &mut building] {
-            let _ = Command::new("pkill").args(["-P", &child.id().to_string()]).status();
+            let _ = crate::census::command("pkill").args(["-P", &child.id().to_string()]).status();
             let _ = child.kill();
             let _ = child.wait();
         }

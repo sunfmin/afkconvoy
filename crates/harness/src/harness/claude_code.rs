@@ -3,11 +3,11 @@
 //! and hooks from the directory it starts in (docs/adr/0009), so what the
 //! fleet adds is the rest: the directories beside the role's, the settings it
 //! may load, and the hooks that ask the guard and tell the worker backend.
-//! The host user's skills and rules (docs/adr/0017) are one more directory
+//! The host user's skills and rules (docs/adr/0009) are one more directory
 //! beside the role's: one the host keeps, which holds nothing else of the
 //! user's, so that leaving their settings out still leaves out their hooks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use flux_rs::attrs::*;
 use serde::de::{Error, IgnoredAny};
@@ -636,6 +636,82 @@ pub(super) fn shows_background(screen: &[String]) -> bool {
     })
 }
 
+/// How a tool result begins when Claude Code started the call's work in the
+/// background, and what comes right before the ID that work's notification
+/// names as its `<task-id>`: a background agent, then a background shell.
+const LAUNCHED: [(&str, &str); 2] = [
+    ("Async agent launched successfully.", "agentId: "),
+    ("Command running in background with ID: ", "Command running in background with ID: "),
+];
+/// What a notification that background work ended names that work by.
+const TASK_ID: (&str, &str) = ("<task-id>", "</task-id>");
+
+/// Whether the session `text` records background work its own process runs
+/// launched and not yet notified as ended: an agent (the Agent tool run in
+/// the background) or a shell. A launch is a tool result [`LAUNCHED`] names;
+/// its end is a `<task-notification>` naming its ID, recorded as a queued
+/// prompt (a `queue-operation` enqueue or a `queued_command` attachment) or
+/// as a user message. A sidechain's lines are a child session's, and a
+/// request kept beside the session (`api-request-blob`) repeats a message:
+/// neither counts.
+pub(super) fn background_pending(text: &str) -> bool {
+    let mut launched = BTreeSet::new();
+    let mut notified = BTreeSet::new();
+    for value in json_lines(text) {
+        if value["isSidechain"] == true {
+            continue;
+        }
+        let queued = match value["type"].as_str() {
+            Some("queue-operation") if value["operation"] == "enqueue" => &value["content"],
+            Some("attachment") if value["attachment"]["type"] == "queued_command" => {
+                &value["attachment"]["prompt"]
+            }
+            Some("user") => &value["message"]["content"],
+            _ => continue,
+        };
+        if let Some(prompt) = queued.as_str() {
+            notified.extend(task_ids(prompt));
+            continue;
+        }
+        let Some(parts) = queued.as_array() else { continue };
+        for part in parts {
+            match part["type"].as_str() {
+                Some("tool_result") => launched.extend(launch(&part["content"])),
+                Some("text") => {
+                    notified.extend(part["text"].as_str().map(task_ids).into_iter().flatten())
+                }
+                _ => {}
+            }
+        }
+    }
+    launched.iter().any(|id| !notified.contains(id))
+}
+
+/// The ID of the background work a tool result's `content` says was launched.
+fn launch(content: &serde_json::Value) -> Option<String> {
+    let text = match content {
+        serde_json::Value::String(text) => text.as_str(),
+        serde_json::Value::Array(parts) => parts.first()?["text"].as_str()?,
+        _ => return None,
+    };
+    let text = text.trim_start();
+    let (_, before) = LAUNCHED.iter().find(|(begins, _)| text.starts_with(begins))?;
+    let (_, rest) = text.split_once(before)?;
+    let id: String =
+        rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
+    (!id.is_empty()).then_some(id)
+}
+
+/// The IDs each `<task-id>` in `prompt` names.
+fn task_ids(prompt: &str) -> Vec<String> {
+    prompt
+        .split(TASK_ID.0)
+        .skip(1)
+        .filter_map(|rest| Some(rest.split_once(TASK_ID.1)?.0.trim().to_string()))
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
 /// The harness directory under a user's home.
 pub(super) const HOME: &str = ".claude";
 
@@ -650,9 +726,19 @@ pub(super) fn note_layout(cwd: &str) -> SessionLayout {
     SessionLayout::Files { dir: format!("projects/{}", dir_name(cwd)), extension: "jsonl" }
 }
 
-/// `/Users/sunfmin/Developments/chessmirror` → `-Users-sunfmin-Developments-chessmirror`.
+/// The directory Claude Code files `cwd`'s sessions under: every character
+/// that is not an ASCII letter or digit turned into `-` (one per UTF-16 unit,
+/// as Claude Code's JavaScript replaces), so
+/// `/Users/felix/.guild/instances/x_y` → `-Users-felix--guild-instances-x-y`.
 fn dir_name(cwd: &str) -> String {
-    session::stored_name(cwd.replace('/', "-"), cwd)
+    let natural = cwd
+        .chars()
+        .flat_map(|ch| match ch.is_ascii_alphanumeric() {
+            true => std::iter::repeat_n(ch, 1),
+            false => std::iter::repeat_n('-', ch.len_utf16()),
+        })
+        .collect();
+    session::stored_name(natural, cwd)
 }
 
 /// The turn for `cwd`, or for the worker its initial brief pointer names
@@ -942,6 +1028,20 @@ pub(super) fn said(value: &serde_json::Value) -> Vec<Said> {
 /// stdin, whose `rate_limits` [`windows`] reads.
 pub(super) const STATUS_LINE: StatusLine =
     StatusLine { settings: USER_HOOKS.settings, key: "statusLine" };
+
+/// How Claude Code is asked for its account's windows now. Its account usage
+/// (`/api/oauth/usage`) answers only a login with the `user:profile` scope,
+/// which a `claude setup-token` token lacks: Claude Code 2.1.326 itself reads
+/// such a token's windows from a one-token "quota" request. Its smallest such
+/// request a person can make is one turn on its smallest model, with no
+/// tools, settings, servers or kept session, whose stream says the windows
+/// in its `rate_limit_event` (recorded on this host: 3 s, under $0.0002).
+pub(super) const WINDOWS_QUESTION: super::WindowsQuestion = super::WindowsQuestion {
+    line: "claude -p --model haiku --output-format stream-json --verbose --tools '' \
+           --strict-mcp-config --no-session-persistence --setting-sources '' \
+           --system-prompt 'Answer with one word.' quota",
+    spends_turn: true,
+};
 
 /// The windows one record of Claude Code's says: the `rate_limits` of the
 /// input it hands its status line (`used_percentage`, `resets_at`), or the
@@ -1520,5 +1620,132 @@ mod usage_tests {
             tokens["claude"],
             Counts { input: 7, cache_read: 5, cache_write: 1, output: 4, reasoning: None }
         );
+    }
+
+    /// The tool result Claude Code records for a call it ran in the
+    /// background (2.1.325): an agent's names its `agentId`, a shell's its ID.
+    fn launched(tool_use: &str, text: &str, sidechain: bool) -> String {
+        serde_json::json!({
+            "type": "user", "isSidechain": sidechain,
+            "message": {"role": "user", "content": [
+                {"tool_use_id": tool_use, "type": "tool_result",
+                 "content": [{"type": "text", "text": text}]}
+            ]}
+        })
+        .to_string()
+    }
+
+    fn agent(id: &str, tool_use: &str) -> String {
+        launched(
+            tool_use,
+            &format!(
+                "Async agent launched successfully. (This tool result is internal metadata.)\n\
+                 agentId: {id} (internal ID - do not mention to user.)\n\
+                 The agent is working in the background."
+            ),
+            false,
+        )
+    }
+
+    fn notification(id: &str, tool_use: &str) -> String {
+        format!(
+            "<task-notification>\n<task-id>{id}</task-id>\n<tool-use-id>{tool_use}</tool-use-id>\n\
+             <status>completed</status>\n</task-notification>"
+        )
+    }
+
+    /// Its end as Claude Code queues it: a `queue-operation` enqueue.
+    fn enqueued(id: &str, tool_use: &str) -> String {
+        serde_json::json!({
+            "type": "queue-operation", "operation": "enqueue",
+            "timestamp": "2026-11-15T11:39:17.118Z", "content": notification(id, tool_use)
+        })
+        .to_string()
+    }
+
+    fn pending(lines: &[String]) -> bool {
+        Harness::ClaudeCode.background_pending(&lines.join("\n"))
+    }
+
+    #[test]
+    fn a_background_agent_is_pending_until_its_notification_is_enqueued() {
+        let launch = agent("ae1f929cbb4405079", "toolu_01");
+        assert!(pending(std::slice::from_ref(&launch)));
+        assert!(!pending(&[launch.clone(), enqueued("ae1f929cbb4405079", "toolu_01")]));
+        let dequeued = serde_json::json!({"type": "queue-operation", "operation": "dequeue"});
+        assert!(pending(&[launch, dequeued.to_string()]));
+    }
+
+    #[test]
+    fn its_notification_counts_as_an_attachment_or_a_user_message_too() {
+        let launch = agent("a1", "toolu_01");
+        let attached = serde_json::json!({
+            "type": "attachment", "isSidechain": false,
+            "attachment": {"type": "queued_command", "prompt": notification("a1", "toolu_01")}
+        });
+        assert!(!pending(&[launch.clone(), attached.to_string()]));
+        let prompted = serde_json::json!({
+            "type": "user", "isSidechain": false,
+            "message": {"role": "user", "content": notification("a1", "toolu_01")}
+        });
+        assert!(!pending(&[launch, prompted.to_string()]));
+    }
+
+    #[test]
+    fn two_agents_launched_and_one_notified_is_still_pending() {
+        let lines = [agent("a1", "toolu_01"), agent("a2", "toolu_02"), enqueued("a1", "toolu_01")];
+        assert!(pending(&lines));
+        let mut both = lines.to_vec();
+        both.push(enqueued("a2", "toolu_02"));
+        assert!(!pending(&both));
+    }
+
+    #[test]
+    fn a_foreground_agent_call_is_not_pending() {
+        let answered = launched("toolu_01", "The agent's final report: all tests pass.", false);
+        assert!(!pending(&[answered]));
+        assert!(!pending(&[]));
+    }
+
+    #[test]
+    fn a_child_sessions_launch_does_not_count() {
+        let child = launched(
+            "toolu_01",
+            "Async agent launched successfully.\nagentId: c1 (internal ID)",
+            true,
+        );
+        assert!(!pending(&[child]));
+    }
+
+    #[test]
+    fn a_background_shell_is_pending_until_its_notification() {
+        let shell = launched(
+            "toolu_03",
+            "Command running in background with ID: b44qytqb4. Output is being written to: \
+             /tmp/tasks/b44qytqb4.output.",
+            false,
+        );
+        assert!(pending(std::slice::from_ref(&shell)));
+        assert!(!pending(&[shell, enqueued("b44qytqb4", "toolu_03")]));
+    }
+
+    #[test]
+    fn a_request_kept_beside_the_session_repeats_a_launch_without_counting() {
+        let blob = serde_json::json!({
+            "type": "api-request-blob",
+            "message": {"role": "user", "content": [
+                {"tool_use_id": "toolu_01", "type": "tool_result",
+                 "content": "Command running in background with ID: b1."}
+            ]}
+        });
+        assert!(!pending(&[blob.to_string()]));
+    }
+
+    #[test]
+    fn other_harnesses_say_nothing_pending() {
+        let text = agent("a1", "toolu_01");
+        for harness in Harness::ALL.into_iter().filter(|h| *h != Harness::ClaudeCode) {
+            assert!(!harness.background_pending(&text));
+        }
     }
 }

@@ -10,7 +10,7 @@
 //! come from Claude Code's InstructionsLoaded hook, not a model's file list.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use afkconvoy::kept::keep_under;
 use afkconvoy_core::harness::Harness;
@@ -167,7 +167,11 @@ fn real_claude_code_started_in_a_role_keeps_host_rules_opt_in_and_enforces_both_
             start.in_role(Harness::ClaudeCode, &launch),
             quoted(PROMPT)
         );
-        let out = Command::new(&shell).args(["-lic", &line]).stdin(Stdio::null()).output().unwrap();
+        let out = afkconvoy::census::command(&shell)
+            .args(["-lic", &line])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         let events: Vec<Value> =
             stdout.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
@@ -280,7 +284,7 @@ fn real_interactive_claude_takes_its_brief_without_persisting_workspace_trust() 
     use afkconvoy_core::line::Line;
 
     fn orca(args: &[&str]) -> Value {
-        let out = Command::new("orca").args(args).arg("--json").output().unwrap();
+        let out = afkconvoy::census::command("orca").args(args).arg("--json").output().unwrap();
         let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(answer["ok"], true, "{args:?}: {answer}");
         answer["result"].clone()
@@ -288,7 +292,7 @@ fn real_interactive_claude_takes_its_brief_without_persisting_workspace_trust() 
     struct Terminal(String);
     impl Drop for Terminal {
         fn drop(&mut self) {
-            let _ = Command::new("orca")
+            let _ = afkconvoy::census::command("orca")
                 .args(["terminal", "close", "--terminal", &self.0, "--json"])
                 .output();
         }
@@ -317,7 +321,12 @@ fn real_interactive_claude_takes_its_brief_without_persisting_workspace_trust() 
     }
     for dir in [&role, &project] {
         assert!(
-            Command::new("git").args(["init", "-q"]).current_dir(dir).status().unwrap().success()
+            afkconvoy::census::command("git")
+                .args(["init", "-q"])
+                .current_dir(dir)
+                .status()
+                .unwrap()
+                .success()
         );
         assert!(!persisted_trust(dir));
     }
@@ -437,10 +446,10 @@ fn a_real_claimed_worker_receives_a_later_comment_in_its_session() {
     );
     let existing = std::env::var("AFKCONVOY_LIVE_COMMENT_URL").ok();
     if existing.is_none() {
-        fleet.gh.comment(issue, &text).unwrap();
+        fleet.issues.comment(issue, &text).unwrap();
     }
     let comment = fleet
-        .gh
+        .issues
         .comments(issue)
         .unwrap()
         .into_iter()
@@ -454,7 +463,7 @@ fn a_real_claimed_worker_receives_a_later_comment_in_its_session() {
     let started = worker.handed(None).unwrap().unwrap();
     let began = Instant::now();
     loop {
-        let mut open = fleet.gh.open().unwrap();
+        let mut open = afkconvoy::issues::open(&fleet.gh, &*fleet.issues).unwrap();
         open.issues.rows.retain(|row| row.number == issue);
         let steps = reconcile(&fleet, &host, &open.issues);
         if afkconvoy::session::holds_note(&checkout, harness, started, &comment.url).unwrap() {

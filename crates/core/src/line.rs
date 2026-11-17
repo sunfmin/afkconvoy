@@ -13,7 +13,7 @@ pub const NICENESS: u64 = 10;
 /// The line a worker's terminal runs: `line`, which starts the worker launch
 /// command — in its role, or as it was given — run under `nice` with `tmp`
 /// for its `TMPDIR`, and every build it starts serial on its build
-/// directory (`SERIAL_BUILDS`, docs/adr/0088). The shell lowers itself, so
+/// directory (`SERIAL_BUILDS`, docs/adr/0082). The shell lowers itself, so
 /// whatever it reads the command as — an alias, a function — and all it
 /// starts run lower too.
 pub fn niced(tmp: &str, line: &str) -> String {
