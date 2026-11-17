@@ -146,6 +146,12 @@ pub struct Lander<'a, F: Forge> {
     /// What the commit named declares of its gate, read in the checkout
     /// named.
     pub declared: fn(&Path, &str) -> Result<Declared, String>,
+    /// The program's proving branch (docs/adr/0090), where it has one: a
+    /// round that lands on it is gated by its fast gate alone, which is its
+    /// whole gate there, and its green run is put on record for the tree it
+    /// lands (`Declared::on`); its slow gate runs at a promotion
+    /// (`proving::promote`). `None`: every target is gated whole.
+    pub proving: Option<String>,
     /// The time now, in epoch seconds.
     pub now: fn() -> u64,
 }
@@ -158,13 +164,36 @@ struct Read<N> {
     chain: Chain<N>,
 }
 
+/// The sha `checkout`'s remote has at `name`, fetched into it; `None`
+/// where it has none.
+pub(crate) fn fetched(checkout: &Git, name: &str) -> Result<Option<String>, String> {
+    fetched_from(checkout.worktree.as_path(), &checkout.remote, name)
+}
+
+/// The sha `from` has at `name`, fetched into the checkout in `dir`; `None`
+/// where it has none.
+fn fetched_from(dir: &Path, from: &str, name: &str) -> Result<Option<String>, String> {
+    let listed = git(dir, &["ls-remote", from, name])?;
+    let Some(sha) = listed
+        .lines()
+        .find_map(|line| line.split_once('\t').filter(|(_, n)| *n == name))
+        .map(|(sha, _)| sha.to_string())
+    else {
+        return Ok(None);
+    };
+    if git(dir, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_err() {
+        git(dir, &["fetch", "--quiet", "--no-tags", from, name])?;
+    }
+    Ok(Some(sha))
+}
+
 /// One git call in `dir` that must succeed → its stdout, trimmed.
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     git_in(dir, args, None)
 }
 
 /// Whether `head` holds `other`: `other` is `head` or an ancestor of it.
-fn contains(dir: &Path, head: &str, other: &str) -> Result<bool, String> {
+pub(crate) fn contains(dir: &Path, head: &str, other: &str) -> Result<bool, String> {
     let out = Command::new("git")
         .current_dir(dir)
         .args(["merge-base", "--is-ancestor", other, head])
@@ -244,24 +273,19 @@ where
     /// The sha the remote has at `name`, fetched into the checkout; `None`
     /// where it has none.
     fn fetched(&self, name: &str) -> Result<Option<String>, String> {
-        self.fetched_from(&self.git.remote, name)
+        fetched(&self.git, name)
     }
 
     /// The sha `from` has at `name`, fetched into the checkout; `None`
     /// where it has none.
     fn fetched_from(&self, from: &str, name: &str) -> Result<Option<String>, String> {
-        let listed = git(self.dir(), &["ls-remote", from, name])?;
-        let Some(sha) = listed
-            .lines()
-            .find_map(|line| line.split_once('\t').filter(|(_, n)| *n == name))
-            .map(|(sha, _)| sha.to_string())
-        else {
-            return Ok(None);
-        };
-        if git(self.dir(), &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_err() {
-            git(self.dir(), &["fetch", "--quiet", "--no-tags", from, name])?;
-        }
-        Ok(Some(sha))
+        fetched_from(self.dir(), from, name)
+    }
+
+    /// What `commit` declares of its gate, as a landing on `target` gates
+    /// by: on the proving branch, its fast gate alone (`Declared::on`).
+    fn declared_on(&self, target: &str, commit: &str) -> Result<Declared, String> {
+        Ok((self.declared)(self.dir(), commit)?.on(self.proving.as_deref(), target))
     }
 
     fn read(&self, target: &str) -> Result<Read<F::Note>, String> {
@@ -441,7 +465,7 @@ where
                 .to_string();
             let message = self.forge.message(&change);
             let commit = commit_tree(self.dir(), &tree, &[&predecessor, &original], &message)?;
-            let own = (self.declared)(self.dir(), &commit)?.own();
+            let own = self.declared_on(&change.target, &commit)?.own();
             let id = read.chain.unused_id(format!(
                 "{}-{}-{}",
                 change.number,
@@ -1119,7 +1143,7 @@ where
         let mut built = vec![];
         for (at, commit) in made.groups {
             let tree = git(self.dir(), &["rev-parse", &format!("{commit}^{{tree}}")])?;
-            let own = (self.declared)(self.dir(), &commit)?.own();
+            let own = self.declared_on(target, &commit)?.own();
             built.push(Built {
                 nodes: at,
                 commit,
@@ -1162,7 +1186,7 @@ where
         }
         let made = match merged {
             Some((commit, tree)) => {
-                let own = (self.declared)(self.dir(), &commit)?.own();
+                let own = self.declared_on(target, &commit)?.own();
                 Some(Merged { commit, tree, command: own.command, seconds: own.seconds })
             }
             None => None,

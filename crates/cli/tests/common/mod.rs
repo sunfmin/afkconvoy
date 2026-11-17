@@ -289,9 +289,11 @@ impl World {
             clone,
             bin,
         };
-        // The library this test calls in process resolves the host's cache
-        // and data directories as a command does: they are this world's, never
-        // those of the host the tests run on. A test that read the checkout
+        // The library this test calls in process resolves the host's cache,
+        // data and config directories as a command does: they are this
+        // world's, never those of the host the tests run on. A dev build's
+        // tests once took the host's real kit.json from its config directory
+        // into a world's host.db and moved it aside (2026-11-17). A test that read the checkout
         // list through the library once took the host's real checkouts.json
         // into a host.db in its real data directory (2026-11-17). Each test is
         // a process of its own under nextest, so its environment is its own.
@@ -299,6 +301,7 @@ impl World {
         unsafe {
             std::env::set_var("XDG_CACHE_HOME", world.cache());
             std::env::set_var("XDG_DATA_HOME", world.data());
+            std::env::set_var("XDG_CONFIG_HOME", world.config());
         }
         world.write_gh(&json!({"bare": world.bare, "base": BASE, "issues": [], "prs": [],
             "comments": {}, "labels": ["ready-for-agent"], "calls": [], "envs": []}));
@@ -393,10 +396,9 @@ impl World {
 
     /// Changes the host kit in place.
     pub fn with_kit(&self, change: impl FnOnce(&mut Value)) {
-        let mut kit: Value =
-            serde_json::from_slice(&std::fs::read(self.kit_path()).unwrap()).unwrap();
+        let mut kit = self.kit();
         change(&mut kit);
-        std::fs::write(self.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+        self.keep("kit.json", &kit);
     }
 
     /// What the host kit's first answers a caster's prompt with.
@@ -481,7 +483,7 @@ impl World {
             .env("SHELL", self.bin.join("shell"))
             .env("XDG_CACHE_HOME", self.cache())
             .env("XDG_DATA_HOME", self.data())
-            .env_remove("XDG_CONFIG_HOME")
+            .env("XDG_CONFIG_HOME", self.config())
             .env("HOME", self.home())
             .env_remove("ANTHROPIC_BASE_URL");
         // A stand-in world never inherits the host's real GitHub credential.
@@ -651,24 +653,29 @@ impl World {
         self.root.join("home")
     }
 
-    pub fn kit_path(&self) -> PathBuf {
-        self.home().join(".config/afkconvoy/kit.json")
+    /// The world's config directory: its HOME's `.config`, as a login shell
+    /// of its host user that sets no XDG_CONFIG_HOME has it.
+    pub fn config(&self) -> PathBuf {
+        self.home().join(".config")
+    }
+
+    /// The host kit, as its file held it: kept in the host database.
+    pub fn kit(&self) -> Value {
+        self.kept("kit.json")
     }
 
     /// Set a host command directly, as the terminal editor would save it.
     pub fn kit_command(&self, harness: &str, command: &str) {
-        let file = self.kit_path();
-        let mut kit = std::fs::read(&file)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .unwrap_or_else(|| json!({"harnesses": []}));
+        let mut kit = match self.kit() {
+            Value::Null => json!({"harnesses": []}),
+            kit => kit,
+        };
         let held = kit["harnesses"].as_array_mut().unwrap();
         match held.iter_mut().find(|held| held["harness"] == harness) {
             Some(held) => held["command"] = json!(command),
             None => held.push(json!({"harness": harness, "command": command})),
         }
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, serde_json::to_vec(&kit).unwrap()).unwrap();
+        self.keep("kit.json", &kit);
     }
 
     /// Set the Jev key command directly in the host's checkout-list settings.
@@ -1400,6 +1407,95 @@ impl World {
             Err(rusqlite::Error::QueryReturnedNoRows) => Value::Null,
             Err(error) => panic!("{error}"),
         }
+    }
+
+    /// The green gate records this world's host keeps (docs/adr/0037), each
+    /// the record's whole text, oldest first; empty where it keeps none.
+    pub fn gate_records(&self) -> Vec<String> {
+        self.host_rows("SELECT record FROM gate_records ORDER BY at, tree, command")
+    }
+
+    /// The red gate runs this world's host keeps until a work account cites
+    /// them, each the record's text, oldest first.
+    pub fn red_gate_runs(&self) -> Vec<String> {
+        self.host_rows("SELECT record FROM red_gate_runs ORDER BY at")
+    }
+
+    /// Whether this world's host keeps a green gate record of `tree`, of any
+    /// command.
+    pub fn gate_recorded(&self, tree: &str) -> bool {
+        self.gate_recorded_on(&self.cache(), tree)
+    }
+
+    /// Whether the host whose cache directory is `cache` — this world's, or
+    /// another host's beside it — keeps a green gate record of `tree`.
+    pub fn gate_recorded_on(&self, cache: &Path, tree: &str) -> bool {
+        let db = data_beside(cache).join("afkconvoy/host.db");
+        let stated = format!("convoy:gate tree={tree} ");
+        rows_of(&db, "SELECT record FROM gate_records").iter().any(|r| r.starts_with(&stated))
+    }
+
+    /// The remote's gate refs, on either layout: none is written any more.
+    pub fn remote_gate_refs(&self) -> Vec<String> {
+        let listed = self.remote(&[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/convoy/gate/",
+            "refs/heads/convoy-gate/",
+        ]);
+        listed.lines().map(str::to_string).collect()
+    }
+
+    /// The first column of each row `sql` selects from this world's host
+    /// database; empty where there is none yet.
+    fn host_rows(&self, sql: &str) -> Vec<String> {
+        rows_of(&self.host_db(), sql)
+    }
+
+    /// Keeps `record`, a green gate record of `command` on `tree` finished
+    /// at `at`, in this world's host database, as a gate run of its host
+    /// writes one (docs/adr/0037).
+    pub fn keep_gate_record(&self, tree: &str, command: &str, at: u64, record: &str) {
+        let path = self.host_db();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        afkconvoy::host_db::forget(&path, "paused.json").unwrap();
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        let common = std::fs::canonicalize(self.clone.join(".git")).unwrap();
+        let repo = format!("{:016x}", afkconvoy_core::gate::key(&common.to_string_lossy()));
+        db.execute(
+            "INSERT OR REPLACE INTO gate_records (repo, tree, command, at, record)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![repo, tree, command, at as i64, record],
+        )
+        .unwrap();
+    }
+
+    /// Lets the host's database take green gate records again
+    /// (`refuse_gate_records`).
+    pub fn allow_gate_records(&self) {
+        let db = rusqlite::Connection::open(self.host_db()).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        db.execute_batch("DROP TRIGGER IF EXISTS refuse_gate").unwrap();
+    }
+
+    /// Makes the host's database refuse every write of a green gate record,
+    /// with `reason`: what a remote hook refused a record with, before the
+    /// records were the host's.
+    pub fn refuse_gate_records(&self, reason: &str) {
+        let path = self.host_db();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // The tables are afkconvoy's to make: forgetting what a store holds
+        // opens, and so makes, the database.
+        afkconvoy::host_db::forget(&path, "paused.json").unwrap();
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        let reason = reason.replace('\'', "''");
+        db.execute_batch(&format!(
+            "CREATE TRIGGER refuse_gate BEFORE INSERT ON gate_records \
+             BEGIN SELECT RAISE(ABORT, '{reason}'); END"
+        ))
+        .unwrap();
     }
 
     /// Makes the host's database refuse every write of a chain whose text
@@ -2934,4 +3030,26 @@ pub fn data_beside(cache: impl AsRef<Path>) -> PathBuf {
     let mut name = cache.file_name().unwrap_or_default().to_os_string();
     name.push("-data");
     cache.with_file_name(name)
+}
+
+/// The test process's `PATH` with this build's `afkconvoy` first: what a
+/// command run with a cleared environment finds by that name. The installed
+/// release found otherwise refuses a host database this build migrated past
+/// it.
+pub fn built_first_path() -> String {
+    let built = std::path::Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap();
+    format!("{}:{}", built.display(), std::env::var("PATH").unwrap())
+}
+
+/// The first column of each row `sql` selects from the host database `db`;
+/// empty where there is none yet, or it was never migrated this far.
+fn rows_of(db: &Path, sql: &str) -> Vec<String> {
+    if !db.exists() {
+        return vec![];
+    }
+    let db = rusqlite::Connection::open(db).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+    let Ok(mut statement) = db.prepare(sql) else { return vec![] };
+    let rows = statement.query_map([], |row| row.get::<_, String>(0)).unwrap();
+    rows.map(Result::unwrap).collect()
 }

@@ -681,7 +681,7 @@ fn under_codex(world: &World, line: &str) -> Vec<String> {
     let out = afkconvoy::census::command("/bin/sh")
         .args(["-c", line])
         .env_clear()
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .env("PATH", format!("{}:{}", bin.display(), crate::common::built_first_path()))
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -728,7 +728,7 @@ fn hook_answers(
     hook_run
         .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
         .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
+        .env("PATH", crate::common::built_first_path())
         .env("XDG_CACHE_HOME", world.cache())
         .env("XDG_DATA_HOME", world.data())
         .env("STAND_IN_HOOK", hook);
@@ -939,7 +939,7 @@ fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_pl
             let mut child = afkconvoy::census::command("/bin/sh")
                 .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
                 .env_clear()
-                .env("PATH", std::env::var("PATH").unwrap())
+                .env("PATH", crate::common::built_first_path())
                 .env("STAND_IN_HOOK", hook)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -1299,7 +1299,7 @@ fn a_discovered_codex_command_must_take_the_role_flags_before_it_is_saved() {
     let why = tick(&world, 1000).error();
     assert!(why.contains("no --dangerously-bypass-hook-trust, no --config"), "{why}");
     assert!(world.claims().is_empty());
-    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let kit: Value = world.kit();
     let codex = kit["harnesses"]
         .as_array()
         .unwrap()

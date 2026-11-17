@@ -67,7 +67,7 @@ fn a_new_host_asks_for_its_watch_directory_before_any_startup_writes_and_no_trac
     let world = fresh_host();
     // A missing kit and flags that would write settings are deliberate:
     // neither setup nor those writes may precede this refusal.
-    std::fs::remove_file(world.kit_path()).unwrap();
+    world.forget("kit.json");
     refused(
         &world,
         &world.clone,

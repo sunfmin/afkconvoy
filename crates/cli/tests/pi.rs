@@ -557,7 +557,7 @@ fn under_pi(world: &World, line: &str, calls: &Value) -> Value {
     let out = afkconvoy::census::command("/bin/sh")
         .args(["-c", line])
         .env_clear()
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .env("PATH", format!("{}:{}", bin.display(), crate::common::built_first_path()))
         .env("XDG_CACHE_HOME", world.cache())
         .env("XDG_DATA_HOME", world.data())
         .env("STAND_IN_CALLS", calls.to_string())
@@ -746,7 +746,7 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     let out = afkconvoy::census::command("/bin/sh")
         .args(["-c", &gone])
         .env_clear()
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .env("PATH", format!("{}:{}", bin.display(), crate::common::built_first_path()))
         .output()
         .unwrap();
     assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));

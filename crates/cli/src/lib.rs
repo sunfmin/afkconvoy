@@ -74,6 +74,7 @@ pub mod forget;
 pub mod found;
 pub mod fresh_look;
 pub mod gate;
+mod gate_records;
 pub mod gh;
 mod gh_equivalent;
 mod gh_quota;
@@ -354,6 +355,14 @@ enum Command {
         /// Take this harness out of the host kit until switch puts it back
         #[arg(long, value_parser = kit_harness, conflicts_with_all = ["harness", "research", "cast"])]
         remove: Option<Harness>,
+        /// Start this harness's workers on this command from now on, and list its models through it
+        #[arg(
+            long,
+            value_name = "HARNESS=COMMAND",
+            value_parser = kit_command,
+            conflicts_with_all = ["harness", "research", "cast", "remove"]
+        )]
+        command: Option<(Harness, String)>,
     },
     /// A worker's `model:` label or the user default sets its harness model; automatic casting is gone
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment, long_about = caster::HELP)]
@@ -542,6 +551,9 @@ enum Command {
         /// Include earlier watch rounds; the default keeps only the last round's report
         #[arg(long)]
         rounds: bool,
+        /// Print the stderr a need that failed on this host kept, by the name a finding gives it
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["all", "rounds"])]
+        stderr: Option<String>,
         #[command(flatten)]
         proxy: ProxyArgs,
         /// The host whose fleet is asked after [default: this machine's name]
@@ -1954,6 +1966,17 @@ fn verdict(text: &str) -> Result<Declared, String> {
 
 /// An existing kit harness to promote, by its key. The old `config`
 /// pseudo-harness is rejected because priority has no independent override.
+/// `--command`'s `<harness>=<command>`.
+fn kit_command(text: &str) -> Result<(Harness, String), String> {
+    let (harness, command) =
+        text.split_once('=').ok_or("say it as `<harness>=<command>`, as `pi=pi --custom`")?;
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("the command is empty: name the command its workers start on".into());
+    }
+    Ok((kit_harness(harness.trim())?, command.to_string()))
+}
+
 fn kit_harness(text: &str) -> Result<Harness, String> {
     match text {
         "config" => {
@@ -2558,8 +2581,17 @@ fn run(
     match command {
         Command::Asked { question, text_file } => asking_report::record(&question, &text_file),
         Command::Watched { watch, text_file } => watch_report::record(&watch, &text_file, now),
+        Command::Doctor { stderr: Some(name), .. } => match probe::kept_stderr(&name)? {
+            Some(text) => Ok(json!({"name": name, "stderr": text})),
+            None => bail!(
+                "this host keeps no stderr named `{name}`: its check passed since, or it is no name `plan` or `doctor` gave"
+            ),
+        },
         Command::Kit { cast: Some(_), .. } => bail!("automatic casting is gone"),
         Command::Kit { remove: Some(harness), .. } => kit::remove(harness, now),
+        Command::Kit { command: Some((harness, command)), .. } => {
+            kit::set_command(harness, &command, now)
+        }
         Command::Kit { research: Some(file), .. } => kit::apply_research(&file, now),
         Command::Kit { harness: Some(harness), .. } => kit::write_one(harness, now),
         Command::Kit { .. } => kit::write(now),

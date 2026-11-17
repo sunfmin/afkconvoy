@@ -268,7 +268,7 @@ checks:
 ```
 A separate `yaml cut-needs` block uses the same `checks` form for cutting. Before claiming a due cut, the host runs these checks; a failure leaves the cut for another host and is named in the tick, plan and doctor. Output follows the same privacy rules.
 
-Each name is unique and nonempty, each command nonempty, and seconds positive. Each runs with `sh -e` in the checkout, with the host's environment — a fresh login shell's, as the host runner has — never that of the command that set it off: a worker's sandbox proxy, `TMPDIR` and tool homes do not reach it. The startup probe refuses a failed or timed-out check; a passing check stands for an hour. A check's stdout is discarded. On failure its last 20 stderr lines are stored in a user-only file in the host cache, overwritten by its next run; the refusal names the file, never its contents.
+Each name is unique and nonempty, each command nonempty, and seconds positive. Each runs with `sh -e` in the checkout, with the host's environment — a fresh login shell's, as the host runner has — never that of the command that set it off: a worker's sandbox proxy, `TMPDIR` and tool homes do not reach it. The startup probe refuses a failed or timed-out check; a passing check stands for an hour. A check's stdout is discarded. On failure its last 20 stderr lines are kept in the host database, which its user alone reads, overwritten by its next run; the refusal names the `afkconvoy doctor --stderr <name>` line that prints them, never their contents.
 
 A check may declare how to install what it checks, with `install` and `install_seconds` together (both or neither):
 

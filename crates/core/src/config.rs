@@ -388,17 +388,21 @@ impl Config {
     /// Whether a landing on `target` is a landing on this repo's proving
     /// branch, which runs the fast gate alone (docs/adr/0090).
     pub fn proves_on(&self, target: &str) -> bool {
-        self.proving_branch.as_deref() == Some(target)
+        afkconvoy_landing::proving::proves_on(self.proving_branch.as_deref(), target)
     }
 
     /// This config as a landing on the proving branch gates by: its fast
     /// gate is its whole gate, with that gate's limit and budget, and it
     /// splits nothing (docs/adr/0090); the slow gate runs at a promotion.
-    /// Unchanged where it declares no fast gate with time to run.
+    /// Unchanged where it declares no fast gate with time to run
+    /// (`afkconvoy_landing::proving::landing_gate`).
     pub fn fast_as_whole(self) -> Config {
-        let Some(fast) = self.gates.as_ref().map(|gates| gates.fast.clone()) else {
+        let Some(fast) = afkconvoy_landing::proving::landing_gate(self.gates.as_ref()).cloned()
+        else {
             return self;
         };
+        // What `landing_gate` holds already, said here for the refinement of
+        // `gate_seconds`, which Flux reads only in this body.
         if fast.seconds == 0 {
             return self;
         }

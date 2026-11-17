@@ -636,10 +636,7 @@ fn two_tasks_hand_off_one_pr_and_a_human_merge_is_reconstructed_after_restart() 
     assert_eq!(final_prs(&world).len(), 1);
     assert_eq!(final_prs(&world)[0]["draft"], true);
     assert!(refs_under(&world, "refs/convoy/delivery-evidence").is_empty());
-    assert!(
-        !refs_under(&world, "refs/convoy/gate").is_empty(),
-        "each task landing records its own green gate"
-    );
+    assert!(!world.gate_records().is_empty(), "each task landing records its own green gate");
 
     world.gh_calls();
     let handed = handoff(&world);

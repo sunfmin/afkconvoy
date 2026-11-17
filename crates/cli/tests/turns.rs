@@ -230,15 +230,7 @@ fn two_turns_land_in_order_with_a_record_of_each_landed_tree_and_no_line() {
     for answer in [&a, &b] {
         let commit = answer["commit"].as_str().unwrap();
         let tree = git(&world.clone, &["rev-parse", &format!("{commit}^{{tree}}")]);
-        assert!(
-            !world
-                .remote(&[
-                    "for-each-ref",
-                    "--format=%(refname)",
-                    &format!("refs/convoy/gate/{tree}-*")
-                ])
-                .is_empty()
-        );
+        assert!(world.gate_recorded(&tree));
     }
 }
 
@@ -471,7 +463,7 @@ fn a_green_run_without_a_written_record_joins_nothing_and_keeps_the_pr_in_its_an
     world.set_gate("true");
     seed(&world);
     let worker = world.worker(1, "one.txt", "one");
-    world.watch_pushes(Some("convoy/gate"));
+    world.refuse_gate_records("refused by the test");
     let answer = world.afk_in(&worker, &["gate", "--land"]).ok();
     assert_eq!(answer["status"], "green");
     assert_eq!(answer["recorded"], false);
@@ -479,7 +471,7 @@ fn a_green_run_without_a_written_record_joins_nothing_and_keeps_the_pr_in_its_an
     assert_eq!(answer["issue"], 1);
     assert_eq!(answer["pr"], 10);
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
-    world.watch_pushes(None);
+    world.allow_gate_records();
     assert_eq!(world.afk_in(&worker, &["gate", "--land"]).ok()["outcome"], "merged");
 }
 
@@ -488,10 +480,10 @@ fn a_green_tip_whose_record_cannot_be_written_returns_a_retryable_error() {
     let world = World::new();
     world.set_gate("true");
     let worker = world.worker(1, "one.txt", "one");
-    world.watch_pushes(Some("convoy/gate"));
+    world.refuse_gate_records("refused by the test");
     let error = world.afk_in(&worker, &["gate", "--land"]).error();
     assert!(error.contains("gated green without a record"), "{error}");
-    world.watch_pushes(None);
+    world.allow_gate_records();
     assert_eq!(world.afk_in(&worker, &["gate", "--land"]).ok()["outcome"], "merged");
 }
 
@@ -637,6 +629,54 @@ fn a_rejected_push_ends_the_turn_and_another_turn_gates_the_new_base() {
     assert_eq!(landed["recorded"], true);
     assert_eq!(world.remote(&["show", "refs/heads/main:outside.txt"]), "another host");
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
+}
+
+/// Each host keeps its own gate records (docs/adr/0037): a tip another host
+/// landed, and certified there, is no tip this host has a record of. This
+/// host's next turn gates it alone first, then lands on it. That run is
+/// wasted, and accepted (sunfmin/control#1326).
+#[test]
+fn a_tip_another_host_landed_is_certified_here_alone_before_this_hosts_landing() {
+    let world = World::new();
+    let runs = world.root.join("runs");
+    world.set_gate(&format!(
+        "ls | grep -x -e one.txt -e two.txt | tr '\\n' ' ' >> {0}; echo >> {0}",
+        quote(&runs)
+    ));
+    seed(&world);
+    // Another host: the same checkout list and settings, a database of its own.
+    let other = world.root.join("other-host").join("cache");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    let copy = |from: &Path, to: &Path| {
+        let copied = std::process::Command::new("cp").arg("-R").arg(from).arg(to).status();
+        assert!(copied.unwrap().success());
+    };
+    copy(&world.cache(), &other);
+    copy(&world.data(), &crate::common::data_beside(&other));
+
+    let one = world.worker(1, "one.txt", "one");
+    let two = world.worker(2, "two.txt", "two");
+    let landed = finish(start(&world, &one, &other, 1));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let tip = landed["commit"].as_str().unwrap();
+    let tree = git(&world.clone, &["rev-parse", &format!("{tip}^{{tree}}")]);
+    assert!(!world.gate_recorded(&tree), "the other host's record is its own");
+    assert_eq!(world.remote_gate_refs(), [] as [String; 0], "nothing is pushed of it");
+
+    let here = finish(start(&world, &two, &world.cache(), 2));
+    assert_eq!(here["outcome"], "merged", "{here}");
+    assert_eq!(here["merged"], tip, "it landed on the other host's tip");
+    let ran: Vec<String> = std::fs::read_to_string(&runs)
+        .unwrap()
+        .lines()
+        .map(|line| line.trim().to_string())
+        .collect();
+    assert_eq!(
+        ran,
+        ["", "one.txt", "one.txt", "one.txt two.txt"],
+        "the base here, #1 there, the tip it landed alone here, then #2 on it"
+    );
+    assert!(world.gate_recorded(&tree), "this host certified the tip itself");
 }
 
 #[test]

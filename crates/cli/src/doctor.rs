@@ -227,6 +227,7 @@ kinds! {
     NotOurs: Warning, "is held off by a PR not the fleet's";
     CarriedLanded: Warning, "is open though the PR that carried it landed";
     LegacyTargets: Info, "separate target records an earlier release left";
+    LegacyGateRecords: Info, "gate records are left on the remote";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
@@ -612,6 +613,9 @@ pub struct State {
     /// The separate `target/<n>` records an earlier release left, which the
     /// acting tick carries and removes (`target::carry_legacy`).
     pub legacy_targets: Vec<String>,
+    /// The gate records an afkconvoy before docs/adr/0037's amendment left on
+    /// the remote: read by nothing, and removed by the next start's probe.
+    pub legacy_gate_records: Vec<String>,
     /// Candidate state from the same remote listing as the working set.
     pub candidates: Value,
     /// The pending places live lands of this host hold on its chains, from
@@ -1356,7 +1360,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             json!(["cut-need", cut.newest_tag, cut.initial]),
             failed.said(),
             failed.evidence(),
-            "read its stderr file on this host, then check the repo's cut-needs declaration"
+            "print its stderr on this host with the `afkconvoy doctor --stderr` line it names, then check the repo's cut-needs declaration"
                 .to_string(),
         ));
     }
@@ -1543,6 +1547,19 @@ fn legacy_targets_finding(left: &[String]) -> Option<Finding> {
         json!(["legacy-targets"]),
         format!("{} separate target records an earlier release left are on the remote", left.len()),
         format!("the remote holds {first} and {} more", left.len() - 1),
+        "afkconvoy run".into(),
+    ))
+}
+
+/// The gate records still left on the remote: a host keeps its own in its
+/// database and reads none of them; the next start's probe removes them.
+fn legacy_gate_records_finding(left: &[String]) -> Option<Finding> {
+    let first = left.first()?;
+    Some(finding(
+        Kind::LegacyGateRecords,
+        json!(["legacy-gate-records"]),
+        format!("{} gate records are left on the remote", left.len()),
+        format!("the remote holds {first} and {} more; nothing reads them", left.len() - 1),
         "afkconvoy run".into(),
     ))
 }
@@ -1811,6 +1828,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
                 state.carried_landed.iter().map(|c| carried_landed_finding(&state.tracker, c)),
             );
             found.extend(legacy_targets_finding(&state.legacy_targets));
+            found.extend(legacy_gate_records_finding(&state.legacy_gate_records));
             found.extend(pending_finding(&state.pending));
         }
         Err(why) => found.push(finding(
@@ -2159,6 +2177,13 @@ fn finish_state(
         on_gone,
         carried_landed,
         legacy_targets: crate::target::legacy_left(&fleet).into_iter().map(|r| r.name).collect(),
+        legacy_gate_records: afkconvoy_core::layout::Layout::ALL
+            .into_iter()
+            .flat_map(|layout| {
+                fleet.records_at_open(&layout.every(afkconvoy_core::layout::GATE_KIND))
+            })
+            .map(|record| record.name)
+            .collect(),
         candidates,
         pending,
         legacy_chains: crate::candidates::legacy(
@@ -3235,7 +3260,7 @@ The operator, in a checkout of the repo, on the host the fleet runs on. No `--in
 
 ## What it reads and writes
 
-It reads this host (the commands the fleet needs, in a login shell; orca), the log this host's `run` keeps of its ticks, the open issues, PRs and stage records on GitHub, whether GitHub says the tracker is public, the claims, heartbeats and recorded gate runs on the remote, and orca after the worker of each claim. It writes nothing on GitHub and nothing on the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like. It fixes nothing either: each finding names the command that does.
+It reads this host (the commands the fleet needs, in a login shell; orca), the log this host's `run` keeps of its ticks, the open issues, PRs and stage records on GitHub, whether GitHub says the tracker is public, the claims and heartbeats on the remote, this host's recorded gate runs in its database, and orca after the worker of each claim. It writes nothing on GitHub and nothing on the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like. It fixes nothing either: each finding names the command that does.
 
 A harness whose first login answer reads logged out is asked once more in that same login shell setting before `tools` reports `logged_out`; ready on the second answer is ready. A ready harness is still started at most once per doctor. A tool finding's evidence carries the last answer's exit status and the first 500 characters it printed, with credential-shaped text redacted.
 
@@ -3243,6 +3268,8 @@ With `--all` it reads the checkout list (in the host's database) and the same of
 It also reads every tracker that list names once for repo-labelled work, including repos absent from this host. A repo nobody works has an open ready issue with no open blocker or claim, ready for more than an hour since the later of its dispatch label being applied and its last blocker closing, and no remote heartbeat within the 1800-second lease. Ready means the repo's ready label, or its team's flow labels. Only an old enough unblocked issue, or an existing report, asks that repo's heartbeat remote. `host.unworked_repos` holds the waiting issues and their seconds, newest heartbeat's host and time (or null), report and opening host, recovery host, and read error. An unreadable remote proves nothing about whether a fleet works it. Where the login's REST core quota is spent, no tracker is read before its reset, and no repo is said unread for want of it: `host.github_quota` holds {host, login, api, reset} and one finding says it, which calls no watch. Doctor opens and closes nothing; the host runner reconciles these reports at its look.
 
 ## What it answers
+
+With `--stderr <name>`: {name, stderr}, the last 20 stderr lines a need's check or install kept when it failed on this host, by the name a finding, `plan`'s `need_installs` or a refusal gives it — `gate-needs/<key>`, `cut-needs/<key>`, `gate-needs-install/<key>`, `cut-needs-install/<key>` or `cut-held/<key>`. They are kept in the host's database, which its user alone reads (`afkconvoy help data`), and said nowhere else: a check's output is private to its host. A check that passes again drops them; a name this host keeps none of is an error.
 
 {"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "legacy_candidate_chains", "findings", "deliveries"}
 
@@ -3514,6 +3541,7 @@ mod tests {
             on_gone: vec![],
             carried_landed: vec![],
             legacy_targets: vec![],
+            legacy_gate_records: vec![],
             candidates: json!([]),
             pending: vec![],
             base_moved: None,

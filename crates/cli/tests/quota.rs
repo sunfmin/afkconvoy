@@ -56,18 +56,41 @@ fn resource_calls(world: &World, api: &str) -> usize {
         .count()
 }
 
-fn quota_files(world: &World) -> Vec<std::path::PathBuf> {
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries {
-                let p = e.unwrap().path();
-                if p.is_dir() { walk(&p, out) } else { out.push(p) }
-            }
-        }
+/// The host database of `world`, as its quota notes are read and changed.
+fn quota_db(world: &World) -> rusqlite::Connection {
+    rusqlite::Connection::open(world.host_db()).unwrap()
+}
+
+/// Each quota note the host keeps, as `(host, name, note)`.
+fn quota_notes(world: &World) -> Vec<(String, String, serde_json::Value)> {
+    let db = quota_db(world);
+    let mut notes = db.prepare("SELECT host, name, note FROM github_quota").unwrap();
+    let notes = notes.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2)?)));
+    notes
+        .unwrap()
+        .map(Result::unwrap)
+        .map(|(h, n, t)| (h, n, serde_json::from_str(&t).unwrap()))
+        .collect()
+}
+
+/// The quota note `name` the host keeps.
+fn quota_note(world: &World, name: &str) -> serde_json::Value {
+    quota_notes(world).into_iter().find(|(_, n, _)| n == name).unwrap().2
+}
+
+/// Everything the host keeps of GitHub quotas and identities, as text.
+fn quota_texts(world: &World) -> Vec<String> {
+    let db = quota_db(world);
+    let mut texts = vec![];
+    for sql in [
+        "SELECT host || login || name || note FROM github_quota",
+        "SELECT host || credential || note FROM github_identities",
+        "SELECT scope || key || kept FROM shared_readings",
+    ] {
+        let mut rows = db.prepare(sql).unwrap();
+        texts.extend(rows.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap));
     }
-    let mut files = vec![];
-    walk(&world.cache().join("afkconvoy/github-quota"), &mut files);
-    files
+    texts
 }
 
 #[test]
@@ -85,11 +108,12 @@ fn exhausted_api_is_skipped_across_commands_and_recovers_after_reset() {
             "known exhaustion must not hit the API on another command"
         );
         // Expire the observation rather than exhausting an account or sleeping.
-        for file in quota_files(&world) {
-            if file.file_name().unwrap() == format!("{api}.json").as_str() {
-                std::fs::write(file, r#"{"remaining":0,"reset":1}"#).unwrap();
-            }
-        }
+        quota_db(&world)
+            .execute(
+                r#"UPDATE github_quota SET note = '{"remaining":0,"reset":1}' WHERE name = ?1"#,
+                [api],
+            )
+            .unwrap();
         world.with_gh(|gh| gh["quota_fail"] = json!({}));
         plan(&world);
         if api == "core" {
@@ -186,11 +210,7 @@ fn secondary_limits_hold_both_apis_and_honor_retry_after() {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let error = world.afk(&["plan"]).error();
     assert!(error.contains("secondary rate limit"), "{error}");
-    let file = quota_files(&world)
-        .into_iter()
-        .find(|p| p.file_name().unwrap() == "secondary.json")
-        .unwrap();
-    let held: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    let held = quota_note(&world, "secondary");
     assert!(held["reset"].as_u64().unwrap() >= before + 120);
     world.gh_calls();
     assert!(world.afk(&["plan"]).error().contains("both APIs wait"));
@@ -278,8 +298,9 @@ fn quota_notes_are_isolated_by_authenticated_identity_and_host() {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     let out = command.env("GH_HOST", "github.example.test").args(["plan"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
-    let dirs = std::fs::read_dir(world.cache().join("afkconvoy/github-quota")).unwrap().count();
-    assert_eq!(dirs, 2);
+    let hosts: std::collections::BTreeSet<String> =
+        quota_notes(&world).into_iter().map(|(host, _, _)| host).collect();
+    assert_eq!(hosts.len(), 2, "{hosts:?}");
 }
 
 #[test]
@@ -357,11 +378,7 @@ fn ordinary_turn_with_rest_exhausted_still_gates_lands_and_closes_its_issue() {
         &worktree,
         &["rev-parse", &format!("{}^{{tree}}", result["commit"].as_str().unwrap())],
     );
-    assert!(
-        !world
-            .remote(&["for-each-ref", "--format=%(refname)", &format!("refs/convoy/gate/{tree}-*")])
-            .is_empty()
-    );
+    assert!(world.gate_recorded(&tree));
 }
 
 #[test]
@@ -481,11 +498,7 @@ fn response_headers_supply_reset_and_secondary_http_date_backoff() {
     limited.with_gh(|gh|gh["quota_fail"]=json!({"graphql":{"stderr":"gh: secondary rate limit","stdout":"HTTP/2.0 403 Forbidden\nRetry-After: Fri, 01 Jan 2038 00:00:00 GMT\n\n{}"}}));
     let error = limited.afk(&["plan"]).error();
     assert!(error.contains("secondary rate limit"), "{error}");
-    let file = quota_files(&limited)
-        .into_iter()
-        .find(|p| p.file_name().unwrap() == "secondary.json")
-        .unwrap();
-    let note: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    let note = quota_note(&limited, "secondary");
     assert_eq!(note["reset"], afkconvoy::doctor::watching::since("2038-01-01T00:00:00Z").unwrap());
 }
 
@@ -546,8 +559,7 @@ fn overriding_credentials_resolve_identity_without_exhausted_status_probes() {
             resource_calls(&world, api) > 0,
             "a changed credential must discover its own login/quota"
         );
-        for file in quota_files(&world) {
-            let text = std::fs::read_to_string(file).unwrap();
+        for text in quota_texts(&world) {
             assert!(
                 !text.contains("fixture-token-a") && !text.contains("fixture-token-b"),
                 "credentials must not be stored"

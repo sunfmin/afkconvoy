@@ -2,14 +2,17 @@
 //! proving branch's tip once the slow gate passed there. The proving branch
 //! holds every round that landed on it fast-green; the base branch moves
 //! only by this.
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use afkconvoy_core::config::Config;
-use afkconvoy_core::gate::{GateCommand, Proven, Tree};
+use afkconvoy_core::gate::{GateCommand, Judged};
+use afkconvoy_landing::proving::{self, Outcome, Tips};
+use afkconvoy_landing::turn::Declared;
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -275,215 +278,275 @@ impl Due {
 /// fast-forwards the base branch to it. Nothing else ever moves the base
 /// branch of a repo with a proving branch.
 ///
-/// Several hosts land on one proving branch (sunfmin/control#1334), so the
-/// tip is read from the remote before the gate's lane is asked for, and
-/// again once it is given: the tip gated is every host's landings up to
-/// then, in one run.
+/// The promotion is the landing crate's (`proving::promote`), which this
+/// host runs (`Runner`): its lane in the exclusive queue, its gate in a
+/// worktree detached at the tip. Several hosts land on one proving branch
+/// (sunfmin/control#1334), so the tip is read from the remote before the
+/// gate's lane is asked for, and again once it is given: the tip gated is
+/// every host's landings up to then, in one run. What follows is the
+/// fleet's: the answer, the repair issue of a red tip, closed by a green
+/// one, and the line in the fleet's log.
 pub fn promote(repo: &Repo, host: &str, now: u64) -> Result<Value> {
     let config = crate::config::of(repo)?;
     let tracker = crate::gh::GitHub::of(repo)?.tracker;
-    let Some(asked) = Standing::read(repo, &config, &tracker)? else {
+    if config.proving_branch.is_none() {
         return Ok(json!({
             "outcome": "none",
             "detail": "this repo declares no proving_branch: it lands on its base branch, and \
                        nothing is promoted (afkconvoy config --help)",
         }));
-    };
-    if let Some(answer) = settled(repo, &asked, now) {
-        return Ok(answer);
     }
-    let Some(_lock) = Lock::take(repo)? else {
-        let mut answer = asked.json(now);
-        answer["outcome"] = json!("promoting");
-        answer["detail"] = json!("another promotion of this checkout runs; it answers for it");
-        return Ok(answer);
-    };
-    // The lane its gate runs in, taken before the tip is read the last time:
-    // a landing of any host while it waited is in what it gates.
-    let declared = crate::turn::tip_config(repo, &asked.tip, &asked.base_branch)?;
-    let heavy = crate::config::heavy_gate(&declared.gate_command)
-        || declared.gates.as_ref().is_some_and(|gates| {
-            crate::config::heavy_gate(&gates.fast.command)
-                || crate::config::heavy_gate(&gates.slow.command)
-        });
-    let _lane = match crate::exclusive::held() {
-        true => None,
-        false => Some(crate::exclusive::Permit::promotion(
-            repo,
-            "promote: the proving branch's tip",
-            heavy,
-        )?),
-    };
-    let standing = Standing::read(repo, &config, &tracker)?
-        .context("the repo's proving branch went from its config while the promotion waited")?;
-    if let Some(answer) = settled(repo, &standing, now) {
-        return Ok(answer);
-    }
-    let mut answer = standing.json(now);
-    let tip = standing.tip.clone();
-    answer["gated_tip"] = json!(tip);
-    // The tip's own declaration, as a landing on the base branch reads it.
-    let declared = crate::turn::tip_config(repo, &tip, &standing.base_branch)?;
-    let whole = GateCommand::new(&declared.gate_command);
-    let tree = Tree::named(&repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?);
     let output = repo.common_dir()?.join(format!("convoy-promotion-{now}-{}.log", crate::unique()));
-    let (gated, ran) = gate(repo, &declared, &tip, &tree, host, now, &output)?;
-    answer["gate"] = json!(ran);
-    answer["gate_command"] = json!(declared.gate_command);
-    match gated {
-        Gated::Green { run, .. } => {
-            let _ = std::fs::remove_file(&output);
-            let proven = Proven::by(&tree, &whole, &run, now)
-                .ok_or_else(|| anyhow!("the whole gate's record of {tip} does not stand"))?;
-            publish(repo, &standing, &proven, &mut answer)?;
-            // The gated tip is in the base branch, by this promotion or
-            // another host's: a repair of a red promotion is done.
-            if matches!(answer["outcome"].as_str(), Some("promoted" | "already_promoted"))
-                && let Some(issue) =
-                    crate::promotion_repair::green(repo, &standing.proving_branch, &tip)?
-            {
-                answer["repair_closed"] = json!(issue);
-            }
+    let runner = Runner {
+        repo,
+        config: &config,
+        tracker: &tracker,
+        host,
+        now,
+        output: &output,
+        standing: RefCell::new(None),
+        records: crate::gate_records::OnHost(repo),
+    };
+    let promotion = proving::promote(&runner, now)?;
+    let standing =
+        runner.standing.into_inner().context("a promotion reads the remote's tips first")?;
+    let tip = standing.tip.clone();
+    let mut answer = standing.json(now);
+    answer["outcome"] = json!(promotion.outcome.word());
+    let declared = match promotion.ran {
+        Some(ran) => {
+            let declared = crate::turn::tip_config(repo, &tip, &standing.base_branch)?;
+            answer["gated_tip"] = json!(tip);
+            answer["gate"] = json!(ran.word());
+            answer["gate_command"] = json!(declared.gate_command);
+            Some(declared)
         }
-        Gated::Red { red, .. } => {
-            answer["outcome"] = json!("gate_red");
+        None => None,
+    };
+    let base_branch = &standing.base_branch;
+    let mut said = true;
+    let detail = match &promotion.outcome {
+        Outcome::Current => {
+            said = false;
+            "the base branch is at the proving branch's tip".to_string()
+        }
+        Outcome::Promoting => {
+            said = false;
+            "another promotion of this checkout runs; it answers for it".to_string()
+        }
+        Outcome::Diverged { base } if declared.is_none() => format!(
+            "the base branch {base_branch} is not an ancestor of the proving branch's tip: a \
+             promotion never moves it to a commit that is not a fast-forward of it; it stays at \
+             {base}"
+        ),
+        Outcome::Diverged { base } => format!(
+            "the base branch {base_branch} moved to {base}, which is not an ancestor of the gated \
+             tip {tip}: a promotion never moves it to what is not a fast-forward of it"
+        ),
+        Outcome::Promoted { from } => {
+            format!("fast-forwarded {base_branch} from {from} to {tip}, {}", covered(&standing))
+        }
+        Outcome::AlreadyPromoted { base } => format!(
+            "the gated tip {tip} is in the base branch {base_branch} already, at {base}: another \
+             promotion took it there; nothing is pushed"
+        ),
+        Outcome::TargetMoved { .. } => format!(
+            "the remote refused the fast-forward of {base_branch} to {tip} {} times: it moved \
+             each time; the next promotion reads it again",
+            proving::PUBLISH_TRIES
+        ),
+        Outcome::Unrecorded(why) => {
+            bail!("the gate passed on {tip}, but the whole gate is not on record: {why}")
+        }
+        Outcome::GateRed(red) => {
             answer["failing"] = json!(red.tests);
             answer["gate_output"] = json!(output);
             let said = red.said(&format!("the proving branch's tip {tip}"));
-            let landed: Vec<(Option<u64>, u64)> =
-                crate::landing::joins_in(repo, &tracker, &[&format!("{}..{tip}", standing.base)])?
-                    .iter()
-                    .map(|landed| (landed.issue(), landed.pr))
-                    .collect();
-            let text = std::fs::read_to_string(&output).unwrap_or_default();
-            let lines: Vec<&str> = text.lines().collect();
-            let excerpt = lines[lines.len().saturating_sub(80)..].join("\n");
-            let issue = crate::promotion_repair::red(
-                repo,
-                &declared,
-                &crate::promotion_repair::Red {
-                    proving: &standing.proving_branch,
-                    tip: &tip,
-                    said: &said,
-                    failing: &red.tests,
-                    output: &output,
-                    excerpt: &excerpt,
-                    landed: &landed,
-                    gate_command: &declared.gate_command,
-                },
-            )?;
+            let declared = declared.as_ref().context("a red promotion ran a gate")?;
+            let issue = repair(repo, &tracker, &standing, declared, (&said, &red.tests, &output))?;
             answer["repair_issue"] = json!(issue);
-            answer["detail"] = json!(format!(
-                "{}; the base branch {} stays at {}",
-                red.said(&format!("the proving branch's tip {tip}")),
-                standing.base_branch,
-                standing.base
-            ));
+            format!("{said}; the base branch {base_branch} stays at {}", standing.base)
         }
-        Gated::Unsettled { unsettled, .. } => {
-            answer["outcome"] = json!("gate_unsettled");
+        Outcome::GateUnsettled(unsettled) => {
             answer["gate_output"] = json!(output);
-            answer["detail"] = json!(format!(
+            format!(
                 "the proving branch's tip {tip} is unsettled: {}; nothing is recorded, and the \
-                 base branch {} stays at {}",
+                 base branch {base_branch} stays at {}",
                 unsettled.how(),
-                standing.base_branch,
                 standing.base
-            ));
+            )
         }
+    };
+    answer["detail"] = json!(detail);
+    match &promotion.outcome {
+        Outcome::Promoted { from: base }
+        | Outcome::AlreadyPromoted { base }
+        | Outcome::TargetMoved { base }
+        | Outcome::Diverged { base } => {
+            answer["base_tip"] = json!(base);
+        }
+        _ => {}
     }
-    say(repo, &standing, &answer);
+    let green = matches!(
+        promotion.outcome,
+        Outcome::Promoted { .. } | Outcome::AlreadyPromoted { .. } | Outcome::TargetMoved { .. }
+    ) || (matches!(promotion.outcome, Outcome::Diverged { .. }) && declared.is_some());
+    if green {
+        let _ = std::fs::remove_file(&output);
+        answer["pushed"] = json!(matches!(promotion.outcome, Outcome::Promoted { .. }));
+    }
+    // The gated tip is in the base branch, by this promotion or another
+    // host's: a repair of a red promotion is done.
+    if matches!(promotion.outcome, Outcome::Promoted { .. } | Outcome::AlreadyPromoted { .. })
+        && let Some(issue) = crate::promotion_repair::green(repo, &standing.proving_branch, &tip)?
+    {
+        answer["repair_closed"] = json!(issue);
+    }
+    if said {
+        say(repo, &standing, &answer);
+    }
     Ok(answer)
 }
 
-/// The answer of a promotion `standing` leaves nothing to gate for, said in
-/// the fleet's log where it is news: the base branch at the proving tip
-/// (`current`), or no ancestor of it (`diverged`); `None`: the tip is to be
-/// gated.
-fn settled(repo: &Repo, standing: &Standing, now: u64) -> Option<Value> {
-    let mut answer = standing.json(now);
-    if !standing.ahead() {
-        answer["outcome"] = json!("current");
-        answer["detail"] = json!("the base branch is at the proving branch's tip");
-        return Some(answer);
-    }
-    if !standing.fast_forward {
-        answer["outcome"] = json!("diverged");
-        answer["detail"] = json!(format!(
-            "the base branch {} is not an ancestor of the proving branch's tip: a promotion \
-             never moves it to a commit that is not a fast-forward of it; it stays at {}",
-            standing.base_branch, standing.base
-        ));
-        say(repo, standing, &answer);
-        return Some(answer);
-    }
-    None
+/// Opens the repair issue of the red proving tip `standing` read, or
+/// comments on the one open (docs/adr/0090), naming every issue landed past
+/// the base branch, the failing tests and the gate's `output` → its number.
+fn repair(
+    repo: &Repo,
+    tracker: &afkconvoy_core::tracker::Tracker,
+    standing: &Standing,
+    declared: &Config,
+    (said, failing, output): (&str, &[String], &Path),
+) -> Result<Value> {
+    let tip = &standing.tip;
+    let landed: Vec<(Option<u64>, u64)> =
+        crate::landing::joins_in(repo, tracker, &[&format!("{}..{tip}", standing.base)])?
+            .iter()
+            .map(|landed| (landed.issue(), landed.pr))
+            .collect();
+    let text = std::fs::read_to_string(output).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let excerpt = lines[lines.len().saturating_sub(80)..].join("\n");
+    let issue = crate::promotion_repair::red(
+        repo,
+        declared,
+        &crate::promotion_repair::Red {
+            proving: &standing.proving_branch,
+            tip,
+            said,
+            failing,
+            output,
+            excerpt: &excerpt,
+            landed: &landed,
+            gate_command: &declared.gate_command,
+        },
+    )?;
+    Ok(json!(issue))
 }
 
-/// How many times a green promotion reads the base branch again after the
-/// remote refused its push: each refusal is another host's promotion, which
-/// moves it the one way it moves.
-const PUBLISH_TRIES: u32 = 3;
+/// A promotion as this host runs it (`proving::Proving`): the remote read
+/// live, one promotion of a checkout at a time (`Lock`), its gate's lane in
+/// the host's exclusive queue, and its gate run in a worktree detached at
+/// the tip, its whole output kept in `output`.
+struct Runner<'a> {
+    repo: &'a Repo,
+    config: &'a Config,
+    tracker: &'a afkconvoy_core::tracker::Tracker,
+    host: &'a str,
+    now: u64,
+    output: &'a Path,
+    /// What the last read of the tips saw: what the answer says.
+    standing: RefCell<Option<Standing>>,
+    records: crate::gate_records::OnHost<'a>,
+}
 
-/// Moves the base branch to the gated tip `proven` proves, only ever by a
-/// fast-forward from the value it was read at, which the push requires
-/// (sunfmin/control#1334). Another host may have promoted since it was read:
-/// where the base branch holds the tip already, nothing is pushed
-/// (`already_promoted`); where it is still an ancestor of the tip, the tip
-/// is pushed onto it. The base branch never takes a merge.
-fn publish(repo: &Repo, standing: &Standing, proven: &Proven, answer: &mut Value) -> Result<()> {
-    let tip = &standing.tip;
-    let branch = &standing.base_branch;
-    let base_ref = format!("refs/heads/{branch}");
-    let tree = repo.git(&["rev-parse", &format!("{tip}^{{tree}}")])?;
-    if tree != proven.tree() {
-        bail!("{tip} does not hold the tree the gate proved ({}); nothing moved", proven.tree());
+impl<'a> proving::Proving for Runner<'a> {
+    type Error = anyhow::Error;
+    type Records = crate::gate_records::OnHost<'a>;
+    type Lane = (Lock, Option<crate::exclusive::Permit>);
+
+    fn records(&self) -> &Self::Records {
+        &self.records
     }
-    for _ in 0..PUBLISH_TRIES {
-        let refs = repo.remote().refs(&[&base_ref], Fresh::Live)?;
-        let base = refs
+
+    fn tips(&self) -> Result<Tips> {
+        let standing = Standing::read(self.repo, self.config, self.tracker)?
+            .context("the repo's proving branch went from its config while the promotion waited")?;
+        let tips = Tips { base: standing.base.clone(), proving: standing.tip.clone() };
+        *self.standing.borrow_mut() = Some(standing);
+        Ok(tips)
+    }
+
+    fn base(&self) -> Result<String> {
+        let branch = &self.config.base_branch;
+        let base_ref = format!("refs/heads/{branch}");
+        let base = self
+            .repo
+            .remote()
+            .refs(&[&base_ref], Fresh::Live)?
             .into_iter()
             .find(|r| r.name == base_ref)
             .map(|r| r.sha)
             .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
-        repo.bring(&base, &base_ref)?;
-        answer["base_tip"] = json!(base);
-        if repo.within(tip, &base)? {
-            answer["outcome"] = json!("already_promoted");
-            answer["pushed"] = json!(false);
-            answer["detail"] = json!(format!(
-                "the gated tip {tip} is in the base branch {branch} already, at {base}: another \
-                 promotion took it there; nothing is pushed"
-            ));
-            return Ok(());
-        }
-        if !repo.within(&base, tip)? {
-            answer["outcome"] = json!("diverged");
-            answer["pushed"] = json!(false);
-            answer["detail"] = json!(format!(
-                "the base branch {branch} moved to {base}, which is not an ancestor of the gated \
-                 tip {tip}: a promotion never moves it to what is not a fast-forward of it"
-            ));
-            return Ok(());
-        }
-        let push = Push::set(tip, &base_ref).leased(&base);
-        if repo.remote().try_push(&push)?.ok {
-            answer["outcome"] = json!("promoted");
-            answer["pushed"] = json!(true);
-            answer["detail"] = json!(format!(
-                "fast-forwarded {branch} from {base} to {tip}, {}",
-                covered(standing)
-            ));
-            return Ok(());
-        }
+        self.repo.bring(&base, &base_ref)?;
+        Ok(base)
     }
-    answer["outcome"] = json!("target_moved");
-    answer["pushed"] = json!(false);
-    answer["detail"] = json!(format!(
-        "the remote refused the fast-forward of {branch} to {tip} {PUBLISH_TRIES} times: it \
-         moved each time; the next promotion reads it again"
-    ));
-    Ok(())
+
+    fn holds(&self, head: &str, other: &str) -> Result<bool> {
+        self.repo.within(other, head)
+    }
+
+    fn tree(&self, commit: &str) -> Result<String> {
+        self.repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])
+    }
+
+    /// The tip's own declaration, as a landing on the base branch reads it.
+    fn declared(&self, tip: &str) -> Result<Declared> {
+        let config = crate::turn::tip_config(self.repo, tip, &self.config.base_branch)?;
+        Ok(Declared {
+            seconds: config.gate_seconds(),
+            whole: config.gate_command,
+            gates: config.gates,
+        })
+    }
+
+    fn lane(&self, declared: &Declared) -> Result<Option<Self::Lane>> {
+        let Some(lock) = Lock::take(self.repo)? else { return Ok(None) };
+        let heavy = crate::config::heavy_gate(&declared.whole)
+            || declared.gates.as_ref().is_some_and(|gates| {
+                crate::config::heavy_gate(&gates.fast.command)
+                    || crate::config::heavy_gate(&gates.slow.command)
+            });
+        let permit = match crate::exclusive::held() {
+            true => None,
+            false => Some(crate::exclusive::Permit::promotion(
+                self.repo,
+                "promote: the proving branch's tip",
+                heavy,
+            )?),
+        };
+        Ok(Some((lock, permit)))
+    }
+
+    fn gate(&self, tip: &str, command: &GateCommand, seconds: u64) -> Result<Judged> {
+        let limit = Duration::from_secs(seconds);
+        let (gated, removal) = crate::gate::detached(self.repo, tip, Detached::Promotion, |at| {
+            crate::gate::gated(at, command, self.host, self.now, limit, None, Some(self.output))
+        })?;
+        if let Some(error) = removal {
+            eprintln!("warning: {error:#}");
+        }
+        Ok(match gated? {
+            Gated::Green { .. } => Judged::Green,
+            Gated::Red { red, .. } => Judged::Red(red),
+            Gated::Unsettled { unsettled, .. } => Judged::Unsettled(unsettled),
+        })
+    }
+
+    fn push(&self, tip: &str, base: &str) -> Result<bool> {
+        let base_ref = format!("refs/heads/{}", self.config.base_branch);
+        Ok(self.repo.remote().try_push(&Push::set(tip, &base_ref).leased(base))?.ok)
+    }
 }
 
 /// How many landings a promotion of `standing` covers, and whose: `3
@@ -524,58 +587,6 @@ fn hosts_of(
         }
     }
     Ok(hosts)
-}
-
-/// Gates the proving branch's tip `tip` whole, in a worktree of its own: a
-/// green run of the whole gate on record answers; else, where the fast
-/// gate's run of the tree is on record, its slow gate runs and the two are
-/// joined into a record of the whole gate (docs/adr/0083's join); else the
-/// whole gate runs → what it answered, and which of those it was.
-fn gate(
-    repo: &Repo,
-    declared: &Config,
-    tip: &str,
-    tree: &Tree,
-    host: &str,
-    now: u64,
-    output: &std::path::Path,
-) -> Result<(Gated, &'static str)> {
-    let whole = GateCommand::new(&declared.gate_command);
-    if let Some(run) = crate::gate::recorded(repo, tree, &whole, now)? {
-        return Ok((Gated::Green { run, source: "recorded" }, "recorded"));
-    }
-    let fast = declared.gates.as_ref().map(|gates| {
-        (GateCommand::new(&gates.fast.command), GateCommand::new(&gates.slow.command), gates)
-    });
-    let joined = match &fast {
-        Some((fast, _, _)) => crate::gate::recorded(repo, tree, fast, now)?.is_some(),
-        None => false,
-    };
-    let (command, seconds, ran) = match (&fast, joined) {
-        (Some((_, _, gates)), true) => {
-            (GateCommand::new(&gates.slow.command), gates.slow.seconds, "slow")
-        }
-        _ => (GateCommand::new(&declared.gate_command), declared.gate_seconds(), "whole"),
-    };
-    let limit = Duration::from_secs(seconds);
-    let (gated, removal) = crate::gate::detached(repo, tip, Detached::Promotion, |checkout| {
-        crate::gate::gated(checkout, &command, host, now, limit, None, Some(output))
-    })?;
-    if let Some(error) = removal {
-        eprintln!("warning: {error:#}");
-    }
-    let gated = gated?;
-    if let (Gated::Green { .. }, Some((fast, slow, _)), true) = (&gated, &fast, joined) {
-        if let Some(why) =
-            crate::gate::record_whole(repo, tree, tip, (&whole, fast, slow), None, now)?
-        {
-            bail!("the slow gate passed on {tip}, but the whole gate is not on record: {why}");
-        }
-        let run = crate::gate::recorded(repo, tree, &whole, now)?
-            .context("the whole gate's record was written but does not read back")?;
-        return Ok((Gated::Green { run, source: "joined" }, ran));
-    }
-    Ok((gated, ran))
 }
 
 /// Says in the fleet's log how a promotion ended: what `run` echoes, a line
@@ -700,7 +711,7 @@ One promotion of a checkout runs at a time: another answers `promoting`. A repo 
 
 ## What it reads and writes
 
-It reads the remote's base branch and proving branch and the gate records, and writes a gate record of the tip's tree and, green, the base branch. Its run's output is in the checkout's git dir (`convoy-promotion-<time>-<n>.log`), kept where it is red; a tick's promotion appends its answer to `convoy-promotion.log` there. Its line in the fleet's log names the proving tip it read last and how many landings, from which hosts, it covers.
+It reads the remote's base branch and proving branch and this host's gate records, and writes a gate record of the tip's tree, in the host's database, and, green, the base branch. Its run's output is in the checkout's git dir (`convoy-promotion-<time>-<n>.log`), kept where it is red; a tick's promotion appends its answer to `convoy-promotion.log` there. Its line in the fleet's log names the proving tip it read last and how many landings, from which hosts, it covers.
 
 ## What it answers
 

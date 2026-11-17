@@ -16,7 +16,9 @@
 //! runner may read and write it still, and it is taken in again each time it
 //! changes. A `host.db` an older afkconvoy kept in the cache directory is
 //! copied here the same way, whole, by SQLite's backup.
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -87,6 +89,58 @@ const MIGRATIONS: &[&str] = &[
         said TEXT NOT NULL,
         PRIMARY KEY (repo, issue)
      )",
+    // The host's recorded gate runs (`gate_records`), which were refs of the
+    // remote: the green run of a command on a tree, by repo; and the red
+    // runs of an issue's trees, until its work account cites them. `record`
+    // is the record's one encoding, as its ref's commit message held it.
+    "CREATE TABLE gate_records (
+        repo TEXT NOT NULL,
+        tree TEXT NOT NULL,
+        command TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        record TEXT NOT NULL,
+        PRIMARY KEY (repo, tree, command)
+     );
+     CREATE TABLE red_gate_runs (
+        repo TEXT NOT NULL,
+        issue INTEGER NOT NULL,
+        at INTEGER NOT NULL,
+        tree TEXT NOT NULL,
+        command TEXT NOT NULL,
+        record TEXT NOT NULL,
+        PRIMARY KEY (repo, issue, at, tree, command)
+     )",
+    // The host kit (`kit`), whole, as its file `kit.json` in the config
+    // directory held it; and the one row of when it was last written and a
+    // refresh of it last tried, in epoch seconds, which were that file's
+    // modification time and `kit.refresh` beside it.
+    "CREATE TABLE kit (position INTEGER PRIMARY KEY, key TEXT NOT NULL, value TEXT NOT NULL);
+     CREATE TABLE kit_refresh (
+        one INTEGER PRIMARY KEY CHECK (one = 0),
+        written INTEGER,
+        tried INTEGER
+     );
+     CREATE TABLE github_quota (
+        host TEXT NOT NULL,
+        login TEXT NOT NULL,
+        name TEXT NOT NULL,
+        note TEXT NOT NULL,
+        PRIMARY KEY (host, login, name)
+     );
+     CREATE TABLE github_identities (
+        host TEXT NOT NULL,
+        credential TEXT NOT NULL,
+        note TEXT NOT NULL,
+        PRIMARY KEY (host, credential)
+     );
+     CREATE TABLE shared_readings (
+        scope TEXT NOT NULL,
+        key TEXT NOT NULL,
+        kept TEXT NOT NULL,
+        PRIMARY KEY (scope, key)
+     );
+     CREATE TABLE need_stderr (name TEXT PRIMARY KEY, text TEXT NOT NULL);
+     CREATE TABLE need_installs (name TEXT PRIMARY KEY, installed TEXT NOT NULL)",
 ];
 
 /// The host's database: `host.db` in the data directory.
@@ -147,6 +201,11 @@ impl Host {
         &self.db
     }
 
+    /// The cache directory whose old files it converges from, where it does.
+    pub(crate) fn cache(&self) -> Option<&Path> {
+        self.cache.as_deref()
+    }
+
     /// The database, made where there is none, migrated; the host's copied
     /// from an older afkconvoy's cache directory first, where it has one.
     pub(crate) fn open(&self) -> Result<Connection> {
@@ -155,40 +214,93 @@ impl Host {
         if let Some(cache) = &self.cache {
             copied_in(&cache.join(FILE), &self.db)?;
         }
+        #[cfg(test)]
+        tests::OPENS.set(tests::OPENS.get() + 1);
         let mut db = Connection::open(&self.db)
             .with_context(|| format!("cannot open the host database {}", self.db.display()))?;
+        user_only(&self.db)?;
         db.busy_timeout(BUSY)?;
         migrate(&mut db)?;
         if let Some(cache) = &self.cache {
             let old = cache.join(FILE);
             // A hot journal beside it is a write an older process has not
             // ended: it stays until it has.
-            if old.exists() && !old.with_extension("db-journal").exists() && !older_runner(cache) {
+            if old.exists()
+                && !old.with_extension("db-journal").exists()
+                && !another_build_holds(cache)
+            {
                 aside(&old)?;
             }
         }
         Ok(db)
     }
 
-    /// The database, with `store`'s old file taken in.
-    fn open_for(&self, store: &Store) -> Result<Connection> {
-        let mut db = self.open()?;
+    /// This thread's open connection to the database, with `store`'s old
+    /// file taken in: the one it kept from an earlier look where the file is
+    /// still the one it opened, else a new one. It is taken out of the thread's
+    /// slots while it is used (`keep_slot` puts it back), so a call made
+    /// inside another's closure opens a connection of its own.
+    fn slot_for(&self, store: &Store) -> Result<Slot> {
+        let id = file_id(&self.db);
+        let kept = SLOTS.with(|slots| slots.borrow_mut().remove(&self.db));
+        let mut slot = match (kept, id) {
+            (Some(slot), Some(id)) if slot.id == id => {
+                // What `open` does beside making a connection.
+                if let Some(cache) = &self.cache {
+                    let old = cache.join(FILE);
+                    if old.exists()
+                        && !old.with_extension("db-journal").exists()
+                        && !another_build_holds(cache)
+                    {
+                        aside(&old)?;
+                    }
+                }
+                slot
+            }
+            _ => {
+                let conn = self.open()?;
+                let id = file_id(&self.db).context("the host database was not made")?;
+                Slot { conn, id, reads: HashMap::new() }
+            }
+        };
         if let Some(cache) = &self.cache {
-            converge(&mut db, store, cache)?;
+            if cache.join(store.file).exists() {
+                // Taking in writes what this connection does not see change.
+                slot.reads.clear();
+            }
+            converge(&mut slot.conn, store, cache)?;
         }
-        Ok(db)
+        Ok(slot)
+    }
+
+    /// Keeps `slot` for this thread's next look. One not kept — an error
+    /// ended its use — is closed.
+    fn keep_slot(&self, slot: Slot) {
+        SLOTS.with(|slots| slots.borrow_mut().insert(self.db.clone(), slot));
     }
 
     /// What `store` holds, as its file held it; `None` where it holds
     /// nothing. Where there is no database and nothing to make one of, a
-    /// reader makes none.
+    /// reader makes none. What was read is kept, and read again only after
+    /// a write this thread made, or a commit another connection made.
     pub fn value(&self, store: &Store) -> Result<Option<Value>> {
         let to_take_in =
             |cache: &PathBuf| cache.join(FILE).exists() || cache.join(store.file).exists();
         if !self.db.exists() && !self.cache.as_ref().is_some_and(to_take_in) {
             return Ok(None);
         }
-        store.export(&self.open_for(store)?)
+        let mut slot = self.slot_for(store)?;
+        let version: i64 = slot.conn.query_row("PRAGMA data_version", [], |row| row.get(0))?;
+        let held = match slot.reads.get(store.file) {
+            Some((at, value)) if *at == version => value.clone(),
+            _ => {
+                let value = store.export(&slot.conn)?;
+                slot.reads.insert(store.file, (version, value.clone()));
+                value
+            }
+        };
+        self.keep_slot(slot);
+        Ok(held)
     }
 
     /// What `store` holds, as a `T`; `T`'s default where it holds nothing.
@@ -203,20 +315,59 @@ impl Host {
     where
         T: DeserializeOwned + Serialize + Default,
     {
-        let mut db = self.open_for(store)?;
-        write(&mut db, |tx| {
+        let mut slot = self.slot_for(store)?;
+        let answer = write(&mut slot.conn, |tx| {
             let mut held: T = typed(store, &self.db, store.export(tx)?)?;
             let answer = change(&mut held);
             store.import(tx, &serde_json::to_value(&held)?)?;
             Ok(answer)
-        })
+        })?;
+        slot.reads.clear();
+        self.keep_slot(slot);
+        Ok(answer)
     }
 
     /// Makes `store` hold `value` and nothing else, as its file held it.
     pub fn replace(&self, store: &Store, value: &Value) -> Result<()> {
-        let mut db = self.open_for(store)?;
-        write(&mut db, |tx| store.import(tx, value))
+        let mut slot = self.slot_for(store)?;
+        write(&mut slot.conn, |tx| store.import(tx, value))?;
+        slot.reads.clear();
+        self.keep_slot(slot);
+        Ok(())
     }
+}
+
+/// Has `file` be readable and writable by its user alone, where it is not:
+/// the host database keeps what its user alone may read, as the stderr of a
+/// host's checks. SQLite makes its journal with the same mode.
+fn user_only(file: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(file)?.permissions().mode() & 0o777;
+    if mode != 0o600 {
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("cannot make {} its user's alone", file.display()))?;
+    }
+    Ok(())
+}
+
+/// A thread's open connection to a host database, and what it read of its
+/// stores: each store's value as of the connection's `data_version`, which
+/// moves when another connection commits. Its own writes clear it.
+struct Slot {
+    conn: Connection,
+    /// The file the connection opened: a file replaced is opened again.
+    id: (u64, u64),
+    reads: HashMap<&'static str, (i64, Option<Value>)>,
+}
+
+thread_local! {
+    /// This thread's open connection to each host database it has looked at.
+    static SLOTS: RefCell<HashMap<PathBuf, Slot>> = RefCell::new(HashMap::new());
+}
+
+/// Which file `path` is now: none where there is none.
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    std::fs::metadata(path).ok().map(|meta| (meta.dev(), meta.ino()))
 }
 
 /// `value` as a `T`, or an error naming `store` in `db`.
@@ -309,6 +460,8 @@ impl Store {
     }
 
     fn export(&self, db: &Connection) -> Result<Option<Value>> {
+        #[cfg(test)]
+        tests::EXPORTS.set(tests::EXPORTS.get() + 1);
         match self.layout {
             Layout::Whole(table) => Ok(rows(db, table)?.into_iter().next().map(|(_, value)| value)),
             Layout::Rows(table, _) => {
@@ -424,7 +577,7 @@ pub(crate) fn converge_file(
         )?;
         Ok(())
     })?;
-    if !older_runner(cache) {
+    if !another_build_holds(cache) {
         aside(file)?;
     }
     Ok(())
@@ -432,7 +585,7 @@ pub(crate) fn converge_file(
 
 /// Moves `file` aside to `<file>.migrated`, kept: renamed back, an older
 /// afkconvoy reads it again. One already gone is moved.
-fn aside(file: &Path) -> Result<()> {
+pub(crate) fn aside(file: &Path) -> Result<()> {
     let mut to = file.as_os_str().to_owned();
     to.push(format!(".{MIGRATED}"));
     match std::fs::rename(file, &to) {
@@ -442,10 +595,16 @@ fn aside(file: &Path) -> Result<()> {
     }
 }
 
-/// Whether a host runner of a release older than this one holds the host of
-/// `cache`: it reads and writes the old files still, until it moves onto
-/// this release between two ticks (ADR-0023).
-fn older_runner(cache: &Path) -> bool {
+/// Whether a host runner of another build holds the host of `cache`, so an
+/// old file must stay where it is: one of an older release reads and writes
+/// the old files still, until it moves onto this release between two ticks
+/// (ADR-0023); and one of this same release but another executable — the
+/// installed afkconvoy while a test or a dev build runs — may be older than
+/// its version says. Only a free host, a runner of a newer release, or one
+/// started from this very executable lets a file be moved aside: a dev
+/// build's tests once moved the host's real kit.json aside under a runner
+/// whose version matched (2026-11-17).
+pub(crate) fn another_build_holds(cache: &Path) -> bool {
     let lock = cache.join(crate::host_runner::LOCK);
     let Ok(file) = std::fs::File::open(&lock) else { return false };
     // Free: no host runner holds it. A runner starting meanwhile waits for
@@ -458,7 +617,22 @@ fn older_runner(cache: &Path) -> bool {
     let version = holder.as_ref().and_then(|holder| holder["version"].as_str());
     use afkconvoy_core::host_runner::{Found, found};
     // One that says no version is of a release before it was said.
-    version.is_none_or(|version| found(crate::VERSION, version) == Found::Older)
+    let Some(version) = version else { return true };
+    match found(crate::VERSION, version) {
+        Found::Newer => false,
+        Found::Older => true,
+        // The same release: this build only if it is this executable.
+        _ => {
+            let theirs = holder.as_ref().and_then(|holder| holder["exe"].as_str());
+            theirs.is_none_or(|theirs| Some(PathBuf::from(theirs)) != this_executable())
+        }
+    }
+}
+
+/// This process's executable, its links resolved: what a host runner's lock
+/// names as `exe`.
+pub(crate) fn this_executable() -> Option<PathBuf> {
+    std::fs::canonicalize(std::env::current_exe().ok()?).ok()
 }
 
 /// Copies `old`, a host database an older afkconvoy kept, to `new` where
@@ -542,6 +716,7 @@ fn back_up_in(data: &Path, day: &str, now: u64) -> Result<bool> {
             let part = into.join(format!("{name}.part"));
             let _ = std::fs::remove_file(&part);
             backup(&from, &part)?;
+            user_only(&part)?;
             std::fs::rename(&part, into.join(name))?;
         }
         let mut days: Vec<_> = std::fs::read_dir(&backups)?
@@ -614,9 +789,13 @@ const STORES: &[&Store] = &[
     &crate::trash::STORE,
 ];
 
+/// The stores whose old file was not in the cache directory: each takes it
+/// in itself, as the host kit takes in `kit.json` of the config directory.
+const ELSEWHERE: &[&Store] = &[&crate::kit::STORE];
+
 /// The store whose old file is `file`.
 fn store_of(file: &str) -> Result<&'static Store> {
-    let store = STORES.iter().find(|store| store.file == file);
+    let store = STORES.iter().chain(ELSEWHERE).find(|store| store.file == file);
     store.copied().with_context(|| format!("the host database keeps no store of {file}"))
 }
 
@@ -671,6 +850,58 @@ fn migrate(db: &mut Connection) -> Result<()> {
 pub(crate) mod tests {
     use super::*;
 
+    thread_local! {
+        /// How many connections, and how many store exports, this thread made.
+        pub(super) static OPENS: Cell<usize> = const { Cell::new(0) };
+        pub(super) static EXPORTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn a_runners_looks_open_the_database_once_and_export_a_store_only_after_it_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE);
+        let list = serde_json::json!({"checkouts": (0..5)
+            .map(|n| serde_json::json!({"checkout": format!("/c{n}")})).collect::<Vec<_>>()});
+        keep(&file, "checkouts.json", &list).unwrap();
+        let host = Host::at(file.clone());
+        let store = store_of("checkouts.json").unwrap();
+        OPENS.set(0);
+        EXPORTS.set(0);
+        for _ in 0..10 {
+            assert_eq!(
+                host.value(store).unwrap().unwrap()["checkouts"].as_array().unwrap().len(),
+                5
+            );
+        }
+        assert!(OPENS.get() <= 1, "ten looks open the database at most once");
+        assert_eq!(EXPORTS.get(), 1, "and export the store once");
+        // another connection's commit is seen
+        let mut other = Connection::open(&file).unwrap();
+        write(&mut other, |tx| store.import(tx, &serde_json::json!({"checkouts": []}))).unwrap();
+        assert_eq!(host.value(store).unwrap().unwrap()["checkouts"].as_array().unwrap().len(), 0);
+        // so is this thread's own write
+        host.change(store, |held: &mut Value| {
+            held["checkouts"] = serde_json::json!([{"checkout": "/z"}])
+        })
+        .unwrap();
+        assert_eq!(host.value(store).unwrap().unwrap()["checkouts"][0]["checkout"], "/z");
+        assert!(OPENS.get() <= 1, "still the one connection");
+        // a file replaced is opened again
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(host.value(store).unwrap(), None);
+    }
+
+    #[test]
+    fn the_host_database_is_its_users_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("host.db");
+        std::fs::write(&db, "").unwrap();
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
+        Host::at(db.clone()).open().unwrap();
+        assert_eq!(std::fs::metadata(&db).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
     #[test]
     fn a_database_behind_is_migrated_once_and_one_ahead_is_refused() {
         let mut db = Connection::open_in_memory().unwrap();
@@ -688,11 +919,18 @@ pub(crate) mod tests {
         Host { db: dir.join("data/host.db"), cache: Some(dir.join("cache")) }
     }
 
-    /// Holds the host runner's lock in `cache`, as a host runner of `version`.
+    /// Holds the host runner's lock in `cache`, as a host runner of `version`
+    /// of another executable.
     pub(crate) fn runner(cache: &Path, version: &str) -> std::fs::File {
+        runner_of(cache, version, Some(PathBuf::from("/elsewhere/afkconvoy")))
+    }
+
+    /// The same, as one started from `exe`.
+    pub(crate) fn runner_of(cache: &Path, version: &str, exe: Option<PathBuf>) -> std::fs::File {
         std::fs::create_dir_all(cache).unwrap();
         let lock = cache.join(crate::host_runner::LOCK);
-        std::fs::write(&lock, format!(r#"{{"pid": 1, "version": "{version}"}}"#)).unwrap();
+        let holder = serde_json::json!({"pid": 1, "version": version, "exe": exe});
+        std::fs::write(&lock, holder.to_string()).unwrap();
         let file = std::fs::File::open(&lock).unwrap();
         file.lock().unwrap();
         file
@@ -722,8 +960,14 @@ pub(crate) mod tests {
         assert_eq!(chains(&host.open().unwrap()), [r#"{"kept":2}"#], "copied once, never again");
         drop(older);
 
-        // a runner of this release, or none: moved aside, kept
-        let ours = runner(&cache, crate::VERSION);
+        // a runner of this release from another executable: left too
+        let other = runner(&cache, crate::VERSION);
+        host.open().unwrap();
+        assert!(cache.join(FILE).exists(), "another build of this release may read it");
+        drop(other);
+
+        // this very build, or none: moved aside, kept
+        let ours = runner_of(&cache, crate::VERSION, this_executable());
         assert_eq!(chains(&host.open().unwrap()), [r#"{"kept":2}"#]);
         assert!(!cache.join(FILE).exists());
         assert!(cache.join("host.db.migrated").exists(), "kept, to be renamed back");

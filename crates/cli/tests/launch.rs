@@ -219,7 +219,7 @@ fn on_a_custom_provider_the_passed_command_is_preserved_and_worktree_trust_is_ad
     // …and the command is in no file: not the brief, not a note, not the repo
     // (the stand-ins' own files record what orca and the login shell were asked)
     assert_eq!(
-        written_anywhere(&world.root, "big one", &["orca.json", "kit.json", "shell-asked"]),
+        written_anywhere(&world.root, "big one", &["orca.json", "host.db", "shell-asked"]),
         [] as [String; 0]
     );
     assert_eq!(written_anywhere(&world.root, SECRET, &[]), [] as [String; 0]);
@@ -303,13 +303,13 @@ fn host_to_kit(world: &World) {
 
 /// The host kit as written.
 fn kit_on_disk(world: &World) -> Value {
-    serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap()
+    world.kit()
 }
 
 #[test]
 fn no_host_kit_has_run_write_it_and_start_its_first_tick_while_a_tick_refuses() {
     let world = backlog();
-    std::fs::remove_file(world.kit_path()).unwrap();
+    world.forget("kit.json");
     host_to_kit(&world);
     let error = world.afk(&TICK).error();
     assert!(error.contains("afkconvoy kit"), "{error}");
@@ -362,7 +362,7 @@ fn tick_at(world: &World, instance: &str, now: u64) -> std::process::Child {
 #[test]
 fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host() {
     let world = backlog();
-    std::fs::remove_file(world.kit_path()).unwrap();
+    world.forget("kit.json");
     host_to_kit(&world);
     assert_eq!(answer(&world, &RUN, false).code, 0);
     let models = |world: &World| kit_on_disk(world)["harnesses"][0]["models"].clone();
@@ -405,6 +405,25 @@ fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host
 }
 
 #[test]
+fn kit_command_sets_a_harnesss_command_where_a_hand_edit_of_its_file_did() {
+    let world = backlog();
+    host_to_kit(&world);
+    world.afk(&["kit"]).ok();
+    let set = world.afk(&["kit", "--command", "pi=pi --custom"]).ok();
+    assert_eq!(set["command"], json!({"harness": "pi", "command": "pi --custom"}), "{set}");
+    let kit = world.kit();
+    let pi = kit["harnesses"].as_array().unwrap().iter().find(|held| held["harness"] == "pi");
+    assert_eq!(pi.unwrap()["command"], "pi --custom", "{kit}");
+    // Its models are listed through it, and the other harnesses stay.
+    assert_eq!(pi.unwrap()["models"][0]["model"], "openai/gpt-5.5", "{kit}");
+    assert_eq!(kit["harnesses"][0]["harness"], "claude-code", "{kit}");
+    // A removed harness is refused; a malformed one says how to say it.
+    world.afk(&["kit", "--remove", "pi"]).ok();
+    assert!(world.afk(&["kit", "--command", "pi=pi"]).error().contains("switch --harness pi"));
+    assert!(world.afk(&["kit", "--command", "pi"]).error().contains("<harness>=<command>"));
+}
+
+#[test]
 fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_out() {
     let world = backlog();
     world.kit_command("dsh", "dsh");
@@ -415,7 +434,7 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
     host_to_kit(&world);
     let written = world.afk(&["kit"]);
     assert_eq!(written.json["written"], true);
-    assert_eq!(written.json["path"], world.kit_path().display().to_string());
+    assert_eq!(written.json["path"], world.host_db().display().to_string());
     let kit = kit_on_disk(&world);
     assert_eq!(written.json["kit"]["harnesses"].as_array().unwrap().len(), 2);
     assert_eq!(
@@ -455,17 +474,17 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
 fn plan_and_doctor_show_the_host_kit() {
     let world = backlog();
     world.kit_command("pi", "pi");
-    let mut kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let mut kit: Value = world.kit();
     kit["harnesses"][1]["models"] = json!([
         {"model": "a/fast", "probed": {"at": 900, "seconds": 1.5}},
         {"model": "a/slow", "probed": {"at": 901, "seconds": 9.0}},
         {"model": "a/wait", "good_at": "not researched"},
     ]);
-    std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+    world.keep("kit.json", &kit);
     for args in [&["plan", "--now", "1000"][..], &["doctor", "--host", "h1", "--now", "1000"][..]] {
         let answer = world.afk(args).json;
         let kit = if args[0] == "plan" { &answer["host_kit"] } else { &answer["host"]["host_kit"] };
-        assert_eq!(kit["path"], world.kit_path().display().to_string());
+        assert_eq!(kit["path"], world.host_db().display().to_string());
         assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
         assert_eq!(kit["harnesses"][0]["command"], "agent");
         assert_eq!(kit["harnesses"][0]["default_model"], true);
@@ -483,9 +502,9 @@ fn a_missing_required_harness_refuses_the_entire_start() {
     let world = backlog();
 
     // The feature uses Claude Code; the audit workflow also calls for it.
-    let mut kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let mut kit: Value = world.kit();
     kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] != "claude-code");
-    std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+    world.keep("kit.json", &kit);
     world.shell_knows("claude", None);
     let error = world.afk(&TICK).error();
     assert!(error.contains("claude") && error.contains("install"), "{error}");
@@ -539,7 +558,7 @@ fn kit_holds_each_listed_id_with_its_display_name_and_never_probes() {
 #[test]
 fn kit_research_is_written_from_a_checked_file_and_survives_relisting() {
     let world = backlog();
-    std::fs::remove_file(world.kit_path()).unwrap();
+    world.forget("kit.json");
     host_to_kit(&world);
     let source = json!({"url":"https://vendor.example/card", "date":"2026-10-24"});
     std::fs::write(world.root.join("research.json"), json!({
@@ -568,7 +587,7 @@ fn kit_research_is_written_from_a_checked_file_and_survives_relisting() {
 fn a_codex_casting_discovers_a_missing_entry_without_model_probes() {
     let world = World::new();
     world.issue(7, &["ready-for-agent", "harness:codex"]);
-    let before = std::fs::read(world.kit_path()).unwrap();
+    let before = world.kit();
     let ran = world.afk(&TICK);
     assert_eq!(ran.json["errors"], json!([]), "{}", ran.stderr);
     assert_eq!(
@@ -577,8 +596,8 @@ fn a_codex_casting_discovers_a_missing_entry_without_model_probes() {
         "discovery appends without overriding priority"
     );
     assert!(ran.stderr.contains("discovered codex"), "{}", ran.stderr);
-    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
-    let mut before: Value = serde_json::from_slice(&before).unwrap();
+    let kit: Value = world.kit();
+    let mut before: Value = before;
     before["harnesses"][0]["models"] = json!([]);
     assert_eq!(kit["harnesses"][0], before["harnesses"][0]);
     assert_eq!(kit["harnesses"][1]["harness"], "codex");
@@ -605,7 +624,7 @@ fn unavailable_later_casting_does_not_block_the_first_kit_harness() {
         ran.ok();
         assert_eq!(world.claims(), [(7, "alpha".to_string())]);
         assert_eq!(started(&world), [common::trusted("agent")]);
-        let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+        let kit: Value = world.kit();
         assert_eq!(kit["harnesses"].as_array().unwrap().len(), 1);
     }
 }
@@ -620,20 +639,20 @@ fn a_resident_launches_reads_added_and_changed_commands() {
         let repo = Repo::new(std::env::current_dir().unwrap());
         let launches = Launches::new(&repo, true).unwrap();
         launches.command(Harness::ClaudeCode).unwrap();
-        let file = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
-            .join(".config/afkconvoy/kit.json");
-        let mut kit: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        let db = afkconvoy::host_db::path().unwrap();
+        let keep = |kit: &Value| afkconvoy::host_db::keep(&db, "kit.json", kit).unwrap();
+        let mut kit: Value = afkconvoy::host_db::kept(&db, "kit.json").unwrap().unwrap();
         kit["harnesses"]
             .as_array_mut()
             .unwrap()
             .push(json!({"harness": "codex", "command": "agent --new-codex", "models": []}));
-        std::fs::write(&file, serde_json::to_vec(&kit).unwrap()).unwrap();
+        keep(&kit);
         assert_eq!(launches.command(Harness::Codex).unwrap().as_str(), "agent --new-codex");
         kit["harnesses"][1]["command"] = json!("agent --changed-codex");
-        std::fs::write(&file, serde_json::to_vec(&kit).unwrap()).unwrap();
+        keep(&kit);
         assert_eq!(launches.command(Harness::Codex).unwrap().as_str(), "agent --changed-codex");
         kit["harnesses"][1]["command"] = json!("missing-custom");
-        std::fs::write(&file, serde_json::to_vec(&kit).unwrap()).unwrap();
+        keep(&kit);
         assert!(
             launches
                 .command(Harness::Codex)
@@ -691,7 +710,7 @@ fn every_known_harness_discovers_its_existing_stock_command() {
             "{} starts without worktree trust: {commands:?}",
             harness.key()
         );
-        let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+        let kit: Value = world.kit();
         assert_eq!(kit["harnesses"][0]["command"], harness.stock());
     }
 }
@@ -752,12 +771,12 @@ fn removing_a_harness_with_a_running_worker_is_refused_without_ending_it() {
     let world = backlog();
     world.kit_command("pi", "pi");
     world.afk(&TICK).ok();
-    let before = std::fs::read(world.kit_path()).unwrap();
+    let before = world.kit();
     let error = world.afk(&["kit", "--remove", "claude-code"]).error();
     assert!(error.contains("issue #7"), "{error}");
     assert!(error.contains("afkconvoy switch --all --harness pi"), "{error}");
     assert!(error.contains("no worker was ended"), "{error}");
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+    assert_eq!(world.kit(), before);
     assert_eq!(started(&world).len(), 1);
     assert_eq!(world.claims().len(), 1);
 }

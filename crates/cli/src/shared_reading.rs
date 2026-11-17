@@ -5,14 +5,16 @@
 //! 49 of them on one host spent the login's REST core quota within the hour.
 //!
 //! The reading is kept per login and host, beside the quota note
-//! (`gh_quota::Scope::shared`), under a file lock that is held while GitHub
-//! is read: a second waiter waits on the first one's read and answers from
-//! it. A failed read is kept as well, so that a waiter does not ask again
+//! (`gh_quota::Scope::shared`), in the host database, and read under a lock
+//! of its own in the cache directory, held while GitHub is read: a second
+//! waiter waits on the first one's read and answers from it. The lock is the
+//! kernel's, not a transaction of the database: no writer of the host waits
+//! on a read of GitHub. A failed read is kept as well, so that a waiter does not ask again
 //! within the interval either. Past the host's GitHub share of the hour's
 //! quota (`--github-share`), the kept reading answers until the quota
 //! resets: the shared readings leave the rest of the hour to the workers' own calls.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -66,23 +68,38 @@ impl Pace<'_> {
     }
 }
 
-/// The shared reading `key` in `dir` at `now`: what was kept, while `pace` says
+/// Where one login's shared readings are: kept in `db` under `scope`, and
+/// read under locks in `locks`.
+pub(crate) struct Shared {
+    pub(crate) db: crate::host_db::Host,
+    pub(crate) scope: String,
+    pub(crate) locks: PathBuf,
+}
+
+/// The shared reading `key` of `place` at `now`: what was kept, while `pace` says
 /// it still answers, else what `read` says now, kept for the others.
 pub(crate) fn shared(
-    dir: &Path,
+    place: &Shared,
     key: &str,
     now: impl Fn() -> u64,
     pace: Pace<'_>,
     read: impl FnOnce() -> Result<String>,
 ) -> Result<String> {
-    std::fs::create_dir_all(dir)?;
+    use rusqlite::OptionalExtension;
+    std::fs::create_dir_all(&place.locks)?;
     let name: String = key.bytes().map(|b| format!("{b:02x}")).collect();
     let name = if name.len() > 200 { format!("{:016x}", fnv(key)) } else { name };
-    let file = dir.join(format!("{name}.json"));
-    let lock = std::fs::File::create(dir.join(format!("{name}.lock")))?;
+    let lock = std::fs::File::create(place.locks.join(format!("{name}.lock")))?;
     lock.lock()?;
-    let kept: Option<Kept> =
-        std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let mut db = place.db.open()?;
+    let kept: Option<String> = db
+        .query_row(
+            "SELECT kept FROM shared_readings WHERE scope = ?1 AND key = ?2",
+            [&place.scope, key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let kept: Option<Kept> = kept.and_then(|text| serde_json::from_str(&text).ok());
     if let Some(kept) = kept
         && pace.answers(kept.at, now())
     {
@@ -94,9 +111,14 @@ pub(crate) fn shared(
         Ok(body) => Kept { at, body: Some(body.clone()), error: None },
         Err(error) => Kept { at, body: None, error: Some(format!("{error:#}")) },
     };
-    let temp = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temp, serde_json::to_vec(&kept)?)?;
-    std::fs::rename(temp, &file)?;
+    let kept = serde_json::to_string(&kept)?;
+    crate::host_db::write(&mut db, |tx| {
+        tx.execute(
+            "INSERT OR REPLACE INTO shared_readings (scope, key, kept) VALUES (?1, ?2, ?3)",
+            [&place.scope, key, &kept],
+        )?;
+        Ok(())
+    })?;
     made
 }
 
@@ -139,11 +161,16 @@ mod tests {
     #[test]
     fn forty_waiting_lands_make_one_call_an_interval_between_them() {
         let dir = tempfile::tempdir().unwrap();
+        let dir = Shared {
+            db: crate::host_db::Host::at(dir.path().join("host.db")),
+            scope: "github.com/me".into(),
+            locks: dir.path().join("locks"),
+        };
         let calls = AtomicU64::new(0);
         let clock = AtomicU64::new(1_000);
         let wait = |n: u64| {
             shared(
-                dir.path(),
+                &dir,
                 "acme/app locks",
                 || clock.load(Ordering::SeqCst),
                 PACE,
@@ -175,10 +202,15 @@ mod tests {
     #[test]
     fn a_failed_read_is_not_asked_again_within_the_interval() {
         let dir = tempfile::tempdir().unwrap();
+        let dir = Shared {
+            db: crate::host_db::Host::at(dir.path().join("host.db")),
+            scope: "github.com/me".into(),
+            locks: dir.path().join("locks"),
+        };
         let calls = AtomicU64::new(0);
         let fail = |now: u64| {
             shared(
-                dir.path(),
+                &dir,
                 "acme/app locks",
                 || now,
                 PACE,
@@ -199,13 +231,18 @@ mod tests {
     #[test]
     fn past_its_share_of_the_hour_the_host_reads_again_only_after_the_reset() {
         let dir = tempfile::tempdir().unwrap();
+        let dir = Shared {
+            db: crate::host_db::Host::at(dir.path().join("host.db")),
+            scope: "github.com/me".into(),
+            locks: dir.path().join("locks"),
+        };
         let calls = AtomicU64::new(0);
         let reset = 10_000;
         let ask = |now: u64, remaining: u64| {
             let quota = Observation { remaining: Some(remaining), reset, limit: Some(5000) };
             let pace = Pace { every: EVERY, share: 60, quota: Some(&quota) };
             shared(
-                dir.path(),
+                &dir,
                 "acme/app locks",
                 || now,
                 pace,
