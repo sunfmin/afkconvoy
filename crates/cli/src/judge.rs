@@ -561,6 +561,18 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64, look: Look) -> Result<Option<As
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, verdict, said, route }))))
 }
 
+/// Whether a verdict of the worker of my claim on `issue` stands, uncarried:
+/// what it waits on is no reason to leave it, as carrying it out changes the
+/// claim's state and starts no turn.
+pub(crate) fn declared(fleet: &Fleet, me: &Me, issue: u64, worktree: &Worktree) -> Result<bool> {
+    let Some(claim) = mine(fleet, me, issue)? else { return Ok(false) };
+    let comments = fleet.gh.comments(issue)?;
+    let verdict = crate::gh::verdict_since(&comments, claim.since);
+    let said =
+        verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
+    Ok(standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref()).is_some())
+}
+
 /// Ends the goal of the busy worker in `worktree` once a verdict of its
 /// stands: its harness would carry it on round its brief at cost, never
 /// stopping for the tick to carry the verdict out. A worker its harness has

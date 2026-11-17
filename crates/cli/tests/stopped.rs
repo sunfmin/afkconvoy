@@ -414,6 +414,22 @@ fn a_worker_waiting_on_its_own_background_work_has_one_since() {
 }
 
 #[test]
+fn a_verdict_declared_while_the_tick_holds_the_worker_on_background_work_is_carried_out() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    show(&world, &WAITING);
+    // held on its own background work, past the stopped bound
+    assert_eq!(did(&tick(&world, 1300))[0], "judge 7 waiting");
+    // it declares its verdict while the wait is recorded
+    declare(&world, "already-satisfied");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1500"]).json;
+    assert_eq!(stopped_for(&doctor), [] as [&Value; 0], "{doctor}");
+    // the next tick carries it out, whatever the worker waits on
+    assert_eq!(did(&tick(&world, 1600))[0], "judge 7 done");
+    assert_eq!(world.state(7), "closed");
+}
+
+#[test]
 fn a_worker_waiting_on_background_work_has_its_next_health_observation_scheduled() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
