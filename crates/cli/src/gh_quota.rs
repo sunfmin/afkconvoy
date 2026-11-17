@@ -46,9 +46,13 @@ impl Api {
     }
 }
 
+/// One login's quota on one GitHub host, as this host observed it: its
+/// notes are rows of the host database's `github_quota`, and the locks its
+/// shared readings are read under are files of `locks`.
 #[derive(Clone, Debug)]
 pub(crate) struct Scope {
-    dir: PathBuf,
+    db: crate::host_db::Host,
+    locks: PathBuf,
     pub(crate) host: String,
     pub(crate) login: String,
 }
@@ -151,35 +155,53 @@ impl Scope {
                 "GitHub quota identity unavailable for {host}; run gh auth status --hostname {host}"
             );
         }
-        let dir =
-            crate::copies::cache()?.join("github-quota").join(segment(host)).join(segment(&login));
-        Ok(Self { dir, host: host.to_string(), login })
+        let cache = crate::copies::cache()?;
+        set_aside_old_notes(&cache)?;
+        let locks = cache.join(LOCKS).join(segment(host)).join(segment(&login));
+        Ok(Self { db: crate::host_db::Host::of_host()?, locks, host: host.to_string(), login })
     }
 
     /// Where the host's shared readings of this login are kept (`crate::shared_reading`).
-    pub(crate) fn shared(&self) -> PathBuf {
-        self.dir.join("shared")
-    }
-
-    pub(crate) fn read(&self, name: &str) -> Result<Observation> {
-        let file = self.dir.join(format!("{name}.json"));
-        match std::fs::read(&file) {
-            Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| {
-                format!(
-                    "unreadable GitHub quota observation {}; remove it and retry",
-                    file.display()
-                )
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Observation::default()),
-            Err(e) => Err(e.into()),
+    pub(crate) fn shared(&self) -> crate::shared_reading::Shared {
+        crate::shared_reading::Shared {
+            db: self.db.clone(),
+            scope: format!("{}/{}", self.host, self.login),
+            locks: self.locks.clone(),
         }
     }
 
+    pub(crate) fn read(&self, name: &str) -> Result<Observation> {
+        self.read_in(&self.db.open()?, name)
+    }
+
+    /// The observation `name` as `db` holds it; the empty one where none.
+    fn read_in(&self, db: &rusqlite::Connection, name: &str) -> Result<Observation> {
+        use rusqlite::OptionalExtension;
+        let note: Option<String> = db
+            .query_row(
+                "SELECT note FROM github_quota WHERE host = ?1 AND login = ?2 AND name = ?3",
+                [&self.host, &self.login, name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(note) = note else { return Ok(Observation::default()) };
+        serde_json::from_str(&note).with_context(|| {
+            format!(
+                "unreadable GitHub quota observation {name} of {}/{} in the host database",
+                self.host, self.login
+            )
+        })
+    }
+
+    /// Keeps `value` as the observation `name`, as it adds to what was kept,
+    /// in one transaction of the host database.
     pub(crate) fn save(&self, name: &str, value: &Observation) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
-        let lock = std::fs::File::create(self.dir.join("observations.lock"))?;
-        lock.lock()?;
-        let prior = self.read(name)?;
+        let mut db = self.db.open()?;
+        crate::host_db::write(&mut db, |tx| self.save_in(tx, name, value))
+    }
+
+    fn save_in(&self, db: &rusqlite::Connection, name: &str, value: &Observation) -> Result<()> {
+        let prior = self.read_in(db, name)?;
         // Responses from concurrent requests may arrive out of order. A late
         // positive observation cannot erase a primary rejection before reset.
         if prior.remaining == Some(0) && prior.reset > now() && value.remaining != Some(0) {
@@ -203,10 +225,10 @@ impl Scope {
         if name == "secondary" {
             value.reset = value.reset.max(prior.reset);
         }
-        let file = self.dir.join(format!("{name}.json"));
-        let temp = file.with_extension(format!("{}.tmp", crate::unique()));
-        std::fs::write(&temp, serde_json::to_vec(&value)?)?;
-        std::fs::rename(temp, file)?;
+        db.execute(
+            "INSERT OR REPLACE INTO github_quota (host, login, name, note) VALUES (?1, ?2, ?3, ?4)",
+            [&self.host, &self.login, name, &serde_json::to_string(&value)?],
+        )?;
         Ok(())
     }
 
@@ -229,7 +251,7 @@ impl Scope {
     /// At most one observation is made for this login in this look.
     pub(crate) fn observe(&self, gh: &GitHub) -> Result<()> {
         let mut first = false;
-        NOTE.read(&self.dir.to_string_lossy(), || first = true);
+        NOTE.read(&format!("{}/{}", self.host, self.login), || first = true);
         if !first {
             return Ok(());
         }
@@ -440,14 +462,21 @@ struct IdentityNote {
 /// A changed credential/configuration receives a new binding, never the old
 /// user's quota. A rejected identity lookup is bounded and persisted too.
 fn environment_login(gh: &GitHub, host: &str, key: &str) -> Result<String> {
-    let dir = crate::copies::cache()?.join("github-quota").join(segment(host)).join("identities");
-    let file = dir.join(format!("{key}.json"));
-    let note: IdentityNote = match std::fs::read(&file) {
-        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| {
-            format!("invalid GitHub identity observation {}; remove it and retry", file.display())
+    use rusqlite::OptionalExtension;
+    let db = crate::host_db::Host::of_host()?;
+    let held: Option<String> = db
+        .open()?
+        .query_row(
+            "SELECT note FROM github_identities WHERE host = ?1 AND credential = ?2",
+            [host, key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let note: IdentityNote = match held {
+        Some(note) => serde_json::from_str(&note).with_context(|| {
+            format!("invalid GitHub identity observation of {host} in the host database")
         })?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => IdentityNote::default(),
-        Err(e) => return Err(e.into()),
+        None => IdentityNote::default(),
     };
     if let Some(login) = note.login {
         return Ok(login);
@@ -534,10 +563,14 @@ fn environment_login(gh: &GitHub, host: &str, key: &str) -> Result<String> {
             }
         }
     };
-    std::fs::create_dir_all(&dir)?;
-    let tmp = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&tmp, serde_json::to_vec(&note)?)?;
-    std::fs::rename(tmp, &file)?;
+    let mut held = db.open()?;
+    crate::host_db::write(&mut held, |tx| {
+        tx.execute(
+            "INSERT OR REPLACE INTO github_identities (host, credential, note) VALUES (?1, ?2, ?3)",
+            [host, key, &serde_json::to_string(&note)?],
+        )?;
+        Ok(())
+    })?;
     match note.login {
         Some(login) => Ok(login),
         None => bail!(
@@ -546,6 +579,22 @@ fn environment_login(gh: &GitHub, host: &str, key: &str) -> Result<String> {
             note.why.unwrap_or_default()
         ),
     }
+}
+
+/// The cache directory's directory of the locks the shared readings are read
+/// under, by GitHub host and login.
+const LOCKS: &str = "shared-readings";
+
+/// What an older release kept as files of the cache directory, `github-quota/`:
+/// moved aside to `github-quota.migrated` once no host runner of an older
+/// release holds the host. Its notes are not taken in: each is an expiring
+/// observation, whose loss costs one rejected request, never a fact.
+fn set_aside_old_notes(cache: &std::path::Path) -> Result<()> {
+    let old = cache.join("github-quota");
+    if old.exists() && !crate::host_db::older_runner(cache) {
+        crate::host_db::aside(&old)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn credential_present() -> bool {
@@ -561,7 +610,12 @@ mod tests {
     #[test]
     fn a_rejection_saved_last_does_not_shorten_a_known_reset() {
         let dir = tempfile::tempdir().unwrap();
-        let scope = Scope { dir: dir.path().into(), host: "github.com".into(), login: "me".into() };
+        let scope = Scope {
+            db: crate::host_db::Host::at(dir.path().join("host.db")),
+            locks: dir.path().into(),
+            host: "github.com".into(),
+            login: "me".into(),
+        };
         let known = now() + 3600;
         scope
             .save("graphql", &Observation { remaining: Some(0), reset: known, limit: None })
@@ -574,6 +628,23 @@ mod tests {
             .save("graphql", &Observation { remaining: Some(0), reset: known + 60, limit: None })
             .unwrap();
         assert_eq!(scope.read("graphql").unwrap().reset, known + 60, "a later reset is taken");
+    }
+
+    #[test]
+    fn an_older_releases_quota_notes_are_moved_aside_once_no_older_runner_holds_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let old = cache.join("github-quota/github.com/me");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("core.json"), r#"{"remaining":0,"reset":1}"#).unwrap();
+        let runner = crate::host_db::tests::runner(&cache, "0.0.1");
+        set_aside_old_notes(&cache).unwrap();
+        assert!(old.exists(), "an older host runner reads them still");
+        drop(runner);
+        set_aside_old_notes(&cache).unwrap();
+        assert!(!cache.join("github-quota").exists());
+        assert!(cache.join("github-quota.migrated/github.com/me/core.json").exists());
+        set_aside_old_notes(&cache).unwrap();
     }
 
     #[test]

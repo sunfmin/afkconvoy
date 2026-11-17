@@ -96,6 +96,25 @@ const MIGRATIONS: &[&str] = &[
         one INTEGER PRIMARY KEY CHECK (one = 0),
         written INTEGER,
         tried INTEGER
+     );
+     CREATE TABLE github_quota (
+        host TEXT NOT NULL,
+        login TEXT NOT NULL,
+        name TEXT NOT NULL,
+        note TEXT NOT NULL,
+        PRIMARY KEY (host, login, name)
+     );
+     CREATE TABLE github_identities (
+        host TEXT NOT NULL,
+        credential TEXT NOT NULL,
+        note TEXT NOT NULL,
+        PRIMARY KEY (host, credential)
+     );
+     CREATE TABLE shared_readings (
+        scope TEXT NOT NULL,
+        key TEXT NOT NULL,
+        kept TEXT NOT NULL,
+        PRIMARY KEY (scope, key)
      )",
 ];
 
@@ -474,7 +493,7 @@ pub(crate) fn aside(file: &Path) -> Result<()> {
 /// Whether a host runner of a release older than this one holds the host of
 /// `cache`: it reads and writes the old files still, until it moves onto
 /// this release between two ticks (ADR-0023).
-fn older_runner(cache: &Path) -> bool {
+pub(crate) fn older_runner(cache: &Path) -> bool {
     let lock = cache.join(crate::host_runner::LOCK);
     let Ok(file) = std::fs::File::open(&lock) else { return false };
     // Free: no host runner holds it. A runner starting meanwhile waits for
