@@ -1537,6 +1537,17 @@ impl Harness {
         }
     }
 
+    /// Whether one session file's `text` records background work the
+    /// session's own process runs — an agent or a shell it launched — that
+    /// it has not yet been notified ended. A child session's lines do not
+    /// count. A harness whose session records none says `false`.
+    pub fn background_pending(self, text: &str) -> bool {
+        match self {
+            Harness::ClaudeCode => claude_code::background_pending(text),
+            Harness::Pi | Harness::Codex | Harness::Dsh | Harness::Kimi | Harness::Grok => false,
+        }
+    }
+
     /// Whether any harness shows background work on `screen` (as
     /// `shows_background`): the screen does not say which harness drew it.
     pub fn any_shows_background(screen: &[String]) -> bool {
