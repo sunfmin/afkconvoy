@@ -526,7 +526,7 @@ pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) ->
 /// Freeze the destination used to prepare the stage, after its preflight.
 /// A concurrent selection requires a new preparation, never a stale brief.
 fn pin_target(fleet: &Fleet, number: u64, prepared: &str) -> Result<()> {
-    let pinned = crate::target::pin(&fleet.repo, &fleet.config, number, None)?;
+    let pinned = crate::target::branch(&fleet.repo, &fleet.config, number)?;
     if pinned != prepared {
         bail!(
             "issue #{number}'s target became {pinned:?} while dispatch was prepared for {prepared:?}; run dispatch again"
@@ -634,6 +634,9 @@ fn start(
                 if claim["won"] != true {
                     return Ok(Dispatched::lost(number, claim["owner"].clone()));
                 }
+                // The claim pinned the target read as it was pushed: a
+                // selection made since the check above is caught here.
+                pin_target(fleet, number, &target)?;
                 keep_starting(fleet, number, interrupted)?;
                 if let Some(staged) = &staged {
                     staged.refuse_spent(fleet.scan.claim_of(number))?;

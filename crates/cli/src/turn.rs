@@ -511,7 +511,7 @@ fn run(
     let mut routed;
     let config = if let Some(issue) = issue {
         routed = crate::config::load(&repo.dir.join(crate::config::FILE))?;
-        routed.base_branch = crate::target::pin(repo, config, issue, None)?;
+        routed.base_branch = crate::target::branch(repo, config, issue)?;
         &routed
     } else {
         config

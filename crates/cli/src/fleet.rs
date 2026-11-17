@@ -552,7 +552,7 @@ impl Fleet {
             &self.repo,
             &self.config,
             &self.gh.tracker,
-            &open.rows,
+            open,
             self.listing(),
         )
     }
@@ -584,6 +584,7 @@ impl Fleet {
             &self.gh.tracker,
             issue,
             &self.listing().records,
+            None,
         )?;
         let name = format!("refs/heads/{branch}");
         self.remote.fetched(&name, Fresh::Opened)?.ok_or_else(|| {
