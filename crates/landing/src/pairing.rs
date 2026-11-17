@@ -1204,11 +1204,15 @@ impl<N: Clone> Chain<N> {
     /// carried gates no pair of it, and its round carries on without it as
     /// it leaves (sunfmin/control#1349).
     pub fn carried(&mut self, change: u64, by: u64) {
-        let pending = self.pending.iter_mut().filter_map(|b| b.asks.as_mut());
-        let rounds = self.round.iter_mut().chain(self.stacked.iter_mut());
-        let asked = rounds.flat_map(|r| &mut r.asked).map(|a| &mut a.asks);
-        for asks in pending.chain(asked).filter(|a| a.change == change) {
-            asks.carried_by = Some(by);
+        for place in &mut self.pending {
+            if let Some(asks) = place.asks.as_mut().filter(|a| a.change == change) {
+                asks.carried_by = Some(by);
+            }
+        }
+        for round in self.round.iter_mut().chain(self.stacked.iter_mut()) {
+            for ask in round.asked.iter_mut().filter(|a| a.asks.change == change) {
+                ask.asks.carried_by = Some(by);
+            }
         }
         let pairs: Vec<String> = self
             .candidates
@@ -1224,9 +1228,17 @@ impl<N: Clone> Chain<N> {
     /// The PR that carries the PR whose place is `id`, pending or in a
     /// round, where one closed it as carried (`carried`).
     pub fn carried_by(&self, id: &str) -> Option<u64> {
-        let pending = self.pending.iter().filter(|b| b.id == id).filter_map(|b| b.asks.as_ref());
-        let asked = self.rounds().flat_map(|r| &r.asked).filter(|a| a.id == id).map(|a| &a.asks);
-        pending.chain(asked).find_map(|a| a.carried_by)
+        for place in &self.pending {
+            if place.id == id {
+                return place.asks.as_ref().and_then(|a| a.carried_by);
+            }
+        }
+        for round in self.rounds() {
+            if let Some(ask) = round.asked.iter().find(|a| a.id == id) {
+                return ask.asks.carried_by;
+            }
+        }
+        None
     }
 
     /// The round's PR whose place is `id` leaves it: `why`.
