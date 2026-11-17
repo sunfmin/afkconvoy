@@ -38,17 +38,16 @@ fn seed(world: &World) {
     assert_eq!(answer["recorded"], true, "{answer}");
 }
 
-/// How many turns wait pending on the candidate chain of `main`: for the
-/// next round (docs/adr/0083).
-fn pending(world: &World) -> usize {
+/// How many turns asked to land after the open round took its PRs: pending
+/// on the candidate chain of `main`, for the next round (docs/adr/0083), or
+/// stacked on the open one while its whole gate runs (sunfmin/control#1140).
+/// A pending turn is stacked within a read of the chain once that gate runs,
+/// so a count of either alone holds only for a moment, which a loaded host's
+/// slower looks miss (sunfmin/control#1306). Both are read in one look.
+fn asked_after(world: &World) -> usize {
     let chain = world.chain("main");
-    chain["pending"].as_array().map_or(0, Vec::len)
-}
-
-/// The PRs of the round stacked on the open one (sunfmin/control#1140).
-fn stacked(world: &World) -> usize {
-    let chain = world.chain("main");
-    chain["stacked"]["asked"].as_array().map_or(0, Vec::len)
+    let pending = chain["pending"].as_array().map_or(0, Vec::len);
+    pending + chain["stacked"]["asked"].as_array().map_or(0, Vec::len)
 }
 
 #[test]
@@ -67,8 +66,9 @@ fn two_turns_land_in_order_with_a_record_of_each_landed_tree_and_no_line() {
     let a = start(&world, &one, &world.cache(), 1);
     until(|| started.exists());
     let b = start(&world, &two, &world.cache(), 2);
-    // It asked during the first's round: it waits for the next.
-    until(|| pending(&world) == 1);
+    // It asked during the first's round: it waits for the next, or stacks
+    // on this one.
+    until(|| asked_after(&world) == 1);
     assert!(!second_started.exists(), "a worker without its turn runs no gate");
     std::fs::write(&release, "").unwrap();
     let (a, b) = (finish(a), finish(b));
@@ -193,7 +193,7 @@ fn a_busy_host_bounds_candidates_and_room_lets_another_repo_start() {
     // Past the share now: nothing more starts beside the two.
     a.cores_busy(95);
     let second = start(&a, &another, &a.cache(), 2);
-    until(|| pending(&a) == 1);
+    until(|| asked_after(&a) == 1);
     assert!(!another.join("held.txt").exists(), "the second turn has not merged yet");
     // The second turn waits on the host's room, saying the reading.
     let busy = || {
@@ -269,7 +269,7 @@ fn the_exclusive_bound_ends_the_whole_turn_and_releases_the_next_one() {
     // whole gate runs (sunfmin/control#1140); a command waiting in the queue
     // is what the bound ends the turn for.
     let next = start(&world, &two, &world.cache(), 2);
-    until(|| pending(&world) + stacked(&world) == 1);
+    until(|| asked_after(&world) == 1);
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     command.env("XDG_CACHE_HOME", world.cache());
     let queued = command

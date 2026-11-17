@@ -1636,20 +1636,27 @@ fn a_running_fleet_uses_commands_and_codex_preferences_changed_after_it_started(
         world.issue(number, &["ready-for-agent", "harness:codex"]);
         world.afk(&["wake"]).ok();
         let until = Instant::now() + PATIENCE;
+        // The host watch starts on the switched harness too, its command
+        // quoted once more: it is not the worker (sunfmin/control#1306).
+        let watch = format!("{}=host", afkconvoy_core::host_watch::WATCH_ENV);
         loop {
             if world.orca()["terminals"].as_array().unwrap().iter().any(|terminal| {
-                terminal["command"].as_str().is_some_and(|line| {
-                    if !line.contains(&format!(" && {command} ")) {
-                        return false;
-                    }
-                    assert!(line.contains(&format!("--model '{model}'")), "{line}");
-                    assert!(
-                        line.contains(&format!("model_reasoning_effort=\"{effort}\"")),
-                        "{line}"
-                    );
-                    assert!(line.contains(&format!("service_tier=\"{service_tier}\"")), "{line}");
-                    true
-                })
+                terminal["title"] != "afkconvoy watch"
+                    && terminal["command"].as_str().is_some_and(|line| {
+                        if line.contains(&watch) || !line.contains(&format!(" && {command} ")) {
+                            return false;
+                        }
+                        assert!(line.contains(&format!("--model '{model}'")), "{line}");
+                        assert!(
+                            line.contains(&format!("model_reasoning_effort=\"{effort}\"")),
+                            "{line}"
+                        );
+                        assert!(
+                            line.contains(&format!("service_tier=\"{service_tier}\"")),
+                            "{line}"
+                        );
+                        true
+                    })
             }) {
                 break;
             }
