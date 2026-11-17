@@ -42,8 +42,7 @@ pub fn checkouts() -> Result<Value> {
 /// says when it ended, `ticked`, and whether it was idle, the claims it held
 /// and the frontier it left as it did: null with no tick, and the three
 /// where it failed whole. Its
-/// tracker the one its entry says — of the local tracker, its name — null
-/// where it says none. Its repo
+/// tracker as its entry says it (`tracker::json_of_entry`). Its repo
 /// and its tick log are null where the checkout is no git checkout any more.
 fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
     let root = &listed.checkout;
@@ -84,7 +83,7 @@ fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
             Some(repo) => crate::named_harness::json_of(repo),
             None => json!({"error": format!("{} is no git checkout", root.display())}),
         },
-        "tracker": listed.tracker.as_ref().map(|said| said.name(&crate::host_settings::host_name())),
+        "tracker": crate::tracker::json_of_entry(listed, repo.as_ref()),
         "ticked": last.map(|(at, _)| at),
         "tick_log": tick_log.map(|log| log.file),
     })
@@ -126,7 +125,7 @@ The checkout list: checkouts.json in the cache directory (`afkconvoy help cache`
   - `ticked`: when that fleet instance's last tick ended, in epoch seconds; null with none
   - `idle`, `holding`, `frontier`: as that tick ended: whether the fleet instance was idle — it held nothing, nothing of its was on the base branch, and its frontier was empty — the claims it held, and the frontier issues it left undispatched (`afkconvoy tick --help`). null with no tick, or one that failed whole; `idle` null too of a tick logged by an older release
   - `harness`: {in_force, said_by}: the harness its workers start on, and who says it, as `afkconvoy plan` answers it: `checkout` (`afkconvoy run --harness`) or `host_kit`. {error} where the host kit cannot be read, or it is no git checkout any more
-  - `tracker`: the repo its fleet reads and writes its issues in, `<owner>/<repo>`, as its entry says it (`afkconvoy run --tracker`) — this host's local tracker, `local/<host>`, where it says `local`; null where it says none, and the checkout's own repo is its tracker
+  - `tracker`: where its fleet reads and writes its issues, as its entry says it (`afkconvoy run --tracker`): another repo, `<owner>/<repo>`, or this host's local tracker, `local/<host>`, where it says `local` or none; null where it says the checkout's own repo
   - `tick_log`: the file its fleet instance logs its ticks in, as `run` answers it; null where it is no git checkout any more
 
 It exits 0 whatever the checkouts' states. Errors, as {"error": …} with a non-zero exit: the checkout list cannot be read; the host runner cannot say which checkouts it holds — it is of an older afkconvoy, which `afkconvoy run` in any checkout moves onto this one; it ended before it answered; or it answered nothing within 10 seconds.

@@ -61,6 +61,7 @@ fn a_missing_issue_or_comment_is_told_apart_from_a_failure() {
     assert!(matches!(store.view(9), Err(Error::NoSuchIssue(9))));
     assert!(matches!(store.comment(9, "x", 2), Err(Error::NoSuchIssue(9))));
     assert!(matches!(store.edit_body(9, "x", 2), Err(Error::NoSuchIssue(9))));
+    assert!(matches!(store.edit_title(9, "x", 2), Err(Error::NoSuchIssue(9))));
     assert!(matches!(store.add_labels(9, &["x"], 2), Err(Error::NoSuchIssue(9))));
     assert!(matches!(store.remove_labels(9, &["x"], 2), Err(Error::NoSuchIssue(9))));
     assert!(matches!(store.close(9, 2), Err(Error::NoSuchIssue(9))));
@@ -102,6 +103,16 @@ fn a_body_edit_records_when() {
     let issue = store.view(n).unwrap().issue;
     assert_eq!((issue.body.as_str(), issue.body_edited, issue.updated), ("new", Some(40), 40));
     assert_eq!(issue.created, 10);
+}
+
+#[test]
+fn a_title_edit_changes_the_issue_and_leaves_its_body() {
+    let (mut store, _) = store("title");
+    let n = store.create(REPO, "old", "body", &[], 10).unwrap();
+    store.edit_title(n, "new", 40).unwrap();
+    let issue = store.view(n).unwrap().issue;
+    assert_eq!((issue.title.as_str(), issue.body.as_str()), ("new", "body"));
+    assert_eq!((issue.updated, issue.body_edited), (40, None));
 }
 
 #[test]

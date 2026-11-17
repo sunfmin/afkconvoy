@@ -287,8 +287,10 @@ fn held(loaded: &Loaded) -> Vec<Fault> {
 /// — or, where there is none or its config cannot be read, the labels a repo
 /// that names none has. A team with a fault fails with `Refused`.
 pub fn load(from: From, checkout: Option<&Repo>) -> Result<Loaded> {
+    // `gh` reads the team's repo and its roles' — no issue — so the
+    // checkout's tracker is not asked for.
     let gh = match checkout {
-        Some(repo) => GitHub::of(repo)?,
+        Some(repo) => GitHub::new(repo.dir.clone(), crate::gh::Tracker::Own),
         None => GitHub::in_no_checkout(),
     };
     let copies = Copies::of_host()?;

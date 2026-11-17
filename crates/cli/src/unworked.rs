@@ -17,7 +17,7 @@ use afkconvoy_core::claims::{Claim, read_heartbeat};
 use afkconvoy_core::config::RepoName;
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::lease::stamp_stale;
-use afkconvoy_core::tracker::{Said, Tracker, repo_labels};
+use afkconvoy_core::tracker::{Tracker, repo_labels};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -413,17 +413,21 @@ impl Observed {
 /// have never been on this host. Errors remain evidence, never an empty remote.
 pub(crate) fn read(now: u64) -> Result<Value> {
     let listed = List::of_host()?.read()?.checkouts;
-    let host = crate::host_settings::host_name();
     let mut trackers = BTreeMap::new();
     for entry in listed {
         let Ok(repo) = Repo::at(&entry.checkout) else { continue };
-        let tracker = match entry.tracker {
-            Some(said) => Some((said.name(&host), said == Said::Local)),
-            None => named_repo(&repo).ok().map(|named| (named, false)),
+        let Ok(tracker) = crate::checkout_list::tracker_for(entry.tracker, &repo) else {
+            continue;
         };
-        if let Some((tracker, local)) = tracker {
-            trackers.entry((tracker.to_string().to_lowercase(), local)).or_insert(repo.dir);
-        }
+        let (tracker, local) = match tracker {
+            Tracker::Own => match named_repo(&repo) {
+                Ok(named) => (named, false),
+                Err(_) => continue,
+            },
+            Tracker::Other { tracker, .. } => (tracker, false),
+            Tracker::Local { tracker, .. } => (tracker, true),
+        };
+        trackers.entry((tracker.to_string().to_lowercase(), local)).or_insert(repo.dir);
     }
     let mut found = vec![];
     for ((tracker, local), checkout) in trackers {
@@ -547,10 +551,10 @@ fn finding_of(seen: &Observed, host: &str, now: u64) -> Option<Finding> {
             heartbeat(seen, now),
             serde_json::to_string(&report.report.waiting).unwrap_or_default()
         ),
-        match seen.local {
-            true => format!("afkconvoy issue view {}", report.issue),
-            false => format!("gh issue view {} --repo {}", report.issue, seen.tracker),
-        },
+        RepoName::read(&seen.repo)
+            .and_then(|repo| seen.named_tracker(repo).ok())
+            .map(|tracker| tracker.gh_issue("view", report.issue).own())
+            .unwrap_or_else(|| format!("gh issue view {} --repo {}", report.issue, seen.tracker)),
     ))
 }
 

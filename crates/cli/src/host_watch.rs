@@ -1694,14 +1694,16 @@ fn answering(look: &Value) -> String {
     let mut lines = vec![];
     for checkout in look["checkouts"].as_array().into_iter().flatten() {
         let doctor = &checkout["doctor"];
+        // Null: the checkout's own repo (`FleetReport`); else a tracker's name.
         let tracker = match &doctor["fleet"]["tracker"] {
             Value::Null => Tracker::Own,
             Value::String(named) => {
-                let Some(tracker) = RepoName::read(named) else { continue };
+                let Some(named) = RepoName::read(named) else { continue };
                 let Some(repo) = checkout["repo"].as_str().and_then(RepoName::read) else {
                     continue;
                 };
-                Tracker::Other { tracker, repo }
+                let host = crate::host_settings::host_name();
+                afkconvoy_core::tracker::Said::named(named, &host).tracker(&host, repo)
             }
             _ => continue,
         };
@@ -2347,13 +2349,16 @@ mod tests {
 
     #[test]
     fn each_waiting_issue_gets_answering_commands_for_its_own_tracker() {
+        let local = afkconvoy_core::tracker::local_name(&crate::host_settings::host_name());
         let look = json!({"checkouts": [
             {"checkout": "/one", "repo": "acme/one", "doctor": {
                 "fleet": {"tracker": "acme/tracker"}, "waiting_on_human": [
                     {"issue": 7, "answer": "afkconvoy rule --issue 7 --text-file <file>"}]}},
             {"checkout": "/two", "repo": "acme/two", "doctor": {
                 "fleet": {"tracker": null}, "waiting_on_human": [
-                    {"issue": 8, "answer": "gh issue edit 8 --add-label ready --remove-label human"}]}}
+                    {"issue": 8, "answer": "gh issue edit 8 --add-label ready --remove-label human"}]}},
+            {"checkout": "/three", "repo": "acme/three", "doctor": {
+                "fleet": {"tracker": local.as_str()}, "waiting_on_human": [{"issue": 9}]}}
         ]});
         let commands = answering(&look);
         for expected in [
@@ -2365,9 +2370,13 @@ mod tests {
             "In `/two`, issue #8:",
             "gh issue close 8 --comment <why>",
             "gh issue edit 8 --add-label ready --remove-label human",
+            &format!("In `/three`, issue {local}#9:"),
+            "afkconvoy issue close 9 --comment <why>",
+            "afkconvoy issue block 9 --by <blocker>",
         ] {
             assert!(commands.contains(expected), "{expected}: {commands}");
         }
+        assert!(!commands.contains("gh issue close 9"), "{commands}");
         assert!(!commands.contains("<n>"));
         assert!(!commands.contains("close 8 --repo acme/tracker"));
     }

@@ -251,16 +251,17 @@ fn wrote(world: &World) -> bool {
 }
 
 #[test]
-fn off_the_checkout_list_the_tracker_is_not_said_and_no_label_is_created() {
+fn off_the_checkout_list_the_tracker_is_the_hosts_local_one_and_no_github_label_is_created() {
     let world = bound_off_the_list();
+    world.name_origin(&world.clone, "acme/dev");
     world.with_gh(|gh| gh["labels"] = json!([]));
     world.gh_calls();
-    let error = world.afk(&["flows"]).error();
-    assert!(error.contains("the tracker is not said"), "{error}");
-    assert!(error.contains("is on no checkout list of this host"), "{error}");
-    assert!(error.contains("--tracker <owner>/<repo>"), "it names the way on: {error}");
+    let answer = world.afk(&["flows"]).ok();
+    let line = "afkconvoy issue create --repo acme/dev --label 'flow:fix' --title '<title>' \
+                --body-file <file>";
+    assert_eq!(answer["workflows"][0]["line"], line, "{answer}");
     assert_eq!(repo_labels(&world), json!([]));
-    assert!(!wrote(&world), "nothing was written");
+    assert!(!wrote(&world), "nothing was written on GitHub");
 }
 
 #[test]
@@ -292,7 +293,7 @@ fn off_the_checkout_list_tracker_naming_its_own_repo_gives_the_line_of_its_own()
         answer["workflows"][0]["line"],
         "gh issue create --label 'flow:fix' --title '<title>' --body-file <file>"
     );
-    world.list_checkout(&world.clone);
+    world.say_said_tracker(&world.clone, "acme/dev");
     assert_eq!(world.afk(&["flows"]).ok()["workflows"], answer["workflows"]);
 }
 
@@ -314,6 +315,7 @@ fn on_the_checkout_list_its_entry_holds_and_another_tracker_is_refused_naming_bo
     // An entry that says its own repo refuses another the same way.
     let world = bound();
     world.name_origin(&world.clone, "acme/dev");
+    world.say_said_tracker(&world.clone, "acme/dev");
     let error = world.afk(&["flows", "--tracker", "acme/tracker"]).error();
     assert!(error.contains("acme/dev") && error.contains("acme/tracker"), "{error}");
 }

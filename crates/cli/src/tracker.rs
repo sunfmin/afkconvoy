@@ -2,8 +2,9 @@
 //! or its host's local tracker (docs/adr/0091), said on its host as its
 //! concurrency is (docs/adr/0027) — kept with its entry on the checkout list,
 //! set by a `run` that names it, and read as each tick opens the fleet, so a
-//! change holds at the next tick. Until its checkout says one, it is the
-//! checkout's own repo.
+//! change holds at the next tick. Until its checkout says one, it is its
+//! host's local tracker (`Said::DEFAULT`); the checkout's own repo is its
+//! tracker only where it names it.
 //!
 //! A checkout the list holds no entry of yet goes by what its `run` asked,
 //! kept in that process alone until its first tick puts it on the list with
@@ -38,8 +39,9 @@ const ESCALATE_LABEL_SAYS: &str =
 const LOCK_LABEL_SAYS: &str =
     "afkconvoy: while an open issue carries this, the fleet works lock issues only";
 
-/// `--tracker` as said: a repo, `<owner>/<repo>`, the host's local
-/// tracker, `local`, or `default`.
+/// `--tracker` as said: a repo, `<owner>/<repo>` — the checkout's own among
+/// them — the host's local tracker, `local`, or `default`, which is the
+/// local tracker too.
 pub fn repo_or_default(said: &str) -> Result<To<Said>, String> {
     To::parse(said, |said| {
         Said::read(said).ok_or_else(|| {
@@ -54,14 +56,27 @@ pub fn repo_named(said: &str) -> Result<RepoName, String> {
 }
 
 /// The tracker the checkout `repo` says on the host of `list`, as `checkouts`,
-/// `doctor` and `plan` say it: the repo it names, or the name of the host's
-/// local tracker (`local/<host>`), or null where it names none and the
-/// checkout's own repo is its tracker; {error} where the list cannot be read.
+/// `doctor` and `plan` say it: the name of the repo it names, or of the
+/// host's local tracker (`local/<host>`), which it is where the checkout
+/// says none; null where it is the checkout's own repo; {error} where the
+/// list cannot be read.
 pub fn json_of(list: &List, repo: &Repo) -> Value {
-    let host = crate::host_settings::host_name();
-    match said_tracker(list, repo) {
-        Ok(said) => json!(said.map(|said| said.name(&host))),
+    match said_tracker(list, repo).and_then(|said| tracker_for(said, repo)) {
+        Ok(tracker) => json!(tracker.named()),
         Err(error) => json!({"error": format!("{error:#}")}),
+    }
+}
+
+/// The same, of the checkout whose entry is `entry`, `repo` where it is a
+/// git checkout still: where it is none, the name of what the entry says.
+pub fn json_of_entry(entry: &crate::checkout_list::Entry, repo: Option<&Repo>) -> Value {
+    let said = entry.tracker.clone();
+    match repo {
+        Some(repo) => match tracker_for(said, repo) {
+            Ok(tracker) => json!(tracker.named()),
+            Err(error) => json!({"error": format!("{error:#}")}),
+        },
+        None => json!(Said::or_default(said).name(&crate::host_settings::host_name())),
     }
 }
 
@@ -91,8 +106,8 @@ pub fn ask(list: &List, repo: &Repo, to: To<Said>, host: &str) -> Result<Value> 
 }
 
 /// A tracker a checkout says, checked (`check`) and not kept yet: the one it
-/// names, none where that is the checkout's own repo, and what saying it
-/// changes, as `check` says it.
+/// names, none where it says the default, and what saying it changes, as
+/// `check` says it.
 pub struct Checked {
     tracker: Option<Said>,
     changed: Value,
@@ -114,9 +129,10 @@ impl Checked {
 }
 
 /// What the checkout `repo` says of its tracker once it says `to` → the
-/// tracker it then names, none where that is the checkout's own repo, and
-/// what that changes, as {from, to}, each the tracker said — a repo, or
-/// `local` — or null for the checkout's own; null where it changes nothing.
+/// tracker it then names — a repo, its own among them, or `local` — none
+/// where it says the default, the host's local tracker, and what that
+/// changes, as {from, to}, each the tracker said, or null for the default;
+/// null where it changes nothing.
 /// A tracker GitHub says is public is refused before anything is made in it,
 /// whether it changes or not, the checkout's own among them
 /// (`probe::refused_public`); the host's local tracker is no GitHub repo,
@@ -131,11 +147,6 @@ impl Checked {
 pub fn check(list: &List, repo: &Repo, to: To<Said>, host: &str) -> Result<Checked> {
     let said = |said: &Option<Said>| said.as_ref().map(|said| said.to_string().to_lowercase());
     let tracker = match to.kept() {
-        Some(Said::Repo(named))
-            if named.as_str().eq_ignore_ascii_case(named_repo(repo)?.as_str()) =>
-        {
-            None
-        }
         Some(Said::Repo(named)) if !names_a_ref(&named) => bail!(
             "{named} cannot name a git ref, as the fleet's claims on its issues are named: no \
              part of a tracker's name may begin with `.` or end with `.` or `.lock`"
@@ -156,7 +167,7 @@ pub fn check(list: &List, repo: &Repo, to: To<Said>, host: &str) -> Result<Check
     }
     let held = held(repo, &config, host)?;
     if !held.is_empty() {
-        let from = was.as_ref().map_or_else(|| "its own repo".to_string(), Said::to_string);
+        let from = Said::or_default(was.clone()).to_string();
         bail!(
             "{} works the issues of {from} still: {}. Run this again once they are done, so \
              that none of them is read in a tracker that does not hold it",

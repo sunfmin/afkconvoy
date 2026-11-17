@@ -336,7 +336,7 @@ afkconvoy::cli exclusive::an_unbound_worker_s_gate_names_its_issue_in_the_tick_l
 afkconvoy::cli exclusive::one_that_waits_as_its_host_runner_ends_waits_in_the_next_one_s_queue
 afkconvoy::cli exclusive::the_command_s_output_and_exit_status_are_its_own
 afkconvoy::cli exclusive::two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_asked
-afkconvoy::cli first_start::a_new_host_asks_nothing_of_host_sleep
+afkconvoy::cli first_start::a_new_checkout_starts_without_a_tracker_and_works_the_local_one
 afkconvoy::cli first_start::explicit_choices_start_and_existing_checkouts_and_host_defaults_need_no_flags
 afkconvoy::cli flows::an_unbound_repo_answers_its_ready_label_and_creates_it_when_missing
 afkconvoy::cli flows::delivery_creation_preserves_separate_tracker_repo_label_and_selected_workflow
@@ -626,7 +626,8 @@ afkconvoy::cli probe::two_rejections_of_a_noted_branch_layout_settle_hidden_refs
 afkconvoy::cli probe::under_the_branch_layout_a_pr_lands_in_one_recorded_turn_without_a_train_ref
 afkconvoy::cli proxy::dispatch_applies_the_host_list_without_putting_it_in_repo_config
 afkconvoy::cli proxy::plan_and_doctor_show_the_hosts_effective_per_harness_lists
-afkconvoy::cli public_tracker::a_checkout_of_a_public_repo_that_says_no_tracker_is_refused_by_every_start
+afkconvoy::cli public_tracker::a_checkout_of_a_public_repo_that_names_its_own_repo_is_refused_by_every_start
+afkconvoy::cli public_tracker::a_checkout_of_a_public_repo_that_says_no_tracker_works_the_local_one_and_is_not_refused
 afkconvoy::cli public_tracker::a_fleet_instance_whose_tracker_is_made_public_works_nothing_from_its_next_check_until_it_is_private
 afkconvoy::cli public_tracker::a_listed_checkout_of_a_public_repo_a_move_starts_is_refused_and_stays_on_the_list_broken
 afkconvoy::cli public_tracker::a_probe_that_found_the_tracker_private_stands_for_the_hour_and_no_longer
@@ -1224,3 +1225,15 @@ afkconvoy::cli local_tracker::an_issue_opened_locally_is_claimed_worked_landed_a
 # Local tracker: 92 and 46 processes in the fast gate (plans and targets of a world), past its bound.
 afkconvoy::cli local_tracker::an_issue_is_held_back_while_one_it_is_blocked_by_is_open
 afkconvoy::cli local_tracker::a_comment_the_fleet_writes_is_read_back_from_the_local_tracker
+# `afkconvoy issue` against a local tracker, and the default tracker off the
+# checkout list (docs/adr/0091): each starts more processes than the fast
+# gate's bound.
+afkconvoy::cli local_tracker::afkconvoy_issue_comments_edits_closes_reopens_and_blocks_a_local_issue
+afkconvoy::cli local_tracker::afkconvoy_issue_opens_reads_and_lists_the_local_trackers_issues
+afkconvoy::cli local_tracker::afkconvoy_issue_opens_one_of_another_repo_only_where_the_host_has_a_checkout_of_it
+afkconvoy::cli local_tracker::the_flows_line_of_a_local_tracker_opens_a_local_issue_from_anywhere_on_the_host
+afkconvoy::cli flows::off_the_checkout_list_the_tracker_is_the_hosts_local_one_and_no_github_label_is_created
+# Past the fast gate's process bound by the one `git config` a checkout that
+# says no tracker now reads its remote's name with (docs/adr/0091).
+afkconvoy::cli plan::show_says_a_fleet_lock_holds_an_unbound_issue_back
+afkconvoy::cli watch_landing::only_a_watch_lands_by_the_watch_and_only_its_branch_s_pr

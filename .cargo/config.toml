@@ -1,0 +1,7 @@
+[env]
+# Each test thread's stack, and every other thread's a test starts: the
+# manual, rendered in process by the tests that read it, recurses through
+# clap's whole command tree, which in a debug build outgrows the 2 MiB a
+# thread is given by default (`afkconvoy issue` and its verbs tipped it). A
+# release build, and a command's own main thread, need no more.
+RUST_MIN_STACK = "8388608"

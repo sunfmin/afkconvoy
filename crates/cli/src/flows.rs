@@ -16,7 +16,7 @@ use afkconvoy_core::tracker::Said;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use crate::checkout_list::{List, named_repo, said, tracker_for};
+use crate::checkout_list::{List, said, tracker_for};
 use crate::config;
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
@@ -32,10 +32,16 @@ pub(crate) const READY_LABEL_SAYS: &str = "afkconvoy: the fleet works an issue t
 
 /// The line that opens an issue of `tracker` carrying `label` — in a tracker
 /// that is another repo, with the repo label too — its title and body left to
-/// whoever runs it.
+/// whoever runs it. It names where, so it opens the issue wherever on the
+/// host it is run: the tracker, of another repo; the repo it is of, of the
+/// local tracker, where that is a field of the issue.
 fn line(tracker: &Tracker, label: Option<&str>) -> String {
-    let mut line = Line::new().fixed("gh issue create");
-    if let Some(named) = tracker.named() {
+    let mut line = Line::new().fixed(tracker.issue_program()).fixed(" create");
+    let named = match tracker {
+        Tracker::Local { repo, .. } => Some(repo),
+        _ => tracker.issue_flag(),
+    };
+    if let Some(named) = named {
         line = line.fixed(" --repo ").program(named.as_str());
     }
     if let Some(label) = label {
@@ -118,23 +124,16 @@ fn keep_off(config: &Config, escalate_label: &str) -> Value {
 /// `--tracker` says of it → the tracker, and whether `asked` said it where
 /// the checkout list holds no entry of the checkout. The list's entry holds,
 /// and an `asked` it does not say is refused, naming both; with no entry,
-/// `asked` is the tracker, and with neither the tracker is not said.
+/// `asked` is the tracker; with neither, the host's local tracker, which a
+/// checkout that says none works (`Said::DEFAULT`).
 fn tracker(repo: &Repo, asked: Option<&RepoName>) -> Result<(Tracker, bool)> {
-    // The tracker a checkout names, none where that is its own repo.
-    let own = |named: &RepoName| -> Result<Option<Said>> {
-        let is_own = named.as_str().eq_ignore_ascii_case(named_repo(repo)?.as_str());
-        Ok((!is_own).then(|| Said::Repo(named.clone())))
-    };
-    let tracker = |said: Option<Said>| tracker_for(said, repo);
-    let lower = |said: &Option<Said>| said.as_ref().map(|n| n.to_string().to_lowercase());
-    match (said(&List::of_host()?, repo)?, asked) {
-        (Some(listed), None) => Ok((tracker(listed)?, false)),
+    let asked = asked.map(|named| Said::Repo(named.clone()));
+    let listed = said(&List::of_host()?, repo)?;
+    let lower = |said: &Said| said.to_string().to_lowercase();
+    match (listed, asked) {
         (Some(listed), Some(asked)) => {
-            if lower(&listed) != lower(&own(asked)?) {
-                let listed = listed.map_or_else(
-                    || named_repo(repo).map(|n| n.to_string()),
-                    |said| Ok(said.to_string()),
-                )?;
+            let listed = Said::or_default(listed);
+            if lower(&listed) != lower(&asked) {
                 bail!(
                     "{} is on this host's checkout list with the tracker {listed}, and \
                      `--tracker` says {asked}: its fleet reads its issues in {listed}. Leave \
@@ -143,16 +142,10 @@ fn tracker(repo: &Repo, asked: Option<&RepoName>) -> Result<(Tracker, bool)> {
                     repo.dir.display()
                 );
             }
-            Ok((tracker(listed)?, false))
+            Ok((tracker_for(Some(listed), repo)?, false))
         }
-        (None, Some(asked)) => Ok((tracker(own(asked)?)?, true)),
-        (None, None) => bail!(
-            "the tracker is not said: {} is on no checkout list of this host, so which repo its \
-             fleet reads its issues in is not known here. Say it: `afkconvoy flows --tracker \
-             <owner>/<repo>` — the checkout's own repo where that is its tracker — or run it on \
-             the fleet's host, where `afkconvoy run --tracker <owner>/<repo>` puts it on the list",
-            repo.dir.display()
-        ),
+        (Some(listed), None) => Ok((tracker_for(listed, repo)?, false)),
+        (None, asked) => Ok((tracker_for(asked.clone(), repo)?, asked.is_some())),
     }
 }
 
@@ -228,7 +221,7 @@ Whoever hands the fleet work: a human, or the agent a human is talking to, with 
 
 ## What it reads and writes
 
-It reads the config of the checkout and the labels its tracker has. The tracker is the one this host's checkout list says for the checkout, or for the checkout it is a worktree of — the checkout's own repo, until its host says another (`afkconvoy run --tracker`). Where the list holds no entry of it — another account on a shared machine, a fresh clone — the tracker is not said, and it is refused: name it with `--tracker <owner>/<repo>`, the checkout's own repo where that is its tracker. On an entry, a `--tracker` the entry does not say is refused, naming both. In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
+It reads the config of the checkout and the labels its tracker has. The tracker is the one this host's checkout list says for the checkout, or for the checkout it is a worktree of — the host's local tracker, `local/<host>`, until its host says a GitHub repo (`afkconvoy run --tracker`). Where the list holds no entry of it — another account on a shared machine, a fresh clone — it is the local tracker too, unless `--tracker <owner>/<repo>` names a GitHub repo, the checkout's own among them. On an entry, a `--tracker` the entry does not say is refused, naming both. In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
 
 It writes one thing: each label its lines name that the tracker lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label; and, where `--tracker` names another repo off the list, the repo label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
 
@@ -262,14 +255,15 @@ In an unbound repo, which has no workflow:
 - `keep_off`: as above; the escalate label is the config's
 - `created`: the ready label, when this run created it; else empty
 
-Errors, as {"error": …} with a non-zero exit: "the tracker is not said" — the checkout is on no checkout list of this host, and no `--tracker` names it; a `--tracker` its entry does not say; the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout", or git's own words for a checkout it refuses; GitHub refused to list or create a label.
+Errors, as {"error": …} with a non-zero exit: a `--tracker` its entry does not say; the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout", or git's own words for a checkout it refuses; GitHub refused to list or create a label.
 
 ## What trips you up
 
-- `gh issue create --label` refuses a label the repo lacks, and nothing but this command creates a flow label ahead of the first issue. Run it before the line.
+- `gh issue create --label` refuses a label the repo lacks, and nothing but this command creates a flow label ahead of the first issue. Run it before the line. A local tracker needs no label made: an issue carries any it is given.
+- Where the tracker is the host's local tracker (`local/<host>`, the default), the line is `afkconvoy issue create --repo <owner>/<repo>`: run it on this host. `gh issue` does not reach a local tracker. `afkconvoy issue` wakes the fleet as it writes.
 - Opening an issue with `gh`, or labelling one, wakes no fleet: the fleet takes it up at its next tick — within {const:TICK_BUSY_SECONDS} seconds while it has work, within {const:TICK_IDLE_MINUTES} minutes once it has been idle {const:TICK_IDLE_AFTER} ticks in a row. `afkconvoy wake <checkout>`, on the fleet's host, starts that tick now: run it once, after the last issue you open.
 - An issue follows one workflow: put one flow label on it. With several it follows none, and no stage of any is performed on it.
-- The flow label is what hands the issue over. Leave it off an issue that is not ready to be worked, and put it on later: `gh issue edit <n> --add-label <label>`.
+- The flow label is what hands the issue over. Leave it off an issue that is not ready to be worked, and put it on later: `gh issue edit <n> --add-label <label>`, or `afkconvoy issue edit <n> --add-label <label>` of a local tracker.
 - Where the tracker is another repo, the line opens the issue there, `--repo <owner>/<tracker>`, with this repo's repo label, `repo:<owner>/<repo>`: an issue there without it is no issue of this repo, and its fleet never works it. Name the tracker in every `gh issue` command (`--repo`): run in the checkout, `gh` acts on the checkout's own repo.
 - A workflow whose `first` is `by: human` starts by waiting for a human: the fleet does nothing on its issue until one declares a verdict (`afkconvoy verdict --help`).
 - It answers the team as pushed to its default branch. A workflow added in a checkout of the team is not answered, and its label not created, until it is pushed.

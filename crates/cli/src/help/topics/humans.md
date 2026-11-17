@@ -34,7 +34,7 @@ Where its comment gives a line of its own, `doctor`'s is the current one: a comm
 
 ## Answering an escalation
 
-Every command a human or the watch runs to answer one, `<n>` the issue's number. Where the checkout's tracker is another repo (`afkconvoy run --tracker`), name it in every `gh` line — `--repo <owner>/<tracker>`, `repos/<owner>/<tracker>/…` — and give `gh issue create` the repo label too, `--label repo:<owner>/<repo>`: run in the checkout, `gh` acts on the checkout's own repo. The lines an escalation's comment, `plan` and `doctor` give name it already. A consult may run each, and any read-only command, the gate too; never commit, push or change the host.
+Every command a human or the watch runs to answer one, `<n>` the issue's number, as of a checkout whose tracker is its own repo. Where the tracker is the host's local tracker — the default, `local/<host>` — each `gh issue` line is `afkconvoy issue`'s, with the same verb and flags (`afkconvoy issue close <n> --comment <why>`), run on the fleet's host, and an edge is recorded with `afkconvoy issue block <n> --by <blocker>` and taken off with `afkconvoy issue unblock <n> --by <blocker>`, `<blocker>` the blocker's number: `gh` does not reach a local tracker. Where the checkout's tracker is another repo (`afkconvoy run --tracker`), name it in every `gh` line — `--repo <owner>/<tracker>`, `repos/<owner>/<tracker>/…` — and give `gh issue create` the repo label too, `--label repo:<owner>/<repo>`: run in the checkout, `gh` acts on the checkout's own repo. The lines an escalation's comment, `plan` and `doctor` give name it already. A consult may run each, and any read-only command, the gate too; never commit, push or change the host.
 
 - `afkconvoy rule --issue <n> --text-file <file>`: The stage runs again under your ruling; both rework counts start over (a consult's starts none over). `afkconvoy rule --help`.
 - `afkconvoy send --issue <n> --stage <stage> --text-file <file>`: Put it at another stage, when the approach or workflow changed, or bring it back from a park. `afkconvoy send --help`.
@@ -66,7 +66,7 @@ A workflow may give a stage to a human. An issue at one waits there, claimed by 
 
 A run of a patrol that failed opens an issue of its own, under the escalate label, which says what failed. The patrol is not run again while that issue is open.
 
-- `gh issue close <n>`: Once you have looked: the patrol runs again when it is next due. `afkconvoy plan` gives each patrol's standing.
+- `gh issue close <n>` (`afkconvoy issue close <n>` of a local tracker): Once you have looked: the patrol runs again when it is next due. `afkconvoy plan` gives each patrol's standing.
 
 ## A cut that failed
 
@@ -75,7 +75,7 @@ A cut that failed at a step, ran out of time or was ended from outside opens an 
 It is opened under the label `convoy-cut-failed`, not the escalate label: the host's watch looks for its cause, as it answers whatever holds a fleet back, and `doctor` says what becomes of it (`its last cut failed`, `afkconvoy help troubleshooting`). Only where what failed it needs money spent, the one kind every watch leaves with a human, does the watch swap that label for the escalate label; then it waits for you, and these are its answers. Cuts are still attempted meanwhile. An issue a release before this label opened carries the escalate label, and waits for you too.
 
 - Fix what failed it: the next due cut cuts again from the start, and closes the issue once it publishes. `afkconvoy cut --help`.
-- `gh issue close <n>`: Once you have looked: nothing waits for it either way. A cut that failed at `publish` has pushed its tag: that version stays unpublished, and the next cut is of the version after it, once more lands.
+- `gh issue close <n>` (`afkconvoy issue close <n>` of a local tracker): Once you have looked: nothing waits for it either way. A cut that failed at `publish` has pushed its tag: that version stays unpublished, and the next cut is of the version after it, once more lands.
 
 ## A fleet lock
 
@@ -95,7 +95,7 @@ Legacy proposal PRs are retained for content review and migration, with their li
 
 ## An issue past the end of its workflow
 
-A workflow that ended without a landing leaves its issue open: `gh issue close <n>`.
+A workflow that ended without a landing leaves its issue open: `gh issue close <n>`, or `afkconvoy issue close <n>` of a local tracker.
 
 ## What not to do
 

@@ -57,6 +57,26 @@ const LABEL_MOVES: [&str; 2] = ["--add-label", "--remove-label"];
 /// The options that label an issue as it is created. On any other command
 /// they filter a listing, which writes nothing.
 const LABEL_AT_CREATE: [&str; 2] = ["--label", "-l"];
+/// The GraphQL mutations and reads of an issue, which a fleet whose tracker
+/// is its host's local tracker reads and writes with `afkconvoy issue`.
+const ISSUE_GRAPHQL: [&str; 16] = [
+    "createIssue",
+    "updateIssue",
+    "closeIssue",
+    "reopenIssue",
+    "deleteIssue",
+    "transferIssue",
+    "addComment",
+    "updateIssueComment",
+    "deleteIssueComment",
+    "addLabelsToLabelable",
+    "removeLabelsFromLabelable",
+    "addBlockedBy",
+    "removeBlockedBy",
+    "addSubIssue",
+    "issue(",
+    "issues(",
+];
 /// What an option of `gh api` that sends a field starts with.
 const API_FIELDS: [&str; 5] = ["-f", "-F", "--field", "--raw-field", "--input"];
 
@@ -104,6 +124,9 @@ pub struct Limits {
     /// The home folder, which a watch reads paths under; `None` where
     /// the environment names none.
     home: Option<String>,
+    /// Whether the worker's fleet works its host's local tracker
+    /// (docs/adr/0091), whose issues `gh` does not reach.
+    local_tracker: bool,
 }
 
 impl Limits {
@@ -137,7 +160,14 @@ impl Limits {
             escalate_label: fact(ESCALATE_LABEL_ENV)?,
             lock_label: fact(LOCK_LABEL_ENV)?,
             home: var("HOME").filter(|home| home.starts_with('/')),
+            local_tracker: false,
         })
+    }
+
+    /// The same, of a worker whose fleet works its host's local tracker:
+    /// what the fleet kept in its worktree as it started it says so.
+    pub fn on_local_tracker(self) -> Limits {
+        Limits { local_tracker: true, ..self }
     }
 
     /// Why the simple command `words` is refused, when it is, `processes`
@@ -179,6 +209,7 @@ impl Limits {
             }
             Some("git") => self.refuses_git(&args),
             Some("gh") => self.refuses_gh(&args, &command.input),
+            Some("afkconvoy") => self.refuses_afkconvoy(&args, &command.input),
             Some("orca") if self.consult => {
                 orca_removes(&args).then(|| host_change("`orca worktree rm`"))
             }
@@ -372,11 +403,47 @@ impl Limits {
     fn refuses_gh(&self, args: &[&str], input: &str) -> Option<String> {
         let words = positionals(args, &GH_VALUES);
         let (group, verb) = (words.first().copied()?, words.get(1).copied());
+        if self.local_tracker
+            && let Some(why) = reaches_github_issues(group, verb, args, &words, input)
+        {
+            return Some(why);
+        }
         let writes = if group == "api" {
             api_writes(args)
         } else {
             matches!(verb, Some("comment" | "create" | "edit"))
         };
+        if let Some(why) = self.writes_the_fleets(writes, args, input) {
+            return Some(why);
+        }
+        if group == "api" {
+            return self.refuses_api(args, &words);
+        }
+        if (group, verb) == ("pr", Some("merge")) {
+            return Some(merging());
+        }
+        self.moves_a_label(verb, args)
+    }
+
+    /// Why `afkconvoy` run with `args` is refused: an `afkconvoy issue` that
+    /// writes what only the fleet writes, or moves a label of the fleet's, as
+    /// `gh issue` would.
+    fn refuses_afkconvoy(&self, args: &[&str], input: &str) -> Option<String> {
+        let words = positionals(args, &["-C", "--now"]);
+        if words.first() != Some(&"issue") {
+            return None;
+        }
+        let verb = words.get(1).copied();
+        let writes = matches!(verb, Some("comment" | "create" | "edit" | "close"));
+        if let Some(why) = self.writes_the_fleets(writes, args, input) {
+            return Some(why);
+        }
+        self.moves_a_label(verb, args)
+    }
+
+    /// Why a call that `writes` an issue, with `args` and `input`, is
+    /// refused: it writes a record only the fleet's own commands write.
+    fn writes_the_fleets(&self, writes: bool, args: &[&str], input: &str) -> Option<String> {
         let contains =
             |marker: &str| input.contains(marker) || args.iter().any(|arg| arg.contains(marker));
         if writes && contains(STAGE_RECORD) {
@@ -407,12 +474,12 @@ impl Limits {
                     .to_string(),
             );
         }
-        if group == "api" {
-            return self.refuses_api(args, &words);
-        }
-        if (group, verb) == ("pr", Some("merge")) {
-            return Some(merging());
-        }
+        None
+    }
+
+    /// Why an issue command `verb` with `args` is refused: it adds or takes
+    /// off a label of the fleet's.
+    fn moves_a_label(&self, verb: Option<&str>, args: &[&str]) -> Option<String> {
         let mut rest = args.iter().copied();
         while let Some(arg) = rest.next() {
             let (option, joined) = match arg.split_once('=') {
@@ -629,6 +696,49 @@ fn merging() -> String {
     "merging a PR is refused: a finished PR reaches the base branch through a landing turn, \
      and a worker never merges one"
         .to_string()
+}
+
+/// Why `gh` reaching GitHub's issues is refused of a worker whose fleet
+/// works its host's local tracker: `gh issue <verb>`, `gh api` on an issue's
+/// path, or GraphQL that reads or writes an issue. `gh` would act on the
+/// GitHub repo's own issue of that number — another issue, or none — and
+/// `afkconvoy issue` is how the local tracker is read and written.
+fn reaches_github_issues(
+    group: &str,
+    verb: Option<&str>,
+    args: &[&str],
+    words: &[&str],
+    input: &str,
+) -> Option<String> {
+    const WHY: &str = "this fleet's issues are in its host's local tracker, not on GitHub";
+    match group {
+        "issue" => {
+            let verb = verb.unwrap_or("<verb>");
+            Some(format!(
+                "{WHY}: `gh issue {verb}` acts on the GitHub repo's own issue of that number. \
+                 Run `afkconvoy issue {verb}` with the same flags instead (`afkconvoy issue \
+                 --help`)"
+            ))
+        }
+        "api" => {
+            let graphql = words.get(1) == Some(&"graphql");
+            let touches = if graphql {
+                let said =
+                    |name: &str| input.contains(name) || args.iter().any(|a| a.contains(name));
+                ISSUE_GRAPHQL.iter().any(|name| said(name))
+            } else {
+                words.iter().any(|word| word.contains("/issues"))
+            };
+            touches.then(|| {
+                format!(
+                    "{WHY}: `gh api` on an issue reads or writes GitHub's, not this fleet's. Use \
+                     `afkconvoy issue view|list|create|comment|edit|close|reopen|block|unblock` \
+                     (`afkconvoy issue --help`); a PR's comments are `gh pr comment`'s"
+                )
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Whether a `gh api` call with `args` writes: it sends a field, or names a
@@ -1275,6 +1385,63 @@ mod tests {
     }
 
     #[test]
+    fn a_local_trackers_worker_reaches_its_issues_with_afkconvoy_issue_and_never_gh() {
+        let local = limits(true, false).on_local_tracker();
+        let github = limits(true, false);
+        let refused_here = [
+            ("gh issue comment 7 --body done", "`afkconvoy issue comment`"),
+            ("gh issue view 7 --comments", "`afkconvoy issue view`"),
+            ("gh -R acme/dev issue close 7", "`afkconvoy issue close`"),
+            ("gh api repos/acme/dev/issues/7/comments -f body=x", "`afkconvoy issue view|"),
+            ("gh api repos/{owner}/{repo}/issues/7", "`afkconvoy issue view|"),
+            (
+                "gh api graphql -f query='mutation { addComment(input: {}) { clientMutationId } }'",
+                "local tracker",
+            ),
+            (
+                "gh api graphql -f query='{ repository(owner: \"a\", name: \"b\") { issue(number: 7) { title } } }'",
+                "local tracker",
+            ),
+        ];
+        for (line, names) in refused_here {
+            let why = refused(&Call::shell(line), &local).unwrap_or_else(|| panic!("{line}"));
+            assert!(why.contains("local tracker") && why.contains(names), "{line}: {why}");
+            assert_eq!(refused(&Call::shell(line), &github), None, "{line}");
+        }
+        for line in [
+            "afkconvoy issue comment 7 --body done",
+            "afkconvoy issue view 7 --comments",
+            "gh pr view 70",
+            "gh pr comment 70 --body ok",
+            "gh api repos/acme/dev/pulls/70",
+        ] {
+            assert_eq!(refused(&Call::shell(line), &local), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn afkconvoy_issue_moves_no_label_and_writes_no_record_of_the_fleets() {
+        for limits in [limits(true, false), limits(true, false).on_local_tracker()] {
+            for (line, reason) in [
+                ("afkconvoy issue edit 7 --add-label flow:feature", "is a flow label"),
+                ("afkconvoy issue -C /w create -t t -b b --label fleet-lock", "is the lock label"),
+                ("afkconvoy issue edit 7 --remove-label=stage:review", "is a stage label"),
+                (
+                    "afkconvoy issue comment 7 --body '<!--convoy:stage stage=x-->'",
+                    "`afkconvoy verdict`",
+                ),
+            ] {
+                let why = refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("{line}"));
+                assert!(why.contains(reason), "{line}: {why}");
+            }
+            assert_eq!(
+                refused(&Call::shell("afkconvoy issue list -l flow:feature"), &limits),
+                None
+            );
+        }
+    }
+
+    #[test]
     fn no_worker_writes_a_stage_record_by_hand() {
         refused_for(
             &[
@@ -1378,6 +1545,14 @@ mod tests {
                 let line = line.replace("<n>", "7").replace("<ready label>", "ready-for-agent");
                 assert_eq!(refused(&Call::shell(&line), &consult), None, "{line}");
             }
+        }
+        let local = crate::tracker::Said::Local
+            .tracker("h1", crate::config::RepoName::read("acme/dev").unwrap());
+        for line in crate::waiting::answering(&local) {
+            let line = line.replace("<n>", "7").replace("<ready label>", "ready-for-agent");
+            assert!(line.starts_with("afkconvoy "), "{line}");
+            let on_local = consult.clone().on_local_tracker();
+            assert_eq!(refused(&Call::shell(&line), &on_local), None, "{line}");
         }
         for line in ["df -h /", "uptime", "orca terminal list --worktree path:/w", "git status"] {
             assert_eq!(refused(&Call::shell(line), &consult), None, "{line}");

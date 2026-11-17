@@ -423,9 +423,30 @@ impl Issues for LocalIssues {
         Ok(())
     }
 
+    fn edit_issue(&self, number: u64, title: Option<&str>, body: Option<&str>) -> Result<()> {
+        let at = crate::acting_now();
+        if let Some(title) = title {
+            self.with(|store| store.edit_title(number, title, at))?;
+        }
+        if let Some(body) = body {
+            self.with(|store| store.edit_body(number, body, at))?;
+        }
+        Ok(())
+    }
+
+    fn reopen_issue(&self, number: u64) -> Result<()> {
+        let at = crate::acting_now();
+        self.with(|store| store.reopen(number, at))
+    }
+
     fn add_blocker(&self, number: u64, blocker: u64) -> Result<()> {
         let at = crate::acting_now();
         self.with(|store| store.add_blocker(number, blocker, at))
+    }
+
+    fn remove_blocker(&self, number: u64, blocker: u64) -> Result<()> {
+        let at = crate::acting_now();
+        self.with(|store| store.remove_blocker(number, blocker, at))
     }
 
     /// Nothing to make: an issue carries any label it is given.

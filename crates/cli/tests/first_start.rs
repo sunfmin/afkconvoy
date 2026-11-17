@@ -63,7 +63,7 @@ fn refused(world: &World, cwd: &Path, args: &[&str], settings: &[&str]) -> Value
 }
 
 #[test]
-fn a_new_checkout_asks_for_its_tracker_before_any_startup_writes() {
+fn a_new_host_asks_for_its_watch_directory_before_any_startup_writes_and_no_tracker() {
     let world = fresh_host();
     // A missing kit and flags that would write settings are deliberate:
     // neither setup nor those writes may precede this refusal.
@@ -72,35 +72,39 @@ fn a_new_checkout_asks_for_its_tracker_before_any_startup_writes() {
         &world,
         &world.clone,
         &["--hot-cores", "2", "--concurrency", "1", "--panel", "7123"],
-        &["tracker", "watch-dir"],
+        &["watch-dir"],
     );
-    world.say_host_settings(json!({}));
-    refused(&world, &world.clone, &[], &["tracker"]);
-    // A saved host does not waive the tracker choice for another checkout.
-    let second = world.second_repo();
-    refused(&world, &second, &[], &["tracker"]);
+    // A tracker named asks nothing more, and waives nothing.
+    refused(&world, &world.clone, &["--tracker", "acme/dev"], &["watch-dir"]);
 }
 
 #[test]
-fn a_new_host_asks_nothing_of_host_sleep() {
+fn a_new_checkout_starts_without_a_tracker_and_works_the_local_one() {
     let world = fresh_host();
-    let all = ["tracker", "watch-dir"];
+    world.name_origin(&world.clone, "acme/dev");
+    let all = ["watch-dir"];
     refused(&world, &world.clone, &[], &all);
     refused(&world, &world.clone, &["--foreground"], &all);
-    // Its tracker given, a new host starts: no fleet puts a host to sleep,
-    // so there is nothing of it to settle (docs/adr/0101). Its panel is
-    // served on any free port: 7070 is the panel of the host the tests run on.
+    // Its watch directory given, a new host starts, with no tracker named:
+    // its checkout works the host's local tracker. No fleet puts a host to
+    // sleep, so there is nothing of it to settle (docs/adr/0101). Its panel
+    // is served on any free port: 7070 is the panel of the host the tests
+    // run on.
     let first =
-        run(&world, &world.clone, &["--tracker", "default", "--hot-memory", "2", "--panel", "0"])
+        run(&world, &world.clone, &["--watch-dir", "default", "--hot-memory", "2", "--panel", "0"])
             .ok();
     assert_eq!(first["added"], true);
+    let listed = world.afk(&["checkouts"]).ok();
+    let tracker = listed["checkouts"][0]["tracker"].as_str().unwrap_or_default();
+    assert!(tracker.starts_with("local/"), "{listed}");
     world.afk(&["stop", "--all"]).ok();
 }
 
 #[test]
 fn explicit_choices_start_and_existing_checkouts_and_host_defaults_need_no_flags() {
     let world = World::new();
-    let first = run(&world, &world.clone, &["--tracker", "default"]).ok();
+    world.name_origin(&world.clone, "acme/dev");
+    let first = run(&world, &world.clone, &["--tracker", "acme/dev"]).ok();
     assert_eq!(first["added"], true);
     let again = run(&world, &world.clone, &[]).ok();
     assert_eq!(again["added"], false);
@@ -116,7 +120,7 @@ fn explicit_choices_start_and_existing_checkouts_and_host_defaults_need_no_flags
 #[test]
 fn every_first_start_question_and_option_is_shared_by_the_topic_and_json_asks() {
     let world = fresh_host();
-    let all = ["tracker", "watch-dir"];
+    let all = ["watch-dir"];
     let answer = refused(&world, &world.clone, &[], &all);
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)

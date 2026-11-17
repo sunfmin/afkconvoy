@@ -805,6 +805,7 @@ fn a_watch_decides_what_cannot_be_undone_and_leaves_only_money_to_a_human() {
     let world = World::new();
     world.with_gh(|gh| gh["discussion_categories"] = json!(["Daybook"]));
     world.name_origin(&world.clone, "acme/dev");
+    world.say_said_tracker(&world.clone, "acme/dev");
     world.list_checkout(&world.clone);
     world.issue(7, &["ready-for-human"]);
     world.comment(

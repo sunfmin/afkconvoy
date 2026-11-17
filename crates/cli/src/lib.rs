@@ -92,6 +92,7 @@ pub mod hot;
 pub mod human_wait;
 pub mod instance;
 pub mod intake;
+mod issue;
 pub mod issue_updates;
 pub mod issues;
 pub mod jev;
@@ -223,7 +224,7 @@ const READER: &str = "Run by whoever reads this manual";
 /// ## What it needs
 ///
 /// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}. A repo whose config names a team is a bound repo: its workflows say how issues are worked. One whose config names none is unbound: one worker per issue, then a turn that lands its PR.
-/// - A private tracker for the issues the fleet reads and writes. Only a private repo can be its own tracker: anyone who can comment writes what workers read. Settle it with the user: [`afkconvoy help first-start`](help:first-start).
+/// - A tracker: the host's local tracker, `local/<host>` (`afkconvoy issue`), unless `run --tracker <owner>/<repo>` names a private GitHub repo. Settle a first start with the user: [`afkconvoy help first-start`](help:first-start).
 /// - {const:FIRST_START_SETTINGS}
 /// - `gh` logged in as a user who may push to the repo.
 /// - `orca` on the PATH, or Orca's SSH remote runtime as is, its CLI at `~/.orca/cli/bin/orca`: it starts every worker. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
@@ -257,7 +258,7 @@ const READER: &str = "Run by whoever reads this manual";
 ///
 /// - **{const:OPERATOR}** — `config`, `check`, `plan` before `run`; `target` picks a task's target; `delivery` for a Jira delivery; `tick` for one pass, `stop` to stop; `hold` for one PR; `promote` for a proving branch; `queue` for the exclusive queue; `doctor --all --since <until of your last look>`, `checkouts`, `panel` to watch (`doctor` names each fix); `accounts` reads work accounts, `rewrite-accounts` old ones; `kit`, `cast`, `switch` for harnesses and models; `patrol-now` runs a patrol; `tell` tells a worker something; `takeover` takes another instance's claims; `daybook` records what an agent did off any issue.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
-/// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels. After opening issues, `wake` has the fleet take them up now.
+/// - **{const:HANDS_WORK}** — a human or their agent opening decided work. `flows` names the workflow, gives the issue-create line and makes labels; `issue` reads and writes them. After opening issues, `wake` has the fleet take them up now.
 /// - **{const:SETS_UP}** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
 /// - **{const:WORKER}** — `gate`, `land`, `verdict`, `intake`, `lock`, `over`, `exclusive`, `watched`, `asked`: its prompt names each one as it is needed, and `wake`, above, as its last; `cut` is what a cut's terminal runs, and what you run to go on with a cut that failed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 /// - **{const:HUMAN}** — in a bound repo: `rule` to answer an escalated issue, `send` to put an issue at a stage of your choosing. A `by: human` stage waits for your `verdict`, a worker's command too. [`afkconvoy help humans`](help:humans) says what each case asks of you.
@@ -410,6 +411,15 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
+    /// Read and write the fleet's issues: create, view, list, comment, edit, close, reopen, block, unblock
+    #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment, long_about = issue::HELP,
+        override_usage = "afkconvoy issue [-C <CHECKOUT>] <create|view|list|comment|edit|close|reopen|block|unblock> [ARGS]")]
+    Issue {
+        #[command(subcommand)]
+        verb: issue::Verb,
+        #[command(flatten)]
+        at: AtEveryFlag,
+    },
     /// End the sleep of this host's `run` for this repo: its next tick starts now (after opening issues with `gh`, and as a worker's last command)
     #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment, long_about = wake::HELP)]
     Wake {
@@ -561,10 +571,11 @@ enum Command {
         /// where `doctor` says it is ignored; `default` drops it
         #[arg(long, value_name = "CLAIMS", value_parser = concurrency::claims_or_default)]
         concurrency: Option<To<NonZeroUsize>>,
-        /// The private repo this checkout's fleet reads and writes its issues in, or `local`:
-        /// this host's local tracker, `local/<host>`: required on its first `run`; kept on
-        /// this host and never pushed. `default` says its own repo explicitly, which must be
-        /// private; omitted on later runs, its saved choice holds
+        /// Where this checkout's fleet reads and writes its issues: `local` — the default —
+        /// this host's local tracker, `local/<host>`, read and written with `afkconvoy issue`;
+        /// or a private GitHub repo, `<owner>/<repo>`, the checkout's own among them. Kept on
+        /// this host and never pushed. `default` says the local tracker again; omitted, the
+        /// saved choice holds
         #[arg(long, value_name = "OWNER/REPO|local", value_parser = tracker::repo_or_default)]
         tracker: Option<To<afkconvoy_core::tracker::Said>>,
         /// The harness this checkout's workers start on, from its next tick. `default` follows
@@ -1327,6 +1338,15 @@ struct AtFlag {
     checkout: Option<PathBuf>,
 }
 
+/// The checkout a command with subcommands is about, named with `-C` before
+/// or after the subcommand.
+#[derive(clap::Args)]
+struct AtEveryFlag {
+    /// The checkout it is about, or a directory in it [default: the one it is run in]
+    #[arg(short = 'C', value_name = "CHECKOUT", global = true)]
+    checkout: Option<PathBuf>,
+}
+
 /// The id of the argument of `At` and of `AtFlag`: a command that has it is
 /// about one repo, and one that has neither is about none.
 const CHECKOUT_ARG: &str = "checkout";
@@ -1525,7 +1545,7 @@ fn kind(name: &str) -> Kind {
         | "claim" | "release" | "heartbeat" | "patrol-now" | "hold" => Kind::ACTS,
         "takeover" => Kind { worktree: Worktree::Reads(Some("from")), ..Kind::ACTS },
         "cast" | "target" | "delivery" | "gate" | "land" | "verdict" | "rule" | "send"
-        | "intake" | "lock" | "over" | "cut" | "wake" | "rewrite-accounts" => worker_acts,
+        | "intake" | "lock" | "over" | "cut" | "wake" | "rewrite-accounts" | "issue" => worker_acts,
         "tick" => Kind { starts: true, ..Kind::ACTS },
         "doctor" | "show" | "exclusive" | "daybook" => Kind::WORKERS,
         "plan" => Kind { starts: true, ..Kind::WORKERS },
@@ -1635,23 +1655,37 @@ fn checkout_help(name: &str, positional: bool) -> String {
 /// (`Some(true)`), with `-C` (`Some(false)`), or takes none (`None`). The
 /// same fact `checkout_help` writes into the manual: a fix line uses it, so
 /// the line and a command typed by hand name the checkout the same way.
+/// Asked from deep in a fleet's threads, the command line is built on a
+/// thread of its own, whose stack holds clap's whole tree however deep the
+/// asker is.
 pub(crate) fn positional_checkout(name: &str) -> Option<bool> {
     use std::collections::HashMap;
     use std::sync::OnceLock;
     static FORMS: OnceLock<HashMap<String, bool>> = OnceLock::new();
+    let forms = || -> HashMap<String, bool> {
+        cli()
+            .get_subcommands()
+            .filter_map(|command| {
+                let arg = command.get_arguments().find(|arg| arg.get_id() == CHECKOUT_ARG)?;
+                Some((command.get_name().to_string(), arg.is_positional()))
+            })
+            .collect()
+    };
     FORMS
         .get_or_init(|| {
-            cli()
-                .get_subcommands()
-                .filter_map(|command| {
-                    let arg = command.get_arguments().find(|arg| arg.get_id() == CHECKOUT_ARG)?;
-                    Some((command.get_name().to_string(), arg.is_positional()))
-                })
-                .collect()
+            std::thread::scope(|scope| {
+                let built =
+                    std::thread::Builder::new().stack_size(CLI_STACK).spawn_scoped(scope, forms);
+                built.map_or_else(|_| forms(), |built| issues::beside(built))
+            })
         })
         .get(name)
         .copied()
 }
+
+/// The stack a thread that builds the command line is given: clap's tree,
+/// built in a debug build, outgrows the 2 MiB of a thread's default.
+const CLI_STACK: usize = 16 << 20;
 
 /// The manual: `--help` answers its index, `help all` it whole, and `help
 /// <topic>` one topic of it. Its text is the guide (`Cli`'s doc comment), each
@@ -1813,6 +1847,15 @@ fn asks_for_text(args: &[OsString]) -> Option<&str> {
         }
     }
     long.then(|| first_word(args)).flatten()
+}
+
+/// The subcommand of the command `name` that `args` name after it, where
+/// it has subcommands: `afkconvoy issue view --help` asks for `view`'s text.
+fn nested<'a>(args: &'a [OsString], name: &str) -> Option<&'a str> {
+    let command = cli().find_subcommand(name)?.clone();
+    let mut words = args.iter().filter_map(|arg| arg.to_str());
+    words.find(|word| *word == name)?;
+    words.filter(|word| !word.starts_with('-')).find(|word| command.find_subcommand(word).is_some())
 }
 
 /// What `help` prints: the index with no name, the whole manual for `all`,
@@ -2213,7 +2256,10 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Ok(parsed) => parsed,
         // A command's `--help` is its text in the manual.
         Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => {
-            let text = asks_for_text(&args).and_then(|name| help(Some(name)).ok());
+            let text = asks_for_text(&args).and_then(|name| match nested(&args, name) {
+                Some(sub) => manual().command_help(&[name, sub]).ok(),
+                None => help(Some(name)).ok(),
+            });
             match text {
                 Some(text) => {
                     print!("{text}");
@@ -2468,6 +2514,9 @@ impl Command {
             Command::Cut { now: true, .. } => Acting::new("cut").on("now".to_string()),
             Command::Cut { .. } => Acting::new("cut").saying_start(),
             Command::Wake { .. } => Acting::new("wake").on_own_issue(),
+            Command::Issue { verb, .. } if verb.writes() => {
+                Acting::new("issue").on_issue(verb.number())
+            }
             Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
             // Its kind says it does not act (`kind`).
@@ -2520,6 +2569,7 @@ fn run(
         Command::Flows { delivery, tracker, .. } => {
             flows::flows(&checkout?, delivery.as_deref(), tracker.as_ref())
         }
+        Command::Issue { verb, .. } => issue::issue(&checkout?, verb),
         Command::Daybook { distill: true, .. } => host_watch::ask_distillation(now),
         Command::Daybook { distilled: Some(file), repo, tracker, .. } => {
             daybook::distilled(checkout, repo, tracker, &file)

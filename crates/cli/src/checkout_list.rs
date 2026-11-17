@@ -204,21 +204,27 @@ pub fn tracker_of(repo: &Repo) -> Result<Tracker> {
 /// what is done next: as the entry of `repo` itself says it, or of its main
 /// checkout, which every worktree of it shares — a worker's command acts on
 /// the issues its fleet does. One the list holds no entry of, or whose entry
-/// says none, is its own repo's (`tracker_for`).
+/// says none, works the host's local tracker (`tracker_for`).
 pub fn tracker_on(list: &List, repo: &Repo) -> Result<Tracker> {
     tracker_for(said_tracker(list, repo)?, repo)
 }
 
 /// The tracker of the checkout `repo` that says `said` of it on this host:
-/// its own repo where it says none. Another repo's issues, or the local
+/// its host's local tracker where it says none (`Said::DEFAULT`), its own
+/// repo where it names that. A checkout whose remote names no repo on GitHub
+/// — a path — and says none works its own repo, as every checkout that said
+/// none did before the local tracker was the default: the local tracker has
+/// no repo name to file its issues under. Another repo's issues, or the local
 /// tracker's, are the checkout's by the repo its remote names
 /// (`named_repo`) — as a repo label in another repo, as a field in the local
 /// tracker, which is named for this host (`host_settings::host_name`), as
 /// the claims of its fleets are stamped.
 pub fn tracker_for(said: Option<Said>, repo: &Repo) -> Result<Tracker> {
-    match said {
-        None => Ok(Tracker::Own),
-        Some(said) => Ok(said.tracker(&crate::host_settings::host_name(), named_repo(repo)?)),
+    match (said, named_repo(repo)) {
+        (None, Err(_)) => Ok(Tracker::Own),
+        (said, named) => {
+            Ok(Said::or_default(said).tracker(&crate::host_settings::host_name(), named?))
+        }
     }
 }
 
@@ -243,6 +249,13 @@ pub fn said(list: &List, repo: &Repo) -> Result<Option<Option<Said>>> {
     let worktree = Worktree::at(repo.dir.clone(), String::new());
     let worker = worktree.holds_a_worker();
     if worker && let Some(kept) = worktree.tracker()? {
+        // An empty note is the checkout's own repo, as an older fleet kept
+        // it: by name where its remote names one — says none, where it does
+        // not, which is its own repo there (`tracker_for`).
+        let kept = match kept {
+            Some(kept) => Some(kept),
+            None => named_repo(repo).ok().map(Said::Repo),
+        };
         return Ok(Some(kept));
     }
     let main = repo.main_checkout()?;
@@ -443,10 +456,17 @@ mod tests {
             repo: RepoName::read("acme/dev").unwrap(),
         };
 
-        // none on the list, or none said: its own repo
-        assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own);
+        // none on the list, or none said: the host's local tracker
+        let local = Said::Local
+            .tracker(&crate::host_settings::host_name(), RepoName::read("acme/dev").unwrap());
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), local);
         list.change(|listed| listed.checkouts.push(entry(&checkout.dir.display().to_string())))
             .unwrap();
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), local);
+        // its own repo, named in whatever case: its own
+        let own = Said::read("Acme/Dev");
+        list.change(|listed| listed.checkouts[0].tracker = own).unwrap();
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own);
         assert_eq!(tracker_on(&list, &worktree).unwrap(), Tracker::Own);
 
         let tracker = Said::read("acme/tracker");
@@ -503,13 +523,20 @@ mod tests {
         std::fs::write(held.brief().unwrap(), "the brief").unwrap();
         let error = format!("{:#}", tracker_on(&list, &worktree).unwrap_err());
         assert!(error.contains("cannot be read"), "{error}");
-        assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own, "the checkout's is said");
+        let local = Said::Local
+            .tracker(&crate::host_settings::host_name(), RepoName::read("acme/dev").unwrap());
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), local, "one saying none works the local");
 
         // what its fleet kept there holds while the list holds no entry
         held.keep_tracker(&other).unwrap();
         assert_eq!(tracker_on(&list, &worktree).unwrap(), other);
-        assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own, "kept in the worktree");
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), local, "kept in the worktree");
         held.keep_tracker(&Tracker::Own).unwrap();
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), Tracker::Own);
+        let kept = std::fs::read_to_string(held.note(crate::orca::TRACKER_FILE).unwrap()).unwrap();
+        assert_eq!(kept, "acme/dev", "its own repo is kept named");
+        // an empty note, as an older fleet kept its own repo, is its own repo
+        std::fs::write(held.note(crate::orca::TRACKER_FILE).unwrap(), "").unwrap();
         assert_eq!(tracker_on(&list, &worktree).unwrap(), Tracker::Own);
 
         // a worker's worktree that kept none goes by its checkout's entry
@@ -524,8 +551,6 @@ mod tests {
         assert_eq!(tracker_on(&list, &worktree).unwrap(), other);
 
         // a kept local tracker is the host's
-        let local = Said::Local
-            .tracker(&crate::host_settings::host_name(), RepoName::read("acme/dev").unwrap());
         held.keep_tracker(&local).unwrap();
         assert_eq!(tracker_on(&list, &worktree).unwrap(), local);
 

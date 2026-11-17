@@ -63,6 +63,8 @@ fn an_unbound_escalation_never_starts_a_consult_and_stays_visible_to_the_watch()
 fn an_unbound_escalation_with_an_outside_blocker_stays_visible_to_the_watch() {
     let world = World::new();
     world.name_origin(&world.clone, "acme/app");
+    // Named on GitHub, it works its own repo there only where it says so.
+    world.say_said_tracker(&world.clone, "acme/app");
     world.issue(7, &["ready-for-agent"]);
     tick(&world, 1000);
     world.with_gh(|gh| {

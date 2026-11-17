@@ -17,14 +17,21 @@ const TRACKER: &str = "acme/tracker";
 const MINE: &str = "repo:acme/dev";
 const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "100"];
 
-/// An unbound repo, `acme/dev`, whose gate passes, and which GitHub says is
-/// `visibility`.
+/// An unbound repo, `acme/dev`, whose gate passes, which GitHub says is
+/// `visibility`, and whose checkout names its own repo as its tracker.
 fn world(visibility: &str) -> World {
     let world = World::new();
     world.set_gate("true");
     world.name_origin(&world.clone, "acme/dev");
     world.with_gh(|gh| gh["visibility"] = json!(visibility));
+    world.say_said_tracker(&world.clone, "acme/dev");
     world
+}
+
+/// The checkout list of `world` as it starts: its checkout, naming its own
+/// repo.
+fn own_entry(world: &World) -> Value {
+    json!([{"checkout": world.clone, "tracker": "acme/dev"}])
 }
 
 /// The line that says a private tracker of `world`'s checkout.
@@ -53,14 +60,14 @@ fn found<'a>(doctor: &'a Value, symptom: &str) -> Vec<&'a Value> {
 }
 
 #[test]
-fn a_checkout_of_a_public_repo_that_says_no_tracker_is_refused_by_every_start() {
+fn a_checkout_of_a_public_repo_that_names_its_own_repo_is_refused_by_every_start() {
     let world = world("public");
     world.issue(7, &["ready-for-agent"]);
     world.watch_pushes(None);
 
     let refused = world.afk(&RUN).error();
     assert!(refuses(&world, &refused, "acme/dev"), "{refused}");
-    assert_eq!(world.checkout_list()["checkouts"], json!([]), "nothing is on the list");
+    assert_eq!(world.checkout_list()["checkouts"], own_entry(&world), "nothing is changed");
     for start in [&["plan"][..], &["tick", "--instance", "alpha", "--host", "h1"]] {
         let refused = world.afk(start).error();
         assert!(refuses(&world, &refused, "acme/dev"), "{start:?}: {refused}");
@@ -71,9 +78,28 @@ fn a_checkout_of_a_public_repo_that_says_no_tracker_is_refused_by_every_start() 
     assert!(world.claims().is_empty());
     assert_eq!(world.labels(7), ["ready-for-agent"]);
 
-    // Saying its own repo again is refused as well.
-    let refused = world.afk(&[&RUN[..], &["--tracker", "default"]].concat()).error();
+    // Saying its own repo again is refused as well, in whatever case.
+    let refused = world.afk(&[&RUN[..], &["--tracker", "Acme/Dev"]].concat()).error();
     assert!(refuses(&world, &refused, "acme/dev"), "{refused}");
+}
+
+#[test]
+fn a_checkout_of_a_public_repo_that_says_no_tracker_works_the_local_one_and_is_not_refused() {
+    let world = world("public");
+    world.unlist_checkout(&world.clone);
+    let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
+    assert_eq!(plan["tracker"], "local/h1", "{plan}");
+    // `default` says it again, of a checkout that named its own repo.
+    let world = world_named_then_default();
+    let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
+    assert_eq!(plan["tracker"], "local/h1", "{plan}");
+}
+
+/// A public repo's checkout that named its own repo, then said `default`.
+fn world_named_then_default() -> World {
+    let world = world("public");
+    world.say_said_tracker(&world.clone, Value::Null);
+    world
 }
 
 #[test]
@@ -85,7 +111,7 @@ fn run_tracker_naming_a_public_repo_is_refused_the_same_way_and_makes_nothing_in
     let refused = world.afk(&[&RUN[..], &["--tracker", TRACKER]].concat()).error();
     assert!(refuses(&world, &refused, TRACKER), "{refused}");
     assert_eq!(world.tracker_of(TRACKER)["labels"], json!(["ready-for-agent"]), "none made");
-    assert_eq!(world.checkout_list()["checkouts"], json!([]), "nothing is on the list");
+    assert_eq!(world.checkout_list()["checkouts"], own_entry(&world), "nothing is changed");
 }
 
 #[test]
@@ -99,7 +125,7 @@ fn run_tracker_naming_a_private_repo_of_a_checkout_of_a_public_one_is_taken_and_
     });
 
     let ran = world.afk(&[&RUN[..], &["--tracker", TRACKER]].concat()).ok();
-    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(ran["tracker"], json!({"from": "acme/dev", "to": TRACKER}), "{ran}");
     until("the tracker's #7 is dispatched", || !world.claims().is_empty());
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     assert_eq!(found(&doctor, "is public"), [] as [&Value; 0], "{doctor}");
@@ -111,7 +137,8 @@ fn listed_untracked(world: &World) {
     let file = world.cache().join("afkconvoy/checkouts.json");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     let mut list = world.checkout_list();
-    list["checkouts"] = json!([{"checkout": world.clone, "named": {"host": "h1"}}]);
+    list["checkouts"] =
+        json!([{"checkout": world.clone, "named": {"host": "h1"}, "tracker": "acme/dev"}]);
     std::fs::write(file, list.to_string()).unwrap();
 }
 
@@ -153,7 +180,7 @@ fn run_tracker_that_moves_an_older_host_runner_starts_its_checkout_under_that_tr
     assert_eq!(ran["host_runner"]["replaced"], json!({"pid": old, "version": "0.0.1"}), "{ran}");
     assert!(older.wait().unwrap().success());
     assert_eq!(ran["added"], false, "{ran}");
-    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(ran["tracker"], json!({"from": "acme/dev", "to": TRACKER}), "{ran}");
     assert_eq!(world.checkout_list()["checkouts"][0]["tracker"], TRACKER);
 
     // Never started under the entry it had: no start of it was refused.
@@ -170,7 +197,7 @@ fn run_tracker_that_starts_the_host_runner_starts_its_listed_checkout_under_that
     let ran = world.afk(&[&RUN[..], &["--tracker", TRACKER]].concat()).ok();
     assert_eq!(ran["host_runner"]["started"], true, "{ran}");
     assert_eq!(ran["host_runner"]["replaced"], Value::Null, "{ran}");
-    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(ran["tracker"], json!({"from": "acme/dev", "to": TRACKER}), "{ran}");
     assert_eq!(refused_starts(&world), [] as [String; 0]);
 }
 
@@ -190,7 +217,8 @@ fn a_listed_checkout_of_a_public_repo_a_move_starts_is_refused_and_stays_on_the_
     let stays = "its checkout stays on the checkout list, and its fleet instance is broken";
     assert!(error.contains(stays), "{error}");
     let listed = world.checkout_list()["checkouts"].clone();
-    assert_eq!(listed, json!([{"checkout": world.clone, "named": {"host": "h1"}}]));
+    let named = json!([{"checkout": world.clone, "named": {"host": "h1"}, "tracker": "acme/dev"}]);
+    assert_eq!(listed, named);
     let removed =
         world.runner_log().into_iter().filter(|line| line.starts_with("checkout removed"));
     assert_eq!(removed.collect::<Vec<_>>(), [] as [String; 0]);
@@ -210,7 +238,7 @@ fn a_listed_checkout_of_a_public_repo_a_move_starts_is_refused_and_stays_on_the_
     // And that line starts it at once.
     world.put_tracker(TRACKER);
     let ran = world.afk(&[&RUN[..], &["--tracker", TRACKER]].concat()).ok();
-    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(ran["tracker"], json!({"from": "acme/dev", "to": TRACKER}), "{ran}");
     assert_eq!(ran["added"], false, "{ran}");
 }
 
