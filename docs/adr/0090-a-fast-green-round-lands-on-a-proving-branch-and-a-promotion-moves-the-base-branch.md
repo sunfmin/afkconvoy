@@ -27,7 +27,7 @@ Decided in #1308 (item 2), built in #1310. The PRs' workers have ended and their
 - The fleet starts a repair worker on that issue, as it starts one for a red base tip (`repair.rs`). It fixes on a branch from the proving tip, passes the fast gate and lands its fix on the proving branch by an ordinary turn. The next promotion gates the new tip; a green one closes the issue.
 - Its worktree is kept: settling does not remove the worktree of a promotion repair issue while the repo declares a proving branch.
 
-ADR-0048 and ADR-0083 refused a separate repair worker for a red round, because the round's own workers were still there to fix it. That reason gives way here: a promotion's red belongs to rounds whose workers have ended and whose issues are closed, so only a worker of the proving branch's own can fix it forward.
+ADR-0083 refused a separate repair worker for a red round, because the round's own workers were still there to fix it. That reason gives way here: a promotion's red belongs to rounds whose workers have ended and whose issues are closed, so only a worker of the proving branch's own can fix it forward.
 
 Not built yet: reusing one worktree across repairs, rather than keeping each repair issue's.
 
