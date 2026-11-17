@@ -1044,6 +1044,9 @@ impl World {
         calls.retain(|call| {
             !call.iter().any(|arg| arg.ends_with("/protection") || arg == visibility)
         });
+        // The login a GitHub write is held and noted under, read from gh's
+        // own config: no request of GitHub's.
+        calls.retain(|call| !call.starts_with(&["config".into(), "get".into(), "user".into()]));
         self.with_gh(|gh| {
             gh["calls"] = json!([]);
             gh["envs"] = json!([]);
