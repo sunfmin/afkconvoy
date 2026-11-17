@@ -5,11 +5,3 @@
 # thread is given by default (`afkconvoy issue` and its verbs tipped it). A
 # release build, and a command's own main thread, need no more.
 RUST_MIN_STACK = "8388608"
-# Where a process cargo runs — every test, and `cargo run` — keeps the host's
-# cache and data: a directory under target, never the host's own. A test that
-# reads the host's checkout list or database through the library, outside a
-# world of its own, once took this host's real `checkouts.json` into a
-# `host.db` it made in the real data directory (2026-11-17). Forced, so a
-# shell that sets them changes nothing here; a world still says its own.
-XDG_CACHE_HOME = { value = "target/test-host/cache", relative = true, force = true }
-XDG_DATA_HOME = { value = "target/test-host/data", relative = true, force = true }

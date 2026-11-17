@@ -289,6 +289,17 @@ impl World {
             clone,
             bin,
         };
+        // The library this test calls in process resolves the host's cache
+        // and data directories as a command does: they are this world's, never
+        // those of the host the tests run on. A test that read the checkout
+        // list through the library once took the host's real checkouts.json
+        // into a host.db in its real data directory (2026-11-17). Each test is
+        // a process of its own under nextest, so its environment is its own.
+        // SAFETY: set before this world starts any thread of its own.
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", world.cache());
+            std::env::set_var("XDG_DATA_HOME", world.data());
+        }
         world.write_gh(&json!({"bare": world.bare, "base": BASE, "issues": [], "prs": [],
             "comments": {}, "labels": ["ready-for-agent"], "calls": [], "envs": []}));
         world.write_orca(&json!({"repos": [{"id": "repo-1", "path": world.clone}],
