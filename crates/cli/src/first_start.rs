@@ -89,12 +89,12 @@ pub fn questions() -> Vec<Ask> {
         },
         Ask {
             setting: Setting::WatchDir,
-            question: "Which operator directory should a watch start in, or should watches stay off?",
-            default: "none; no looks or watches".into(),
-            recommend: "Use an existing operator directory holding the rules for looking after this host's projects; leave watches off until the user names one.",
+            question: "Which operator directory should the host's watch start in, or should it be the stock watch?",
+            default: "the stock watch, in afkconvoy's own directory".into(),
+            recommend: "Use an existing operator directory holding the rules for looking after this host's projects; keep the stock watch until the user names one.",
             options: vec![
                 line("An existing operator directory chosen by the user", "--watch-dir '<operator-directory>'"),
-                line("No watch", "--watch-dir default"),
+                line("The stock watch", "--watch-dir default"),
             ],
         },
     ]
