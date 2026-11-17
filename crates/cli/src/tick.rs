@@ -185,6 +185,9 @@ pub struct Ticked {
     flows: Flows,
     /// What admission read of the host, and the shares it held it to.
     admission: Admission,
+    /// What the tick did of a promotion due, or why it waits
+    /// (`promote::Due`); `None`: none is due.
+    promotion: Option<String>,
     /// The clock the tick ran at: what a worker's wait is told against.
     now: u64,
 }
@@ -322,9 +325,16 @@ pub fn tick(
     // A proving branch ahead of the base branch is promoted, by a process
     // of its own, detached from the tick (docs/adr/0090). One that cannot
     // be started costs the tick nothing: the next tries again.
-    if let Err(error) = crate::promote::tend(&fleet.repo, &fleet.config, &fleet.gh.tracker) {
-        eprintln!("warning: the promotion will retry: {error:#}");
-    }
+    // It starts while the host is idle, or once the oldest change it holds
+    // has waited the bound; the tick's line says why a due one waits.
+    let promotion =
+        match crate::promote::tend(&fleet.repo, &fleet.config, &fleet.gh.tracker, me.now) {
+            Ok(said) => said,
+            Err(error) => {
+                eprintln!("warning: the promotion will retry: {error:#}");
+                None
+            }
+        };
     let mut updates = crate::issue_updates::reconcile(&fleet, &me.host, &open.issues);
     for issue in &open.issues.rows {
         // Dispatch reports a resolution failure against its issue; successful
@@ -506,6 +516,7 @@ pub fn tick(
         set,
         flows,
         admission,
+        promotion,
         now: me.now,
     };
     Ok((ticked, fleet))
@@ -1174,6 +1185,9 @@ impl Ticked {
         if let Some(reason) = self.not_cutting_here() {
             answer["not_cutting_here"] = json!(reason.said());
         }
+        if let Some(promotion) = &self.promotion {
+            answer["promotion"] = json!(promotion);
+        }
         if self.pass.held_back(&self.set) {
             answer["held_back_by"] = json!(self.held_back_by());
         }
@@ -1369,6 +1383,7 @@ impl Ticked {
         if let Some(failed) = self.not_cutting_here() {
             parts.push(failed.said());
         }
+        parts.extend(self.promotion.clone());
         parts.extend(self.found.cut_said.iter().filter_map(log::cut_said));
         for update in &self.updates {
             let issue = &update["issue"];

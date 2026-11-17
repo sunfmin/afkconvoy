@@ -15,12 +15,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use afkconvoy_gate::declared;
-use afkconvoy_gate::gate::GateCommand;
+use afkconvoy_gate::gate::{GateCommand, Tree};
 use afkconvoy_gate::layout::Layout;
 use afkconvoy_gate::run::{self, Git, Settled};
 use afkconvoy_landing::chain::{Candidate, Chain, Decision, Evidence, Phase, Plain, Process};
 use afkconvoy_landing::forge::{Change, Forge, SentBack};
 use afkconvoy_landing::land::{Lander, Outcome};
+use afkconvoy_landing::proving::{self, Promoter, Promotion, Ran};
 use afkconvoy_landing::turn::{self, Declared};
 
 /// A forge that lets every change land and remembers what it was told.
@@ -36,6 +37,8 @@ struct Fake {
     closed: RefCell<Vec<(u64, String)>>,
     /// Each source deleted, at the head it was deleted at.
     deleted: RefCell<Vec<(String, String)>>,
+    /// How each promotion ended, by its word (`Forge::promoted`).
+    promoted: RefCell<Vec<&'static str>>,
 }
 
 /// What a change was sent back with (`Forge::sent_back`).
@@ -92,6 +95,11 @@ impl Forge for Fake {
 
     fn delete_source(&self, change: &Change, head: &str) -> Result<(), String> {
         self.deleted.borrow_mut().push((change.source.clone(), head.to_string()));
+        Ok(())
+    }
+
+    fn promoted(&self, promotion: &Promotion) -> Result<(), String> {
+        self.promoted.borrow_mut().push(promotion.outcome.word());
         Ok(())
     }
 }
@@ -206,6 +214,7 @@ fn lander_as<'a>(
         running,
         worktrees: worktrees.into(),
         declared,
+        proving: None,
         now,
     }
 }
@@ -1187,4 +1196,88 @@ fn a_change_stacked_on_a_round_that_ends_red_is_charged_nothing_and_lands_in_the
     assert_eq!(gates.last(), Some(&("slow".to_string(), landed.commit.clone())));
     git(&work, &["fetch", "--quiet", "origin"]);
     assert_eq!(git(&work, &["rev-parse", "origin/main"]), landed.commit);
+}
+
+/// The sha the remote has at the branch `name`.
+fn remote_tip(work: &Path, name: &str) -> String {
+    let listed = git(work, &["ls-remote", "origin", &format!("refs/heads/{name}")]);
+    listed.split_whitespace().next().unwrap_or_default().to_string()
+}
+
+/// A change on the branch `source`, adding `file`, that asks to land on the
+/// proving branch `proving`, cut from its tip.
+fn proving_change(work: &Path, number: u64, source: &str, file: &str) -> Change {
+    git(work, &["fetch", "--quiet", "origin", "proving"]);
+    git(work, &["checkout", "--quiet", "-b", source, "FETCH_HEAD"]);
+    std::fs::write(work.join(file), source).unwrap();
+    git(work, &["add", file]);
+    git(work, &["commit", "--quiet", "-m", &format!("add {file}")]);
+    git(work, &["push", "--quiet", "origin", source]);
+    git(work, &["checkout", "--quiet", "main"]);
+    Change { number, source: source.into(), target: "proving".into(), title: format!("Add {file}") }
+}
+
+/// Whether the remote holds a green run of `command` on `commit`'s tree.
+fn on_record(work: &Path, commit: &str, command: &str) -> bool {
+    let checkout = Git { worktree: work.into(), remote: "origin".into(), layout: Layout::Hidden };
+    let tree = Tree::named(&git(work, &["rev-parse", &format!("{commit}^{{tree}}")]));
+    run::recorded(&checkout, &tree, &GateCommand::new(command), now()).unwrap().is_some()
+}
+
+/// A round lands on the proving branch gated by its fast gate alone, its
+/// green run on record for the tree it lands, and the base branch stays; a
+/// promotion then runs the slow gate alone on the proving tip, joins it with
+/// that fast run into a record of the whole gate, fast-forwards the base
+/// branch to it and tells the forge; another finds nothing to do; and a red
+/// proving tip moves nothing (docs/adr/0090).
+#[test]
+fn a_round_lands_on_the_proving_branch_fast_green_and_a_promotion_moves_the_base_branch() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    git(&work, &["push", "--quiet", "origin", "main:refs/heads/proving"]);
+    let base = remote_tip(&work, "main");
+    let worktrees = root.path().join("worktrees");
+    let forge = Fake::default();
+    let mut lander = lander(&work, &worktrees, &forge);
+    lander.proving = Some("proving".into());
+
+    let outcomes = lander.land(&[proving_change(&work, 1, "a", "a.txt")]).unwrap();
+    let tip = remote_tip(&work, "proving");
+    assert_eq!(outcomes, vec![(1, Outcome::Landed(tip.clone()))]);
+    assert_eq!(runs(&ran), vec![("fast".to_string(), tip.clone())], "the fast gate alone ran");
+    assert_eq!(remote_tip(&work, "main"), base, "a landing on the proving branch moves no base");
+    assert!(on_record(&work, &tip, "./gate.sh fast"), "the fast run is on record for its tree");
+    assert!(!on_record(&work, &tip, "./gate.sh"), "the whole gate is not, yet");
+
+    let promoter = Promoter {
+        git: Git { worktree: work.clone(), remote: "origin".into(), layout: Layout::Hidden },
+        forge: &forge,
+        base_branch: "main".into(),
+        proving_branch: "proving".into(),
+        host: "scratch-host".into(),
+        machine: MACHINE.into(),
+        worktrees: worktrees.clone(),
+        declared,
+        now,
+    };
+    let promotion = promoter.promote().unwrap();
+    assert_eq!(promotion.outcome, proving::Outcome::Promoted { from: base.clone() });
+    assert_eq!(promotion.ran, Some(Ran::Slow), "joined with the fast run on record");
+    assert_eq!(promotion.tips.proving, tip);
+    assert_eq!(runs(&ran).last(), Some(&("slow".to_string(), tip.clone())));
+    assert_eq!(runs(&ran).len(), 2, "no whole gate ran");
+    assert_eq!(remote_tip(&work, "main"), tip, "the base branch fast-forwarded to the tip");
+    assert!(on_record(&work, &tip, "./gate.sh"), "the whole gate is on record from its parts");
+
+    let again = promoter.promote().unwrap();
+    assert_eq!((again.outcome, again.ran), (proving::Outcome::Current, None));
+    assert_eq!(runs(&ran).len(), 2, "nothing ran");
+
+    lander.land(&[proving_change(&work, 2, "b", "breaks.txt")]).unwrap();
+    let red_tip = remote_tip(&work, "proving");
+    assert_ne!(red_tip, tip, "fast-green, it landed on the proving branch");
+    let red = promoter.promote().unwrap();
+    assert_eq!(red.outcome.word(), "gate_red", "{red:?}");
+    assert_eq!(remote_tip(&work, "main"), tip, "a red promotion moves nothing");
+    assert_eq!(*forge.promoted.borrow(), ["promoted", "current", "gate_red"]);
 }

@@ -100,6 +100,15 @@ pub trait Forge {
         let _ = change;
         Ok(vec![])
     }
+
+    /// A promotion of the proving branch ended as `promotion` says
+    /// (`proving::Promoter`, docs/adr/0090): what follows of it on the
+    /// forge, such as asking for a repair of a red proving tip, or closing
+    /// one once a promotion is green; nothing, unless the program says.
+    fn promoted(&self, promotion: &crate::proving::Promotion) -> Result<(), Self::Error> {
+        let _ = promotion;
+        Ok(())
+    }
 }
 
 /// What a carrying change is handed as it leaves its round (`Forge::sent_back`).

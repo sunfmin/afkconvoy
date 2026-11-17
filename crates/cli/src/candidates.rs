@@ -1505,7 +1505,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     let began = std::time::Instant::now();
     let clock = || now.saturating_add(began.elapsed().as_secs());
     let gh = GitHub::of(repo)?;
-    let forge = Pulls { repo, config, gh: &gh, tracker, of, clock: &clock };
+    let forge = Pulls { repo, config, gh: &gh, tracker, of, host, clock: &clock };
     let asked = crate::forge::change(pr);
     let issue = forge.issue();
     let original = repo
