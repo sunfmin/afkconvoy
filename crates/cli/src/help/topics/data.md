@@ -18,7 +18,7 @@ Setting XDG_DATA_HOME, and nothing else: there is no flag and no config key for 
   - the candidate chain of each repo and target branch (`afkconvoy land --help`), and each repo's landing hold (`afkconvoy hold --help`) and fresh looks
   - the harnesses paused, the book of worker health and the harnesses whose workers last took their briefs
   - the account book: what the host last heard of each engine account, its usage windows and the limit it met — never a credential — and the usage of each patrol run
-  - the watch's and the asking session's state and journals, the resource episodes, and the outboxes of human decisions and daybook entries
+  - the watch's and the asking session's state and launch records, the resource episodes, and the outboxes of human decisions and daybook entries
   - each trash directory a discard used
 - `backups/<YYYY-MM-DD>/`: the host runner's daily copy of `host.db`, and of `issues.db` where there is one, made by SQLite's online backup while others write. The newest {const:BACKUPS_KEPT} days are kept. A backup that failed is `doctor`'s finding (`the host database`), and is tried again within the hour.
 

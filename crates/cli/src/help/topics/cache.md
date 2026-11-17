@@ -30,7 +30,7 @@ Each command reads the variable for itself, so two commands find the same copies
 - `host-runner.log`: the host runner's log, moved aside to host-runner.log.1 once past a MiB: what it started, added, refused and stopped, each line stamped in UTC with its zone named: `2026-10-30T13:56:16Z checkout added: …`.
 - `stock-watch/`: the stock watch's directory, made and kept when the host names no operator directory. Its rules are the short instruction carried in the binary, refreshed when a stock watch starts.
 - `watch/`: the watch's briefs, transcripts and each round's report and delivery record, in either directory, and `evidence/`, the host readings and process or disk evidence. Its state — what survives a host runner restart, what it left with a human, the resource episodes — is in the host's database. `state.lock` is held across a look or a check, and by `watched` while it records a report.
-- `asking/`: the asking session's briefs and transcripts (`sessions/`), each question's delivery record (`questions/`) and each report (`reports/`); `steps`, how many steps ran. Its state and its journal are in the host's database; `state.lock` is held across a step, and by `asked` while it records a report.
+- `asking/`: the asking session's briefs and transcripts (`sessions/`), each question's delivery record (`questions/`) and each report (`reports/`); `steps`, how many steps ran. Its state and its launch record are in the host's database; `state.lock` is held across a step, and by `asked` while it records a report.
 - `worker-health.lock`: held by the one fleet instance observing the host's workers, across its whole observation; the book of what it observed is in the host's database.
 
 None of it is fleet state: that is in GitHub and on the repo's remote.
