@@ -1241,3 +1241,7 @@ afkconvoy::cli flows::off_the_checkout_list_the_tracker_is_the_hosts_local_one_a
 # says no tracker now reads its remote's name with (docs/adr/0091).
 afkconvoy::cli plan::show_says_a_fleet_lock_holds_an_unbound_issue_back
 afkconvoy::cli watch_landing::only_a_watch_lands_by_the_watch_and_only_its_branch_s_pr
+# The Lander's chain on the host (sunfmin/control#1360): each lands a round, the last two twice; measured alone 8.6s, 15.2s and 14.2s on a loaded host.
+afkconvoy-landing::standalone a_round_lands_with_its_chain_on_the_host_and_none_on_the_remote
+afkconvoy-landing::standalone a_round_whose_publication_is_refused_as_the_base_moved_is_rebuilt_on_the_new_tip_and_lands
+afkconvoy-landing::standalone a_round_whose_target_moves_while_its_whole_gate_runs_is_rebuilt_on_the_new_tip_and_lands
