@@ -1290,12 +1290,6 @@ fn cancelled(mut answer: Value, c: &Candidate, chain: &Chain) -> Value {
     answer["detail"] = json!(
         "candidate invalidated; source branch preserved; ask for another turn when its blockers permit; this is not this worker's red gate"
     );
-    if c.cause.as_deref() == Some("owner_died") && c.owner.host == crate::this_host() {
-        answer["detail"] = json!(format!(
-            "another host took this candidate over: no turn on this host said it was alive within the lease ({}s) — it slept, or lost the network — so nothing of it lands, and its gate here was stopped; source branch preserved; ask for another turn",
-            afkconvoy_core::lease::LEASE
-        ));
-    }
     answer
 }
 
@@ -1563,8 +1557,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         crate::unique()
     );
     // A barrier's place, or a pending turn's: a round waits for every turn
-    // that asked to land (sunfmin/control#244). It says this host is alive.
-    let here = crate::this_host();
+    // that asked to land (sunfmin/control#244).
     let reserved = clock();
     let bound = pending_bound();
     // A barrier is not bounded: it waits for the window to drain, and one
@@ -1598,7 +1591,6 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 asks: asks.clone(),
             });
         }
-        chain.beat(&here, clock());
     };
     change(repo, config, reserve)?;
     let _reservation = Reservation { repo, config, id: id.clone() };

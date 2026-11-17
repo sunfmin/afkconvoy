@@ -235,7 +235,7 @@ kinds! {
     LandingStalled: Critical, "its fleet lands nothing";
     LandingHeld: Info, "a landing hold stands";
     PendingLands: Warning, "live lands hold pending turns";
-    LegacyChain: Info, "an old remote candidate chain is left";
+    LegacyChain: Info, "of an older afkconvoy is left";
     FetchCorrupt: Warning, "a fetch of the remote keeps failing corrupt";
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which is ignored";
@@ -2901,7 +2901,7 @@ fn legacy_finding(left: &[(String, bool)]) -> Option<Finding> {
     Some(finding(
         Kind::LegacyChain,
         json!(["legacy-chain"]),
-        "the remote still holds a candidate chain record of an older afkconvoy; this one ignores it, and the tick removes it once no turn of this host holds a place on it".to_string(),
+        "a candidate chain record of an older afkconvoy is left on the remote; this one ignores it, and the tick removes it once no turn of this host holds a place on it".to_string(),
         named.join(", "),
         "afkconvoy tick".to_string(),
     ))

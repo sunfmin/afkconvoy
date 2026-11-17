@@ -2010,3 +2010,158 @@ fn a_pr_ready_while_a_round_s_whole_gate_runs_stacks_on_its_root() {
         assert!(files.lines().any(|f| f == "a.txt"), "{files}");
     }
 }
+
+/// Ten turns of one repo wait on one round, and the host starts no git
+/// process for the chain: nothing of it is read from, or written to, the
+/// remote (docs/adr/0090). What the host does start is printed, as the number
+/// the ADR measures.
+#[test]
+fn ten_turns_waiting_on_one_round_start_no_git_process_for_the_chain() {
+    let world = world(2);
+    let (e, _) = worker(&world, 5, "e");
+    let names: Vec<String> = (0..10).map(|n| format!("w{n}")).collect();
+    let workers: Vec<(PathBuf, String)> =
+        names.iter().zip(6..).map(|(name, n)| worker(&world, n, name)).collect();
+    let _runner = world.host_held();
+    let holder = start(&world, &e, &world.cache(), 5);
+    began(&world, "e");
+    hold_pending(&world);
+    let mut children = vec![];
+    for (asked, ((dir, _), n)) in workers.iter().zip(6..).enumerate() {
+        children.push(start(&world, dir, &world.cache(), n));
+        until(|| chain(&world)["pending"].as_array().is_some_and(|p| p.len() == asked + 1));
+    }
+    clear_git_log(&world);
+    let window = Duration::from_secs(5);
+    std::thread::sleep(window);
+    let calls = world.git_calls();
+    eprintln!(
+        "git processes in {window:?} with ten turns waiting: {} ({:.1} a second)",
+        calls.len(),
+        calls.len() as f64 / window.as_secs_f64()
+    );
+    assert!(
+        !calls.iter().any(|call| call.contains("refs/convoy/candidates")),
+        "a turn read or wrote a candidate ref of the remote: {calls:#?}"
+    );
+    assert!(
+        !calls.iter().any(|call| call.starts_with("ls-remote")),
+        "a waiting turn asked the remote: {calls:#?}"
+    );
+    release(&world, "e", false);
+    assert_eq!(finish(holder)["outcome"], "merged");
+    for child in children {
+        assert_eq!(finish(child)["outcome"], "merged");
+    }
+}
+
+/// Two hosts, each with its own database and no knowledge of the other, land
+/// a fast-green round on the same base: one lands, the other's push is
+/// refused, and its next turn builds its round again on the new tip and gates
+/// it again. Neither lands an untested tree (docs/adr/0090).
+#[test]
+fn two_hosts_land_on_one_base_and_the_one_refused_gates_again_on_the_new_tip() {
+    let world = world(3);
+    let (a, _) = worker(&world, 1, "a");
+    let (b, _) = worker(&world, 2, "b");
+    let other = world.root.join("cache-of-another-host");
+    let _runner = world.host_held();
+    let on_a = start(&world, &a, &world.cache(), 1);
+    let on_b = start(&world, &b, &other, 2);
+    began(&world, "a");
+    began(&world, "b");
+    release(&world, "a", false);
+    let landed = finish(on_a);
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    release(&world, "b", false);
+    let refused = finish(on_b);
+    assert!(
+        matches!(refused["outcome"].as_str(), Some("target_moved" | "cancelled")),
+        "its push is refused: {refused}"
+    );
+    assert_eq!(
+        world.remote(&["rev-parse", "refs/heads/main"]),
+        landed["commit"].as_str().unwrap(),
+        "nothing of b landed"
+    );
+    // Its host's chain holds nothing of a, and the other's nothing of b.
+    let again = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &b)
+        .env("XDG_CACHE_HOME", &other)
+        .env("AFKCONVOY_ISSUE", "2")
+        .args(["land", "--issue", "2"])
+        .output()
+        .unwrap();
+    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["outcome"], "merged", "{again}");
+    assert_eq!(again["merged"], landed["commit"], "built again on the new tip");
+    let tip = world.remote(&["rev-parse", "refs/heads/main"]);
+    assert_eq!(tip, again["commit"].as_str().unwrap());
+    assert_eq!(
+        world.remote(&["rev-parse", &format!("{tip}^1")]),
+        landed["commit"].as_str().unwrap()
+    );
+    let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
+    assert!(files.lines().any(|f| f == "a.txt") && files.lines().any(|f| f == "b.txt"), "{files}");
+    let tree = world.remote(&["rev-parse", &format!("{tip}^{{tree}}")]);
+    assert!(
+        !world
+            .remote(&["for-each-ref", "--format=%(refname)", &format!("refs/convoy/gate/{tree}-*")])
+            .is_empty(),
+        "the tree it landed was gated"
+    );
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty()
+    );
+}
+
+/// A host runner killed in the middle of a round and started again finds the
+/// round in the host's database, and every turn of it finishes.
+#[test]
+fn a_host_runner_restarted_mid_round_finds_its_round_in_the_database() {
+    let world = world(3);
+    let (e, _) = worker(&world, 5, "e");
+    let workers: Vec<_> =
+        [(1, "a"), (2, "b")].into_iter().map(|(n, name)| worker(&world, n, name)).collect();
+    let runner = world.host_held();
+    let turns: Vec<(&Path, u64)> =
+        workers.iter().zip(1..).map(|((dir, _), n)| (dir.as_path(), n)).collect();
+    let children =
+        one_round(&world, &e, &turns, || began(&world, "e"), || release(&world, "e", false));
+    began(&world, "b");
+    let before = chain(&world)["round"]["id"].clone();
+    world.kill_host_runner("KILL");
+    drop(runner);
+    let _replacement = world.host_held();
+    assert_eq!(chain(&world)["round"]["id"], before, "the round is in the database still");
+    release(&world, "a", false);
+    release(&world, "b", false);
+    for child in children {
+        assert_eq!(finish(child)["outcome"], "merged");
+    }
+}
+
+/// A remote chain record of an older afkconvoy is ignored, `doctor` says it is
+/// left, and the tick removes it once no turn of this host holds a place on it.
+#[test]
+fn an_old_remote_chain_record_is_ignored_reported_and_removed() {
+    let world = world(1);
+    let tree = world.remote(&["hash-object", "-w", "-t", "tree", "/dev/null"]);
+    let record = world.remote(&["commit-tree", &tree, "-m", "{\"candidates\":[],\"barriers\":[]}"]);
+    world.remote(&["update-ref", "refs/convoy/candidates/main", &record]);
+    let _runner = world.host_held();
+    let doctor = world.afk(&["doctor"]).json.to_string();
+    assert!(doctor.contains("of an older afkconvoy is left"), "{doctor}");
+    let (a, _) = worker(&world, 1, "a");
+    release(&world, "a", false);
+    let landed = world.afk_in(&a, &["land", "--issue", "1"]).ok();
+    assert_eq!(landed["outcome"], "merged", "ignored: {landed}");
+    assert_eq!(world.remote(&["rev-parse", "refs/convoy/candidates/main"]), record, "untouched");
+    tick(&world);
+    assert!(
+        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty(),
+        "removed"
+    );
+    let doctor = world.afk(&["doctor"]).json.to_string();
+    assert!(!doctor.contains("of an older afkconvoy is left"), "{doctor}");
+}
