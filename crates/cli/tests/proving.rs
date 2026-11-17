@@ -98,7 +98,11 @@ fn two_fast_green_prs_land_on_the_proving_branch_and_a_promotion_moves_the_base_
     let promoted = world.afk(&["promote"]).ok();
     assert_eq!(promoted["outcome"], "promoted", "{promoted}");
     assert_eq!(promoted["gate"], "slow", "the fast run on record of the tip's tree is joined");
-    assert_eq!(ran(&world, "slow"), [proving.clone()], "the slow gate ran once, on the tip");
+    assert_eq!(
+        ran(&world, "slow"),
+        std::slice::from_ref(&proving),
+        "the slow gate ran once, on the tip"
+    );
     assert!(ran(&world, "whole").is_empty());
     assert_eq!(tip(&world, "main"), proving, "the base branch fast-forwards to the tip");
     let again = world.afk(&["promote"]).ok();
