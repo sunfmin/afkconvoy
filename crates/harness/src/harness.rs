@@ -2250,6 +2250,19 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_names_its_project_directory_with_every_punctuation_as_a_dash() {
+        let place = |cwd: &str| match Harness::ClaudeCode.note_place(cwd).layout {
+            SessionLayout::Files { dir, .. } => dir,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            place("/Users/felix/.guild/instances/x_y"),
+            "projects/-Users-felix--guild-instances-x-y"
+        );
+        assert_eq!(place("/a b/c@d+e~f/é"), "projects/-a-b-c-d-e-f--");
+    }
+
+    #[test]
     fn a_long_worktree_keeps_a_short_session_name() {
         let cwd = format!("/{}", "segment/".repeat(40));
         assert!(cwd.len() > 255);
