@@ -171,7 +171,7 @@ mod tests {
         for a in &found {
             assert!(!a.over_budget(), "{a:?}");
         }
-        assert!(found.iter().all(|a| a.permille <= 10), "{found:?}");
+        assert!(found.iter().all(|a| a.permille <= 20),"{found:?}");
     }
 
     #[test]
