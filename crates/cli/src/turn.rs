@@ -18,8 +18,13 @@ use std::time::Duration;
 
 /// Fetches the base branch as it stands now, including its objects.
 pub fn base(repo: &Repo, config: &Config) -> Result<String> {
+    base_as(repo, config, Fresh::Process)
+}
+
+/// The base branch read as `fresh` says, its objects brought here.
+fn base_as(repo: &Repo, config: &Config, fresh: Fresh) -> Result<String> {
     repo.remote()
-        .fetched(&format!("refs/heads/{}", config.base_branch), Fresh::Process)?
+        .fetched(&format!("refs/heads/{}", config.base_branch), fresh)?
         .ok_or_else(|| anyhow!("the remote has no branch {:?}", config.base_branch))
 }
 
@@ -138,8 +143,25 @@ enum OnRedBase {
     Return,
 }
 
+/// What a turn that waited on a red base tip past its bound answers by.
+fn waited_on_red(tip: &str, waited: Duration, bound: Duration, said: Option<&str>) -> String {
+    let mut detail = format!(
+        "this turn waited {} s on the red base tip {tip}, past its bound of {} s, and ended; \
+         nothing of this PR ran",
+        waited.as_secs(),
+        bound.as_secs()
+    );
+    if let Some(said) = said {
+        detail.push_str(&format!("; {said}"));
+    }
+    detail
+}
+
 /// Takes the turn on a tip that is green on record (`Certified::Green`), or
-/// answers why there is none.
+/// answers why there is none. While it waits on a red tip, each read of the
+/// base branch asks the remote again: a repair or another landing moves it
+/// from another process (sunfmin/control#1302). It waits at most the pending
+/// bound (`candidates::pending_bound`), then answers red.
 fn take(
     repo: &Repo,
     config: &Config,
@@ -150,7 +172,8 @@ fn take(
     unremoved: &mut Vec<String>,
 ) -> Result<Certified> {
     let mut tried = None;
-    let mut said = None;
+    let mut said: Option<String> = None;
+    let mut red_since: Option<std::time::Instant> = None;
     loop {
         let gh = GitHub::of(repo)?;
         // Asked again while the base is red: one read for the host's waiting turns.
@@ -161,7 +184,8 @@ fn take(
                 named(&locks)
             );
         }
-        let tip = base(repo, config)?;
+        let fresh = if red_since.is_some() { Fresh::Live } else { Fresh::Process };
+        let tip = base_as(repo, config, fresh)?;
         let mut declared = tip_config(repo, &tip)?;
         declared.base_branch = config.base_branch.clone();
         let command = GateCommand::new(&declared.gate_command);
@@ -182,7 +206,7 @@ fn take(
                     unsettled @ Certified::Unsettled { .. } => return Ok(unsettled),
                     Certified::Red(red) => {
                         said = red;
-                        tried = Some(tip);
+                        tried = Some(tip.clone());
                         let _ = crate::wake::wake(repo, "red base tip");
                     }
                 }
@@ -190,7 +214,18 @@ fn take(
             if matches!(on_red, OnRedBase::Return) {
                 return Ok(Certified::Red(said));
             }
-            std::thread::sleep(Duration::from_secs(2));
+            let since = *red_since.get_or_insert_with(std::time::Instant::now);
+            let bound = crate::candidates::pending_bound();
+            let waited = since.elapsed();
+            if waited >= bound {
+                return Ok(Certified::Red(Some(waited_on_red(
+                    &tip,
+                    waited,
+                    bound,
+                    said.as_deref(),
+                ))));
+            }
+            std::thread::sleep(Duration::from_secs(2).min(bound - waited));
             continue;
         }
         return Ok(Certified::Green);
@@ -613,7 +648,7 @@ Publication uses an explicit atomic Git receive-pack transaction so an unchanged
 
 A watch finds its branch's PR through REST, and every turn checks fleet locks through REST. Exhausted GraphQL quota alone therefore does not prevent a watch from landing its repair; an unreadable lock listing still refuses the turn.
 
-An unrecorded base tip is gated alone in a separate checkout using its own gate declaration. While it is red, ordinary turns wait outside worker lanes. The fleet opens a dispatchable fleet-lock issue for its repair. That issue's worker alone may take a turn on the red tip, and must still gate its complete merge green before landing. A standing fleet lock allows only its issues to land.
+An unrecorded base tip is gated alone in a separate checkout using its own gate declaration. While it is red, ordinary turns wait outside worker lanes, each read of the base branch asking the remote again, so a tip a repair or another landing moved is taken on the next read. A turn that has waited on a red tip past the pending bound, {const:PENDING_MINUTES} minutes, ends with `base_red`: its `detail` says how long it waited and on which tip, and the fleet asks for the turn again. The fleet opens a dispatchable fleet-lock issue for its repair. That issue's worker alone may take a turn on the red tip, and must still gate its complete merge green before landing. A standing fleet lock allows only its issues to land.
 
 ## What it answers
 

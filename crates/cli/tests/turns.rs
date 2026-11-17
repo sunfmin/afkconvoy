@@ -690,3 +690,79 @@ fn a_red_base_tip_whose_gate_left_read_only_files_removes_its_worktree_and_recor
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("cannot remove worktree"), "{stderr}");
 }
+
+/// A `land --issue 1` of `worker`, waiting on a red base tip, under
+/// `pending` seconds of pending bound.
+fn land_waiting(world: &World, worker: &Path, pending: u64) -> Child {
+    world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), worker)
+        .env("XDG_CACHE_HOME", world.cache())
+        .env("AFKCONVOY_PENDING_SECONDS", pending.to_string())
+        .args(["land", "--issue", "1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// A world whose base tip is red on record, with a worker's PR waiting on it
+/// → that worker's checkout and the land turn waiting.
+fn waiting_on_red(world: &World, pending: u64) -> (std::path::PathBuf, Child) {
+    world.set_gate("if test -f broken.txt && test ! -f repaired.txt; then exit 1; fi");
+    seed(world);
+    let worker = world.worker(1, "worker.txt", "normal work");
+    crate::common::commit(&world.clone, "broken.txt", "outside change");
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    let mut child = land_waiting(world, &worker, pending);
+    until(|| {
+        !world
+            .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/base/red/main"])
+            .is_empty()
+            || child.try_wait().unwrap().is_some()
+    });
+    if child.try_wait().unwrap().is_some() {
+        let out = child.wait_with_output().unwrap();
+        panic!(
+            "the turn ended instead of waiting on the red tip: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    (worker, child)
+}
+
+/// A land turn waiting on a red base tip sees a green commit another process
+/// lands, and takes its turn on it without being started again
+/// (sunfmin/control#1302).
+#[test]
+fn a_land_waiting_on_a_red_base_takes_its_turn_once_a_green_commit_lands() {
+    let world = World::new();
+    let (_worker, mut child) = waiting_on_red(&world, 600);
+    crate::common::commit(&world.clone, "repaired.txt", "repair");
+    git(&world.clone, &["push", "-q", "origin", "HEAD"]);
+    let repaired = world.remote(&["rev-parse", "refs/heads/main"]);
+    until(|| child.try_wait().unwrap().is_some());
+    let landed = finish(child);
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    assert_eq!(landed["merged"], repaired, "{landed}");
+    assert_eq!(world.remote(&["show", "refs/heads/main:worker.txt"]), "normal work");
+}
+
+/// A land turn whose base tip stays red answers `base_red` at the pending
+/// bound, saying how long it waited and on which tip (sunfmin/control#1302).
+#[test]
+fn a_land_waiting_on_a_red_base_answers_base_red_at_its_bound() {
+    let world = World::new();
+    let started = Instant::now();
+    let (_worker, mut child) = waiting_on_red(&world, 3);
+    let red = world.remote(&["rev-parse", "refs/heads/main"]);
+    until(|| child.try_wait().unwrap().is_some());
+    let answer = finish(child);
+    assert!(started.elapsed() >= Duration::from_secs(3));
+    assert_eq!(answer["outcome"], "base_red", "{answer}");
+    let detail = answer["detail"].as_str().unwrap();
+    assert!(detail.starts_with("this turn waited "), "{detail}");
+    assert!(detail.contains(&format!(" s on the red base tip {red}")), "{detail}");
+    assert!(detail.contains("past its bound of 3 s"), "{detail}");
+    assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), red);
+}
