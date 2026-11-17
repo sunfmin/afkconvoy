@@ -235,6 +235,7 @@ kinds! {
     LandingStalled: Critical, "its fleet lands nothing";
     LandingHeld: Info, "a landing hold stands";
     PendingLands: Warning, "live lands hold pending turns";
+    LegacyChain: Info, "an old remote candidate chain is left";
     FetchCorrupt: Warning, "a fetch of the remote keeps failing corrupt";
     Moved: Info, "moved since the stage";
     RetiredConcurrency: Info, "which is ignored";
@@ -614,6 +615,10 @@ pub struct State {
     /// The pending places live lands of this host hold on its chains, from
     /// the same listing.
     pub(crate) pending: Vec<crate::candidates::PendingLand>,
+    /// The remote candidate chain records an afkconvoy before
+    /// docs/adr/0090 left: ignored, and removed by the tick once no turn of
+    /// this host holds a place on one.
+    pub(crate) legacy_chains: Vec<(String, bool)>,
     /// When the base branch's tip on the remote was committed, in epoch
     /// seconds: the repo's last landing, this host's or a peer's.
     pub base_moved: Option<u64>,
@@ -1791,6 +1796,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
                 state.carried_landed.iter().map(|c| carried_landed_finding(&state.tracker, c)),
             );
             found.extend(pending_finding(&state.pending));
+            found.extend(legacy_finding(&state.legacy_chains));
         }
         Err(why) => found.push(finding(
             Kind::StateUnread,
@@ -2106,11 +2112,12 @@ fn finish_state(
         })
         .collect();
     let carried_landed = read_carried_landed(&fleet, &open)?;
-    let prefix = fleet.repo.layout().under("candidates/");
-    let chains = fleet.records_at_open(&format!("{prefix}*"));
-    let candidates = crate::candidates::view(&fleet.repo, &fleet.config, &chains)
-        .unwrap_or_else(|error| json!({"error": error.to_string()}));
-    let pending = crate::candidates::pending_lands(&chains, &prefix, now);
+    let (candidates, pending) = match crate::chain_store::all(&fleet.repo) {
+        Ok(chains) => {
+            (crate::candidates::view(&chains), crate::candidates::pending_lands(&chains, now))
+        }
+        Err(error) => (json!({"error": error.to_string()}), vec![]),
+    };
     let base_moved = fleet.base_tip().ok().and_then(|tip| {
         fleet.repo.git(&["log", "-1", "--format=%ct", &tip]).ok()?.trim().parse().ok()
     });
@@ -2138,6 +2145,13 @@ fn finish_state(
         carried_landed,
         candidates,
         pending,
+        legacy_chains: crate::candidates::legacy(
+            &fleet.repo,
+            &fleet.records_at_open(&format!("{}*", fleet.repo.layout().under("candidates/"))),
+        )
+        .into_iter()
+        .map(|old| (old.name, old.in_use))
+        .collect(),
         base_moved,
         deliveries,
     };
@@ -2867,6 +2881,32 @@ const PENDING_MANY: usize = 20;
 /// this repo's chains, each named with how long it has waited. Each ends
 /// itself once it waits past its bound; one that does not is of an older
 /// afkconvoy, or waits on what the queue shows.
+fn legacy_finding(left: &[(String, bool)]) -> Option<Finding> {
+    if left.is_empty() {
+        return None;
+    }
+    let named: Vec<String> = left
+        .iter()
+        .map(|(name, in_use)| {
+            format!(
+                "{name} ({})",
+                if *in_use {
+                    "a live turn of this host holds a place on it"
+                } else {
+                    "no turn of this host holds a place on it"
+                }
+            )
+        })
+        .collect();
+    Some(finding(
+        Kind::LegacyChain,
+        json!(["legacy-chain"]),
+        "the remote still holds a candidate chain record of an older afkconvoy; this one ignores it, and the tick removes it once no turn of this host holds a place on it".to_string(),
+        named.join(", "),
+        "afkconvoy tick".to_string(),
+    ))
+}
+
 fn pending_finding(pending: &[crate::candidates::PendingLand]) -> Option<Finding> {
     if pending.len() < PENDING_MANY {
         return None;
@@ -3311,17 +3351,12 @@ mod tests {
                 asks: None,
             });
             let chain: Chain = Chain { pending, ..Chain::default() };
-            crate::remote::RemoteRecord {
-                name: "refs/convoy/candidates/main".into(),
-                sha: "0".into(),
-                subject: serde_json::to_string(&chain).unwrap(),
-            }
+            ("main".to_string(), chain)
         };
-        let prefix = "refs/convoy/candidates/";
-        let nineteen = pending_lands(&[record(19)], prefix, 5000);
+        let nineteen = pending_lands(&[record(19)], 5000);
         assert_eq!(nineteen.len(), 19, "a place whose owner is gone is no live land");
         assert!(pending_finding(&nineteen).is_none());
-        let found = pending_finding(&pending_lands(&[record(20)], prefix, 5000)).unwrap();
+        let found = pending_finding(&pending_lands(&[record(20)], 5000)).unwrap();
         assert_eq!(found.kind, Kind::PendingLands);
         assert!(found.what.starts_with("20 live lands hold pending turns"), "{}", found.what);
         let pid = live.pid;
@@ -3455,6 +3490,7 @@ mod tests {
             ready_label: "ready-for-agent".into(),
             tracker: Tracker::Own,
             unclaimed: vec![],
+            legacy_chains: vec![],
             left_watch: vec![],
             not_ours: vec![],
             on_gone: vec![],

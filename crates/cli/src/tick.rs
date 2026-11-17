@@ -67,6 +67,9 @@ enum Failed {
 enum Cleanup {
     /// The worktrees of stopped candidates (`candidates::remove_listed`).
     Candidates,
+    /// The remote chain records of an afkconvoy before docs/adr/0090
+    /// (`candidates::retire_legacy`).
+    LegacyChains,
     /// The removals orca answered success for that left the directory
     /// (`orca::finish_failed_removals`).
     FailedRemovals,
@@ -84,6 +87,7 @@ impl Cleanup {
     fn word(self) -> &'static str {
         match self {
             Cleanup::Candidates => "remove_candidates",
+            Cleanup::LegacyChains => "remove_legacy_chains",
             Cleanup::FailedRemovals => "finish_removals",
             Cleanup::Kept => "remove_kept",
             Cleanup::WatchLeft => "remove_watch_left",
@@ -253,10 +257,14 @@ pub fn tick(
     // itself still runs.
     // Each cleanup's failures are the tick log's, each with its worktree
     // (sunfmin/control#1204); a later tick tries each again.
-    let candidates = repo.layout().under("candidates/");
-    let records = fleet.records_at_open(&format!("{candidates}*"));
-    let mut cleanup_failures =
-        Cleanup::Candidates.failures(crate::candidates::remove_listed(repo, &records));
+    let chains = crate::chain_store::all(repo);
+    let mut cleanup_failures = Cleanup::Candidates
+        .failures(chains.and_then(|chains| crate::candidates::remove_listed(repo, &chains)));
+    // The remote chain record of an older afkconvoy, once no turn of this
+    // host holds a place on it (docs/adr/0090).
+    let old = fleet.records_at_open(&format!("{}*", repo.layout().under("candidates/")));
+    cleanup_failures
+        .extend(Cleanup::LegacyChains.failures(crate::candidates::retire_legacy(repo, &old)));
     // A removal orca already answered success for, while the directory remains.
     // No claim is required: the settle that met it has already released its own.
     let base = &fleet.config.base_branch;
