@@ -87,9 +87,9 @@ fn only_run_tick_and_plan_probe() {
     assert_eq!(world.probes(), [] as [String; 0]);
 
     plan(&world).ok();
-    assert_eq!(world.probes().len(), 4);
+    assert_eq!(world.probes().len(), 2);
     run_once(&world).ok();
-    assert_eq!(world.probes().len(), 8);
+    assert_eq!(world.probes().len(), 4);
 }
 
 fn plan_at(world: &World, now: &str) -> Answer {
@@ -109,7 +109,7 @@ fn plan_trusts_a_probe_that_passed_on_this_host_in_the_last_hour_and_says_so() {
     let first = plan_at(&world, "1000");
     assert!(!stands(&first), "{}", first.stderr);
     assert_eq!(warnings(&first).len(), 1, "{}", first.stderr);
-    assert_eq!(world.probes().len(), 4);
+    assert_eq!(world.probes().len(), 2);
     let asked = world.shell_asked().len();
 
     // within the hour: no probe, and what the probe warned of is said again
@@ -117,7 +117,7 @@ fn plan_trusts_a_probe_that_passed_on_this_host_in_the_last_hour_and_says_so() {
     assert!(stands(&again), "{}", again.stderr);
     assert!(again.stderr.contains("59 min ago"), "{}", again.stderr);
     assert_eq!(warnings(&again), warnings(&first));
-    assert_eq!(world.probes().len(), 4);
+    assert_eq!(world.probes().len(), 2);
     let again_asked = world.shell_asked();
     assert_eq!(again_asked.len(), asked + 3, "proxy exports and launch eligibility are read again");
     assert!(again_asked[asked..].iter().any(|line| line.starts_with("printf 'AFKCONVOY_PROXY")));
@@ -128,10 +128,10 @@ fn plan_trusts_a_probe_that_passed_on_this_host_in_the_last_hour_and_says_so() {
     // the hour is over
     let later = plan_at(&world, "4600");
     assert!(!stands(&later), "{}", later.stderr);
-    assert_eq!(world.probes().len(), 8);
+    assert_eq!(world.probes().len(), 4);
     // …and a probe from a clock ahead of this one is nobody's to trust
     assert!(!stands(&plan_at(&world, "4000")));
-    assert_eq!(world.probes().len(), 12);
+    assert_eq!(world.probes().len(), 6);
 }
 
 #[test]
@@ -140,13 +140,13 @@ fn a_probe_is_made_again_when_the_base_branch_or_the_remote_changed() {
     world.watch_pushes(None);
     plan_at(&world, "1000").ok();
     assert!(stands(&plan_at(&world, "1001")));
-    assert_eq!(world.probes().len(), 4);
+    assert_eq!(world.probes().len(), 2);
 
     // the remote: the same repo, reached another way
     let elsewhere = format!("{}/.", world.bare.display());
     git(&world.clone, &["remote", "set-url", "origin", &elsewhere]);
     assert!(!stands(&plan_at(&world, "1002")));
-    assert_eq!(world.probes().len(), 8);
+    assert_eq!(world.probes().len(), 4);
     assert!(stands(&plan_at(&world, "1003")));
 
     // the base branch
@@ -154,7 +154,7 @@ fn a_probe_is_made_again_when_the_base_branch_or_the_remote_changed() {
     let config = "```yaml\nbase_branch: release\ngate_command: ./gate.sh\n```\n";
     commit(&world.clone, "docs/agents/afkconvoy.md", config);
     assert!(!stands(&plan_at(&world, "1004")));
-    assert_eq!(world.probes().len(), 12);
+    assert_eq!(world.probes().len(), 6);
     assert!(stands(&plan_at(&world, "1005")));
 }
 
@@ -167,12 +167,12 @@ fn a_tick_trusts_only_a_probe_that_checked_its_worker_launch_command() {
     world.kit_command("pi", "new-pi");
     let ticked = tick_at(&world, "1001");
     assert!(!stands(&ticked), "{}", ticked.stderr);
-    assert_eq!(world.probes().len(), 8);
+    assert_eq!(world.probes().len(), 4);
 
     let again = tick_at(&world, "1002");
     assert!(stands(&again), "{}", again.stderr);
     again.ok();
-    assert_eq!(world.probes().len(), 8);
+    assert_eq!(world.probes().len(), 4);
     // …and a plan asks nothing of the command: a tick's probe stands for it
     assert!(stands(&plan_at(&world, "1003")));
 
@@ -182,12 +182,12 @@ fn a_tick_trusts_only_a_probe_that_checked_its_worker_launch_command() {
         world.afk(&other)
     };
     assert!(!stands(&other), "{}", other.stderr);
-    assert_eq!(world.probes().len(), 12);
+    assert_eq!(world.probes().len(), 6);
 
     // `run` probes at every start
     let run = run_once_at(&world, "1005");
     assert!(!stands(&run), "{}", run.stderr);
-    assert_eq!(world.probes().len(), 16);
+    assert_eq!(world.probes().len(), 8);
 }
 
 #[test]
@@ -229,14 +229,13 @@ fn a_remote_that_rejects_hidden_refs_has_every_ref_kept_as_a_branch() {
     let scan = world.afk(&["scan"]).ok();
     assert_eq!(scan["heartbeats"]["alpha"], 1000);
 
-    // …a worker's too: its green run goes on record as a branch
+    // …but a worker's green run, which is the host's, on neither layout
     world.set_gate("true");
     let gated = world.afk(&["gate", "--now", "1100"]).ok();
     assert_eq!(gated["recorded"], true, "{gated}");
     let tree = git(&world.clone, &["rev-parse", "HEAD^{tree}"]);
-    let records = refs(&world, "refs/heads/convoy-gate");
-    assert_eq!(records.len(), 1);
-    assert!(records[0].starts_with(&format!("refs/heads/convoy-gate/{tree}-")), "{records:?}");
+    assert!(world.gate_recorded(&tree));
+    assert_eq!(world.remote_gate_refs(), [] as [String; 0]);
     // …and the next gate reads it back from there
     let again = world.afk(&["gate", "--now", "1200"]).ok();
     assert_eq!(again["status"], "green", "{again}");
@@ -523,8 +522,9 @@ fn a_start_removes_every_gate_ref_from_the_remote_and_doctor_says_while_one_is_l
     ] {
         git(&world.clone, &["push", "-q", "origin", &format!("{head}:{litter}")]);
     }
+    // Doctor reads the layout the checkout noted; a start sweeps both.
     let found = left("6000").expect("doctor says gate records are left");
-    assert!(found["what"].as_str().unwrap().starts_with("3 gate records"), "{found}");
+    assert!(found["what"].as_str().unwrap().starts_with("2 gate records"), "{found}");
 
     // `run` probes at every start, and `plan` too.
     world.afk(&["plan", "--now", "6000"]).ok();

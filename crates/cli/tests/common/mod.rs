@@ -1417,8 +1417,15 @@ impl World {
     /// Whether this world's host keeps a green gate record of `tree`, of any
     /// command.
     pub fn gate_recorded(&self, tree: &str) -> bool {
+        self.gate_recorded_on(&self.cache(), tree)
+    }
+
+    /// Whether the host whose cache directory is `cache` — this world's, or
+    /// another host's beside it — keeps a green gate record of `tree`.
+    pub fn gate_recorded_on(&self, cache: &Path, tree: &str) -> bool {
+        let db = data_beside(cache).join("afkconvoy/host.db");
         let stated = format!("convoy:gate tree={tree} ");
-        self.gate_records().iter().any(|record| record.starts_with(&stated))
+        rows_of(&db, "SELECT record FROM gate_records").iter().any(|r| r.starts_with(&stated))
     }
 
     /// The remote's gate refs, on either layout: none is written any more.
@@ -1435,20 +1442,7 @@ impl World {
     /// The first column of each row `sql` selects from this world's host
     /// database; empty where there is none yet.
     fn host_rows(&self, sql: &str) -> Vec<String> {
-        let path = self.host_db();
-        if !path.exists() {
-            return vec![];
-        }
-        let db = rusqlite::Connection::open(path).unwrap();
-        db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
-        let mut statement = match db.prepare(sql) {
-            Ok(statement) => statement,
-            // No table yet: the database was made by an afkconvoy call that
-            // never migrated it this far.
-            Err(_) => return vec![],
-        };
-        let rows = statement.query_map([], |row| row.get::<_, String>(0)).unwrap();
-        rows.map(Result::unwrap).collect()
+        rows_of(&self.host_db(), sql)
     }
 
     /// Keeps `record`, a green gate record of `command` on `tree` finished
@@ -3029,4 +3023,26 @@ pub fn data_beside(cache: impl AsRef<Path>) -> PathBuf {
     let mut name = cache.file_name().unwrap_or_default().to_os_string();
     name.push("-data");
     cache.with_file_name(name)
+}
+
+/// The test process's `PATH` with this build's `afkconvoy` first: what a
+/// command run with a cleared environment finds by that name. The installed
+/// release found otherwise refuses a host database this build migrated past
+/// it.
+pub fn built_first_path() -> String {
+    let built = std::path::Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap();
+    format!("{}:{}", built.display(), std::env::var("PATH").unwrap())
+}
+
+/// The first column of each row `sql` selects from the host database `db`;
+/// empty where there is none yet, or it was never migrated this far.
+fn rows_of(db: &Path, sql: &str) -> Vec<String> {
+    if !db.exists() {
+        return vec![];
+    }
+    let db = rusqlite::Connection::open(db).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+    let Ok(mut statement) = db.prepare(sql) else { return vec![] };
+    let rows = statement.query_map([], |row| row.get::<_, String>(0)).unwrap();
+    rows.map(Result::unwrap).collect()
 }

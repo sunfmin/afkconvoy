@@ -2050,8 +2050,10 @@ fn ten_turns_waiting_on_one_round_start_no_git_process_for_the_chain() {
 
 /// Two hosts, each with its own database and no knowledge of the other, land
 /// a fast-green round on the same base: one lands, the other's push is
-/// refused, and its next turn builds its round again on the new tip and gates
-/// it again. Neither lands an untested tree (docs/adr/0117).
+/// refused — or, its gate records being its own, it finds the new tip
+/// uncertified — and its next turn certifies that tip, builds its round again
+/// on it and gates it again. Neither lands an untested tree (docs/adr/0117,
+/// docs/adr/0037).
 #[test]
 fn two_hosts_land_on_one_base_and_the_one_refused_gates_again_on_the_new_tip() {
     let world = world(3);
@@ -2069,7 +2071,10 @@ fn two_hosts_land_on_one_base_and_the_one_refused_gates_again_on_the_new_tip() {
     release(&world, "b", false);
     let refused = finish(on_b);
     assert!(
-        matches!(refused["outcome"].as_str(), Some("target_moved" | "cancelled")),
+        matches!(
+            refused["outcome"].as_str(),
+            Some("target_moved" | "cancelled" | "base_uncertified")
+        ),
         "its push is refused: {refused}"
     );
     assert_eq!(
@@ -2081,7 +2086,7 @@ fn two_hosts_land_on_one_base_and_the_one_refused_gates_again_on_the_new_tip() {
     let again = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &b)
         .env("XDG_CACHE_HOME", &other)
-        .env("XDG_DATA_HOME", crate::common::data_beside(other))
+        .env("XDG_DATA_HOME", crate::common::data_beside(&other))
         .env("AFKCONVOY_ISSUE", "2")
         .args(["land", "--issue", "2"])
         .output()
@@ -2098,7 +2103,8 @@ fn two_hosts_land_on_one_base_and_the_one_refused_gates_again_on_the_new_tip() {
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
     assert!(files.lines().any(|f| f == "a.txt") && files.lines().any(|f| f == "b.txt"), "{files}");
     let tree = world.remote(&["rev-parse", &format!("{tip}^{{tree}}")]);
-    assert!(world.gate_recorded(&tree), "the tree it landed was gated");
+    assert!(world.gate_recorded_on(&other, &tree), "the tree it landed was gated on its host");
+    assert!(!world.gate_recorded(&tree), "and is on no other host's record");
     assert!(
         world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty()
     );
