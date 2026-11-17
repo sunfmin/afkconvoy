@@ -160,6 +160,9 @@ pub enum What {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         asked: bool,
     },
+    /// A tick's due cut started nothing: another cut, `said`, holds the
+    /// cut checkout it would remove and cut again (sunfmin/control#1331).
+    CutHeld { said: String },
     /// A tick ended the cut of `version`: `said` is what it did — its PR,
     /// where it landed, and each step it took with its seconds. `failed`, of
     /// one that ended short, says at which step, why, the issue that says so
@@ -192,6 +195,7 @@ pub fn cut_said(what: &What) -> Option<String> {
         What::CutEnded { version, failed: Some(failed), .. } => {
             Some(format!("the cut of v{version} FAILED {failed}"))
         }
+        What::CutHeld { said } => Some(format!("the due cut waits, and starts nothing: {said}")),
         _ => None,
     }
 }
@@ -294,7 +298,7 @@ impl Entry {
                 round.as_deref().unwrap_or("none"),
                 pending.join(", ")
             ),
-            What::CutStarted { .. } | What::CutEnded { .. } => {
+            What::CutStarted { .. } | What::CutEnded { .. } | What::CutHeld { .. } => {
                 format!("cut: {}", cut_said(&self.what).unwrap_or_default())
             }
         }
@@ -337,7 +341,9 @@ impl Entry {
                 Some(("watch", format!("{outcome} · {said}")))
             }
             What::WatchFailed { said } => Some(("watch", said.clone())),
-            What::CutStarted { .. } | What::CutEnded { .. } => Some(("cut", cut_said(&self.what)?)),
+            What::CutStarted { .. } | What::CutEnded { .. } | What::CutHeld { .. } => {
+                Some(("cut", cut_said(&self.what)?))
+            }
             What::TickStarted { .. }
             | What::Tick(_)
             | What::Command { .. }
