@@ -1669,12 +1669,22 @@ mod tests {
         let (_dir, worktree, tmp) = world();
         // A system binary's environment is not readable (SIP): the worker's
         // own process, this test binary running the loop below, is.
-        let mut spinner = Command::new(std::env::current_exe().unwrap())
+        /// Ends the fixture however the test ends: a spinner left behind is
+        /// the very thing this is about.
+        struct Spinner(std::process::Child);
+        impl Drop for Spinner {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let spinner = Command::new(std::env::current_exe().unwrap())
             .args(["--ignored", "--exact", "hot::tests::fixture_spinning_sleeps"])
             .current_dir(&worktree)
             .env("TMPDIR", &tmp)
             .spawn()
             .unwrap();
+        let spinner = Spinner(spinner);
         let mut watched =
             Watched::new("#1".into(), Worktree::at(worktree.clone(), "b".into()), None);
         let mut before = counter().unwrap();
@@ -1685,7 +1695,7 @@ mod tests {
             let now = counter().unwrap();
             let procs = listed();
             let mine = tree(&procs, &worktree);
-            let found = mine.iter().find(|proc| proc.pid == spinner.id());
+            let found = mine.iter().find(|proc| proc.pid == spinner.0.id());
             spinner_says = command_of(found.unwrap_or_else(|| panic!("{mine:?}")));
             watched.created.push_back(created(&procs, &mine, (before, now), 100));
             watched.spawners.push_back(spawners(&procs, &mine, (before, now)));
@@ -1693,8 +1703,7 @@ mod tests {
         }
         let rate = spawn_rate(&watched.created).expect("processes were created and found");
         let seconds = started.elapsed().as_secs_f64();
-        let _ = spinner.kill();
-        let _ = spinner.wait();
+        drop(spinner);
         assert!(rate >= 15, "{rate} processes a second over {seconds}s");
         assert!(
             spawners_of(&watched.spawners).iter().any(|(command, _)| *command == spinner_says),
