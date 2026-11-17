@@ -96,9 +96,9 @@ pub(crate) struct Turn {
 
 /// The last turn of my landing claim on `issue`, where it answered what the
 /// tick handles before worker health can hold its harness: a turn still
-/// asking and heard from within the gate limit, an answer to hand to the worker, or a wait to ask again for
-/// while its worker is not at work. `None` leaves the claim to the step's
-/// own look at its worker. Reads only.
+/// asking and heard from within the gate limit, an answer to hand to the
+/// worker, or a wait to ask again for while its worker is not at work.
+/// `None` leaves the claim to the step's own look at its worker. Reads only.
 pub(crate) fn turn(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Turn>> {
     if mine(fleet, me, issue)?.is_none() {
         return Ok(None);

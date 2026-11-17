@@ -211,10 +211,11 @@ pub enum LandingRoute {
 
 /// Routes one claim whose PR is open and not landed — nudge → restart →
 /// nudge → escalate, a wait on its own background work past the limit
-/// climbing the same rungs — from its worker's state, its worktree's progress, the nudge this host recorded, the restart
-/// the PR records, and when the worker was last handed its work — started,
-/// or restarted. What the worker stopped on — a merge conflict it is
-/// resolving, a gate it is fixing — changes nothing: the rungs are the same.
+/// climbing the same rungs — from its worker's state, its worktree's
+/// progress, the nudge this host recorded, the restart the PR records, and
+/// when the worker was last handed its work — started, or restarted. What
+/// the worker stopped on — a merge conflict it is resolving, a gate it is
+/// fixing — changes nothing: the rungs are the same.
 pub fn join_route(
     state: WorkerState,
     progress: &Progress,
