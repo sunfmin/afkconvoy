@@ -256,15 +256,19 @@ pub struct Seen {
 /// listing already held it. The claim ref and the configured base are read
 /// live together, once. Ownership is checked before resolving the target or
 /// writing a turn receipt.
-pub fn once(repo: &Repo, config: &Config, tracker: &Tracker, issue: u64) -> Result<Seen> {
+/// An unclaimed issue's comments are read without a quota probe.
+pub fn once(repo: &Repo, config: &Config, gh: &GitHub, issue: u64) -> Result<Seen> {
+    let tracker = &gh.tracker;
     let base_ref = format!("refs/heads/{}", config.base_branch);
     let [claim_ref, legacy, members] = patterns(repo, tracker, issue);
     let asked_refs = [claim_ref.as_str(), legacy.as_str(), members.as_str(), base_ref.as_str()];
     let mut listed = repo.remote().refs(&asked_refs, Fresh::Live)?;
     repo.read_record_subjects(&mut listed)?;
     crate::claims::on_this_host(repo, issue, &crate::host_settings::host_name(), Fresh::Process)?;
-    let target =
-        decide(repo, tracker, issue, &listed, || GitHub::of(repo)?.comments(issue))?;
+    let target = decide(repo, tracker, issue, &listed, || {
+        gh.note_without_probe()?;
+        gh.comments(issue)
+    })?;
     let branch = match target {
         None => config.base_branch.clone(),
         Some(target) => target.resolve_known(repo, &asked_refs, &listed)?,

@@ -395,7 +395,7 @@ pub fn land(
         let asked = json!({"issue": issue});
         return crate::turn_answer::noted(repo, Some(issue), now, || Ok(held(asked, &hold)));
     }
-    let looked = crate::target::once(repo, config, &gh.tracker, issue)?;
+    let looked = crate::target::once(repo, config, gh, issue)?;
     let mut answer = crate::turn_answer::noted(repo, Some(issue), now, || {
         land_task(repo, gh, issue, host, now, looked)
     })?;

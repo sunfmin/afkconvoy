@@ -1543,7 +1543,7 @@ fn legacy_targets_finding(left: &[String]) -> Option<Finding> {
             left.len()
         ),
         format!("the remote holds {first} and {} more", left.len() - 1),
-        "afkconvoy tick".into(),
+        "afkconvoy run".into(),
     ))
 }
 

@@ -35,16 +35,12 @@ fn target_selection_keeps_tracker_identity_and_refuses_foreign_ownership() {
     tracker_issue(&world, 8, &["repo:acme/other", "ready-for-agent"]);
     git(&world.clone, &["push", "-q", "origin", "HEAD:delivery/tracker"]);
     world.afk(&["target", "--issue", "7", "--branch", "delivery/tracker"]).ok();
-    let record: Value = serde_json::from_str(&world.remote(&[
-        "show",
-        "-s",
-        "--format=%s",
-        "refs/convoy/target/acme/tracker/7",
-    ]))
-    .unwrap();
-    assert_eq!(record["issue"], "acme/tracker#7");
-    assert_eq!(record["branch"], "delivery/tracker");
-    // Another host may spell the same GitHub tracker with different case.
+    // The selection is the tracker issue's comment; no ref of its own.
+    let comments = world.tracker()["comments"]["7"].clone();
+    assert!(comments.to_string().contains("convoy:target branch=delivery/tracker"), "{comments}");
+    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/target"]).is_empty());
+    // An older afkconvoy's separate record, its tracker spelled with
+    // different case by another host, still reads until it is carried.
     let differently_spelled = json!({"issue": "ACME/TRACKER#7", "branch": "delivery/tracker"});
     let sha = afkconvoy::git::Repo::new(world.clone.clone())
         .record_commit(&differently_spelled.to_string())

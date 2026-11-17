@@ -109,7 +109,7 @@ The configured destination of a repo's ordinary tasks, watches and cuts, and the
 _Avoid_: trunk, main, default branch (a team's or a role's repo is read at its own)
 
 **Target branch**:
-The same-repo branch one task is cut from and lands on, pinned before it is claimed: the selected branch, or the configured base branch. Its stages and continuations retain that destination.
+The same-repo branch one task is cut from and lands on, pinned by its claim: the selected branch, or the configured base branch. The claim's own record carries it, a takeover keeps it, and it ends with the claim; a selection is the issue's `convoy:target` comment and outlives a released claim. Its stages and continuations retain that destination.
 _Avoid_: delivery branch (a Jira ticket's broader delivery), integration branch (a team's purpose for a branch)
 
 **Jira delivery**:

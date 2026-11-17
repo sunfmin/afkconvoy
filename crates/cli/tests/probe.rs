@@ -226,7 +226,6 @@ fn a_remote_that_rejects_hidden_refs_has_every_ref_kept_as_a_branch() {
         [
             "refs/heads/convoy-claim/7",
             "refs/heads/convoy-heartbeat/alpha",
-            "refs/heads/convoy-target/7"
         ]
     );
     // every later command names the refs the start settled on, probe or none
@@ -503,7 +502,7 @@ fn a_remote_that_refuses_gate_records_is_a_warning_and_every_landing_runs_the_ga
     assert_eq!(did(&ticked.ok()), ["dispatch 7 done", "heartbeat done"]);
     assert_eq!(
         refs(&world, "refs/convoy"),
-        ["refs/convoy/claim/7", "refs/convoy/heartbeat/alpha", "refs/convoy/target/7"],
+        ["refs/convoy/claim/7", "refs/convoy/heartbeat/alpha"],
         "the fleet's other refs stay where they were, and no probe is left"
     );
 
@@ -547,10 +546,7 @@ fn a_start_sweeps_gate_records_past_their_day_and_probes_left_behind() {
     world.issue(7, &[]);
     world.afk(&["claim", "--issue", "7", "--instance", "alpha", "--now", "100"]).ok();
     world.afk(&["plan", "--now", "999999"]).ok();
-    assert_eq!(
-        refs(&world, "refs/convoy"),
-        ["refs/convoy/claim/7", "refs/convoy/heartbeat/alpha", "refs/convoy/target/7"]
-    );
+    assert_eq!(refs(&world, "refs/convoy"), ["refs/convoy/claim/7", "refs/convoy/heartbeat/alpha"]);
 }
 
 #[test]
