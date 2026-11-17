@@ -99,14 +99,21 @@ fn a_gate_timeout_still_ends_a_nested_exclusive_command_and_its_descendants() {
         .fixed(" exclusive -- sh -c ")
         .word("sleep 600 & echo $! > descendant; wait")
         .own();
-    // The limit is to end the gate once its nested command has started its
-    // descendant, which a loaded host takes seconds to: 20 of them, though
-    // the descendant never ends by itself (sunfmin/control#1183).
-    world.set_gate_config(&format!("gate_command: {line}\ngate_seconds: 20"));
     let _host_runner = world.host_held();
-    let answer = world.afk(&["gate"]).ok();
-    assert_eq!(answer["timed_out"], true, "{answer}");
-    let pid = std::fs::read_to_string(world.clone.join("descendant")).unwrap();
+    let descendant = world.clone.join("descendant");
+    // The limit is to end the gate once its nested command has started its
+    // descendant, which a loaded host takes seconds to: up to 20 of them,
+    // though the descendant never ends by itself (sunfmin/control#1183). A
+    // quiet host has started it within the first, shorter limits.
+    for limit in [1, 2, 4, 8, 16, 20] {
+        world.set_gate_config(&format!("gate_command: {line}\ngate_seconds: {limit}"));
+        let answer = world.afk(&["gate"]).ok();
+        assert_eq!(answer["timed_out"], true, "{answer}");
+        if descendant.exists() {
+            break;
+        }
+    }
+    let pid = std::fs::read_to_string(&descendant).unwrap();
     let state = Command::new("ps").args(["-p", pid.trim(), "-o", "stat="]).output().unwrap();
     let state = text(&state.stdout);
     assert!(state.trim().is_empty() || state.trim().starts_with('Z'), "{state}");
@@ -214,6 +221,21 @@ fn tickets(world: &World) -> usize {
 /// what it holds is seen held however loaded the host, where a sleep could
 /// end first.
 const HELD: &str = "while test ! -f \"$CACHE/release\"; do sleep 0.02; done";
+
+/// How long a test holds the queue ahead of a gate, well short of its limit:
+/// long enough that a gate whose clock counted the wait would say so.
+const HOLD: Duration = Duration::from_secs(2);
+
+/// Asserts the gate that `answer` reports started its clock at its grant,
+/// which came after the test let its holder go, `released`: the `seconds` it
+/// reports, whole, which its limit is judged on too, are no more than the
+/// time since. However loaded the host, a clock started at the grant is within
+/// that; one counting the queue wait passes it by about `HOLD`.
+fn started_at_the_grant(answer: &serde_json::Value, released: Instant) {
+    let since = released.elapsed();
+    let seconds = answer["seconds"].as_u64().unwrap();
+    assert!(Duration::from_secs(seconds) <= since, "{since:?} since the release: {answer}");
+}
 
 /// Waits until `done`.
 fn until(done: impl Fn() -> bool) {
@@ -446,13 +468,16 @@ fn a_cut_gates_ahead_of_waiting_workers_and_its_queue_wait_does_not_end_its_gate
     let first = Path::new(queue["waiting"][0]["dir"].as_str().unwrap());
     assert_eq!(first.file_name().unwrap(), "afkconvoy-cut-2", "{queue}");
     assert_eq!(lines(&order), ["holder-start"], "priority never interrupts the holder");
-    // Longer than the gate limit, which is room for a loaded host to run an
-    // `echo` (sunfmin/control#1183): the gate starts its clock after the grant.
-    std::thread::sleep(Duration::from_secs(21));
+    // The gate limit stays room for a loaded host to run an `echo`
+    // (sunfmin/control#1183); the hold need not pass it to show the gate
+    // starts its clock at the grant (`started_at_the_grant`).
+    std::thread::sleep(HOLD);
     std::fs::write(cache.join("release"), "").unwrap();
+    let released = Instant::now();
     let out = cutting.wait_with_output().unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    started_at_the_grant(&answer, released);
     assert_eq!(answer["status"], "green", "{answer}");
     assert_eq!(answer["recorded"], true, "{answer}");
     for child in [held, worker_a, worker_b] {
@@ -665,18 +690,20 @@ fn a_fast_gate_s_wait_for_its_lane_uses_none_of_its_limit() {
     );
     until(|| cache.join("held").exists());
     let release = cache.join("release");
+    // The limit stays room for a loaded host to run an `echo`
+    // (sunfmin/control#1183); the hold need not pass it.
     let letting_go = std::thread::spawn(move || {
-        // Past the limit, which is room for a loaded host to run an `echo`.
-        std::thread::sleep(Duration::from_secs(21));
+        std::thread::sleep(HOLD);
         std::fs::write(release, "").unwrap();
+        Instant::now()
     });
 
     let answer = world.afk(&["gate", "--fast"]).ok();
-    letting_go.join().unwrap();
+    let released = letting_go.join().unwrap();
     assert!(held.wait_with_output().unwrap().status.success());
     assert_eq!(answer["status"], "green", "{answer}");
     assert_eq!(answer["timed_out"], false);
-    assert!(answer["seconds"].as_u64().unwrap() < 20, "{answer}");
+    started_at_the_grant(&answer, released);
     assert_eq!(lines(&world.root.join("ran")), ["fast"]);
 }
 
