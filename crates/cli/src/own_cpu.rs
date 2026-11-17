@@ -153,10 +153,10 @@ mod tests {
         for minute in 0..=*looks.iter().max().unwrap() {
             let at = minute * 60;
             window.note(AT + at, Duration::from_secs(used_at(at)));
-            if looks.contains(&minute) {
-                if let Some(a) = window.average(AT + at, Duration::from_secs(used_at(at))) {
-                    found.push(a);
-                }
+            if looks.contains(&minute)
+                && let Some(a) = window.average(AT + at, Duration::from_secs(used_at(at)))
+            {
+                found.push(a);
             }
         }
         found
