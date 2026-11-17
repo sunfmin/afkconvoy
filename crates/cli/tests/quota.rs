@@ -593,3 +593,48 @@ fn an_unidentified_credential_with_both_quotas_zero_waits_without_repeated_probe
         "{calls:?}"
     );
 }
+
+/// GitHub's secondary limit as it met the hosts (local/macnomac-studio#27):
+/// every write is refused until none has come for `quiet` seconds. Busy
+/// writers that retry as soon as GitHub's one-second `Retry-After` ends would
+/// extend it for ever; the host's hold grows on each repeat, so its writers
+/// stay quiet past `quiet` and then the write goes through.
+#[test]
+fn a_secondary_limit_met_again_grows_the_hosts_hold_until_its_writers_stay_quiet_long_enough() {
+    let world = World::new();
+    let jira = "https://example.atlassian.net/browse/ABC-123";
+    let delivery = ["delivery", "--jira", jira, "--final-target", "main"];
+    let made = world.afk(&delivery).ok();
+    crate::common::commit(&world.clone, "contribution.txt", "meaningful contribution\n");
+    let branch = format!("HEAD:{}", made["branch"].as_str().unwrap());
+    crate::common::git(&world.clone, &["push", "-q", "origin", &branch]);
+    let quiet = 3.0;
+    world.with_gh(|gh| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+        gh["secondary_quiet"] = json!(quiet);
+        gh["secondary_last_write"] = json!(now.as_secs_f64());
+    });
+    // a busy writer: it asks again five times a second
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    let opened = loop {
+        let answer = world.afk(&delivery);
+        if answer.code == 0 && answer.json["final_pr"]["number"].is_u64() {
+            break answer.json;
+        }
+        assert!(std::time::Instant::now() < deadline, "never resumed: {}", world.gh());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert_eq!(opened["final_pr"]["draft"], true, "{opened}");
+    let gh = world.gh();
+    let refused: Vec<f64> = serde_json::from_value(gh["secondary_refused"].clone()).unwrap();
+    let accepted: Vec<f64> = serde_json::from_value(gh["secondary_accepted"].clone()).unwrap();
+    // 1 s, 2 s, then 4 s of quiet: three refusals, never a write sent while held
+    assert!((1..=3).contains(&refused.len()), "{refused:?}");
+    assert_eq!(accepted.len(), 1, "{accepted:?}");
+    assert!(accepted[0] - refused.last().unwrap() >= quiet, "{refused:?} {accepted:?}");
+    let doctor = world.afk(&["doctor"]).json;
+    let hold = &doctor["fleet"]["github_api"]["secondary"];
+    assert_eq!(hold["trips"], refused.len(), "{hold}");
+    assert_eq!(hold["first"]["what"], "gh pr create", "{hold}");
+    assert!(hold["wait"].as_u64().unwrap() >= 2, "{hold}");
+}

@@ -67,6 +67,51 @@ pub(crate) struct Observation {
     pub(crate) limit: Option<u64>,
 }
 
+/// The longest a hold grows to by itself: a `Retry-After` GitHub says that
+/// is longer still is waited in full.
+pub(crate) const LONGEST_HOLD: u64 = 15 * 60;
+
+/// How far back the write ledger reaches: the writes a hold names as run
+/// before the one that met the limit.
+const LEDGER: u64 = 60;
+
+/// GitHub's secondary limit as the host holds it, its note `secondary` in the host database: every
+/// afkconvoy process of the login on the host waits on it before any GitHub
+/// write. Met again soon after a hold ends, the next hold waits twice as long,
+/// up to `LONGEST_HOLD`, so the host's writers stay quiet long enough for
+/// GitHub to lift its block instead of extending it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub(crate) struct Hold {
+    #[serde(flatten)]
+    pub(crate) seen: Observation,
+    /// How long this hold waits, in seconds.
+    #[serde(default)]
+    pub(crate) wait: u64,
+    /// How many holds in a row this one is: each met the limit before the
+    /// last one was quiet for the wait the next would take.
+    #[serde(default)]
+    pub(crate) trips: u64,
+    /// The write that first met the limit in this row of holds, and the
+    /// writes the host ran in the minute before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) first: Option<Tripped>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub(crate) struct Tripped {
+    pub(crate) what: String,
+    pub(crate) at: u64,
+    pub(crate) before: Vec<Wrote>,
+}
+
+/// One GitHub write a process of the host made, named by its kind
+/// (`gh::writes`), in the host's ledger of the last minute's writes.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct Wrote {
+    pub(crate) what: String,
+    pub(crate) at: u64,
+}
+
 pub(crate) fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
 }
@@ -171,11 +216,15 @@ impl Scope {
     }
 
     pub(crate) fn read(&self, name: &str) -> Result<Observation> {
-        self.read_in(&self.db.open()?, name)
+        self.get(&self.db.open()?, name)
     }
 
-    /// The observation `name` as `db` holds it; the empty one where none.
-    fn read_in(&self, db: &rusqlite::Connection, name: &str) -> Result<Observation> {
+    /// The note `name` as `db` holds it; the default one where none.
+    fn get<T: serde::de::DeserializeOwned + Default>(
+        &self,
+        db: &rusqlite::Connection,
+        name: &str,
+    ) -> Result<T> {
         use rusqlite::OptionalExtension;
         let note: Option<String> = db
             .query_row(
@@ -184,24 +233,92 @@ impl Scope {
                 |row| row.get(0),
             )
             .optional()?;
-        let Some(note) = note else { return Ok(Observation::default()) };
+        let Some(note) = note else { return Ok(T::default()) };
         serde_json::from_str(&note).with_context(|| {
             format!(
-                "unreadable GitHub quota observation {name} of {}/{} in the host database",
+                "unreadable GitHub quota note {name} of {}/{} in the host database",
                 self.host, self.login
             )
+        })
+    }
+
+    /// Makes `db` hold `value` as the note `name`.
+    fn put(&self, db: &rusqlite::Connection, name: &str, value: &impl Serialize) -> Result<()> {
+        db.execute(
+            "INSERT OR REPLACE INTO github_quota (host, login, name, note) VALUES (?1, ?2, ?3, ?4)",
+            [&self.host, &self.login, name, &serde_json::to_string(value)?],
+        )?;
+        Ok(())
+    }
+
+    /// Runs `change` in one transaction of the host database: every change of
+    /// the note is made so, by whichever process of the host.
+    fn change<R>(&self, change: impl FnOnce(&rusqlite::Transaction) -> Result<R>) -> Result<R> {
+        let mut db = self.db.open()?;
+        crate::host_db::write(&mut db, change)
+    }
+
+    /// The host's hold of the secondary limit; a default one, long over,
+    /// where none was ever made.
+    pub(crate) fn hold(&self) -> Result<Hold> {
+        self.get(&self.db.open()?, "secondary")
+    }
+
+    /// Notes that a process of the host made the GitHub write `what` at `at`.
+    /// The ledger keeps the last minute's.
+    pub(crate) fn wrote(&self, what: &str, at: u64) -> Result<()> {
+        self.change(|tx| {
+            let mut ledger: Vec<Wrote> = self.get(tx, "writes").unwrap_or_default();
+            ledger.retain(|w| w.at.saturating_add(LEDGER) > at);
+            ledger.push(Wrote { what: what.into(), at });
+            self.put(tx, "writes", &ledger)
+        })
+    }
+
+    /// The write `what` met GitHub's secondary limit at `now`, which GitHub
+    /// lifts at `said` at the earliest → the instant the host's hold ends.
+    /// A hold still standing is not grown by a write that was in flight
+    /// before it; one met again within the wait the next hold would take of
+    /// the last one's end waits twice the last one's, up to `LONGEST_HOLD`.
+    pub(crate) fn trip(&self, what: &str, now: u64, said: u64) -> Result<u64> {
+        self.change(|tx| {
+            let prior: Hold = self.get(tx, "secondary")?;
+            if prior.seen.reset > now {
+                let mut hold = prior;
+                hold.seen.reset = hold.seen.reset.max(said);
+                self.put(tx, "secondary", &hold)?;
+                return Ok(hold.seen.reset);
+            }
+            let floor = said.saturating_sub(now);
+            let next = prior.wait.saturating_mul(2).min(LONGEST_HOLD);
+            let again = prior.trips > 0 && now < prior.seen.reset.saturating_add(next);
+            let (wait, trips, first) = if again {
+                (floor.max(next), prior.trips + 1, prior.first)
+            } else {
+                let ledger: Vec<Wrote> = self.get(tx, "writes").unwrap_or_default();
+                let before = ledger.into_iter().filter(|w| w.at.saturating_add(LEDGER) > now);
+                (floor, 1, Some(Tripped { what: what.into(), at: now, before: before.collect() }))
+            };
+            let reset = now.saturating_add(wait).max(said);
+            let hold = Hold {
+                seen: Observation { remaining: Some(0), reset, limit: None },
+                wait,
+                trips,
+                first,
+            };
+            self.put(tx, "secondary", &hold)?;
+            Ok(hold.seen.reset)
         })
     }
 
     /// Keeps `value` as the observation `name`, as it adds to what was kept,
     /// in one transaction of the host database.
     pub(crate) fn save(&self, name: &str, value: &Observation) -> Result<()> {
-        let mut db = self.db.open()?;
-        crate::host_db::write(&mut db, |tx| self.save_in(tx, name, value))
+        self.change(|tx| self.save_in(tx, name, value))
     }
 
     fn save_in(&self, db: &rusqlite::Connection, name: &str, value: &Observation) -> Result<()> {
-        let prior = self.read_in(db, name)?;
+        let prior: Observation = self.get(db, name)?;
         // Responses from concurrent requests may arrive out of order. A late
         // positive observation cannot erase a primary rejection before reset.
         if prior.remaining == Some(0) && prior.reset > now() && value.remaining != Some(0) {
@@ -222,14 +339,7 @@ impl Scope {
                 (_, b) => b,
             };
         }
-        if name == "secondary" {
-            value.reset = value.reset.max(prior.reset);
-        }
-        db.execute(
-            "INSERT OR REPLACE INTO github_quota (host, login, name, note) VALUES (?1, ?2, ?3, ?4)",
-            [&self.host, &self.login, name, &serde_json::to_string(&value)?],
-        )?;
-        Ok(())
+        self.put(db, name, &value)
     }
 
     pub(crate) fn describe(&self) -> Result<String> {
@@ -258,11 +368,9 @@ impl Scope {
         let out = match rate_limit_body(gh, &self.host) {
             Ok(out) => out,
             Err(error) => {
-                if let Some(reset) = secondary(&error.to_string(), now()) {
-                    self.save(
-                        "secondary",
-                        &Observation { remaining: Some(0), reset, limit: None },
-                    )?;
+                let now = now();
+                if let Some(said) = secondary(&error.to_string(), now) {
+                    let reset = self.trip("api rate_limit", now, said)?;
                     bail!(
                         "GitHub secondary rate limit on quota observation: both APIs wait until {reset} (Unix seconds); {error}"
                     );
@@ -401,12 +509,13 @@ impl Scope {
     pub(crate) fn json(&self) -> Result<Value> {
         let core = self.read("core")?;
         let graphql = self.read("graphql")?;
-        let secondary = self.read("secondary")?;
-        let now = now();
+        let secondary = self.hold()?;
+        let held = secondary.seen.reset > now();
         Ok(
             serde_json::json!({"host":self.host,"login":self.login,"core":core,"graphql":graphql,"secondary":secondary,
-            "for_rest_reads":if secondary.reset>now {"wait"}else if core.remaining==Some(0)&&core.reset>now {"graphql when equivalent"}else{"core"},
-            "for_graphql_reads":if secondary.reset>now {"wait"}else if graphql.remaining==Some(0)&&graphql.reset>now {"core when equivalent"}else{"graphql"}}),
+            "for_writes":if held {"wait"}else{"write"},
+            "for_rest_reads":if held {"wait"}else if core.remaining==Some(0)&&core.reset>now() {"graphql when equivalent"}else{"core"},
+            "for_graphql_reads":if held {"wait"}else if graphql.remaining==Some(0)&&graphql.reset>now() {"core when equivalent"}else{"graphql"}}),
         )
     }
 }
@@ -645,6 +754,72 @@ mod tests {
         assert!(!cache.join("github-quota").exists());
         assert!(cache.join("github-quota.migrated/github.com/me/core.json").exists());
         set_aside_old_notes(&cache).unwrap();
+    }
+
+    #[test]
+    fn a_secondary_limit_met_again_soon_after_doubles_the_hold_up_to_fifteen_minutes() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = Scope {
+            db: crate::host_db::Host::at(dir.path().join("host.db")),
+            locks: dir.path().into(),
+            host: "github.com".into(),
+            login: "me".into(),
+        };
+        scope.wrote("gh pr comment", 950).unwrap();
+        scope.wrote("gh pr create", 1000).unwrap();
+        assert_eq!(scope.trip("gh pr create", 1000, 1060).unwrap(), 1060);
+        let hold = scope.hold().unwrap();
+        let first = hold.first.clone().unwrap();
+        assert_eq!((hold.wait, hold.trips, first.what.as_str()), (60, 1, "gh pr create"));
+        assert_eq!(first.before.len(), 2, "{first:?}");
+        // in flight before the hold: it stands as it was
+        assert_eq!(scope.trip("gh pr merge", 1030, 1090).unwrap(), 1090);
+        assert_eq!(scope.hold().unwrap().wait, 60);
+        // met again as the hold opens: each next waits twice, GitHub's minimum
+        // notwithstanding, up to fifteen minutes
+        let mut at = 1090;
+        for wait in [120, 240, 480, 900, 900] {
+            let reset = scope.trip("gh pr create", at, at + 60).unwrap();
+            let hold = scope.hold().unwrap();
+            assert_eq!((reset, hold.wait), (at + wait, wait));
+            assert_eq!(hold.first.unwrap().at, 1000, "the row keeps its first write");
+            at = reset + 5;
+        }
+        // GitHub's longer word is waited in full
+        assert_eq!(scope.trip("gh pr create", at, at + 2000).unwrap(), at + 2000);
+        // quiet for the next hold's wait: the row ends, and GitHub's wait is taken again
+        let quiet = scope.hold().unwrap().seen.reset + LONGEST_HOLD;
+        assert_eq!(scope.trip("gh pr comment", quiet, quiet + 60).unwrap(), quiet + 60);
+        let hold = scope.hold().unwrap();
+        assert_eq!((hold.trips, hold.first.unwrap().what.as_str()), (1, "gh pr comment"));
+    }
+
+    #[test]
+    fn writes_are_named_by_kind_and_reads_are_none() {
+        use crate::gh::writes;
+        assert_eq!(writes(&["pr", "create", "--base", "main"]).unwrap(), "gh pr create");
+        assert_eq!(
+            writes(&["api", "--method", "POST", "repos/o/r/issues/7/comments", "-f", "body=x"])
+                .unwrap(),
+            "api POST repos/o/r/issues/:n/comments"
+        );
+        assert_eq!(
+            writes(&["api", "repos/o/r/issues/7/labels", "-f", "labels[]=x"]).unwrap(),
+            "api POST repos/o/r/issues/:n/labels"
+        );
+        assert_eq!(
+            writes(&["api", "graphql", "-f", "query=mutation($r:ID!){x}", "-f", "r=1"]).unwrap(),
+            "api graphql mutation"
+        );
+        for read in [
+            &["api", "graphql", "-f", "query=query { viewer { login } }"][..],
+            &["api", "rate_limit", "--hostname", "github.com"],
+            &["api", "--paginate", "repos/o/r/pulls?state=all", "--jq", ".x"],
+            &["pr", "list", "--json", "number"],
+            &["pr", "view", "3"],
+        ] {
+            assert_eq!(writes(read), None, "{read:?}");
+        }
     }
 
     #[test]
