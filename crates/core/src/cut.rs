@@ -462,7 +462,7 @@ impl Held {
         format!("not cutting here: {} failed", names.join(", "))
     }
 
-    /// Each need's status and any install, and the stderr file, as doctor
+    /// Each need's status and any install, and the line that prints their stderr, as doctor
     /// says them.
     pub fn evidence(&self) -> String {
         let needs: Vec<String> = self

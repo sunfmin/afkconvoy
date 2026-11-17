@@ -115,7 +115,9 @@ const MIGRATIONS: &[&str] = &[
         key TEXT NOT NULL,
         kept TEXT NOT NULL,
         PRIMARY KEY (scope, key)
-     )",
+     );
+     CREATE TABLE need_stderr (name TEXT PRIMARY KEY, text TEXT NOT NULL);
+     CREATE TABLE need_installs (name TEXT PRIMARY KEY, installed TEXT NOT NULL)",
 ];
 
 /// The host's database: `host.db` in the data directory.

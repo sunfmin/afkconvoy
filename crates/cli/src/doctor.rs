@@ -1356,7 +1356,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             json!(["cut-need", cut.newest_tag, cut.initial]),
             failed.said(),
             failed.evidence(),
-            "read its stderr file on this host, then check the repo's cut-needs declaration"
+            "print its stderr on this host with the `afkconvoy doctor --stderr` line it names, then check the repo's cut-needs declaration"
                 .to_string(),
         ));
     }
@@ -3240,6 +3240,8 @@ With `--all` it reads the checkout list (in the host's database) and the same of
 It also reads every tracker that list names once for repo-labelled work, including repos absent from this host. A repo nobody works has an open ready issue with no open blocker or claim, ready for more than an hour since the later of its dispatch label being applied and its last blocker closing, and no remote heartbeat within the 1800-second lease. Ready means the repo's ready label, or its team's flow labels. Only an old enough unblocked issue, or an existing report, asks that repo's heartbeat remote. `host.unworked_repos` holds the waiting issues and their seconds, newest heartbeat's host and time (or null), report and opening host, recovery host, and read error. An unreadable remote proves nothing about whether a fleet works it. Where the login's REST core quota is spent, no tracker is read before its reset, and no repo is said unread for want of it: `host.github_quota` holds {host, login, api, reset} and one finding says it, which calls no watch. Doctor opens and closes nothing; the host runner reconciles these reports at its look.
 
 ## What it answers
+
+With `--stderr <name>`: {name, stderr}, the last 20 stderr lines a need's check or install kept when it failed on this host, by the name a finding, `plan`'s `need_installs` or a refusal gives it — `gate-needs/<key>`, `cut-needs/<key>`, `gate-needs-install/<key>`, `cut-needs-install/<key>` or `cut-held/<key>`. They are kept in the host's database, which its user alone reads (`afkconvoy help data`), and said nowhere else: a check's output is private to its host. A check that passes again drops them; a name this host keeps none of is an error.
 
 {"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "legacy_candidate_chains", "findings", "deliveries"}
 

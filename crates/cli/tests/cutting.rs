@@ -1500,11 +1500,11 @@ fn a_cut_need_that_passes_then_fails_claims_no_cut_and_doctor_names_its_stderr()
     let said = doctor.to_string();
     assert!(said.contains("not cutting here: publish-access failed"), "{doctor}");
     let stderr = said
-        .split("stderr: ")
+        .split("afkconvoy doctor --stderr ")
         .nth(1)
-        .and_then(|rest| rest.split(['"', '\\']).next())
-        .unwrap_or_else(|| panic!("doctor names the stderr file: {doctor}"));
-    let lines = std::fs::read_to_string(stderr).unwrap();
+        .and_then(|rest| rest.split('`').next())
+        .unwrap_or_else(|| panic!("doctor names the stderr: {doctor}"));
+    let lines = kept_stderr(&world, stderr);
     assert!(lines.contains("publish-access") && lines.contains("private-late-failure"), "{lines}");
     assert!(!format!("{tick}{doctor}{}", logged(&world).join(" ")).contains("private-late"));
 }
@@ -1520,10 +1520,22 @@ fn cut_need(world: &World, now: u64) -> Option<Value> {
         .cloned()
 }
 
-/// The stderr file a finding's evidence names.
+/// The name of the stderr a finding's evidence names.
 fn named_stderr(found: &Value) -> String {
     let evidence = found["evidence"].as_str().unwrap();
-    evidence.split("stderr: ").nth(1).unwrap().split(['"', ';']).next().unwrap().to_string()
+    evidence
+        .split("afkconvoy doctor --stderr ")
+        .nth(1)
+        .unwrap()
+        .split('`')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+/// The stderr the host keeps as `name`, as `doctor --stderr` prints it.
+fn kept_stderr(world: &World, name: &str) -> String {
+    world.afk(&["doctor", "--stderr", name]).ok()["stderr"].as_str().unwrap().to_string()
 }
 
 /// sunfmin/control#570: a cut held first by one need, then by another, then
@@ -1550,7 +1562,7 @@ fn a_held_cut_is_one_cut_need_finding_whichever_need_fails() {
     assert_eq!(then["what"], "not cutting here: upload failed", "{then}");
     assert_eq!(then["watch_id"], first["watch_id"], "one held cut, one condition");
     assert_eq!(named_stderr(&then), named_stderr(&first), "{then}");
-    let lines = std::fs::read_to_string(named_stderr(&then)).unwrap();
+    let lines = kept_stderr(&world, &named_stderr(&then));
     assert!(lines.contains("no-upload") && !lines.contains("no-signing"), "{lines}");
 
     std::fs::remove_file(&signing).unwrap();
@@ -1559,14 +1571,15 @@ fn a_held_cut_is_one_cut_need_finding_whichever_need_fails() {
     assert_eq!(both["watch_id"], first["watch_id"]);
     let evidence = both["evidence"].as_str().unwrap();
     assert!(evidence.contains("signing failed") && evidence.contains("upload failed"), "{both}");
-    let lines = std::fs::read_to_string(named_stderr(&both)).unwrap();
+    let lines = kept_stderr(&world, &named_stderr(&both));
     assert!(lines.contains("no-signing") && lines.contains("no-upload"), "{lines}");
     assert!(!both.to_string().contains("no-signing"), "never its output: {both}");
 
     std::fs::write(&signing, "yes").unwrap();
     std::fs::write(&upload, "yes").unwrap();
     assert_eq!(cut_need(&world, 10_030), None, "a cut no longer held clears it");
-    assert!(!std::path::Path::new(&named_stderr(&both)).exists());
+    let gone = world.afk(&["doctor", "--stderr", &named_stderr(&both)]).error();
+    assert!(gone.contains("keeps no stderr"), "{gone}");
 }
 
 /// The plan's frontier, by number.

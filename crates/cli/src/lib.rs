@@ -548,6 +548,9 @@ enum Command {
         /// Include earlier watch rounds; the default keeps only the last round's report
         #[arg(long)]
         rounds: bool,
+        /// Print the stderr a need that failed on this host kept, by the name a finding gives it
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["all", "rounds"])]
+        stderr: Option<String>,
         #[command(flatten)]
         proxy: ProxyArgs,
         /// The host whose fleet is asked after [default: this machine's name]
@@ -2562,6 +2565,12 @@ fn run(
     match command {
         Command::Asked { question, text_file } => asking_report::record(&question, &text_file),
         Command::Watched { watch, text_file } => watch_report::record(&watch, &text_file, now),
+        Command::Doctor { stderr: Some(name), .. } => match probe::kept_stderr(&name)? {
+            Some(text) => Ok(json!({"name": name, "stderr": text})),
+            None => bail!(
+                "this host keeps no stderr named `{name}`: its check passed since, or it is no name `plan` or `doctor` gave"
+            ),
+        },
         Command::Kit { cast: Some(_), .. } => bail!("automatic casting is gone"),
         Command::Kit { remove: Some(harness), .. } => kit::remove(harness, now),
         Command::Kit { command: Some((harness, command)), .. } => {

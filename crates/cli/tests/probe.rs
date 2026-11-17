@@ -578,13 +578,15 @@ fn gate_needs_refuse_without_disclosing_output_and_recheck_after_an_hour() {
         assert!(!error.contains("stdout-secret") && !error.contains("stderr-secret"), "{error}");
     }
     assert!(world.probes().is_empty());
-    let dir = world.cache().join("afkconvoy/gate-needs");
-    let path = std::fs::read_dir(dir).unwrap().next().unwrap().unwrap().path();
-    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "stderr-secret");
+    // Its stderr is kept in the host database, its user's alone.
+    let error = plan(&world).error();
+    let name = error.split("afkconvoy doctor --stderr ").nth(1).unwrap().split('`').next().unwrap();
+    let mode = std::fs::metadata(world.host_db()).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert_eq!(world.afk(&["doctor", "--stderr", name]).ok()["stderr"], "stderr-secret");
     std::fs::write(&script, "exit 0\n").unwrap();
     plan_at(&world, "1000").ok();
-    assert!(!path.exists());
+    assert!(world.afk(&["doctor", "--stderr", name]).error().contains("keeps no stderr"));
     std::fs::write(&script, "echo stderr-secret >&2\nexit 7\n").unwrap();
     plan_at(&world, "4599").ok();
     let error = plan_at(&world, "4600").error();
@@ -625,13 +627,8 @@ fn a_fleet_instance_breaks_when_a_gate_need_stops_passing() {
     assert!(!doctor.contains("stdout-secret") && !doctor.contains("stderr-secret"), "{doctor}");
     let plan = world.afk(&["plan"]).error();
     assert!(!plan.contains("stdout-secret") && !plan.contains("stderr-secret"));
-    let path = std::fs::read_dir(world.cache().join("afkconvoy/gate-needs"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "stderr-secret");
+    let name = plan.split("afkconvoy doctor --stderr ").nth(1).unwrap().split('`').next().unwrap();
+    assert_eq!(world.afk(&["doctor", "--stderr", name]).ok()["stderr"], "stderr-secret");
     world.afk(&["stop", "--all"]).ok();
 }
 
@@ -702,12 +699,10 @@ fn a_failed_install_refuses_and_is_not_run_again_within_the_hour_unless_declared
             && !error.contains("install-secret"),
         "{error}"
     );
-    let path = std::fs::read_dir(world.cache().join("afkconvoy/gate-needs-install"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "stderr"))
-        .unwrap();
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "install-secret");
+    let name = error.split("install stderr: `afkconvoy doctor --stderr ").nth(1).unwrap();
+    let name = name.split('`').next().unwrap();
+    assert!(name.starts_with("gate-needs-install/"), "{error}");
+    assert_eq!(world.afk(&["doctor", "--stderr", name]).ok()["stderr"], "install-secret");
     let doctor = world.afk(&["doctor", "--host", "h1"]).json.to_string();
     assert!(doctor.contains("toolchain: its install failed on this host"), "{doctor}");
     assert!(!doctor.contains("install-secret"), "{doctor}");
