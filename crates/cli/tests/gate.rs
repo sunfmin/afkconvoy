@@ -7,7 +7,6 @@ use afkconvoy_core::layout::Layout;
 use common::{World, git};
 use serde_json::json;
 
-use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Output, Stdio};
@@ -203,9 +202,9 @@ fn gated() -> (World, String) {
     (world, command)
 }
 
+/// The green records the world's host keeps, each its whole text.
 fn records(world: &World) -> Vec<String> {
-    let listed = world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/gate"]);
-    listed.lines().map(str::to_string).collect()
+    world.gate_records()
 }
 
 #[test]
@@ -222,57 +221,17 @@ fn a_green_run_on_a_committed_tree_is_put_on_record() {
     assert!(seconds < 60, "{answer}");
 
     let tree = git(&world.clone, &["rev-parse", "HEAD^{tree}"]);
-    let refs = records(&world);
-    assert_eq!(refs.len(), 1);
-    assert!(refs[0].starts_with(&format!("refs/convoy/gate/{tree}-")), "{refs:?}");
-    // the record is a commit of the tree it is about
-    assert_eq!(world.remote(&["rev-parse", &format!("{}^{{tree}}", refs[0])]), tree);
-    let subject = world.remote(&["log", "-1", "--format=%s", &refs[0]]);
-    assert!(subject.starts_with("convoy:gate tree="), "{subject}");
+    let kept = records(&world);
+    assert_eq!(kept.len(), 1);
+    // The host's database keeps it (docs/adr/0037): nothing is pushed.
+    assert_eq!(world.remote_gate_refs(), [] as [String; 0]);
+    let subject = kept[0].lines().next().unwrap();
+    assert!(subject.starts_with(&format!("convoy:gate tree={tree} ")), "{subject}");
     // …and says when the run finished, how long it took, on which host and
     // on which kind of machine
     let machine = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let said = format!(" at=5000 seconds={seconds} host=mini machine={machine}");
     assert!(subject.ends_with(&said), "{subject}");
-}
-
-#[test]
-fn a_record_push_packs_only_objects_past_the_tested_commit() {
-    let (world, _) = gated();
-    let mut random = 0x9e3779b9_u32;
-    let large: Vec<u8> = (0..1024 * 1024)
-        .map(|_| {
-            random ^= random << 13;
-            random ^= random >> 17;
-            random ^= random << 5;
-            random as u8
-        })
-        .collect();
-    std::fs::write(world.clone.join("large.bin"), large).unwrap();
-    git(&world.clone, &["add", "large.bin"]);
-    git(&world.clone, &["commit", "-q", "-m", "a large base tree"]);
-    git(&world.clone, &["push", "-q", "origin", "main"]);
-
-    let head = common::commit(&world.clone, "README.md", "one line changed\n");
-    // The candidate chain has already preserved the tested commit before its
-    // gate record is pushed, as the base branch has here.
-    git(&world.clone, &["push", "-q", "origin", "main"]);
-    assert_eq!(world.afk(&["gate"]).ok()["recorded"], true);
-
-    let record = records(&world).pop().unwrap();
-    let sha = world.remote(&["rev-parse", &record]);
-    assert_eq!(world.remote(&["rev-parse", &format!("{record}^")]), head);
-    let mut pack = afkconvoy::census::command("git")
-        .current_dir(&world.clone)
-        .args(["pack-objects", "--revs", "--stdout"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    pack.stdin.take().unwrap().write_all(format!("{sha}\n^{head}\n").as_bytes()).unwrap();
-    let packed = pack.wait_with_output().unwrap();
-    assert!(packed.status.success(), "{}", String::from_utf8_lossy(&packed.stderr));
-    assert!(packed.stdout.len() < 64 * 1024, "the record pack was {} bytes", packed.stdout.len());
 }
 
 #[test]
@@ -282,7 +241,7 @@ fn a_run_is_timed_from_the_start_of_the_gate_command_to_its_end() {
     let answer = world.afk(&["gate"]).ok();
     assert_eq!(answer["recorded"], true, "{answer}");
     assert!((2..30).contains(&answer["seconds"].as_u64().unwrap()), "{answer}");
-    let subject = world.remote(&["log", "-1", "--format=%s", &records(&world)[0]]);
+    let subject = records(&world)[0].lines().next().unwrap().to_string();
     let host = world.checkout_list()["settings"]["host_name"].as_str().unwrap().to_string();
     let said = format!(" seconds={} host={host} machine=", answer["seconds"]);
     assert!(subject.contains(&said), "the host is what the fleet calls this one: {subject}");
@@ -395,11 +354,11 @@ fn a_run_that_commits_is_not_a_run_of_the_commit_it_started_on() {
 #[test]
 fn a_record_that_cannot_be_written_is_not_an_error() {
     let (world, _) = gated();
-    world.watch_pushes(Some("convoy/gate"));
+    world.refuse_gate_records("refused by the test");
     let answer = world.afk(&["gate"]).ok();
     assert_eq!(answer["status"], "green");
     assert_eq!(answer["recorded"], false);
-    assert!(answer["not_recorded"].as_str().unwrap().contains("rejected by the test"));
+    assert!(answer["not_recorded"].as_str().unwrap().contains("refused by the test"), "{answer}");
 }
 
 #[test]
@@ -423,112 +382,49 @@ fn a_record_stands_for_the_same_tree_and_command_for_one_day() {
 }
 
 #[test]
-fn a_parentless_record_already_on_the_remote_is_still_believed() {
-    let (world, command) = gated();
-    world.afk(&["gate", "--now", "100000"]).ok();
-    let repo = Repo::at(&world.clone).unwrap();
-    let tree = Tree::named(&git(&world.clone, &["rev-parse", "HEAD^{tree}"]));
-    let command = GateCommand::new(&command);
-    let name = records(&world).pop().unwrap();
-    let subject = world.remote(&["log", "-1", "--format=%s", &name]);
-    let legacy = repo.record_commit_of(tree.name(), &subject).unwrap();
-    git(&world.clone, &["push", "-q", "--force", "origin", &format!("{legacy}:{name}")]);
-
-    let run = recorded(&repo, &tree, &command, 100_000).unwrap().unwrap();
-    assert_eq!(run.at(), 100_000);
-}
-
-/// Moves the commit at `from` onto `to` and drops `from`.
-fn move_record(world: &World, from: &str, to: &str) {
-    let sha = world.remote(&["rev-parse", from]);
-    git(&world.clone, &["push", "-q", "origin", &format!("{sha}:{to}")]);
-    git(&world.clone, &["push", "-q", "origin", "--delete", from]);
-}
-
-fn believes_recorded(gated_run: Gated) {
-    match gated_run {
-        Gated::Green { source, .. } => assert_eq!(source, "recorded"),
-        Gated::Red { .. } | Gated::Unsettled { .. } => panic!("the recorded run was not believed"),
-    }
-}
-
-#[test]
-fn a_turn_believes_a_green_run_kept_on_the_other_layout() {
+fn a_green_record_on_the_remote_is_never_believed() {
     let world = World::new();
     let ran = world.root.join("gate-runs");
     let command = format!("echo ran >> {}", ran.display());
     world.set_gate(&command);
-    let answer = world.afk(&["gate", "--now", "100000", "--host", "mini"]).ok();
-    assert_eq!(answer["recorded"], true, "{answer}");
-    assert_eq!(std::fs::read_to_string(&ran).unwrap(), "ran\n");
-
     let repo = Repo::at(&world.clone).unwrap();
     let tree = Tree::named(&git(&world.clone, &["rev-parse", "HEAD^{tree}"]));
     let command = GateCommand::new(&command);
-    let hidden = record_ref(Layout::Hidden, &tree, &command);
-    let branches = record_ref(Layout::Branches, &tree, &command);
-    move_record(&world, &hidden, &branches);
+    // What an older release, or another host, left on the remote: a green
+    // run of this very tree, on this kind of machine, on either layout.
+    let machine = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let record = afkconvoy_core::record::write(
+        afkconvoy_core::gate::GATE,
+        &[
+            ("tree", tree.name()),
+            ("command", command.text()),
+            ("at", "100000"),
+            ("seconds", "1"),
+            ("host", "other"),
+            ("machine", &machine),
+        ],
+    );
+    let sha = repo.record_commit_of(tree.name(), &record).unwrap();
+    for layout in Layout::ALL {
+        let to = format!("{sha}:{}", record_ref(layout, &tree, &command));
+        git(&world.clone, &["push", "-q", "origin", &to]);
+    }
+    assert_eq!(world.remote_gate_refs().len(), 2);
 
-    // Noted hidden believes the same run kept as a branch, and does not run it.
-    repo.note_layout(Layout::Hidden).unwrap();
-    let believed =
-        believe(&repo, &command, "mini", 100_000, afkconvoy_patience::PATIENCE, None, None)
-            .unwrap();
-    believes_recorded(believed);
+    assert!(recorded(&repo, &tree, &command, 100_000).unwrap().is_none());
+    let gated = believe(&repo, &command, "mini", 100_000, afkconvoy_patience::PATIENCE, None, None)
+        .unwrap();
+    assert!(matches!(gated, Gated::Green { source: "run", .. }), "the gate ran itself");
+    assert_eq!(std::fs::read_to_string(&ran).unwrap(), "ran\n");
+
+    // The run made now is on this host's record, and answers the next ask.
+    let gated = believe(&repo, &command, "mini", 100_000, afkconvoy_patience::PATIENCE, None, None)
+        .unwrap();
+    assert!(matches!(gated, Gated::Green { source: "recorded", .. }));
     assert_eq!(std::fs::read_to_string(&ran).unwrap(), "ran\n");
     let later = Tree::named("later-tree-a-cut-commits");
     assert!(recorded(&repo, &later, &command, 100_000).unwrap().is_none());
-    assert!(recorded(&repo, &tree, &command, 100_000).unwrap().is_some());
     assert!(recorded(&repo, &tree, &command, 100_001 + RECORD_TTL).unwrap().is_none());
-
-    // Noted branches believes the same run kept as a hidden ref.
-    move_record(&world, &branches, &hidden);
-    repo.note_layout(Layout::Branches).unwrap();
-    let believed =
-        believe(&repo, &command, "mini", 100_000, afkconvoy_patience::PATIENCE, None, None)
-            .unwrap();
-    believes_recorded(believed);
-    assert_eq!(std::fs::read_to_string(&ran).unwrap(), "ran\n");
-}
-
-#[test]
-fn a_new_record_is_written_on_the_noted_layout_only() {
-    let (world, _) = gated();
-    world.afk(&["gate", "--now", "5000"]).ok();
-    let hidden = records(&world);
-    assert_eq!(hidden.len(), 1, "{hidden:?}");
-    let sha = world.remote(&["rev-parse", &hidden[0]]);
-
-    Repo::at(&world.clone).unwrap().note_layout(Layout::Branches).unwrap();
-    let again = world.afk(&["gate", "--now", "6000"]).ok();
-    assert_eq!(again["recorded"], true, "{again}");
-    assert_eq!(world.remote(&["rev-parse", &hidden[0]]), sha);
-    let branches = world.remote(&["for-each-ref", "--format=%(refname)", "refs/heads/convoy-gate"]);
-    assert_eq!(branches.lines().count(), 1, "{branches}");
-    assert_eq!(records(&world), hidden);
-}
-
-#[test]
-fn a_red_run_is_not_believed_from_the_other_layout() {
-    let (world, command) = gated();
-    world.afk(&["gate", "--now", "5000"]).ok();
-    let hidden = records(&world);
-    assert_eq!(hidden.len(), 1, "{hidden:?}");
-    let sha = world.remote(&["rev-parse", &hidden[0]]);
-    let branch = hidden[0].replacen("refs/convoy/", "refs/heads/convoy-", 1);
-    git(&world.clone, &["push", "-q", "origin", &format!("{sha}:{branch}")]);
-
-    std::fs::write(world.root.join("red"), "").unwrap();
-    let answer = world.afk(&["gate"]).ok();
-    assert_eq!(answer["status"], "red");
-    assert_eq!(answer["recorded"], false);
-    assert_eq!(records(&world), [] as [String; 0]);
-    let left = world.remote(&["for-each-ref", "--format=%(refname)", "refs/heads/convoy-gate"]);
-    assert_eq!(left, "");
-
-    let repo = Repo::at(&world.clone).unwrap();
-    let tree = Tree::named(&git(&world.clone, &["rev-parse", "HEAD^{tree}"]));
-    assert!(recorded(&repo, &tree, &GateCommand::new(&command), 10_000).unwrap().is_none());
 }
 
 #[test]

@@ -338,15 +338,6 @@ pub fn no_base_branch(branch: &str) -> String {
     )
 }
 
-/// What the human is told when the remote takes no gate record.
-pub fn no_gate_records(layout: Layout, why: &str) -> String {
-    format!(
-        "the remote refuses refs under {} ({why}): no gate run can be put on record, so \
-         every landing runs the gate itself",
-        layout.every(GATE_KIND)
-    )
-}
-
 #[cfg(flux)]
 #[allow(dead_code)]
 mod rejected {

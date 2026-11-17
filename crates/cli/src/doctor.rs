@@ -227,6 +227,7 @@ kinds! {
     NotOurs: Warning, "is held off by a PR not the fleet's";
     CarriedLanded: Warning, "is open though the PR that carried it landed";
     LegacyTargets: Info, "separate target records an earlier release left";
+    LegacyGateRecords: Info, "gate records are left on the remote";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     ExclusiveBound: Warning, "ended at the exclusive bound";
@@ -612,6 +613,9 @@ pub struct State {
     /// The separate `target/<n>` records an earlier release left, which the
     /// acting tick carries and removes (`target::carry_legacy`).
     pub legacy_targets: Vec<String>,
+    /// The gate records an afkconvoy before docs/adr/0037's amendment left on
+    /// the remote: read by nothing, and removed by the next start's probe.
+    pub legacy_gate_records: Vec<String>,
     /// Candidate state from the same remote listing as the working set.
     pub candidates: Value,
     /// The pending places live lands of this host hold on its chains, from
@@ -1547,6 +1551,19 @@ fn legacy_targets_finding(left: &[String]) -> Option<Finding> {
     ))
 }
 
+/// The gate records still left on the remote: a host keeps its own in its
+/// database and reads none of them; the next start's probe removes them.
+fn legacy_gate_records_finding(left: &[String]) -> Option<Finding> {
+    let first = left.first()?;
+    Some(finding(
+        Kind::LegacyGateRecords,
+        json!(["legacy-gate-records"]),
+        format!("{} gate records are left on the remote", left.len()),
+        format!("the remote holds {first} and {} more; nothing reads them", left.len() - 1),
+        "afkconvoy run".into(),
+    ))
+}
+
 /// A claim on an issue that is gone: the line that deletes it, for a holder
 /// whose ticks do not.
 fn on_gone_finding(on: &OnGone) -> Finding {
@@ -1811,6 +1828,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
                 state.carried_landed.iter().map(|c| carried_landed_finding(&state.tracker, c)),
             );
             found.extend(legacy_targets_finding(&state.legacy_targets));
+            found.extend(legacy_gate_records_finding(&state.legacy_gate_records));
             found.extend(pending_finding(&state.pending));
         }
         Err(why) => found.push(finding(
@@ -2159,6 +2177,13 @@ fn finish_state(
         on_gone,
         carried_landed,
         legacy_targets: crate::target::legacy_left(&fleet).into_iter().map(|r| r.name).collect(),
+        legacy_gate_records: afkconvoy_core::layout::Layout::ALL
+            .into_iter()
+            .flat_map(|layout| {
+                fleet.records_at_open(&layout.every(afkconvoy_core::layout::GATE_KIND))
+            })
+            .map(|record| record.name)
+            .collect(),
         candidates,
         pending,
         legacy_chains: crate::candidates::legacy(
@@ -3235,7 +3260,7 @@ The operator, in a checkout of the repo, on the host the fleet runs on. No `--in
 
 ## What it reads and writes
 
-It reads this host (the commands the fleet needs, in a login shell; orca), the log this host's `run` keeps of its ticks, the open issues, PRs and stage records on GitHub, whether GitHub says the tracker is public, the claims, heartbeats and recorded gate runs on the remote, and orca after the worker of each claim. It writes nothing on GitHub and nothing on the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like. It fixes nothing either: each finding names the command that does.
+It reads this host (the commands the fleet needs, in a login shell; orca), the log this host's `run` keeps of its ticks, the open issues, PRs and stage records on GitHub, whether GitHub says the tracker is public, the claims and heartbeats on the remote, this host's recorded gate runs in its database, and orca after the worker of each claim. It writes nothing on GitHub and nothing on the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like. It fixes nothing either: each finding names the command that does.
 
 A harness whose first login answer reads logged out is asked once more in that same login shell setting before `tools` reports `logged_out`; ready on the second answer is ready. A ready harness is still started at most once per doctor. A tool finding's evidence carries the last answer's exit status and the first 500 characters it printed, with credential-shaped text redacted.
 
@@ -3516,6 +3541,7 @@ mod tests {
             on_gone: vec![],
             carried_landed: vec![],
             legacy_targets: vec![],
+            legacy_gate_records: vec![],
             candidates: json!([]),
             pending: vec![],
             base_moved: None,

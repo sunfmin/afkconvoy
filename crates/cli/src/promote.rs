@@ -305,7 +305,7 @@ pub fn promote(repo: &Repo, host: &str, now: u64) -> Result<Value> {
         now,
         output: &output,
         standing: RefCell::new(None),
-        records: crate::gate::OnRemote(repo),
+        records: crate::gate_records::OnHost(repo),
     };
     let promotion = proving::promote(&runner, now)?;
     let standing =
@@ -457,12 +457,12 @@ struct Runner<'a> {
     output: &'a Path,
     /// What the last read of the tips saw: what the answer says.
     standing: RefCell<Option<Standing>>,
-    records: crate::gate::OnRemote<'a>,
+    records: crate::gate_records::OnHost<'a>,
 }
 
 impl<'a> proving::Proving for Runner<'a> {
     type Error = anyhow::Error;
-    type Records = crate::gate::OnRemote<'a>;
+    type Records = crate::gate_records::OnHost<'a>;
     type Lane = (Lock, Option<crate::exclusive::Permit>);
 
     fn records(&self) -> &Self::Records {
@@ -711,7 +711,7 @@ One promotion of a checkout runs at a time: another answers `promoting`. A repo 
 
 ## What it reads and writes
 
-It reads the remote's base branch and proving branch and the gate records, and writes a gate record of the tip's tree and, green, the base branch. Its run's output is in the checkout's git dir (`convoy-promotion-<time>-<n>.log`), kept where it is red; a tick's promotion appends its answer to `convoy-promotion.log` there. Its line in the fleet's log names the proving tip it read last and how many landings, from which hosts, it covers.
+It reads the remote's base branch and proving branch and this host's gate records, and writes a gate record of the tip's tree, in the host's database, and, green, the base branch. Its run's output is in the checkout's git dir (`convoy-promotion-<time>-<n>.log`), kept where it is red; a tick's promotion appends its answer to `convoy-promotion.log` there. Its line in the fleet's log names the proving tip it read last and how many landings, from which hosts, it covers.
 
 ## What it answers
 

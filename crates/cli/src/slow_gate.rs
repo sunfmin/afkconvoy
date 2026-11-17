@@ -5,8 +5,7 @@
 use std::collections::HashMap;
 
 use afkconvoy_core::claims::{Holder, RunClaim};
-use afkconvoy_core::gate::{GateCommand, GreenRun, Tree, record_ref};
-use afkconvoy_core::layout::GATE_KIND;
+use afkconvoy_core::gate::{GateCommand, GreenRun, Tree};
 use afkconvoy_core::slow_gate::{
     CLAIM_KEY, LABEL, LANDINGS, Landing, Reported, SlowGate, TITLE, report, slow,
 };
@@ -17,7 +16,6 @@ use crate::claims::{Me, drop_run, take_run};
 use crate::fleet::Fleet;
 use crate::gh::GitHub;
 use crate::git::Repo;
-use crate::remote::RemoteRecord;
 
 /// How many commits down the base branch a landing is looked for. A recorded
 /// gate run is swept a day after it was made, so the landings that still have
@@ -25,36 +23,23 @@ use crate::remote::RemoteRecord;
 const READ_BACK: &str = "--max-count=1000";
 
 /// The base branch's landings below `base` that have a run of `command` on
-/// record among `records` — the fleet's refs as one listing saw them — newest
-/// first. A tree that landed twice is the landing of its newest commit: one
-/// run is counted once.
+/// this host's record, newest first. A tree that landed twice is the landing
+/// of its newest commit: one run is counted once.
 ///
-/// The base branch is not walked while the remote holds fewer records than
+/// The base branch is not walked while the host holds fewer records than
 /// make a gate slow.
-fn landings(
-    repo: &Repo,
-    command: &GateCommand,
-    records: &[RemoteRecord],
-    base: &str,
-) -> Result<Vec<Landing>> {
-    let layout = repo.layout();
-    let gate_record = |record: &&RemoteRecord| {
-        layout.kept(&record.name).is_some_and(|kept| kept.starts_with(GATE_KIND))
-    };
-    let mut on_record: HashMap<&str, &str> = records
-        .iter()
-        .filter(gate_record)
-        .map(|record| (record.name.as_str(), record.subject.as_str()))
-        .collect();
+fn landings(repo: &Repo, command: &GateCommand, base: &str) -> Result<Vec<Landing>> {
+    let mut on_record: HashMap<String, String> =
+        crate::gate_records::of_command(repo, command)?.into_iter().collect();
     if on_record.len() < LANDINGS {
         return Ok(vec![]);
     }
     let listed = repo.git(&["log", "--first-parent", "--format=%H %T", READ_BACK, base])?;
     let mut landings = vec![];
     for (commit, tree) in listed.lines().filter_map(|row| row.split_once(' ')) {
+        let record = on_record.remove(tree);
         let tree = Tree::named(tree);
-        let subject = on_record.remove(record_ref(layout, &tree, command).as_str());
-        if let Some(run) = subject.and_then(|subject| GreenRun::recorded(subject, &tree, command)) {
+        if let Some(run) = record.and_then(|record| GreenRun::recorded(&record, &tree, command)) {
             landings.push(Landing { commit: commit.to_string(), run });
         }
     }
@@ -71,13 +56,9 @@ fn reported(gh: &GitHub) -> Result<Reported> {
 /// recorded run of the gate command, and the issues opened for a slow gate.
 /// GitHub is asked for those only while the landings say the gate is slow:
 /// they change nothing otherwise.
-pub fn seen(
-    fleet: &Fleet,
-    records: &[RemoteRecord],
-    base: &str,
-) -> Result<(Vec<Landing>, Reported)> {
+pub fn seen(fleet: &Fleet, base: &str) -> Result<(Vec<Landing>, Reported)> {
     let command = GateCommand::new(&fleet.config.gate_command);
-    let landings = landings(&fleet.repo, &command, records, base)?;
+    let landings = landings(&fleet.repo, &command, base)?;
     let reported = match slow(
         &landings,
         fleet.config.gate_seconds(),

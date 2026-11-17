@@ -528,19 +528,14 @@ impl Fleet {
             .collect()
     }
 
-    /// The recorded gate run in this view's remote listing that still stands.
+    /// The recorded gate run of this host that still stands at this view's
+    /// time; `None` where none does, or the host's database cannot be read.
     pub fn recorded_gate(
         &self,
         tree: &afkconvoy_core::gate::Tree,
         command: &afkconvoy_core::gate::GateCommand,
     ) -> Option<afkconvoy_core::gate::GreenRun> {
-        crate::gate::recorded_among(
-            &self.listing().records,
-            self.repo.layout(),
-            tree,
-            command,
-            self.now,
-        )
+        crate::gate::recorded(&self.repo, tree, command, self.now).ok().flatten()
     }
 
     /// The base branch's tip on the remote, its commits in this repo.
@@ -715,7 +710,7 @@ impl Fleet {
         }
         let idle = self.idle_landings(me, prs, &closed);
         let heartbeats = self.scan.beats();
-        let (landings, slow_gate) = slow_gate::seen(self, &self.listing().records, &base)?;
+        let (landings, slow_gate) = slow_gate::seen(self, &base)?;
         let cut = crate::cut::seen(self, &stages, issues, &open.issues, &base)?;
         let overlapping = self.overlapping(&open.issues);
         let seen = Observed {

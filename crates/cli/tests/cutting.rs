@@ -318,12 +318,7 @@ fn finish(world: &World, checkout: &Path) -> Value {
     assert!(branch.starts_with("afkconvoy-cut/v"), "{answer}");
     assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), commit);
     let tree = world.remote(&["rev-parse", &format!("{commit}^{{tree}}")]);
-    assert!(
-        !world
-            .remote(&["for-each-ref", "--format=%(refname)", &format!("refs/convoy/gate/{tree}-*")])
-            .is_empty(),
-        "its gate run is on record"
-    );
+    assert!(world.gate_recorded(&tree), "its gate run is on record");
     no_cut_on_the_chain(world);
     assert!(
         world.gh()["prs"]
@@ -1960,18 +1955,13 @@ fn a_cut_of_a_repo_that_splits_its_gate_runs_its_slow_part_in_a_slow_lane() {
     // The whole gate is on record for the version's tree.
     let commit = answer["commit"].as_str().unwrap();
     let tree = world.remote(&["rev-parse", &format!("{commit}^{{tree}}")]);
-    let refs = world.remote(&[
-        "for-each-ref",
-        "--format=%(refname)",
-        &format!("refs/convoy/gate/{tree}-*"),
-    ]);
+    let records = world.gate_records();
     use afkconvoy_core::gate::{GateCommand, GreenRun, Tree};
     let whole = GateCommand::new(&part("whole"));
-    let recorded = refs.lines().any(|name| {
-        let message = world.remote(&["log", "-1", "--format=%B", name]);
-        GreenRun::recorded(&message, &Tree::named(&tree), &whole).is_some()
-    });
-    assert!(recorded, "{refs}");
+    let recorded = records
+        .iter()
+        .any(|record| GreenRun::recorded(record, &Tree::named(&tree), &whole).is_some());
+    assert!(recorded, "{records:#?}");
 }
 
 /// A repo that turns cutting on, whose gate — the cut's alone, on the

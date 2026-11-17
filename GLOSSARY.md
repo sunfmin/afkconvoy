@@ -73,7 +73,7 @@ A tick stopped after its rebuild, which reports what an acting tick would do and
 _Avoid_: dry run, preview
 
 **Startup probe**:
-What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that the repo’s declared gate needs pass on this host, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, that its tracker is not public, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing. `run` makes one at every start; one that passed stands for an hour on the host that made it, while the tracker the checkout says is the one it found private, and `tick` and `plan` make none while it does. A running fleet instance asks again whether its tracker is public as that hour ends, or as it says another.
+What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that the repo’s declared gate needs pass on this host, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, that its tracker is not public, and where the remote takes the fleet's refs; it deletes every gate record an older release left on the remote. A host or a repo the fleet cannot work is refused here, not at its first tick or landing. `run` makes one at every start; one that passed stands for an hour on the host that made it, while the tracker the checkout says is the one it found private, and `tick` and `plan` make none while it does. A running fleet instance asks again whether its tracker is public as that hour ends, or as it says another.
 _Avoid_: bootstrap, preflight, health check
 
 **Ref layout**:
@@ -478,7 +478,7 @@ The fixed duration a repo expects its gate to stay within. Recent recorded landi
 _Avoid_: gate limit (the termination bound), learned baseline
 
 **Recorded gate run**:
-The evidence that the gate passed on one committed tree, with how long the run took, on which host and on which kind of machine, and each test's wall time and CPU time where the run's output said them, made by the tool that saw the exit code and kept where every host can read it. A turn believes one from either ref layout while it stands.
+The evidence that the gate passed on one committed tree, with how long the run took, on which host and on which kind of machine, and each test's wall time and CPU time where the run's output said them, made by the tool that saw the exit code and kept in the host's database, where that host alone reads it (ADR-0037). A turn believes one of its own host while it stands, a day; a tip another host certified is certified again here.
 _Avoid_: gate cache, CI status
 
 **Kind of machine**:

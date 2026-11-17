@@ -69,6 +69,12 @@ impl Layout {
         })
     }
 
+    /// Whether `refname` is a gate record kept under the layout, a probe's
+    /// left among them included.
+    pub fn is_gate_record(self, refname: &str) -> bool {
+        self.kept(refname).is_some_and(|kept| kept.starts_with(GATE_KIND))
+    }
+
     /// The other of the two layouts.
     pub fn other(self) -> Layout {
         match self {
@@ -114,6 +120,9 @@ mod tests {
             // An instance may be named anything its grammar allows.
             assert!(!layout.is_probe(&layout.under("heartbeat/probe-1")));
             assert!(!layout.is_probe(&layout.under("gate/4b825dc-00ff")));
+            assert!(layout.is_gate_record(&layout.under("gate/4b825dc-00ff")));
+            assert!(layout.is_gate_record(&layout.probe(GATE_KIND, "17-4")));
+            assert!(!layout.is_gate_record(&layout.under("claim/7")));
         }
         assert_ne!(Layout::Hidden.probe("", "1"), Layout::Hidden.probe("", "2"));
     }

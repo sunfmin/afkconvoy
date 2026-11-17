@@ -54,8 +54,9 @@ database, and because a reader starts no process and needs no lock.
   `refs/convoy/held/<target>`, whose commit has them as parents. A stopped
   green candidate has no worktree, and a later turn of its PR takes it over
   from its commit.
-- Kept on the remote: the base branch, claims, heartbeats and gate records.
-  Gate records are still reused across hosts (ADR-0037). A host's claims and
+- Kept on the remote: the base branch, claims and heartbeats. Gate records
+  are the host's too, rows of its database (ADR-0037, sunfmin/control#1326):
+  a tip another host landed is certified again here. A host's claims and
   their lease are unchanged, so an issue is still worked by one host.
 - A host runner restarted on the same host finds its database, as it finds
   its claims: a turn that finds its candidate there finishes it or builds it

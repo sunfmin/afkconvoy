@@ -157,7 +157,7 @@ fn a_gate_started_before_a_takeover_cannot_record_after_it() {
     let error = worker_command(&world, &["gate"]).error();
     assert!(error.contains("this worker's work was taken; stop"), "{error}");
     assert_eq!(holder(&world, 7), "beta");
-    assert!(world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/gate/"]).is_empty());
+    assert!(world.gate_records().is_empty());
 }
 
 #[test]

@@ -378,11 +378,7 @@ fn ordinary_turn_with_rest_exhausted_still_gates_lands_and_closes_its_issue() {
         &worktree,
         &["rev-parse", &format!("{}^{{tree}}", result["commit"].as_str().unwrap())],
     );
-    assert!(
-        !world
-            .remote(&["for-each-ref", "--format=%(refname)", &format!("refs/convoy/gate/{tree}-*")])
-            .is_empty()
-    );
+    assert!(world.gate_recorded(&tree));
 }
 
 #[test]
