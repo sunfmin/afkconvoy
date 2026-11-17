@@ -92,6 +92,7 @@ pub mod hot;
 pub mod human_wait;
 pub mod instance;
 pub mod intake;
+pub mod issue_import;
 pub mod issue_updates;
 pub mod issues;
 pub mod jev;
@@ -1063,6 +1064,22 @@ enum Command {
         /// The host its gate runs and is recorded as on [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        at: At,
+    },
+    // TEMPORARY wiring of `issue_import::import` as a hidden top-level
+    // command, for its tests: re-homed under `afkconvoy issue import` once
+    // the `issue` command exists, when this variant and its arm in `run` go.
+    /// Move a GitHub tracker's open issues into this host's local tracker
+    #[command(name = "issue-import", hide = true, next_help_heading = OPERATOR,
+        verbatim_doc_comment, long_about = issue_import::HELP)]
+    IssueImport {
+        /// The GitHub tracker to move them from
+        #[arg(long, value_name = "OWNER/TRACKER", value_parser = tracker::repo_named)]
+        from: RepoName,
+        /// Say what would move and what stays, and why, changing nothing
+        #[arg(long)]
+        dry_run: bool,
         #[command(flatten)]
         at: At,
     },
@@ -2893,6 +2910,10 @@ fn run(
         Command::Wake { .. } => Ok(json!({})),
         Command::Promote { host, .. } => {
             promote::promote(&checkout?, &host.unwrap_or_else(this_host), now)
+        }
+        // TEMPORARY: `afkconvoy issue import` once the `issue` command exists.
+        Command::IssueImport { from, dry_run, .. } => {
+            issue_import::import(&checkout?, &from, dry_run, now)
         }
         Command::Scan { .. } => Ok(Scan::read_said(&checkout?)?.json()),
         Command::Claim { issue, who, .. } => {

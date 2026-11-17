@@ -40,6 +40,7 @@ mod help;
 mod host_runner;
 mod host_watch;
 mod intake;
+mod issue_import;
 mod joining;
 mod kimi;
 mod kit_research;

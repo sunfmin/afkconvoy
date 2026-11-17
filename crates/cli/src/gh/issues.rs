@@ -74,6 +74,31 @@ impl GitHubIssues {
         GitHubIssues { gh }
     }
 
+    /// Closes one issue as not planned: its work goes on elsewhere — in a
+    /// host's local tracker, where it was moved (docs/adr/0091). One closed
+    /// already is closed.
+    pub(crate) fn close_not_planned(&self, number: u64) -> Result<()> {
+        let endpoint = endpoint(&self.gh.tracker, &format!("issues/{number}"));
+        let closed = self.gh.gh(&[
+            "api",
+            "--method",
+            "PATCH",
+            &endpoint,
+            "-f",
+            "state=closed",
+            "-f",
+            "state_reason=not_planned",
+            "--silent",
+        ]);
+        if let Err(error) = closed
+            && !self.issue(number).is_ok_and(|issue| issue.is_closed())
+        {
+            return Err(error);
+        }
+        self.gh.saw_closed(number);
+        Ok(())
+    }
+
     fn take_open(&self, open: &mut OpenIssues, row: OpenRow) -> Result<()> {
         // Another repo's issue in the tracker is none of the fleet's.
         if !self.gh.tracker.holds(&row.labels) {
