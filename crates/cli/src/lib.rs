@@ -1707,6 +1707,7 @@ pub fn manual() -> agent_help::Help {
         .constant("TICK_IDLE_MINUTES", afkconvoy_core::tick::IDLE_SECONDS / 60)
         .constant("TICK_IDLE_AFTER", afkconvoy_core::tick::IDLE_AFTER)
         .constant("GRACE", afkconvoy_core::worker::GRACE)
+        .constant("PENDING_MINUTES", candidates::PENDING_FOR.as_secs() / 60)
         .constant("LEASE_MINUTES", afkconvoy_core::lease::LEASE / 60)
         .constant("BEAT_EVERY_MINUTES", afkconvoy_core::lease::BEAT_EVERY / 60)
         .constant("BACKOFF_FIRST_MINUTES", afkconvoy_core::host_runner::BACKOFF_FIRST / 60)
