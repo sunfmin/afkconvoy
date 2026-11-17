@@ -49,15 +49,16 @@ const AT_MOST: Duration = Duration::from_secs(1);
 
 /// How long a land turn holds a pending place, waiting on the chain and
 /// then for its lane, before it ends `waited_past_bound` and
-/// frees it (`pending_bound`). On Studio64, 2026-11-15, 25 live lands of
+/// frees it (`pending_bound`); a land turn waiting on a red base tip waits
+/// no longer either (`turn::take`, sunfmin/control#1302). On Studio64, 2026-11-15, 25 live lands of
 /// sunfmin/guild held pending places, one for 3 h 10 min; a round waits for
 /// every pending turn, so none started, and their polling spent the REST
 /// quota (sunfmin/control#1117).
-const PENDING_FOR: Duration = Duration::from_secs(30 * 60);
+pub(crate) const PENDING_FOR: Duration = Duration::from_secs(30 * 60);
 
 /// `PENDING_FOR`, or the seconds `AFKCONVOY_PENDING_SECONDS` says: the tests
 /// set it short.
-fn pending_bound() -> Duration {
+pub(crate) fn pending_bound() -> Duration {
     std::env::var("AFKCONVOY_PENDING_SECONDS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -1177,11 +1178,30 @@ pub(crate) struct Gate<'a> {
 }
 
 impl Gate<'_> {
-    /// Where the candidate's gate builds: the target directory of the
-    /// worktree its turn runs in, which that worker's own gate has just
-    /// built. A candidate's worktree is new, and a build there is cold.
-    pub fn target(&self) -> std::path::PathBuf {
-        self.repo.dir.join("target")
+    /// Warms the candidate's own build: its `checkout`'s `target/`, where it
+    /// has none yet, becomes a copy-on-write clone of the target directory
+    /// of the worktree its turn runs in, which that worker's own gate has
+    /// just built. A candidate's worktree is new, and a build there is cold.
+    ///
+    /// It never builds in the worker's target itself: what it builds there
+    /// has the candidate's checkout compiled in (`CARGO_MANIFEST_DIR`), and
+    /// cargo, which keys a unit by its path in the workspace, takes it up
+    /// for the worker's next gate, whose tests then read a candidate
+    /// checkout that is gone (sunfmin/control#1262). A clone that cannot be
+    /// made leaves the build cold.
+    pub fn seed(&self, checkout: &Path) {
+        let worker = self.repo.dir.join("target");
+        let own = checkout.join("target");
+        if own.exists() || !worker.is_dir() {
+            return;
+        }
+        if let Err(error) = clone_tree(&worker, &own) {
+            let _ = std::fs::remove_dir_all(&own);
+            eprintln!(
+                "[afkconvoy] gate: {} could not be cloned for the candidate, which builds cold: {error:#}",
+                worker.display()
+            );
+        }
     }
 
     /// Where the candidate's gate writes its whole output (`gate_output`).
@@ -1561,11 +1581,28 @@ fn candidate_directory(root: &Path, path: &Path, id: &str) -> bool {
     }
 }
 
+/// Clones the directory tree `from` to `to`, which is not there yet, file
+/// by file copy-on-write, keeping each file's times, which cargo judges a
+/// build fresh by: on APFS a 3.6 GiB target took 2.7 s and no disk
+/// (macnoMac-Studio). A file system that cannot clone refuses it rather
+/// than copying it whole.
+fn clone_tree(from: &Path, to: &Path) -> Result<()> {
+    let mut cp = std::process::Command::new("cp");
+    if cfg!(target_os = "macos") {
+        cp.arg("-c");
+    } else {
+        cp.arg("--reflink=always");
+    }
+    let out = crate::process::output(cp.arg("-pR").arg(from).arg(to))?;
+    ensure!(out.status.success(), "cp: {}", String::from_utf8_lossy(&out.stderr).trim());
+    Ok(())
+}
+
 /// Adds the candidate's worktree at `path`, detached at `commit`, where it
 /// is not there yet: each gate run of the candidate, its fast gate or a
 /// round's slow gate, runs in one, which goes as that run ends
-/// (sunfmin/control#1063). It builds in its turn's worker's target
-/// directory (`Gate::target`), so a worktree added again builds warm.
+/// (sunfmin/control#1063). Its gate builds warm in a clone of its turn's
+/// worker's target directory (`Gate::seed`).
 fn add_candidate_worktree(repo: &Repo, path: &Path, commit: &str) -> Result<()> {
     if path.exists() {
         return Ok(());

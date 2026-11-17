@@ -43,8 +43,9 @@ PATH="$HOME/.cargo/bin:$PATH"
 RUSTUP_TOOLCHAIN=nightly-2026-09-25
 export PATH RUSTUP_TOOLCHAIN
 # Every build names the commit it is of to the build script, which stamps the
-# binary with it: a candidate's gate builds in its worker's target directory,
-# from a worktree whose paths the script did not last watch, and at a merge
+# binary with it: checkouts may build in one target directory, a
+# CARGO_TARGET_DIR the environment names, from a worktree whose paths the
+# script did not last watch, and at a merge
 # that may have its branch's tree (sunfmin/control#838). Every other package's
 # build script, crates/commit.rs, is run again at each commit it names, so
 # that the worker's next build does not find the crates its candidate built
@@ -58,8 +59,8 @@ began=$(date +%s)
 echo "gate: ${1:-fast and slow} gate started $(date -u '+%Y-%m-%dT%H:%M:%SZ') on $(hostname), commit $(git rev-parse HEAD)" >&2
 echo "gate: host $(uname -sm); $(uptime)" >&2
 # Where the build puts what it builds is cargo's to say, not the gate's: a
-# candidate's gate is given its worker's target directory, and huacnlee/cargo
-# ignores any it is given and builds into the workspace's own ./target
+# candidate's gate builds in its own ./target, a clone of its worker's
+# (sunfmin/control#1262), and the environment may name another
 # (sunfmin/control#1127). `cargo metadata` says the one it uses.
 target_dir=$(cargo metadata --format-version 1 --no-deps --offline | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
 [ -n "$target_dir" ] || {
