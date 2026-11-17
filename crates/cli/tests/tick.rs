@@ -495,6 +495,47 @@ fn a_settled_worktree_whose_directory_is_already_gone_has_its_registration_remov
 }
 
 #[test]
+fn a_settled_worktree_removed_out_from_under_it_settles_with_no_step_failing() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    std::fs::remove_dir_all(&worktree).unwrap();
+    git(&world.clone, &["worktree", "prune"]);
+    // orca forgets it by the time it is asked to remove it (local/macnomac-studio#29)
+    world.with_orca(|orca| orca["rm_not_found"] = json!(true));
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["settle 3 done"], "{ticked}");
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert_eq!(world.claims(), []);
+    let listed = git(&world.clone, &["worktree", "list", "--porcelain"]);
+    assert!(!common::worktree_listed(&listed, &worktree), "{listed}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let findings = doctor["findings"].as_array().unwrap_or_else(|| panic!("{doctor}"));
+    assert!(findings.iter().all(|found| found["kind"] != "step_unrecovered"), "{doctor}");
+}
+
+#[test]
+fn a_worktree_orca_does_not_find_while_its_directory_is_there_fails_naming_it() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    let worktree = worker_worktree(&world);
+    world.with_orca(|orca| orca["rm_not_found"] = json!(true));
+    world.close_issue(3);
+
+    let ticked = tick(&world, "1090");
+    let errors = ticked["errors"].to_string();
+    assert!(errors.contains("selector_not_found"), "{ticked}");
+    assert!(
+        errors.contains(&format!("cannot remove the worktree {}", worktree.display())),
+        "{ticked}"
+    );
+    assert!(worktree.join(".git").exists(), "its files are put back");
+    assert_eq!(world.claims(), alpha(&[3]), "the claim stays for a later tick");
+}
+
+#[test]
 fn a_settled_worktree_whose_directory_is_gone_with_a_head_not_on_the_remote_is_kept() {
     let world = backlog(&[3]);
     tick(&world, "1000");
