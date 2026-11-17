@@ -4,6 +4,8 @@ status: accepted
 
 # A turn lands its PR on its target branch
 
+_Amended by ADR-0090:_ the candidate chain is the host's own, in its database, not a ref of the remote; a turn no longer cancels another host's candidates through it, nor judges another host dead by a lease for the chain. Publication stays one atomic push of the base and the source heads, and it still requires the base to be exactly the expected predecessor, so two hosts can never land an untested commit; one whose push is refused builds its round again on the new tip.
+
 A turn makes the PR's merge commit on the current target tip, gates that commit, records green, and pushes that same commit to the target branch as a fast-forward. This replaces the landing train of ADR-0004 and the joining step of ADR-0034. The train added no verification after a recorded turn, but needed another worker and a separate lane; the measurements in ADR-0034 show the cost of running those gates together.
 
 A cut takes no turn (sunfmin/control#541, amending ADR-0028): it commits its version on a branch of its own, gates that commit in a worker lane, and tags it; the base branch never receives it. Before that, a cut's landed commit had one parent (sunfmin/control#178), its message saying `By a cut on <host>`; those landings, and the cut candidates and barriers an earlier afkconvoy left on a chain, are still read and drain. Issue turns and watches land as merge commits. A commit with one parent whose subject ends ` (#n)` and whose message has no `By a cut on <host>` line is not a landing. Tags already published stay where they are.

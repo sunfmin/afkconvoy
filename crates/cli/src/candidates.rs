@@ -934,16 +934,29 @@ pub(crate) fn invalidate(repo: &Repo, config: &Config, id: &str, cause: &str) ->
 /// A turn's look at the chain, which keeps it true: invalidates a candidate
 /// whose owner on this host is gone, except an adoptable stopped fast-green
 /// one, drops this host's dead barriers and pending turns, and stops its
-/// invalid candidates (`cleanup`). It asks no remote: a candidate whose PR
-/// head or base moved is found by its own turn, which builds on the base it
-/// reads live and publishes only where the push finds the heads unchanged.
-fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
+/// invalid candidates (`cleanup`). It asks no remote, but where `watch` says
+/// so: the look a running gate makes asks it for the base tip and the tips of
+/// the PR heads of the valid candidates, and invalidates one whose head moved
+/// or whose predecessor is not the base, which stops its gate. A turn waiting
+/// on the chain does not: a green candidate that the chain says may land reads
+/// the base before it publishes, and a publication is refused by the remote
+/// where a head or the base moved (docs/adr/0090).
+fn reconcile(repo: &Repo, config: &Config, watch: bool) -> Result<Chain> {
     loop {
         let mut updated = read(repo, config)?;
         let before = updated.chain.clone();
         let mut invalid = vec![];
-        for c in updated.chain.candidates.iter().filter(|c| c.valid()) {
-            if !c.adoptable() && !alive(&c.owner)? {
+        let valid: Vec<&Candidate> =
+            updated.chain.candidates.iter().filter(|c| c.valid()).collect();
+        let tips = if watch {
+            heads_of(repo, valid.iter().map(|c| c.branch.as_str()))?
+        } else {
+            BTreeMap::new()
+        };
+        for c in valid {
+            if watch && tips.get(&c.branch).map(String::as_str) != Some(c.original_head.as_str()) {
+                invalid.push((c.id.clone(), "head_changed"));
+            } else if !c.adoptable() && !alive(&c.owner)? {
                 invalid.push((c.id.clone(), "owner_died"));
             }
         }
@@ -963,6 +976,10 @@ fn reconcile(repo: &Repo, config: &Config) -> Result<Chain> {
         updated.chain.leave_round(|a| dead_barriers.contains(&a.id));
         for (id, cause) in &invalid {
             updated.chain.invalidate(id, cause);
+        }
+        if watch {
+            let base = crate::turn::base_live(repo, config)?;
+            updated.chain.observe_base(&base);
         }
         updated.chain.advance_round();
         if before != updated.chain && !write(repo, config, &updated)? {
@@ -1111,7 +1128,7 @@ impl Gate<'_> {
 
     pub fn cancelled(&self) -> Result<bool> {
         // Asked live at each look: a cancellation reaches the gate so.
-        let chain = reconcile(self.repo, self.config)?;
+        let chain = reconcile(self.repo, self.config, true)?;
         Ok(!chain.candidates.iter().any(|c| c.id == self.id && c.valid()))
     }
 }
@@ -1619,7 +1636,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     // another invocation of this PR. Dead owners are reconciled first.
     let mut waiting = Waiting::new();
     loop {
-        let mut chain = reconcile(repo, config)?;
+        let mut chain = reconcile(repo, config, false)?;
         // Another host read this one dead while it was away — it slept, or
         // lost the network — and dropped its place: it takes one again, at
         // the back.
@@ -1933,7 +1950,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
     };
     let mut waiting = Waiting::new();
     loop {
-        let chain = reconcile(repo, config)?;
+        let chain = reconcile(repo, config, false)?;
         let c = chain.candidates.iter().find(|c| c.id == id).expect("assigned candidate");
         let next = chain.next(&id).expect("assigned candidate");
         // A round at a candidate behind this one may have landed it.
@@ -1990,7 +2007,16 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
         // remote is asked only once it does (docs/adr/0090).
         let stands = chain.members(&id).first().map(|c| c.predecessor.clone());
         let base = match stands {
-            Some(stands) if chain.ripe(&id, &stands) => crate::turn::base_live(repo, config)?,
+            Some(stands) if chain.ripe(&id, &stands) => {
+                let live = crate::turn::base_live(repo, config)?;
+                if live != stands {
+                    // Another host moved the base under it: the round is
+                    // built again on the new tip (docs/adr/0090).
+                    invalidate(repo, config, &id, "base_moved")?;
+                    continue;
+                }
+                live
+            }
             _ => String::new(),
         };
         if !chain.ripe(&id, &base) {
@@ -2058,6 +2084,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
                 // Another host moved the base: the round is built again on
                 // the new tip and gated again (docs/adr/0090).
                 if crate::turn::base_live(repo, config)? != base {
+                    invalidate(repo, config, &id, "base_moved")?;
                     continue;
                 }
                 result["outcome"] = json!(Ending::TargetMoved);
@@ -2131,7 +2158,7 @@ fn in_round(
     let me = identity(std::process::id())?.context("cannot identify turn owner")?;
     let mut waiting = Waiting::new();
     loop {
-        let mut chain = reconcile(repo, config)?;
+        let mut chain = reconcile(repo, config, false)?;
         // No gate of this turn runs between its steps: a pair or stacked
         // merge of it that ended unstarted has no process to wait for.
         let unstarted = |c: &Candidate| {

@@ -159,13 +159,7 @@ fn began(world: &World, name: &str) {
 }
 
 fn chain(world: &World) -> Value {
-    serde_json::from_str(&world.remote(&[
-        "show",
-        "-s",
-        "--format=%B",
-        "refs/convoy/candidates/main",
-    ]))
-    .unwrap()
+    world.chain("main")
 }
 
 fn gone(world: &World, name: &str) {
@@ -231,26 +225,12 @@ fn one_round(
 /// round's first PR's turn: turns that ask wait pending while it runs, and
 /// the place goes as that process ends, as a dead owner's does.
 fn hold_pending(world: &World) {
-    let name = "refs/convoy/candidates/main";
-    loop {
-        let old = world.remote(&["rev-parse", name]);
-        let mut state = chain(world);
+    world.edit_chain("main", |state| {
         let owner = state["round"]["asked"][0]["owner"].clone();
         assert!(owner.is_object(), "no round holds a turn: {state}");
         let barriers = state["barriers"].as_array_mut().unwrap();
         barriers.push(json!({"id": "held-by-the-holder", "owner": owner}));
-        let tree = world.remote(&["hash-object", "-w", "-t", "tree", "/dev/null"]);
-        let message = state.to_string();
-        let new = world.remote(&["commit-tree", &tree, "-p", &old, "-m", &message]);
-        let moved = Command::new("git")
-            .current_dir(&world.bare)
-            .args(["update-ref", name, &new, &old])
-            .status()
-            .unwrap();
-        if moved.success() {
-            return;
-        }
-    }
+    });
 }
 
 /// The pairs of the open round's pairing tree, each as its level and the
@@ -424,9 +404,7 @@ fn a_cache_inside_any_checkout_is_refused_before_a_candidate_is_assigned() {
         );
         assert!(error.contains("set XDG_CACHE_HOME"), "{error}");
     }
-    assert!(
-        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty()
-    );
+    assert_eq!(chain(&world)["candidates"], json!(null), "no candidate was assigned");
 }
 
 #[test]
@@ -463,12 +441,8 @@ fn stopped_candidates_in_the_old_root_are_removed_and_other_directories_are_left
         row["worktree"] = json!(path);
         state["candidates"].as_array_mut().unwrap().push(row);
     }
-    let file = world.root.join("seed.json");
-    std::fs::write(&file, state.to_string()).unwrap();
-    let tip = chain_tip(&world);
-    let tree = world.remote(&["hash-object", "-t", "tree", "/dev/null"]);
-    let seeded = world.remote(&["commit-tree", &tree, "-p", &tip, "-F", file.to_str().unwrap()]);
-    world.remote(&["update-ref", "refs/convoy/candidates/main", &seeded]);
+    world.edit_chain("main", |chain| *chain = state.clone());
+    let seeded = chain_tip(&world);
     tick(&world);
     for (_, path, removed) in &paths {
         assert_eq!(path.exists(), !removed, "{}", path.display());
@@ -528,13 +502,7 @@ fn interleaved_targets_and_default_publish_only_to_their_own_chains() {
                 "{target}: {files}"
             );
         }
-        let record: Value = serde_json::from_str(&world.remote(&[
-            "show",
-            "-s",
-            "--format=%B",
-            &format!("refs/convoy/candidates/{target}"),
-        ]))
-        .unwrap();
+        let record = world.chain(&target);
         assert_eq!(record["candidates"].as_array().unwrap().len(), 1);
     }
     assert!(world.gh()["issues"].as_array().unwrap().iter().all(|i| i["state"] == "closed"));
@@ -558,10 +526,7 @@ fn land_of_a_closed_issue_names_it_and_asks_for_no_turn() {
     let error = answer["error"].as_str().unwrap();
     assert!(error.contains("issue #1 is closed; nothing lands for it"), "{error}");
     assert!(!gated.exists(), "no gate ran: the turn was never asked for");
-    assert!(
-        world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty(),
-        "no candidate was assigned"
-    );
+    assert_eq!(chain(&world)["candidates"], json!(null), "no candidate was assigned");
     assert_eq!(world.afk(&["doctor"]).json["host"]["exclusive"]["waiting"], json!([]));
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base);
 }
@@ -1188,40 +1153,24 @@ fn a_reparented_descendant_is_still_owned_and_terminated() {
 
 #[test]
 fn restart_after_durable_cancellation_finishes_cleanup_before_rebuilding() {
-    use std::os::unix::fs::PermissionsExt;
     let world = world(2);
     let (a, _) = worker(&world, 1, "a");
     let runner = world.host_held();
     let mut aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
     let old = gate_pids(&world, "a");
-    std::fs::write(world.root.join("owner"), aa.id().to_string()).unwrap();
-    let hook = world.bare.join("hooks/post-receive");
-    let script = format!(
-        r#"#!/bin/sh
-root={}
-while read old new ref; do
-  case "$ref" in refs/convoy/candidates/main)
-    text=$(git show -s --format=%B "$new")
-    case "$text" in *'"phase":"cancelling"'*)
-      if mkdir "$root/cancellation-checkpoint" 2>/dev/null; then
-        kill -STOP "$(cat "$root/owner")"
-        touch "$root/cancellation-durable"
-      fi;;
-    esac;;
-  esac
-done
-"#,
-        quote(&world.root)
-    );
-    std::fs::write(&hook, script).unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // Its head moves: its own turn cancels its candidate, durably, and is
-    // frozen and killed before it stops the gate.
+    // Its head moves, and its own turn cancels its candidate, durably, and
+    // dies before it stops the gate: the host's chain holds the cancellation
+    // and its gate still runs.
     move_head(&a);
-    until(|| world.root.join("cancellation-durable").exists());
     aa.kill().unwrap();
     let _ = aa.wait();
+    world.edit_chain("main", |state| {
+        let c = &mut state["candidates"][0];
+        c["cancelled_by"] = c["id"].clone();
+        c["cause"] = json!("head_changed");
+        c["phase"] = json!("cancelling");
+    });
     world.kill_host_runner("KILL");
     drop(runner);
     let _replacement = world.host_held();
@@ -1245,25 +1194,12 @@ done
 /// stopped (sunfmin/control#508).
 #[test]
 fn a_cancellation_that_cannot_record_its_frozen_gate_still_kills_it() {
-    use std::os::unix::fs::PermissionsExt;
     let world = world(2);
     let (a, _) = worker(&world, 1, "a");
     let _runner = world.host_held();
     let mut aa = start(&world, &a, &world.cache(), 1);
     began(&world, "a");
-    let hook = world.bare.join("hooks/pre-receive");
-    let script = r#"#!/bin/sh
-while read old new ref; do
-  case "$ref" in refs/convoy/candidates/main)
-    case "$(git show -s --format=%B "$new")" in *'"descendants":[{'*)
-      echo "the frozen tree is never recorded" >&2
-      exit 1;;
-    esac;;
-  esac
-done
-"#;
-    std::fs::write(&hook, script).unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    world.refuse_chain_writes("\"descendants\":[{", "the frozen tree is never recorded");
     move_head(&a);
     let began = Instant::now();
     while aa.try_wait().unwrap().is_none() {
@@ -1318,8 +1254,9 @@ fn seal_gate(world: &World) {
     }
 }
 
+/// The host's chain of `main` as it stands, to see whether a step wrote it.
 fn chain_tip(world: &World) -> String {
-    world.remote(&["rev-parse", "refs/convoy/candidates/main"])
+    chain(world).to_string()
 }
 
 /// The look's one listing of the remote. It is the only `ls-remote` whose
@@ -1461,13 +1398,9 @@ fn a_red_candidate_loses_its_worktree_and_the_chain_keeps_its_evidence() {
     assert!(!a_tree.exists(), "a red candidate's worktree is gone");
     assert!(!listed(&world, &a_tree));
     let calls = world.git_calls();
-    let wrote = calls
-        .iter()
-        .rposition(|call| call.starts_with("push ") && call.contains("refs/convoy/candidates/"));
-    let reread = calls.iter().rposition(|call| call == "ls-remote origin refs/convoy/candidates/*");
     assert!(
-        wrote.is_some_and(|wrote| reread.is_some_and(|reread| reread > wrote)),
-        "a turn reads the chain it just wrote before it returns: {calls:#?}"
+        !calls.iter().any(|call| call.contains("refs/convoy/candidates/")),
+        "no turn reads or writes a candidate ref of the remote: {calls:#?}"
     );
     assert!(listed(&world, &issue_a), "the issue worktree stays");
     let failed = chained(&world).into_iter().find(|c| c["issue"] == 1).unwrap();
@@ -1856,12 +1789,7 @@ fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
     seed["candidates"] = json!(ended);
     let text = seed.to_string();
     assert!(text.len() > 1_048_576, "the record is past macOS's ARG_MAX");
-    let file = world.root.join("seed.json");
-    std::fs::write(&file, &text).unwrap();
-    let state = world.remote(&["rev-parse", "refs/convoy/candidates/main"]);
-    let tree = world.remote(&["hash-object", "-t", "tree", "/dev/null"]);
-    let seeded = world.remote(&["commit-tree", &tree, "-p", &state, "-F", file.to_str().unwrap()]);
-    world.remote(&["update-ref", "refs/convoy/candidates/main", &seeded]);
+    world.edit_chain("main", |chain| *chain = seed.clone());
 
     let (b, _) = worker(&world, 2, "b");
     release(&world, "b", false);
@@ -1870,8 +1798,6 @@ fn a_record_past_arg_max_is_written_and_drops_the_candidates_nothing_holds() {
     let kept = chain(&world)["candidates"].as_array().unwrap().clone();
     assert!(!kept.iter().any(|c| c["id"].as_str().unwrap().starts_with("ended-")), "{kept:?}");
     assert!(kept.iter().any(|c| c["issue"] == 2 && c["phase"] == "landed"), "{kept:?}");
-    let history = world.remote(&["rev-list", "refs/convoy/candidates/main"]);
-    assert!(history.lines().any(|sha| sha == seeded), "the seeded record stays reachable");
 }
 
 /// `land --issue n` in `dir` with its clock at `now`.
@@ -1891,88 +1817,6 @@ fn candidate_of(world: &World, issue: u64) -> Value {
     let state = chain(world);
     let rows = state["candidates"].as_array().unwrap();
     rows.iter().find(|c| c["issue"] == issue).cloned().unwrap_or(Value::Null)
-}
-
-/// The Offices-MBP case (sunfmin/control#400): a host whose turn holds a
-/// candidate goes quiet — its lid closed, here its turn stopped — and its
-/// gate with it. While a fleet heartbeat of it is within the lease it is
-/// left alone, and a turn here waits for the next round; past the lease,
-/// the next turn here takes its candidate over and its round with it, and
-/// the turns here land in a round of their own. When the quiet host comes
-/// back, its turn finds its candidate taken, stops its own gate, and
-/// answers cancelled.
-#[test]
-fn a_quiet_hosts_candidate_is_taken_over_past_the_lease_and_its_turn_learns_it_on_waking() {
-    use afkconvoy_core::lease::LEASE;
-    let world = world(2);
-    let (a, _) = worker(&world, 1, "a");
-    let (b, _) = worker(&world, 2, "b");
-    let (c, _) = worker(&world, 3, "c");
-    let base = world.remote(&["rev-parse", "refs/heads/main"]);
-    let _runner = world.host_held();
-    // A turn reads its host's name once, as it starts: this one is on "far".
-    let here = world.checkout_list()["settings"].clone();
-    let mut far_settings = here.clone();
-    far_settings["host_name"] = json!("far");
-    world.say_host_settings(far_settings);
-    let far = start(&world, &a, &world.cache(), 1);
-    began(&world, "a");
-    assert_eq!(candidate_of(&world, 1)["owner"]["host"], "far");
-    assert!(chain(&world)["heartbeats"]["far"].is_u64(), "its turn said it was alive");
-    world.say_host_settings(here);
-    // A turn here would stack on its round, whose whole gate runs: a
-    // barrier's place of that far turn holds it pending instead, and goes
-    // with what the far host owns.
-    hold_pending(&world);
-    let asleep = Held::stop(&far);
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let beat = (now + 1000).to_string();
-    world.afk(&["heartbeat", "--instance", "farfleet", "--host", "far", "--now", &beat]).ok();
-
-    // The chain heard nothing of it for longer than the lease, but its fleet
-    // beat within it: it is alive, and a turn here waits for the next round.
-    let behind = start_at(&world, &b, 2, now + LEASE + 100);
-    until(|| chain(&world)["pending"].as_array().is_some_and(|p| p.len() == 1));
-    let first = candidate_of(&world, 1);
-    assert_eq!(
-        (first["phase"].clone(), first["cancelled_by"].clone()),
-        (json!("validating"), Value::Null)
-    );
-
-    // Past the lease on both counts: it is dead.
-    let next = start_at(&world, &c, 3, now + 1001 + 2 * LEASE);
-    began(&world, "c");
-    let first = candidate_of(&world, 1);
-    assert_eq!(
-        (first["phase"].clone(), first["cause"].clone(), first["abandoned"].clone()),
-        (json!("cancelled"), json!("owner_died"), json!(true)),
-        "{first}"
-    );
-    assert_eq!(first["stopped"], false, "nobody here confirmed its processes gone");
-    assert_eq!(pairs(&world), [(0, 30)], "the turns here pair in a round of their own");
-    release(&world, "c", false);
-    assert_eq!(finish(behind)["outcome"], "merged");
-    assert_eq!(finish(next)["outcome"], "merged");
-    assert_eq!(
-        chained(&world).iter().find(|c| c["issue"] == 2).unwrap()["predecessor"],
-        json!(base)
-    );
-
-    // The far host wakes.
-    drop(asleep);
-    let woke = finish(far);
-    assert_eq!(
-        (woke["outcome"].clone(), woke["cause"].clone()),
-        (json!("cancelled"), json!("owner_died")),
-        "{woke}"
-    );
-    assert!(
-        woke["detail"].as_str().unwrap().contains("another host took this candidate over"),
-        "{woke}"
-    );
-    gone(&world, "a");
-    assert_eq!(candidate_of(&world, 1)["stopped"], true, "its own host confirmed them gone");
-    assert!(!world.root.join("release-a").exists(), "gate a was stopped, never released");
 }
 
 /// A candidate's gate red only on TIMEOUTs it cannot classify on an

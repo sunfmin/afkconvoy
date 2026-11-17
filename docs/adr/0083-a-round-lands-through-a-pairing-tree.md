@@ -4,6 +4,8 @@ status: accepted
 
 # A round lands through a pairing tree
 
+_Amended by ADR-0090:_ a round holds only the PRs whose turns ran on one host: there is no round across hosts. The root is published by the same atomic push; where another host moved the base, the push is refused and the round is built again on the new tip and gated again.
+
 Replaces the candidate chain within a round of ADR-0037 and ADR-0048, and the batch round of ADR-0068 (sunfmin/control#1135; decided by Felix, control session 2026-11-15 ~21:20 JST).
 
 Felix: 「我想把这个逻辑改成。并发的寻找和自己不冲突的 PR。两个合在一起。跑快测试。……两两合并这种。所有这种只靠跑快测试。只有到最后合并到 main 的时候。才跑一次整体的测试。当然是这些 PR 都已经改完了的情况下。」 — find, concurrently, the PRs that do not conflict with each other; merge them two by two and run the fast gate; run the whole gate once, only as it all merges onto main.
