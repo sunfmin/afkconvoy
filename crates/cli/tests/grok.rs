@@ -307,7 +307,7 @@ fn missing_or_logged_out_grok_is_named_with_its_fix() {
 #[test]
 fn kit_discovers_grok_models_through_its_isolated_home() {
     let world = World::new();
-    std::fs::remove_file(world.kit_path()).unwrap();
+    world.forget("kit.json");
     world.shell_knows("dsh-tui", None);
     world.shell_knows("claude", None);
     world.shell_knows("pi", None);

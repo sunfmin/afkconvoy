@@ -393,10 +393,9 @@ impl World {
 
     /// Changes the host kit in place.
     pub fn with_kit(&self, change: impl FnOnce(&mut Value)) {
-        let mut kit: Value =
-            serde_json::from_slice(&std::fs::read(self.kit_path()).unwrap()).unwrap();
+        let mut kit = self.kit();
         change(&mut kit);
-        std::fs::write(self.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+        self.keep("kit.json", &kit);
     }
 
     /// What the host kit's first answers a caster's prompt with.
@@ -651,24 +650,23 @@ impl World {
         self.root.join("home")
     }
 
-    pub fn kit_path(&self) -> PathBuf {
-        self.home().join(".config/afkconvoy/kit.json")
+    /// The host kit, as its file held it: kept in the host database.
+    pub fn kit(&self) -> Value {
+        self.kept("kit.json")
     }
 
     /// Set a host command directly, as the terminal editor would save it.
     pub fn kit_command(&self, harness: &str, command: &str) {
-        let file = self.kit_path();
-        let mut kit = std::fs::read(&file)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .unwrap_or_else(|| json!({"harnesses": []}));
+        let mut kit = match self.kit() {
+            Value::Null => json!({"harnesses": []}),
+            kit => kit,
+        };
         let held = kit["harnesses"].as_array_mut().unwrap();
         match held.iter_mut().find(|held| held["harness"] == harness) {
             Some(held) => held["command"] = json!(command),
             None => held.push(json!({"harness": harness, "command": command})),
         }
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, serde_json::to_vec(&kit).unwrap()).unwrap();
+        self.keep("kit.json", &kit);
     }
 
     /// Set the Jev key command directly in the host's checkout-list settings.

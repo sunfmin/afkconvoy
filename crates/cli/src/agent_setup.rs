@@ -68,9 +68,10 @@ pub fn home() -> Result<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set")
 }
 
-/// Where what was given to which harness is recorded: beside the host kit.
+/// Where what was given to which harness is recorded: in the config
+/// directory.
 fn record_path() -> Result<PathBuf> {
-    Ok(crate::kit::path()?.with_file_name("agent-setup.json"))
+    Ok(crate::copies::config()?.join("agent-setup.json"))
 }
 
 /// What the setup was last given to each harness as.

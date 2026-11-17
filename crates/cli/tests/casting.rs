@@ -24,7 +24,7 @@ fn cast(labels: &[&str]) -> World {
     let world = World::new();
     world.hold_every_harness();
     world.issue(7, &[&["ready-for-agent"], labels].concat());
-    let mut kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let mut kit: Value = world.kit();
     let models = |names: &[&str]| -> Value {
         names
             .iter()
@@ -38,7 +38,7 @@ fn cast(labels: &[&str]) -> World {
             _ => json!([]),
         };
     }
-    std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+    world.keep("kit.json", &kit);
     world
 }
 
@@ -291,7 +291,7 @@ fn switching_again_follows_the_label_of_the_harness_now_first() {
 #[test]
 fn a_paused_candidate_is_skipped_without_reordering_the_kit_or_rewriting_labels() {
     let world = cast(&["harness:pi", "model:a/slow"]);
-    let kit = std::fs::read(world.kit_path()).unwrap();
+    let kit = world.kit();
     world.pause("pi", 400, "organization disabled subscription access");
     let planned = world.afk(&PLAN).ok();
     assert_eq!(planned["frontier"][0]["cast"]["harness"], "claude-code");
@@ -300,7 +300,7 @@ fn a_paused_candidate_is_skipped_without_reordering_the_kit_or_rewriting_labels(
     world.afk(&TICK).ok();
     assert_eq!(started(&world), [claude(None)]);
     assert_eq!(world.labels(7), ["ready-for-agent", "harness:pi", "model:a/slow"]);
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert_eq!(world.kit(), kit);
 }
 
 #[test]

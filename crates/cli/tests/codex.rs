@@ -728,7 +728,8 @@ fn hook_answers(
     hook_run
         .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
         .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
+        // The world's PATH: its `afkconvoy` this build, not one installed.
+        .env("PATH", world.login_env().into_iter().find(|(name, _)| name == "PATH").unwrap().1)
         .env("XDG_CACHE_HOME", world.cache())
         .env("XDG_DATA_HOME", world.data())
         .env("STAND_IN_HOOK", hook);
@@ -1299,7 +1300,7 @@ fn a_discovered_codex_command_must_take_the_role_flags_before_it_is_saved() {
     let why = tick(&world, 1000).error();
     assert!(why.contains("no --dangerously-bypass-hook-trust, no --config"), "{why}");
     assert!(world.claims().is_empty());
-    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let kit: Value = world.kit();
     let codex = kit["harnesses"]
         .as_array()
         .unwrap()

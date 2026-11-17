@@ -4,10 +4,9 @@
 //! and `run` refresh it with no human; `kit --remove` records the operator's
 //! explicit choice, and `switch --harness` reverses it.
 use std::collections::BTreeSet;
-use std::fs::{OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use afkconvoy_core::harness::Harness;
 use anyhow::{Context, Result, bail};
@@ -228,69 +227,203 @@ impl Kit {
     }
 }
 
-pub fn path() -> Result<PathBuf> {
-    let root = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .context(
-            "cannot find the host kit: set HOME or XDG_CONFIG_HOME, then run `afkconvoy kit`",
+/// The host kit, whole, in the host's database: the one row of `kit`. It was
+/// `kit.json` in the config directory, with `kit.lock` and `kit.refresh`
+/// beside it (`Kept`).
+pub(crate) static STORE: crate::host_db::Store = crate::host_db::Store {
+    file: "kit.json",
+    old: crate::host_db::Old::Json,
+    layout: crate::host_db::Layout::Whole("kit"),
+};
+
+/// Where the host kit is kept: the host database (`STORE`, and `kit_refresh`
+/// of when it was last written and a refresh of it last tried); and, on this
+/// host, the file an older afkconvoy kept it in, taken in as the database is
+/// opened (`Kept::open`).
+pub(crate) struct Kept {
+    host: crate::host_db::Host,
+    old: Option<PathBuf>,
+}
+
+/// What `Kept` holds: the host kit as its file held it, where there is one;
+/// when it was last written, and when a refresh of it was last tried.
+#[derive(Debug, Clone, Default)]
+struct State {
+    kit: Option<Value>,
+    written: Option<u64>,
+    tried: Option<u64>,
+}
+
+impl State {
+    /// The host kit held, read as a `Kit`; an error naming `kept` where there
+    /// is none or it cannot be read.
+    fn kit(&self, kept: &Kept) -> Result<Kit> {
+        let place = kept.host.file().display();
+        let value = self.kit.clone().with_context(|| {
+            format!("the host database {place} holds no host kit: run `afkconvoy kit`")
+        })?;
+        let unreadable = || format!("cannot read the host kit in {place}: run `afkconvoy kit`");
+        let kit: Kit = serde_json::from_value(value).with_context(unreadable)?;
+        if let Some(fault) = kit.fault() {
+            bail!("cannot read the host kit in {place}: {fault}: run `afkconvoy kit`");
+        }
+        Ok(kit)
+    }
+
+    /// The host kit held, as a `Kit`; the empty one where there is none.
+    fn kit_or_empty(&self, kept: &Kept) -> Result<Kit> {
+        if self.kit.is_none() { Ok(Kit::default()) } else { self.kit(kept) }
+    }
+
+    /// Has it hold `kit`, written `now`.
+    fn put(&mut self, kit: &Kit, now: u64) -> Result<()> {
+        self.kit = Some(serde_json::to_value(kit)?);
+        self.written = Some(now);
+        Ok(())
+    }
+}
+
+impl Kept {
+    /// This host's.
+    pub(crate) fn of_host() -> Result<Kept> {
+        Ok(Kept {
+            host: crate::host_db::Host::of_host()?,
+            old: Some(crate::copies::config()?.join(STORE.file)),
+        })
+    }
+
+    /// The host kit in the database `db`, which takes in no file.
+    #[cfg(test)]
+    fn at(db: PathBuf) -> Kept {
+        Kept { host: crate::host_db::Host::at(db), old: None }
+    }
+
+    /// The database, with the host kit's old file taken in.
+    fn open(&self) -> Result<rusqlite::Connection> {
+        let mut db = self.host.open()?;
+        if let (Some(old), Some(cache)) = (&self.old, self.host.cache()) {
+            take_in(&mut db, old, cache)?;
+        }
+        Ok(db)
+    }
+
+    /// What it holds now. Where there is no database and no file to make one
+    /// of, a reader makes none.
+    fn state(&self) -> Result<State> {
+        if !self.host.file().exists() && !self.old.as_ref().is_some_and(|old| old.exists()) {
+            return Ok(State::default());
+        }
+        state_of(&self.open()?)
+    }
+
+    /// Changes what it holds by `change`, in one immediate transaction of
+    /// the host database: no other writer of the host takes between its
+    /// reading and its writing. Nothing is written where `change` fails.
+    fn change<R>(&self, change: impl FnOnce(&mut State) -> Result<R>) -> Result<R> {
+        let mut db = self.open()?;
+        crate::host_db::write(&mut db, |tx| {
+            let mut state = state_of(tx)?;
+            let answer = change(&mut state)?;
+            match &state.kit {
+                Some(kit) => crate::host_db::put_rows(tx, "kit", [(String::new(), kit)])?,
+                None => drop(tx.execute("DELETE FROM kit", [])?),
+            }
+            tx.execute(
+                "INSERT OR REPLACE INTO kit_refresh (one, written, tried) VALUES (0, ?1, ?2)",
+                rusqlite::params![
+                    state.written.map(|at| at as i64),
+                    state.tried.map(|at| at as i64)
+                ],
+            )?;
+            Ok(answer)
+        })
+    }
+
+    /// The host kit held.
+    fn load(&self) -> Result<Kit> {
+        self.state()?.kit(self)
+    }
+}
+
+/// What the host database `db` holds of the host kit.
+fn state_of(db: &rusqlite::Connection) -> Result<State> {
+    use rusqlite::OptionalExtension;
+    let kit = crate::host_db::rows(db, "kit")?.into_iter().next().map(|(_, value)| value);
+    let times: Option<(Option<i64>, Option<i64>)> = db
+        .query_row("SELECT written, tried FROM kit_refresh WHERE one = 0", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?;
+    let (written, tried) = times.unwrap_or_default();
+    Ok(State { kit, written: written.map(|at| at as u64), tried: tried.map(|at| at as u64) })
+}
+
+/// Takes in `old`, the file an older afkconvoy kept the host kit in
+/// (`host_db::converge_file`): what it holds, its modification time as when
+/// it was written, and `kit.refresh` beside it as when a refresh was last
+/// tried. Once it is moved aside, so are `kit.lock` and `kit.refresh`.
+fn take_in(db: &mut rusqlite::Connection, old: &Path, cache: &Path) -> Result<()> {
+    let refresh = old.with_extension("refresh");
+    crate::host_db::converge_file(db, old, cache, |tx, bytes| {
+        let kit: Value = serde_json::from_slice(bytes)?;
+        let written = std::fs::metadata(old)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .map(|at| at.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()));
+        let tried: Option<u64> =
+            std::fs::read_to_string(&refresh).ok().and_then(|text| text.trim().parse().ok());
+        crate::host_db::put_rows(tx, "kit", [(String::new(), &kit)])?;
+        tx.execute(
+            "INSERT OR REPLACE INTO kit_refresh (one, written, tried) VALUES (0, ?1, ?2)",
+            rusqlite::params![written.map(|at| at as i64), tried.map(|at| at as i64)],
         )?;
-    Ok(root.join("afkconvoy/kit.json"))
+        Ok(())
+    })?;
+    if !old.exists() {
+        crate::host_db::aside(&refresh)?;
+        crate::host_db::aside(&old.with_extension("lock"))?;
+    }
+    Ok(())
+}
+
+/// Where the host kit is kept, as its answers name it: the host database.
+fn place() -> Option<String> {
+    crate::host_db::path().ok().map(|path| path.display().to_string())
 }
 
 pub fn load() -> Result<Kit> {
-    load_at(&path()?)
+    Kept::of_host()?.load()
 }
 
 /// Merge one discovered command into the latest kit. A concurrent explicit
 /// command wins; models, research, preference order and the consult stay put.
 pub fn discover(harness: Harness, command: &str) -> Result<String> {
-    discover_at(&path()?, harness, command)
+    discover_at(&Kept::of_host()?, harness, command)
 }
 
-fn writing(file: &Path) -> Result<std::fs::File> {
-    std::fs::create_dir_all(file.parent().context("the host kit needs a parent directory")?)?;
-    let lock = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(file.with_extension("refresh"))?;
-    lock.lock()?;
-    Ok(lock)
-}
-
-fn discover_at(file: &Path, harness: Harness, command: &str) -> Result<String> {
-    let _writing = writing(file)?;
-    let mut kit = if file.exists() { load_at(file)? } else { Kit::default() };
-    if kit.is_removed(harness) {
-        bail!(
-            "the harness `{}` was removed by the operator; restore it with `afkconvoy switch --harness {}`",
-            harness.key(),
-            harness.key()
-        );
-    }
-    if let Some(explicit) = kit.command(harness).filter(|command| !command.trim().is_empty()) {
-        return Ok(explicit.to_string());
-    }
-    match kit.harnesses.iter_mut().find(|held| held.harness == harness) {
-        Some(held) => held.command = command.to_string(),
-        None => kit.harnesses.push(Held { harness, command: command.to_string(), models: vec![] }),
-    }
+fn discover_at(kept: &Kept, harness: Harness, command: &str) -> Result<String> {
     let now = std::time::SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    store(file, &kit, now)?;
-    Ok(command.to_string())
-}
-
-/// The host kit kept in `file`.
-fn load_at(file: &Path) -> Result<Kit> {
-    let unreadable =
-        || format!("cannot read the host kit at {}: run `afkconvoy kit`", file.display());
-    let text = std::fs::read_to_string(file).with_context(unreadable)?;
-    let kit: Kit = serde_json::from_str(&text).with_context(unreadable)?;
-    if let Some(fault) = kit.fault() {
-        bail!("cannot read the host kit at {}: {fault}: run `afkconvoy kit`", file.display());
-    }
-    Ok(kit)
+    kept.change(|state| {
+        let mut kit = state.kit_or_empty(kept)?;
+        if kit.is_removed(harness) {
+            bail!(
+                "the harness `{}` was removed by the operator; restore it with `afkconvoy switch --harness {}`",
+                harness.key(),
+                harness.key()
+            );
+        }
+        if let Some(explicit) = kit.command(harness).filter(|command| !command.trim().is_empty()) {
+            return Ok(explicit.to_string());
+        }
+        match kit.harnesses.iter_mut().find(|held| held.harness == harness) {
+            Some(held) => held.command = command.to_string(),
+            None => {
+                kit.harnesses.push(Held { harness, command: command.to_string(), models: vec![] })
+            }
+        }
+        state.put(&kit, now)?;
+        Ok(command.to_string())
+    })
 }
 
 /// The host kit as this host can start it now: its file without the
@@ -312,7 +445,7 @@ pub fn show_for_look(now: u64) -> Value {
 }
 
 fn show_with_research(now: u64, research: bool) -> Value {
-    let file = path().map(|path| path.display().to_string()).ok();
+    let file = place();
     let paused = crate::paused::read();
     let paused_said: Vec<Value> = paused
         .iter()
@@ -362,10 +495,11 @@ fn show_with_research(now: u64, research: bool) -> Value {
 pub fn ensure(now: u64) -> Result<()> {
     static WRITING: Mutex<()> = Mutex::new(());
     let _writing = WRITING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !path()?.exists() {
+    let kept = Kept::of_host()?;
+    if kept.state()?.kit.is_none() {
         write(now)?;
     }
-    load().map(|_| ())
+    kept.load().map(|_| ())
 }
 
 /// Writes the host kit with no human (docs/adr/0020): everything this host
@@ -374,13 +508,12 @@ pub fn ensure(now: u64) -> Result<()> {
 /// `{path, written, kit, left_out}`.
 pub fn write(now: u64) -> Result<Value> {
     let host = Host::here(now)?;
-    let file = path()?;
-    let _writing = writing(&file)?;
-    let current = if file.exists() { load()? } else { Kit::default() };
+    let kept = Kept::of_host()?;
+    let file = kept.host.file().display().to_string();
+    let current = kept.state()?.kit_or_empty(&kept)?;
     let (kit, left_out) = compose(&current, &host, Writing::Whole);
-    store(&file, &kit, now)?;
-    eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
-    drop(_writing);
+    let kit = store(&kept, &current, &kit, now)?;
+    eprint!("{}", report(&file, &kit, &left_out));
     let harnesses: Vec<Harness> = kit.harnesses.iter().map(|held| held.harness).collect();
     let agent_setup = give_agent_setup(&harnesses, crate::agent_setup::To::Every, now);
     let tmux = crate::tmux::give();
@@ -453,10 +586,9 @@ pub const REMOVED: &str = "removed by the operator";
 /// the operator's removal. Live fleet workers on it refuse the removal and are
 /// left alone. Only `switch --harness` restores it.
 pub fn remove(harness: Harness, now: u64) -> Result<Value> {
-    let file = path()?;
-    let _writing = writing(&file)?;
-    let _mutation = mutation_lock(&file)?;
-    let mut kit = if file.exists() { load_at(&file)? } else { Kit::default() };
+    let kept = Kept::of_host()?;
+    let file = kept.host.file().display().to_string();
+    let kit = kept.state()?.kit_or_empty(&kept)?;
     if !kit.is_removed(harness) {
         let mut running = vec![];
         for on in crate::orca::Worktree::on_host()?.into_iter().filter(|on| on.held) {
@@ -481,32 +613,38 @@ pub fn remove(harness: Harness, now: u64) -> Result<Value> {
             );
         }
     }
-    kit.harnesses.retain(|held| held.harness != harness);
-    push_new(&mut kit.removed, [harness]);
-    store_unlocked(&file, &kit, now)?;
+    let kit = kept.change(|state| {
+        let mut kit = state.kit_or_empty(&kept)?;
+        kit.harnesses.retain(|held| held.harness != harness);
+        push_new(&mut kit.removed, [harness]);
+        state.put(&kit, now)?;
+        Ok(kit)
+    })?;
     let left_out = kit.operator_left_out();
-    eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
+    eprint!("{}", report(&file, &kit, &left_out));
     Ok(json!({"path": file, "written": true, "removed": harness, "kit": kit, "left_out": left_out}))
 }
 
-/// Applies the watch's research against the latest kit under both write locks,
+/// Applies the watch's research against the latest kit in one transaction,
 /// so listing, casting and a switch cannot lose each other's changes. A bad
-/// file never reaches the atomic write, nor changes the kit's refresh time.
+/// file never reaches the write, nor changes the kit's refresh time.
 pub fn apply_research(research: &Path, now: u64) -> Result<Value> {
     let text = std::fs::read_to_string(research)
         .with_context(|| format!("cannot read research file {}", research.display()))?;
-    let file = path()?;
-    let _writing = writing(&file)?;
-    let _mutation = mutation_lock(&file)?;
-    let mut kit = load_at(&file)?;
-    let applied = crate::kit_research::apply(&mut kit, &text, now).with_context(|| {
-        format!(
-            "invalid research file {}; correct it and run `afkconvoy kit --research <file>`",
-            research.display()
-        )
+    let kept = Kept::of_host()?;
+    let file = kept.host.file().display().to_string();
+    let (kit, applied) = kept.change(|state| {
+        let mut kit = state.kit(&kept)?;
+        let applied = crate::kit_research::apply(&mut kit, &text, now).with_context(|| {
+            format!(
+                "invalid research file {}; correct it and run `afkconvoy kit --research <file>`",
+                research.display()
+            )
+        })?;
+        // Research changes nothing of when the host kit was written.
+        state.kit = Some(serde_json::to_value(&kit)?);
+        Ok((kit, applied))
     })?;
-    let refreshed = written(&file).unwrap_or(now);
-    store_unlocked(&file, &kit, refreshed)?;
     Ok(json!({"path": file, "written": true, "placed": applied.placed,
         "settled": applied.settled, "kit": kit}))
 }
@@ -516,9 +654,9 @@ pub fn apply_research(research: &Path, now: u64) -> Result<Value> {
 /// command-only when listing fails, so its start fault remains visible.
 pub fn write_one(harness: Harness, now: u64) -> Result<Value> {
     let host = Host::here(now)?;
-    let file = path()?;
-    let _writing = writing(&file)?;
-    let mut current = load_at(&file)?;
+    let kept = Kept::of_host()?;
+    let file = kept.host.file().display().to_string();
+    let mut current = kept.load()?;
     let found = |candidate| {
         if candidate == harness {
             (host.found)(candidate)
@@ -541,13 +679,13 @@ pub fn write_one(harness: Harness, now: u64) -> Result<Value> {
     let (mut repaired, left_out) = compose(&before, &only, Writing::Refresh);
     let listed = repaired.harnesses.first().is_some_and(|held| !held.models.is_empty());
     if listed {
+        let base = current.clone();
         if let Some(held) = current.harnesses.iter_mut().find(|held| held.harness == harness) {
             *held = repaired.harnesses.remove(0);
         }
-        store(&file, &current, now)?;
+        current = store(&kept, &base, &current, now)?;
     }
-    eprint!("{}", report(&file.display().to_string(), &current, &left_out));
-    drop(_writing);
+    eprint!("{}", report(&file, &current, &left_out));
     let agent_setup = give_agent_setup(&[harness], crate::agent_setup::To::New, now);
     Ok(json!({"path": file, "written": listed, "kit": current, "left_out": left_out,
         "agent_setup": agent_setup}))
@@ -617,95 +755,102 @@ pub fn switch_target(harness: Option<Harness>, model: Option<&str>) -> Result<Na
 /// its stock command with no model and starts on its login's default while its
 /// targeted refresh runs afterwards.
 pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
-    let file = path()?;
-    let _lock = mutation_lock(&file)?;
-    let mut kit = load_at(&file)?;
-    let before: Vec<_> = kit.harnesses.iter().map(|held| held.harness).collect();
-    let restored = kit.is_removed(harness);
-    kit.removed.retain(|removed| *removed != harness);
-    let at = kit.harnesses.iter().position(|held| held.harness == harness);
-    let model_at = model
-        .map(|name| {
-            let at = at.context("a model switch names an existing kit harness")?;
-            kit.harnesses[at].models.iter().position(|seen| seen.model == name).with_context(|| {
-                format!(
-                    "the host kit no longer holds model `{name}` of {}; run switch again",
-                    harness.key()
+    let kept = Kept::of_host()?;
+    let file = kept.host.file().display().to_string();
+    kept.change(|state| {
+        let mut kit = state.kit(&kept)?;
+        let before: Vec<_> = kit.harnesses.iter().map(|held| held.harness).collect();
+        let restored = kit.is_removed(harness);
+        kit.removed.retain(|removed| *removed != harness);
+        let at = kit.harnesses.iter().position(|held| held.harness == harness);
+        let model_at = model
+            .map(|name| {
+                let at = at.context("a model switch names an existing kit harness")?;
+                kit.harnesses[at].models.iter().position(|seen| seen.model == name).with_context(
+                    || {
+                        format!(
+                            "the host kit no longer holds model `{name}` of {}; run switch again",
+                            harness.key()
+                        )
+                    },
                 )
             })
-        })
-        .transpose()?;
-    let added = at.is_none();
-    let changed = restored || added || at != Some(0) || model_at.is_some_and(|at| at != 0);
-    if changed {
-        let held = match at {
-            Some(at) => kit.harnesses.remove(at),
-            None => Held { harness, command: harness.stock().to_string(), models: vec![] },
-        };
-        kit.harnesses.insert(0, held);
-        let mut raw: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
-        if let Some(removed) = raw.get_mut("removed").and_then(Value::as_array_mut) {
-            removed.retain(|removed| removed != &json!(harness));
-            if removed.is_empty() {
-                raw.as_object_mut().context("kit must be an object")?.remove("removed");
+            .transpose()?;
+        let added = at.is_none();
+        let changed = restored || added || at != Some(0) || model_at.is_some_and(|at| at != 0);
+        if changed {
+            let held = match at {
+                Some(at) => kit.harnesses.remove(at),
+                None => Held { harness, command: harness.stock().to_string(), models: vec![] },
+            };
+            kit.harnesses.insert(0, held);
+            // What the kit holds besides is kept as it was: only the order
+            // and the removal change, and not when it was written.
+            let raw = state.kit.as_mut().context("the host kit is gone")?;
+            if let Some(removed) = raw.get_mut("removed").and_then(Value::as_array_mut) {
+                removed.retain(|removed| removed != &json!(harness));
+                if removed.is_empty() {
+                    raw.as_object_mut().context("kit must be an object")?.remove("removed");
+                }
+            }
+            let entries =
+                raw["harnesses"].as_array_mut().context("kit harnesses must be an array")?;
+            let held = match at {
+                Some(at) => entries.remove(at),
+                None => json!({"harness": harness, "command": harness.stock(), "models": []}),
+            };
+            entries.insert(0, held);
+            if let Some(at) = model_at {
+                let models =
+                    entries[0]["models"].as_array_mut().context("kit models must be an array")?;
+                let model = models.remove(at);
+                models.insert(0, model);
             }
         }
-        let entries = raw["harnesses"].as_array_mut().context("kit harnesses must be an array")?;
-        let held = match at {
-            Some(at) => entries.remove(at),
-            None => json!({"harness": harness, "command": harness.stock(), "models": []}),
-        };
-        entries.insert(0, held);
-        if let Some(at) = model_at {
-            let models =
-                entries[0]["models"].as_array_mut().context("kit models must be an array")?;
-            let model = models.remove(at);
-            models.insert(0, model);
+        Ok(json!({"harness": harness, "model": model, "path": file, "order_before": before,
+            "order": kit.harnesses.iter().map(|held| held.harness).collect::<Vec<_>>(),
+            "changed": changed, "added": added, "restored": restored}))
+    })
+}
+
+/// Writes `kit`, made from `base`, as the host kit, written `now`, in one
+/// transaction → what it wrote. What changed in the host kit since `base`
+/// was read is kept: a harness added or given another command meanwhile, and
+/// what the operator decided — the removals, the harnesses' order and the
+/// models' placed order.
+fn store(kept: &Kept, base: &Kit, kit: &Kit, now: u64) -> Result<Kit> {
+    kept.change(|state| {
+        let mut kit = kit.clone();
+        if state.kit.is_some()
+            && let Ok(latest) = state.kit(kept)
+        {
+            for held in &latest.harnesses {
+                match (
+                    base.held(held.harness),
+                    kit.harnesses.iter_mut().find(|h| h.harness == held.harness),
+                ) {
+                    (None, None) => kit.harnesses.push(held.clone()),
+                    (Some(was), Some(ours)) if was.command != held.command => {
+                        ours.command = held.command.clone();
+                    }
+                    _ => {}
+                }
+            }
+            kit.cast = latest.cast;
+            kit.removed = latest.removed.clone();
+            kit.harnesses.retain(|held| !latest.is_removed(held.harness));
+            kit.harnesses.sort_by_key(|held| {
+                latest
+                    .harnesses
+                    .iter()
+                    .position(|old| old.harness == held.harness)
+                    .unwrap_or(usize::MAX)
+            });
+            retain_model_order(&latest, &mut kit);
         }
-        let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-        std::fs::write(&temporary, serde_json::to_vec_pretty(&raw)?)?;
-        stamp(&temporary, written(&file).unwrap_or_else(crate::clock))?;
-        std::fs::rename(&temporary, &file)?;
-    }
-    Ok(json!({"harness": harness, "model": model, "path": file, "order_before": before,
-        "order": kit.harnesses.iter().map(|held| held.harness).collect::<Vec<_>>(),
-        "changed": changed, "added": added, "restored": restored}))
-}
-
-fn mutation_lock(file: &Path) -> Result<std::fs::File> {
-    let lock = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(file.with_extension("lock"))?;
-    lock.lock()?;
-    Ok(lock)
-}
-
-/// Writes `kit` to `file` at once, as written `now`: the time its file
-/// keeps as when it was last modified, which says when the host kit was last
-/// written (`written`).
-fn store(file: &Path, kit: &Kit, now: u64) -> Result<()> {
-    if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let _lock = mutation_lock(file)?;
-    // Promotion may have happened while listing ran.
-    let mut kit = kit.clone();
-    if let Ok(latest) = load_at(file) {
-        kit.cast = latest.cast;
-        kit.removed = latest.removed.clone();
-        kit.harnesses.retain(|held| !latest.is_removed(held.harness));
-        kit.harnesses.sort_by_key(|held| {
-            latest
-                .harnesses
-                .iter()
-                .position(|old| old.harness == held.harness)
-                .unwrap_or(usize::MAX)
-        });
-        retain_model_order(&latest, &mut kit);
-    }
-    store_unlocked(file, &kit, now)
+        state.put(&kit, now)?;
+        Ok(kit)
+    })
 }
 
 /// Established model order is user priority, whether researched or switched:
@@ -719,33 +864,6 @@ pub(super) fn retain_model_order(before: &Kit, kit: &mut Kit) {
             });
         }
     }
-}
-
-fn store_unlocked(file: &Path, kit: &Kit, now: u64) -> Result<()> {
-    let parent = file.parent().context("the host kit needs a parent directory")?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(kit)?)?;
-    stamp(&temporary, now)?;
-    std::fs::rename(&temporary, file)?;
-    Ok(())
-}
-
-/// Has `file` say it was last modified `now`.
-fn stamp(file: &Path, now: u64) -> Result<()> {
-    let at = UNIX_EPOCH + Duration::from_secs(now);
-    OpenOptions::new()
-        .write(true)
-        .open(file)
-        .and_then(|opened| opened.set_modified(at))
-        .with_context(|| format!("cannot stamp {}", file.display()))
-}
-
-/// When `file` was last modified, in epoch seconds; `None` of one that is
-/// not there.
-fn written(file: &Path) -> Option<u64> {
-    let modified = std::fs::metadata(file).and_then(|meta| meta.modified()).ok()?;
-    Some(modified.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()))
 }
 
 /// How long the host kit stands before a tick writes it again.
@@ -803,55 +921,45 @@ impl Changed {
     }
 }
 
-/// Writes the host kit in `file` again where it is due `now` (`due`), with
+/// Writes the host kit `kept` again where it is due `now` (`due`), with
 /// what `host` finds (`Writing::Refresh`) → the host kit before and after;
 /// `None` where it was not due, there is no host kit, or another process of
-/// the host is writing it again. Every fleet of the host shares the one file, and the
-/// lock beside it: one of them writes it again, once a day, and the others
-/// read what it wrote.
+/// the host is writing it again. Every fleet of the host shares the one host
+/// kit: the first to find it due records, in the transaction that finds it,
+/// that it tries a refresh, and writes it again; the others find it tried
+/// and read what it wrote.
 fn refresh_at<'a>(
-    file: &Path,
+    kept: &Kept,
     now: u64,
     host: impl FnOnce() -> Result<Host<'a>>,
 ) -> Result<Option<(Kit, Kit)>> {
-    // The lock holds when a refresh was last tried, in epoch seconds.
-    let lock = file.with_extension("refresh");
-    let tried = || std::fs::read_to_string(&lock).ok().and_then(|text| text.trim().parse().ok());
     // Command discovery used to leave Codex with no models until the daily
     // refresh. Repair those entries without waiting a day or restarting a
     // runner, retaining the ordinary backoff when discovery cannot answer.
-    let is_due = || {
-        let incomplete = load_at(file)
-            .ok()
-            .is_some_and(|kit| kit.held(Harness::Codex).is_some_and(|held| held.models.is_empty()));
-        due(written(file), tried(), now)
-            || (incomplete && tried().is_none_or(|at| now.saturating_sub(at) >= TRIED_AGAIN_AFTER))
+    let is_due = |state: &State| {
+        let incomplete = state.kit.is_some()
+            && state.kit(kept).ok().is_some_and(|kit| {
+                kit.held(Harness::Codex).is_some_and(|held| held.models.is_empty())
+            });
+        due(state.written, state.tried, now)
+            || (incomplete
+                && state.tried.is_none_or(|at| now.saturating_sub(at) >= TRIED_AGAIN_AFTER))
     };
-    if !is_due() {
+    if !is_due(&kept.state()?) {
         return Ok(None);
     }
-    let held = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock)
-        .with_context(|| format!("cannot open {}", lock.display()))?;
-    match held.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Ok(None),
-        Err(TryLockError::Error(error)) => {
-            return Err(error).with_context(|| format!("cannot lock {}", lock.display()));
+    // Another process may have taken it since it was found due.
+    let taken = kept.change(|state| {
+        if !is_due(state) {
+            return Ok(None);
         }
-    }
-    // Another process may have written it again since it was found due.
-    if !is_due() {
-        return Ok(None);
-    }
-    std::fs::write(&lock, now.to_string())
-        .with_context(|| format!("cannot write {}", lock.display()))?;
-    let current = load_at(file)?;
+        state.tried = Some(now);
+        Ok(Some(state.clone()))
+    })?;
+    let Some(state) = taken else { return Ok(None) };
+    let current = state.kit(kept)?;
     let host = host()?;
-    if !due(written(file), None, now) {
+    if !due(state.written, None, now) {
         // An early repair is only about Codex. In particular it must not
         // normalize, drop or reorder any other command-only kit entry.
         let found = |harness| match harness {
@@ -876,12 +984,11 @@ fn refresh_at<'a>(
         {
             *held = repaired.clone();
         }
-        store(file, &kit, now)?;
+        let kit = store(kept, &current, &kit, now)?;
         return Ok(Some((current, kit)));
     }
     let (kit, _) = compose(&current, &host, Writing::Refresh);
-    store(file, &kit, now)?;
-    drop(held);
+    let kit = store(kept, &current, &kit, now)?;
     Ok(Some((current, kit)))
 }
 
@@ -890,7 +997,7 @@ fn refresh_at<'a>(
 /// line to the run log of `repo` where that changed it, naming what was added
 /// and dropped, or where it failed. No model is sent a prompt.
 pub fn refresh(repo: &crate::git::Repo, instance: &str, host: &str, now: u64) -> Result<()> {
-    let refreshed = refresh_at(&path()?, now, || Host::here(now))
+    let refreshed = refresh_at(&Kept::of_host()?, now, || Host::here(now))
         .map(|refreshed| refreshed.map(|(before, after)| Changed::between(&before, &after)));
     let (outcome, failed) = match refreshed {
         Ok(None) => return Ok(()),
@@ -919,7 +1026,7 @@ pub fn refresh(repo: &crate::git::Repo, instance: &str, host: &str, now: u64) ->
 /// When this host's host kit was last written — by `kit`, by `run` on a host
 /// without one, or by a tick's daily refresh — in epoch seconds.
 pub fn refreshed() -> Option<u64> {
-    written(&path().ok()?)
+    Kept::of_host().ok()?.state().ok()?.written
 }
 
 /// One model a harness lists: the id it lists it by, and the name it shows
@@ -1228,6 +1335,41 @@ The operator's global instructions, skills and guards, declared once in the oper
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_older_hosts_kit_json_is_taken_in_once_with_its_times_and_moved_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let old = config.join("kit.json");
+        let kit = Kit {
+            cast: false,
+            harnesses: vec![held(Harness::Pi, "pi --custom", &["a/b"])],
+            removed: vec![Harness::Codex],
+            _retired_consult: None,
+        };
+        std::fs::write(&old, serde_json::to_vec_pretty(&kit).unwrap()).unwrap();
+        let at = UNIX_EPOCH + std::time::Duration::from_secs(5000);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(at).unwrap();
+        std::fs::write(config.join("kit.refresh"), "4000").unwrap();
+        std::fs::write(config.join("kit.lock"), "").unwrap();
+        let kept = Kept { host: crate::host_db::tests::host(dir.path()), old: Some(old.clone()) };
+        assert_eq!(kept.load().unwrap(), kit);
+        let state = kept.state().unwrap();
+        assert_eq!((state.written, state.tried), (Some(5000), Some(4000)));
+        for name in ["kit.json", "kit.refresh", "kit.lock"] {
+            assert!(!config.join(name).exists(), "{name}");
+            assert!(config.join(format!("{name}.migrated")).exists(), "{name}");
+        }
+        // Taken in once: a later change stands, and nothing is taken in again.
+        put(&kept, &Kit::default(), 6000);
+        assert_eq!(kept.load().unwrap(), Kit::default());
+    }
+
+    /// Has `kept` hold `kit`, written `now`.
+    fn put(kept: &Kept, kit: &Kit, now: u64) {
+        kept.change(|state| state.put(kit, now)).unwrap();
+    }
+
     use super::*;
 
     #[test]
@@ -1271,17 +1413,17 @@ mod tests {
             );
         }
         let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("kit.json");
-        store(&file, &current, 100).unwrap();
-        assert!(!std::fs::read_to_string(&file).unwrap().contains("\"cast\""));
+        let file = Kept::at(root.path().join("host.db"));
+        store(&file, &Kit::default(), &current, 100).unwrap();
+        assert!(!file.state().unwrap().kit.unwrap().to_string().contains("\"cast\""));
         let stale = Kit {
             cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["new", "default", "sonnet"])],
             removed: vec![],
             _retired_consult: None,
         };
-        store(&file, &stale, 200).unwrap();
-        let latest = load_at(&file).unwrap();
+        store(&file, &current, &stale, 200).unwrap();
+        let latest = file.load().unwrap();
         assert!(!latest.cast);
         assert_eq!(
             latest.harnesses[0].models.iter().map(|model| model.model.as_str()).collect::<Vec<_>>(),
@@ -1293,14 +1435,14 @@ mod tests {
     #[test]
     fn concurrent_command_discovery_and_kit_edits_preserve_the_latest_kit() {
         let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("kit.json");
+        let file = Kept::at(root.path().join("host.db"));
         let original = Kit {
             cast: false,
             harnesses: vec![held(Harness::Pi, "pi --custom", &["provider/model"])],
             removed: vec![],
             _retired_consult: None,
         };
-        store(&file, &original, 100).unwrap();
+        put(&file, &original, 100);
         std::thread::scope(|scope| {
             for harness in [Harness::Codex, Harness::ClaudeCode, Harness::Codex, Harness::Dsh] {
                 let file = &file;
@@ -1308,13 +1450,15 @@ mod tests {
             }
             let file = &file;
             scope.spawn(move || {
-                let _writing = writing(file).unwrap();
-                let mut kit = load_at(file).unwrap();
-                kit.harnesses[0].models[0].good_at = Some("concurrent research".into());
-                store(file, &kit, 101).unwrap();
+                file.change(|state| {
+                    let mut kit = state.kit(file)?;
+                    kit.harnesses[0].models[0].good_at = Some("concurrent research".into());
+                    state.put(&kit, 101)
+                })
+                .unwrap();
             });
         });
-        let kit = load_at(&file).unwrap();
+        let kit = file.load().unwrap();
         assert_eq!(kit.harnesses.len(), 4);
         assert_eq!(kit.harnesses[0].harness, Harness::Pi);
         assert_eq!(kit.harnesses[0].command, "pi --custom");
@@ -1324,7 +1468,7 @@ mod tests {
             assert!(held.models.is_empty());
         }
         assert_eq!(discover_at(&file, Harness::Pi, Harness::Pi.stock()).unwrap(), "pi --custom");
-        assert_eq!(load_at(&file).unwrap(), kit);
+        assert_eq!(file.load().unwrap(), kit);
     }
 
     #[test]
@@ -1750,14 +1894,14 @@ mod tests {
     #[test]
     fn a_command_only_codex_entry_is_listed_without_waiting_for_the_daily_refresh() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("kit.json");
+        let file = Kept::at(dir.path().join("host.db"));
         let current = Kit {
             cast: true,
             harnesses: vec![held(Harness::Codex, "codex", &[])],
             removed: vec![],
             _retired_consult: None,
         };
-        store(&file, &current, 1000).unwrap();
+        put(&file, &current, 1000);
         let found = |harness| if harness == Harness::Codex { Ok(()) } else { Err("absent".into()) };
         let listed = |_: Harness, _: &str| Ok(vec![listed("gpt-first", None)]);
         let host = || Ok(Host { found: &found, listed: &listed });
@@ -1772,15 +1916,15 @@ mod tests {
     #[test]
     fn an_unsuccessful_codex_repair_preserves_the_kit_and_waits_an_hour() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("kit.json");
+        let file = Kept::at(dir.path().join("host.db"));
         let current = Kit {
             cast: true,
             harnesses: vec![held(Harness::Codex, "codex", &[]), held(Harness::Dsh, "dsh-tui", &[])],
             removed: vec![],
             _retired_consult: None,
         };
-        store(&file, &current, 1000).unwrap();
-        let bytes = std::fs::read(&file).unwrap();
+        put(&file, &current, 1000);
+        let bytes = file.state().unwrap().kit;
         let host = || {
             Ok(Host {
                 found: &|_| Err("not answering".into()),
@@ -1789,20 +1933,20 @@ mod tests {
         };
         let (before, after) = refresh_at(&file, 1001, host).unwrap().unwrap();
         assert_eq!(before, after);
-        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        assert_eq!(file.state().unwrap().kit, bytes);
         assert!(refresh_at(&file, 1002, || panic!("backoff")).unwrap().is_none());
     }
 
     #[test]
     fn one_process_refreshes_the_host_kit_and_the_others_read_it() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("afkconvoy/kit.json");
+        let file = Kept::at(dir.path().join("host.db"));
         let mut pi = held(Harness::Pi, "pi", &["a/b"]);
         pi.models[0] = sourced(pi.models[0].clone());
         let current =
             Kit { cast: false, harnesses: vec![pi], removed: vec![], _retired_consult: None };
-        store(&file, &current, 1000).unwrap();
-        assert_eq!(written(&file), Some(1000));
+        put(&file, &current, 1000);
+        assert_eq!(file.state().unwrap().written, Some(1000));
         let listed = |_: Harness, _: &str| Ok(vec![listed("a/b", None), listed("c/d", None)]);
         let found = |harness: Harness| match harness {
             Harness::Pi => Ok(()),
@@ -1834,7 +1978,7 @@ mod tests {
             assert!(after.harnesses[0].models[1].awaits_research());
         });
         // Once written, it is not due again for a day, in any process.
-        assert_eq!(written(&file), Some(now));
+        assert_eq!(file.state().unwrap().written, Some(now));
         assert!(refresh_at(&file, now + 60, || panic!("refreshed already")).unwrap().is_none());
         // A refresh that fails is tried again an hour later, not every tick.
         let later = now + REFRESHED_EVERY;
@@ -1889,17 +2033,17 @@ mod tests {
     #[test]
     fn worker_launch_discovery_does_not_restore_an_operator_removed_harness() {
         let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("kit.json");
+        let file = Kept::at(root.path().join("host.db"));
         let current = Kit {
             cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &[])],
             removed: vec![Harness::Pi],
             _retired_consult: None,
         };
-        store(&file, &current, 100).unwrap();
-        let before = std::fs::read(&file).unwrap();
+        put(&file, &current, 100);
+        let before = file.state().unwrap().kit;
         let error = discover_at(&file, Harness::Pi, Harness::Pi.stock()).unwrap_err();
         assert!(error.to_string().contains("switch --harness pi"), "{error:#}");
-        assert_eq!(std::fs::read(&file).unwrap(), before);
+        assert_eq!(file.state().unwrap().kit, before);
     }
 }

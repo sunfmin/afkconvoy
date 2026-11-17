@@ -213,7 +213,7 @@ fn settlement_and_placement_share_identities_and_invalid_settlement_writes_nothi
     world.with_kit(|kit| kit["harnesses"][1]["models"][0]["good_at"] = json!("not researched"));
     let settled = json!({"harness":"claude-code", "model":"unknown",
         "settled":"not a worker model", "sources":finding("unused")["sources"]});
-    let before = std::fs::read(world.kit_path()).unwrap();
+    let before = world.kit();
     for (key, value) in [
         ("settled", json!(" ")),
         ("sources", json!([])),
@@ -224,7 +224,7 @@ fn settlement_and_placement_share_identities_and_invalid_settlement_writes_nothi
         let mut bad = settled.clone();
         bad[key] = value;
         apply(&world, &json!({"models":[finding("fast"), bad]})).error();
-        assert_eq!(std::fs::read(world.kit_path()).unwrap(), before, "{key}");
+        assert_eq!(world.kit(), before, "{key}");
     }
     let answer = apply(&world, &json!({"models":[settled, finding("deep")]})).ok();
     assert_eq!(answer["placed"], json!([{"harness":"claude-code", "model":"deep"}]));
@@ -239,18 +239,19 @@ fn settlement_and_placement_share_identities_and_invalid_settlement_writes_nothi
         world.afk(&["doctor", "--all"]).ok()["host"]["host_kit"]["harnesses"][1]["default_model"],
         true
     );
-    let before = std::fs::read(world.kit_path()).unwrap();
+    let before = world.kit();
     assert!(
         apply(&world, &json!({"models":[finding("unknown")]})).error().contains("settles no model")
     );
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+    assert_eq!(world.kit(), before);
 }
 
 #[test]
 fn malformed_or_inapplicable_research_changes_neither_the_kit_nor_its_time() {
     let world = pending();
-    let before = std::fs::read(world.kit_path()).unwrap();
-    let modified = std::fs::metadata(world.kit_path()).unwrap().modified().unwrap();
+    let before = world.kit();
+    let refreshed = || world.afk(&["doctor"]).json["host"]["host_kit"]["refreshed"].clone();
+    let modified = refreshed();
     let mut cases = vec![
         (json!({"models":[]}), "places no model"),
         (json!({"models":[], "extra":true}), "unknown field"),
@@ -279,9 +280,9 @@ fn malformed_or_inapplicable_research_changes_neither_the_kit_nor_its_time() {
     for (file, fault) in cases {
         let error = apply(&world, &file).error();
         assert!(error.contains(fault) && error.contains("research.json"), "{error}");
-        assert_eq!(std::fs::read(world.kit_path()).unwrap(), before, "{fault}");
-        assert_eq!(std::fs::metadata(world.kit_path()).unwrap().modified().unwrap(), modified);
+        assert_eq!(world.kit(), before, "{fault}");
     }
+    assert_eq!(refreshed(), modified);
     let file = world.root.join("bad.json");
     std::fs::write(&file, "```json\n{}\n```").unwrap();
     assert!(
@@ -290,7 +291,7 @@ fn malformed_or_inapplicable_research_changes_neither_the_kit_nor_its_time() {
             .error()
             .contains("one JSON object")
     );
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+    assert_eq!(world.kit(), before);
 }
 
 #[test]
@@ -326,9 +327,9 @@ fn partial_research_preserves_defaults_pending_models_established_priority_and_s
         "established priority and research survive"
     );
     assert_eq!(placed["kit"]["harnesses"][0]["models"][2]["good_at"], "research pending");
-    let before = std::fs::read(world.kit_path()).unwrap();
+    let before = world.kit();
     assert!(
         apply(&world, &json!({"models":[finding("deep")]})).error().contains("places no model")
     );
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+    assert_eq!(world.kit(), before);
 }

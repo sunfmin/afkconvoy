@@ -291,7 +291,7 @@ fn on_a_host_with_no_git_a_start_names_every_command_it_lacks_and_any_other_git_
     assert_eq!(world.shell_asked(), [] as [String; 0], "no other command was looked for");
     // …while a start names every one it lacks, before a host kit it has not
     // got yet either
-    std::fs::remove_file(world.kit_path()).unwrap();
+    world.forget("kit.json");
     let error = world.afk(&["plan", "--now", "1000"]).error();
     assert!(error.contains("nothing was started"), "{error}");
     assert!(error.contains("\n  git is not installed: brew install git\n"), "{error}");

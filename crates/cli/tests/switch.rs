@@ -21,12 +21,12 @@ fn switching_a_model_promotes_its_harness_and_preserves_every_entry() {
         kit["harnesses"][0]["models"][1]["good_at"] = json!("wide changes");
     });
     world.afk(&["switch", "--harness", "codex"]).ok();
-    let before: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let before: Value = world.kit();
     let moved = world.afk_in(&world.root, &["switch", "--model", "SONNET"]).ok();
     assert_eq!(moved["harness"], "claude-code");
     assert_eq!(moved["model"], "claude-sonnet-5-5");
     assert_eq!(moved["order"], json!(["claude-code", "codex", "pi", "dsh", "kimi", "grok"]));
-    let after: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let after: Value = world.kit();
     assert_eq!(
         after["harnesses"][0]["models"],
         json!([
@@ -39,10 +39,7 @@ fn switching_a_model_promotes_its_harness_and_preserves_every_entry() {
         assert!(before["harnesses"].as_array().unwrap().contains(&after["harnesses"][at]));
     }
     assert_eq!(world.afk(&["switch", "--model", "Sonnet 5.5"]).ok()["changed"], false);
-    assert_eq!(
-        std::fs::read(world.kit_path()).unwrap(),
-        serde_json::to_vec_pretty(&after).unwrap()
-    );
+    assert_eq!(world.kit(), after);
 }
 
 #[test]
@@ -51,7 +48,7 @@ fn an_unknown_or_ambiguous_model_leaves_the_kit_unchanged_and_names_candidates()
     world.hold_every_harness();
     world.kit_models("claude-code", &["claude-sonnet-5-5"]);
     world.kit_models("pi", &["anthropic/claude-sonnet-5-5"]);
-    let before = std::fs::read(world.kit_path()).unwrap();
+    let before = world.kit();
     let refused = world.afk(&["switch", "--model", "claude-sonnet-5-5"]).error();
     assert!(
         refused.contains("claude-code claude-sonnet-5-5")
@@ -63,7 +60,7 @@ fn an_unknown_or_ambiguous_model_leaves_the_kit_unchanged_and_names_candidates()
         unknown.contains("nearest names") && unknown.contains("claude-sonnet-5-5"),
         "{unknown}"
     );
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+    assert_eq!(world.kit(), before);
 }
 
 #[test]
@@ -71,7 +68,7 @@ fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() 
     let world = World::new();
     hold_every_harness(&world);
     world.kit_models("codex", &["gpt-x"]);
-    let before: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let before: Value = world.kit();
     let other = world.second_repo();
     for (dir, old) in [(&world.clone, "pi"), (&other, "claude-code")] {
         let git_dir = PathBuf::from(git(dir, &["rev-parse", "--git-common-dir"]));
@@ -81,16 +78,13 @@ fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() 
     let moved = world.afk_in(&world.root, &["switch", "--harness", "codex"]).ok();
     assert_eq!(moved["order"], json!(["codex", "claude-code", "pi", "dsh", "kimi", "grok"]));
     assert_eq!(moved["switched"], json!([]));
-    let after: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let after: Value = world.kit();
     for held in after["harnesses"].as_array().unwrap() {
         assert!(before["harnesses"].as_array().unwrap().contains(held));
     }
     let again = world.afk_in(&other, &["switch", "--harness", "codex"]).ok();
     assert_eq!(again["changed"], false);
-    assert_eq!(
-        after,
-        serde_json::from_slice::<Value>(&std::fs::read(world.kit_path()).unwrap()).unwrap()
-    );
+    assert_eq!(after, world.kit());
     world.issue(7, &["ready-for-agent", "harness:pi", "model:another-harness-model"]);
     let plan = world.afk(&["plan", "--now", "1000"]).ok();
     assert_eq!(plan["frontier"][0]["cast"]["harness"], "codex");
@@ -261,8 +255,7 @@ fn a_missing_harness_starts_on_its_default_before_its_listing_is_researched() {
     let hold = world.root.join("hold-kimi-models");
     std::fs::write(&hold, "").unwrap();
     let answer = switch(&world, "800", &["7", "--harness", "kimi"]).ok();
-    let kit =
-        || -> Value { serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap() };
+    let kit = || -> Value { world.kit() };
     assert_eq!(kit()["harnesses"][0]["models"], json!([]), "answered before its listing");
     std::fs::remove_file(&hold).unwrap();
     assert_eq!(answer["added"], true);
@@ -291,7 +284,7 @@ fn an_added_harness_that_cannot_start_is_kept_and_reported_by_switch_and_doctor(
     assert_eq!(answer["added"], true);
     assert_eq!(answer["order"][0], "kimi");
     assert!(answer["start_fault"].as_str().unwrap().contains("kimi"));
-    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let kit: Value = world.kit();
     assert_eq!(kit["harnesses"][0]["harness"], "kimi");
     assert_eq!(kit["harnesses"][0]["models"], json!([]));
 
@@ -491,7 +484,7 @@ fn screen_faults_are_judged_before_automatic_continuation_and_keep_the_scene() {
     let dir = worktree(&world, 7);
     let head = git(&dir, &["rev-parse", "HEAD"]);
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
-    let before = std::fs::read(world.kit_path()).unwrap();
+    let before = world.kit();
     world.jev_judges(&[("login_refused", 0.99)], DISABLED);
     tick(&world, 800);
     assert_eq!(open_commands(&world, &dir), [common::trusted("agent")]);
@@ -512,7 +505,7 @@ fn screen_faults_are_judged_before_automatic_continuation_and_keep_the_scene() {
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
     assert_eq!(world.claims().len(), 1);
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+    assert_eq!(world.kit(), before);
     let brief = brief(&dir);
     assert!(brief.contains("#70 is open"));
     assert!(brief.contains("unfinished.txt"));
@@ -607,14 +600,14 @@ fn account_faults_continue_stalled_workers_across_checkouts_and_switch_all_is_ho
             terminal["agent"] = json!({"state":"idle", "error":{"code":"insufficient_quota"}});
         }
     });
-    let kit = std::fs::read(world.kit_path()).unwrap();
+    let kit = world.kit();
     tick(&world, 800);
     world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "800"]).ok();
     for dir in [&seven, &eight] {
         assert_guarded_harness(&world, dir, afkconvoy_core::harness::Harness::Codex);
         assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "preserve");
     }
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert_eq!(world.kit(), kit);
     let switched =
         world.afk_in(&world.root, &["switch", "--harness", "codex", "--all", "--host", "h1"]).ok();
     assert_eq!(switched["failed"], json!([]), "{switched}");
@@ -652,7 +645,7 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
     assert_eq!(faults[0]["model"], "opus");
     assert_eq!(world.paused(), json!([]));
     assert_eq!(plan["selection"]["eligible"][0], "claude-code");
-    let kit = std::fs::read(world.kit_path()).unwrap();
+    let kit = world.kit();
     world.issue(9, &["ready-for-agent"]);
     let plan = world.afk(&["plan", "--now", "801"]).ok();
     let nine = plan["frontier"].as_array().unwrap().iter().find(|i| i["number"] == 9).unwrap();
@@ -667,7 +660,7 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
     let ten = plan["frontier"].as_array().unwrap().iter().find(|i| i["number"] == 10).unwrap();
     assert_eq!(ten["cast"]["model"], Value::Null);
     assert_eq!(ten["cast"]["why"], "user_default");
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert_eq!(world.kit(), kit);
 }
 
 #[test]
@@ -830,7 +823,7 @@ fn capacity_waits_and_nudges_twice_then_continues_without_faulting_the_harness()
     let head = git(&dir, &["rev-parse", "HEAD"]);
     let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
     let claims = world.claims();
-    let kit = std::fs::read(world.kit_path()).unwrap();
+    let kit = world.kit();
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
     capacity_turn(&world, &dir, "done", 790);
     tick(&world, 800);
@@ -873,7 +866,7 @@ fn capacity_waits_and_nudges_twice_then_continues_without_faulting_the_harness()
     assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]), branch);
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "still keep me");
     assert_eq!(world.claims(), claims);
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert_eq!(world.kit(), kit);
     assert!(brief(&dir).contains("#70 is open"));
     let doctor = world.afk(&["doctor", "--now", "984"]);
     assert_eq!(doctor.json["host"]["host_kit"]["worker_health"]["capacity_stops"]["codex"], 3);
@@ -1037,7 +1030,7 @@ fn codex_task_refusal_continues_immediately_and_only_excludes_this_issue() {
     let head = git(&dir, &["rev-parse", "HEAD"]);
     let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
     let claims = world.claims();
-    let kit = std::fs::read(world.kit_path()).unwrap();
+    let kit = world.kit();
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
     codex_refusal(&world, &dir);
     world.keep("worker-health.json", &json!({"workers":[], "faults":[], "observations_failed":[[dir,"a previous failed observation",2000]]}));
@@ -1049,7 +1042,7 @@ fn codex_task_refusal_continues_immediately_and_only_excludes_this_issue() {
     assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]), branch);
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
     assert_eq!(world.claims(), claims);
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert_eq!(world.kit(), kit);
     assert!(!world.root.join("typesafe-request").exists());
     let plan = world.afk(&["plan", "--now", "801"]).ok();
     let worker = &plan["selection"]["health"]["workers"][0];
@@ -1286,7 +1279,7 @@ fn pi_zai_usage_limit_is_an_account_quota_by_rule_from_either_source() {
         let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
         let claims = world.claims();
         let pr = world.gh()["prs"][0].clone();
-        let kit = std::fs::read(world.kit_path()).unwrap();
+        let kit = world.kit();
         std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
         world.with_orca(|orca| {
             for terminal in orca["terminals"].as_array_mut().unwrap() {
@@ -1311,7 +1304,7 @@ fn pi_zai_usage_limit_is_an_account_quota_by_rule_from_either_source() {
         assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
         assert_eq!(world.claims(), claims);
         assert_eq!(world.gh()["prs"][0], pr);
-        assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+        assert_eq!(world.kit(), kit);
         assert!(!world.root.join("typesafe-request").exists(), "{source} rule runs first");
         let plan = world.afk(&["plan", "--now", "801"]).ok();
         let health = &plan["host_kit"]["worker_health"];
@@ -1359,7 +1352,7 @@ fn kimi_5_hour_usage_limit_is_an_account_quota_by_rule_and_continues() {
     let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
     let claims = world.claims();
     let pr = world.gh()["prs"][0].clone();
-    let kit = std::fs::read(world.kit_path()).unwrap();
+    let kit = world.kit();
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
     let evidence = KIMI_SCREEN.lines().next().unwrap();
     world.with_orca(|orca| {
@@ -1380,7 +1373,7 @@ fn kimi_5_hour_usage_limit_is_an_account_quota_by_rule_and_continues() {
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
     assert_eq!(world.claims(), claims);
     assert_eq!(world.gh()["prs"][0], pr);
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert_eq!(world.kit(), kit);
     assert!(!world.root.join("typesafe-request").exists(), "the terminal rule runs first");
     assert!(!world.asked_a_harness_about("5-hour usage limit"));
     let plan = world.afk(&["plan", "--now", "801"]).ok();
@@ -1423,7 +1416,7 @@ fn kimi_usage_limit_waits_out_a_running_gate_then_continues() {
     let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
     let claims = world.claims();
     let pr = world.gh()["prs"][0].clone();
-    let kit = std::fs::read(world.kit_path()).unwrap();
+    let kit = world.kit();
     std::fs::write(dir.join("unfinished.txt"), "keep me").unwrap();
     let evidence = KIMI_SCREEN.lines().next().unwrap();
     let mut lines: Vec<String> = KIMI_SCREEN.lines().map(str::to_string).collect();
@@ -1442,7 +1435,7 @@ fn kimi_usage_limit_waits_out_a_running_gate_then_continues() {
     tick(&world, 800);
 
     assert_eq!(open_commands(&world, &dir), kimi, "a running gate is not cut short");
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert_eq!(world.kit(), kit);
     assert!(!world.root.join("typesafe-request").exists());
     let plan = world.afk(&["plan", "--now", "801"]).ok();
     let health = &plan["host_kit"]["worker_health"];
@@ -1478,7 +1471,7 @@ fn kimi_usage_limit_waits_out_a_running_gate_then_continues() {
     assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep me");
     assert!(world.claims().contains(&claims[0]), "issue 7 keeps its claim");
     assert_eq!(world.gh()["prs"][0], pr);
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    assert_eq!(world.kit(), kit);
     let continued = world.afk(&["plan", "--now", "901"]).ok();
     let worker = &continued["host_kit"]["worker_health"]["workers"]
         .as_array()
@@ -1796,7 +1789,7 @@ fn switching_to_a_removed_harness_restores_it_first_and_clears_the_removal() {
     assert_eq!(restored["added"], true);
     assert_eq!(restored["start_fault"], Value::Null);
     assert_eq!(restored["order"][0], "pi");
-    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let kit: Value = world.kit();
     assert!(kit.get("removed").is_none(), "{kit}");
     assert_eq!(kit["harnesses"][0]["harness"], "pi");
 

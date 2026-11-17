@@ -2827,8 +2827,8 @@ fn start_detached(program: &Path) -> Result<Child> {
 /// process asks.
 pub(crate) fn host_environment() -> Result<Vec<(OsString, OsString)>> {
     let env = launch::login_environment()?;
-    let kit = kit::path()?;
-    let config = kit.parent().and_then(Path::parent).unwrap_or(Path::new("/"));
+    let config = crate::copies::config()?;
+    let config = config.parent().unwrap_or(Path::new("/"));
     Ok(pinned(env, &cache()?, &crate::copies::data()?, config))
 }
 

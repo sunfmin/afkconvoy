@@ -87,6 +87,16 @@ const MIGRATIONS: &[&str] = &[
         said TEXT NOT NULL,
         PRIMARY KEY (repo, issue)
      )",
+    // The host kit (`kit`), whole, as its file `kit.json` in the config
+    // directory held it; and the one row of when it was last written and a
+    // refresh of it last tried, in epoch seconds, which were that file's
+    // modification time and `kit.refresh` beside it.
+    "CREATE TABLE kit (position INTEGER PRIMARY KEY, key TEXT NOT NULL, value TEXT NOT NULL);
+     CREATE TABLE kit_refresh (
+        one INTEGER PRIMARY KEY CHECK (one = 0),
+        written INTEGER,
+        tried INTEGER
+     )",
 ];
 
 /// The host's database: `host.db` in the data directory.
@@ -145,6 +155,11 @@ impl Host {
     /// The database's file.
     pub fn file(&self) -> &Path {
         &self.db
+    }
+
+    /// The cache directory whose old files it converges from, where it does.
+    pub(crate) fn cache(&self) -> Option<&Path> {
+        self.cache.as_deref()
     }
 
     /// The database, made where there is none, migrated; the host's copied
@@ -432,7 +447,7 @@ pub(crate) fn converge_file(
 
 /// Moves `file` aside to `<file>.migrated`, kept: renamed back, an older
 /// afkconvoy reads it again. One already gone is moved.
-fn aside(file: &Path) -> Result<()> {
+pub(crate) fn aside(file: &Path) -> Result<()> {
     let mut to = file.as_os_str().to_owned();
     to.push(format!(".{MIGRATED}"));
     match std::fs::rename(file, &to) {
@@ -612,6 +627,7 @@ const STORES: &[&Store] = &[
     &crate::resources::STORE,
     &crate::watch_notify::STORE,
     &crate::trash::STORE,
+    &crate::kit::STORE,
 ];
 
 /// The store whose old file is `file`.

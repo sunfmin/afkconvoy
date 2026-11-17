@@ -82,6 +82,22 @@ fn data_home() -> Result<PathBuf> {
     Ok(OWN.with(|own| own.path().to_path_buf()))
 }
 
+/// Where on this host this user's fleets find the files the host user
+/// keeps for them: their config directory, as XDG_CONFIG_HOME or HOME says
+/// it. The host kit was a file of it before the host database
+/// (`host_db`) kept it.
+pub fn config() -> Result<PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    Ok(match (set("XDG_CONFIG_HOME"), set("HOME")) {
+        (Some(config), _) => PathBuf::from(config),
+        (None, Some(home)) => PathBuf::from(home).join(".config"),
+        (None, None) => {
+            bail!("neither XDG_CONFIG_HOME nor HOME says where the fleet's config directory is")
+        }
+    }
+    .join("afkconvoy"))
+}
+
 /// Where on this host the copies are kept.
 #[derive(Clone)]
 pub struct Copies {
