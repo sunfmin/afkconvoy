@@ -159,7 +159,7 @@ pub struct Evidence {
     pub head: Option<String>,
     /// Why a green run is not on record, where it is not.
     pub not_recorded: Option<String>,
-    /// A green run of the committed tree is on record on the remote.
+    /// A green run of the committed tree is on record.
     pub recorded: bool,
     /// The candidate's gate did not run: the green run on record of its
     /// tree, of the same command and kind of machine, answered (a reused
@@ -248,8 +248,7 @@ pub struct Observed<'a> {
 
 impl Evidence {
     /// The evidence of a candidate's run `run`: green where it ran green
-    /// and was not cancelled, on record where its record was written and
-    /// reached the remote, or a run on record answered for it (`reused`);
+    /// and was not cancelled, on record where its record was written, or a run on record answered for it (`reused`);
     /// unsettled where it says nothing of its tree.
     pub fn of(run: Observed<'_>) -> Evidence {
         let unsettled = match run.judged {

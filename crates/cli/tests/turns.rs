@@ -631,6 +631,54 @@ fn a_rejected_push_ends_the_turn_and_another_turn_gates_the_new_base() {
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
 }
 
+/// Each host keeps its own gate records (docs/adr/0037): a tip another host
+/// landed, and certified there, is no tip this host has a record of. This
+/// host's next turn gates it alone first, then lands on it. That run is
+/// wasted, and accepted (sunfmin/control#1326).
+#[test]
+fn a_tip_another_host_landed_is_certified_here_alone_before_this_hosts_landing() {
+    let world = World::new();
+    let runs = world.root.join("runs");
+    world.set_gate(&format!(
+        "ls | grep -x -e one.txt -e two.txt | tr '\\n' ' ' >> {0}; echo >> {0}",
+        quote(&runs)
+    ));
+    seed(&world);
+    // Another host: the same checkout list and settings, a database of its own.
+    let other = world.root.join("other-host").join("cache");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    let copy = |from: &Path, to: &Path| {
+        let copied = std::process::Command::new("cp").arg("-R").arg(from).arg(to).status();
+        assert!(copied.unwrap().success());
+    };
+    copy(&world.cache(), &other);
+    copy(&world.data(), &crate::common::data_beside(&other));
+
+    let one = world.worker(1, "one.txt", "one");
+    let two = world.worker(2, "two.txt", "two");
+    let landed = finish(start(&world, &one, &other, 1));
+    assert_eq!(landed["outcome"], "merged", "{landed}");
+    let tip = landed["commit"].as_str().unwrap();
+    let tree = git(&world.clone, &["rev-parse", &format!("{tip}^{{tree}}")]);
+    assert!(!world.gate_recorded(&tree), "the other host's record is its own");
+    assert_eq!(world.remote_gate_refs(), [] as [String; 0], "nothing is pushed of it");
+
+    let here = finish(start(&world, &two, &world.cache(), 2));
+    assert_eq!(here["outcome"], "merged", "{here}");
+    assert_eq!(here["merged"], tip, "it landed on the other host's tip");
+    let ran: Vec<String> = std::fs::read_to_string(&runs)
+        .unwrap()
+        .lines()
+        .map(|line| line.trim().to_string())
+        .collect();
+    assert_eq!(
+        ran,
+        ["", "one.txt", "one.txt", "one.txt two.txt"],
+        "the base here, #1 there, the tip it landed alone here, then #2 on it"
+    );
+    assert!(world.gate_recorded(&tree), "this host certified the tip itself");
+}
+
 #[test]
 fn old_stored_lane_keys_load_and_a_run_drops_them() {
     let world = World::new();

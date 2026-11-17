@@ -288,7 +288,7 @@ pub struct GateRun {
     pub strays: Vec<String>,
     /// The evidence, when the run was green on a committed tree.
     pub green: Option<GreenRun>,
-    /// Why a green run is not on record on the remote, when it is not.
+    /// Why a green run is not on record, when it is not.
     pub not_recorded: Option<String>,
     /// The end of the run's log.
     pub excerpt: Vec<String>,
@@ -615,7 +615,7 @@ pub fn reusable(
 /// Whether the committed tree of a worktree passes the gate — the one question
 /// a landing asks of it.
 pub enum Gated {
-    /// It does: by the run the remote has on record for that tree, or by one
+    /// It does: by the run this host has on record for that tree, or by one
     /// made now (`source`).
     Green { run: GreenRun, source: &'static str },
     /// It does not, by a run made now.

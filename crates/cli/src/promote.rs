@@ -361,7 +361,7 @@ One promotion of a checkout runs at a time: another answers `promoting`. A repo 
 
 ## What it reads and writes
 
-It reads the remote's base branch and proving branch and the gate records, and writes a gate record of the tip's tree and, green, the base branch. Its run's output is in the checkout's git dir (`convoy-promotion-<time>-<n>.log`), kept where it is red; a tick's promotion appends its answer to `convoy-promotion.log` there.
+It reads the remote's base branch and proving branch and this host's gate records, and writes a gate record of the tip's tree, in the host's database, and, green, the base branch. Its run's output is in the checkout's git dir (`convoy-promotion-<time>-<n>.log`), kept where it is red; a tick's promotion appends its answer to `convoy-promotion.log` there.
 
 ## What it answers
 
