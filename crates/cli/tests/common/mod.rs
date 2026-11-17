@@ -1334,7 +1334,7 @@ impl World {
     }
 
     /// The candidate chain of `branch` as this world's host holds it
-    /// (docs/adr/0090), `Null` where it holds none.
+    /// (docs/adr/0117), `Null` where it holds none.
     pub fn chain(&self, branch: &str) -> Value {
         let path = self.cache().join("afkconvoy/host.db");
         if !path.exists() {
@@ -2316,7 +2316,7 @@ exit 2
 "#;
 
 /// The stand-in `pmset`: what it is asked is written to `pmset.log`, and it
-/// puts nothing to sleep. No fleet asks it anything (docs/adr/0050).
+/// puts nothing to sleep. No fleet asks it anything (docs/adr/0101).
 const PMSET: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../pmset.log"
 "#;

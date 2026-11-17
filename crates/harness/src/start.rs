@@ -100,6 +100,6 @@ pub struct Told<'a> {
     /// (`Start::dir`), from the file its harness names
     /// (`Harness::role_file`). `None` of a harness that names none: it loads
     /// them from that directory, which is where it starts. A harness that
-    /// starts in the worktree names the file (ADR-0043).
+    /// starts in the worktree names the file (ADR-0098).
     pub own: Option<Rules<'a>>,
 }

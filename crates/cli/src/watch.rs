@@ -119,7 +119,7 @@ pub(crate) fn turn(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Turn>> {
         return Ok(Some(Turn { worktree, answered, handoff: None, reds: vec![] }));
     }
     // Red twice in a row: not handed back to the same worker in the same
-    // worktree, whatever that worker is doing (docs/adr/0088).
+    // worktree, whatever that worker is doing (docs/adr/0114).
     let reds = crate::turn_answer::reds(&worktree)?;
     if reds.len() >= RED_TURNS_IN_A_ROW {
         return Ok(Some(Turn { worktree, answered, handoff: None, reds }));

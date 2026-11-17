@@ -1688,7 +1688,7 @@ impl Runner {
     /// its entry (`concurrency::say`), where it changes nothing → what the
     /// answer says of it: that it is ignored, or null where `to` names none.
     /// No number bounds a fleet's workers: admission alone decides each start
-    /// (docs/adr/0072), and `doctor` says the one kept is ignored.
+    /// (docs/adr/0107), and `doctor` says the one kept is ignored.
     fn said(&self, repo: &Repo, to: Option<To<NonZeroUsize>>) -> Result<Value> {
         let Some(to) = to else { return Ok(Value::Null) };
         let named = match &to {

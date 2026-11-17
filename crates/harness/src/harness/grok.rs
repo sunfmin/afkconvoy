@@ -2,7 +2,7 @@
 //! file; its hooks are not loaded from that file, so each role gets a
 //! generated home whose config holds the role's hooks and denies, the fleet's
 //! guard and the report. A session works only in its cwd, so the worker
-//! starts in the worktree (ADR-0043). The role's rules are told in that home,
+//! starts in the worktree (ADR-0098). The role's rules are told in that home,
 //! and its skills are named there. The role's files stay where every harness
 //! writes them.
 
@@ -61,7 +61,7 @@ pub(super) const TRUST: &str = "--trust";
 pub(super) const TRUST_IS_FLAGS: bool = false;
 /// `--add-dir` is not one of these. Grok 1.0.60 and later reject
 /// `additionalDirectories` on session create, so the fleet never passes it
-/// (ADR-0043). A command must take `--model`.
+/// (ADR-0098). A command must take `--model`.
 pub(super) const FLAGS: [&str; 1] = [MODEL];
 const HELP: &str = " --help";
 const MODELS: &str = " models";
@@ -84,7 +84,7 @@ pub(super) const KEPT: Kept = Kept {
 pub(super) const LIMITS: &str = ".grok/config.toml";
 pub(super) const REPO_RULES: [&str; 2] = ["AGENTS.md", RULES];
 /// The role's rules. The session cwd is the worktree, so this file is how
-/// they reach the worker (ADR-0043). The role module reads the name.
+/// they reach the worker (ADR-0098). The role module reads the name.
 pub(super) const ROLE_FILE: &str = RULES;
 /// Where the generated home writes the repo and team rules. Not the user's
 /// rules directory: that one is named, when the worker is given it, and this

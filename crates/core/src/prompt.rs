@@ -1089,7 +1089,7 @@ pub struct FreshLook<'a> {
 /// What the brief of a worker handed a PR after its landing turns went red
 /// twice in a row says after the rest: both red runs, what the worker before
 /// it last declared and said, the patch of what it left, and that it may
-/// change the approach (docs/adr/0088).
+/// change the approach (docs/adr/0114).
 pub fn fresh_look(look: &FreshLook) -> String {
     let mut text = format!(
         "\n\n## A fresh look at a PR that went red twice in a row\n\nPR #{} gated red in {} \

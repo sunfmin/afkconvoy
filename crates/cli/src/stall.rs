@@ -1,4 +1,4 @@
-//! A ed worker (docs/adr/0088): one whose build waits forever on
+//! A ed worker (docs/adr/0113): one whose build waits forever on
 //! another's build-directory locks. A process stuck on a lock takes no CPU,
 //! so no limit of a hot worker finds it (sunfmin/control#1249); this does.
 //!

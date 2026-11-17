@@ -495,7 +495,7 @@ impl Harness {
     /// Whether its engine reports its account's usage windows at all
     /// ([`Harness::windows`]): a harness that reports none is judged by the
     /// host alone, and comes after those that do where the host kit chooses
-    /// (docs/adr/0088).
+    /// (docs/adr/0112).
     pub const fn reports_windows(self) -> bool {
         match self {
             Harness::ClaudeCode | Harness::Codex | Harness::Kimi => true,
@@ -915,7 +915,7 @@ impl Harness {
     /// rules. A harness that reads no user config ignores `user`.
     /// `role_skills` is the role's `.claude/skills` when this worker has one,
     /// and `role_skill_names` the directories in it. Grok names that directory
-    /// and ignores a host skill of the same name (ADR-0043). Every other
+    /// and ignores a host skill of the same name (ADR-0098). Every other
     /// harness ignores both.
     pub fn kept_configuration(
         self,
@@ -1020,7 +1020,7 @@ impl Harness {
     /// The role file a worker is told, from the role's directory, beside the
     /// repo's and the team's. A harness that starts in the worktree names the
     /// file, because that file is how the role's rules reach the worker
-    /// (ADR-0043). `None`: it starts in the role and loads the file itself,
+    /// (ADR-0098). `None`: it starts in the role and loads the file itself,
     /// and is told no role file.
     pub const fn role_file(self) -> Option<&'static str> {
         match self {
@@ -1452,7 +1452,7 @@ impl Harness {
     /// backend, the host user's skills and rules where the session is given
     /// them, and the model — each in this harness's way. Every harness but
     /// Grok starts in `start.dir`. Grok's session works only in its cwd, so it
-    /// starts in the worktree (ADR-0043).
+    /// starts in the worktree (ADR-0098).
     pub fn in_role(self, command: &str, start: &Start) -> String {
         self.role_line(command, start).done()
     }

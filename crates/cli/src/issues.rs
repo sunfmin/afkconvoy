@@ -14,7 +14,7 @@
 //! The operations are the reads and writes the fleet makes, not GitHub's
 //! calls: each read is shaped so one paged query can answer it (an open
 //! issue comes with its comments and blockers), which is what keeps a GitHub
-//! tracker's reads within its quota (docs/adr/0079).
+//! tracker's reads within its quota (docs/adr/0111).
 
 use std::collections::HashMap;
 use std::sync::Arc;

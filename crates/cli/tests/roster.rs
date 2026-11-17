@@ -297,7 +297,7 @@ fn a_role_with_nothing_it_can_run_safely_waits_and_goes_on_once_it_has() {
     world.issue(8, &["flow:audit", "harness:claude-code", "model:haiku"]);
 
     let planned = world.afk(&PLAN).ok();
-    // Codex reports its windows: it comes before pi (docs/adr/0088).
+    // Codex reports its windows: it comes before pi (docs/adr/0112).
     assert_eq!(said(&planned, 7)["harness"], "codex", "{planned}");
     let waits = said(&planned, 8);
     assert!(waits.as_str().unwrap().contains("no currently eligible harness"), "{planned}");

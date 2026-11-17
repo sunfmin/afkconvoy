@@ -619,7 +619,7 @@ pub struct State {
     /// the same listing.
     pub(crate) pending: Vec<crate::candidates::PendingLand>,
     /// The remote candidate chain records an afkconvoy before
-    /// docs/adr/0090 left: ignored, and removed by the tick once no turn of
+    /// docs/adr/0117 left: ignored, and removed by the tick once no turn of
     /// this host holds a place on one.
     pub(crate) legacy_chains: Vec<(String, bool)>,
     /// When the base branch's tip on the remote was committed, in epoch
@@ -1692,7 +1692,7 @@ fn install_findings(checkout: &Path, config: &Config) -> Vec<Finding> {
         .collect()
 }
 
-/// A concurrency still named, which nothing reads any more (docs/adr/0072):
+/// A concurrency still named, which nothing reads any more (docs/adr/0107):
 /// no number bounds a fleet's workers, and admission alone decides each
 /// start. Nothing is held up. One the checkout keeps on this host's
 /// checkout list, as a `run --concurrency` said it, is dropped by

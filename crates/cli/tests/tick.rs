@@ -1343,7 +1343,7 @@ fn every_tick_says_as_it_starts_why_it_started() {
 }
 
 /// A fleet that worked and then went idle never puts its host to sleep: it
-/// asks `pmset` nothing, however long it stays idle (docs/adr/0050).
+/// asks `pmset` nothing, however long it stays idle (docs/adr/0101).
 #[test]
 fn a_fleet_that_worked_and_went_idle_never_puts_its_host_to_sleep() {
     let world = World::new();

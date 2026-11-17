@@ -2,7 +2,7 @@
 //! share of its load, below its share of available memory, or low on free disk
 //! (docs/adr/0019) — while a usage window of the account it would start on
 //! would run out before it resets, or while the host's exclusive queue would
-//! take longer than its bound to drain (docs/adr/0072), or — for one repo —
+//! take longer than its bound to drain (docs/adr/0107), or — for one repo —
 //! while its candidate chain has had more conflicts than landings in the last
 //! hour (docs/adr/0076). It alone decides each
 //! start: no number of workers bounds a fleet. Whether admission holds is decided here, from what the

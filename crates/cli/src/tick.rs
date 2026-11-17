@@ -67,7 +67,7 @@ enum Failed {
 enum Cleanup {
     /// The worktrees of stopped candidates (`candidates::remove_listed`).
     Candidates,
-    /// The remote chain records of an afkconvoy before docs/adr/0090
+    /// The remote chain records of an afkconvoy before docs/adr/0117
     /// (`candidates::retire_legacy`).
     LegacyChains,
     /// The removals orca answered success for that left the directory
@@ -261,7 +261,7 @@ pub fn tick(
     let mut cleanup_failures = Cleanup::Candidates
         .failures(chains.and_then(|chains| crate::candidates::remove_listed(repo, &chains)));
     // The remote chain record of an older afkconvoy, once no turn of this
-    // host holds a place on it (docs/adr/0090).
+    // host holds a place on it (docs/adr/0117).
     let old = fleet.records_at_open(&format!("{}*", repo.layout().under("candidates/")));
     cleanup_failures
         .extend(Cleanup::LegacyChains.failures(crate::candidates::retire_legacy(repo, &old)));
@@ -372,7 +372,7 @@ pub fn tick(
         (set, flows, claimed) = fleet.rebuild(&open, Some(&me.instance))?;
     }
     // A busy host, an account that would run out or a long exclusive queue
-    // starts no new worker this tick (docs/adr/0019, docs/adr/0072).
+    // starts no new worker this tick (docs/adr/0019, docs/adr/0107).
     // The candidate chain is read once a tick: its answers come from turns
     // that take longer than a pass (docs/adr/0076).
     let landing = crate::admission::landing_of(&fleet.repo.dir, fleet.now);
@@ -1623,7 +1623,7 @@ impl hot::Hears for Said {
 /// host watch's next look. It says how it stands as each tick begins and
 /// ends, among the others its host runner holds (`Standing`, docs/adr/0023),
 /// and begins no tick while a move holds them back (docs/adr/0032). It never
-/// puts the host to sleep (docs/adr/0050). It obeys `holder`'s stop — whoever holds the
+/// puts the host to sleep (docs/adr/0101). It obeys `holder`'s stop — whoever holds the
 /// process listens for the signals — and says each line to its echo. It
 /// ends in an error as its tracker is found public (`probe::public_tracker`).
 pub fn run(

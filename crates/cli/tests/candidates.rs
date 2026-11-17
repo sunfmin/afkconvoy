@@ -2049,7 +2049,7 @@ fn a_pr_ready_while_a_round_s_whole_gate_runs_stacks_on_its_root() {
 
 /// Ten turns of one repo wait on one round, and the host starts no git
 /// process for the chain: nothing of it is read from, or written to, the
-/// remote (docs/adr/0090). What the host does start is printed, as the number
+/// remote (docs/adr/0117). What the host does start is printed, as the number
 /// the ADR measures.
 #[test]
 fn ten_turns_waiting_on_one_round_start_no_git_process_for_the_chain() {
@@ -2094,7 +2094,7 @@ fn ten_turns_waiting_on_one_round_start_no_git_process_for_the_chain() {
 /// Two hosts, each with its own database and no knowledge of the other, land
 /// a fast-green round on the same base: one lands, the other's push is
 /// refused, and its next turn builds its round again on the new tip and gates
-/// it again. Neither lands an untested tree (docs/adr/0090).
+/// it again. Neither lands an untested tree (docs/adr/0117).
 #[test]
 fn two_hosts_land_on_one_base_and_the_one_refused_gates_again_on_the_new_tip() {
     let world = world(3);

@@ -977,7 +977,7 @@ pub fn standing() -> Result<Vec<Ticket>> {
 
 /// The work `queue`'s running tickets run, as `procs` — one reading of the
 /// process table — finds it: what admission discounts of the host's load
-/// (docs/adr/0050) and the hot sampler of a worker's memory (docs/adr/0056).
+/// (docs/adr/0050) and the hot sampler of a worker's memory (docs/adr/0105).
 pub(crate) fn running_work(queue: &[Ticket], procs: &[crate::hot::Proc]) -> Work {
     let table: Vec<(u32, u32)> = procs.iter().map(|proc| (proc.pid, proc.ppid)).collect();
     afkconvoy_core::exclusive::running_work(queue, &table)

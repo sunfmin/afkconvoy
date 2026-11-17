@@ -1,4 +1,4 @@
-//! A host's candidate chain (ADR-0090). Every write edits the chain of
+//! A host's candidate chain (ADR-0117). Every write edits the chain of
 //! this host (`chain_store`) at the revision it was read at; one made on a
 //! chain another turn moved is refused. Publishing is one atomic push of the
 //! base and the source heads, made while the chain is held, so invalidation
@@ -270,7 +270,7 @@ fn shown(chain: &Chain, c: &Candidate, branch: &str) -> Value {
     row
 }
 
-/// The remote record of a chain an afkconvoy before docs/adr/0090 kept: its
+/// The remote record of a chain an afkconvoy before docs/adr/0117 kept: its
 /// ref, where it stands, and whether a live turn of this host holds a place
 /// on it, which is a turn of that older afkconvoy still waiting on it.
 pub(crate) struct Legacy {
@@ -940,7 +940,7 @@ pub(crate) fn invalidate(repo: &Repo, config: &Config, id: &str, cause: &str) ->
 /// or whose predecessor is not the base, which stops its gate. A turn waiting
 /// on the chain does not: a green candidate that the chain says may land reads
 /// the base before it publishes, and a publication is refused by the remote
-/// where a head or the base moved (docs/adr/0090).
+/// where a head or the base moved (docs/adr/0117).
 fn reconcile(repo: &Repo, config: &Config, watch: bool) -> Result<Chain> {
     loop {
         let mut updated = read(repo, config)?;
@@ -1998,14 +1998,14 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             continue;
         }
         // The chain says whether it stands on what landed before it; the
-        // remote is asked only once it does (docs/adr/0090).
+        // remote is asked only once it does (docs/adr/0117).
         let stands = chain.members(&id).first().map(|c| c.predecessor.clone());
         let base = match stands {
             Some(stands) if chain.ripe(&id, &stands) => {
                 let live = crate::turn::base_live(repo, config)?;
                 if live != stands {
                     // Another host moved the base under it: the round is
-                    // built again on the new tip (docs/adr/0090).
+                    // built again on the new tip (docs/adr/0117).
                     invalidate(repo, config, &id, "base_moved")?;
                     continue;
                 }
@@ -2076,7 +2076,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             Published::Took => {}
             Published::Refused => {
                 // Another host moved the base: the round is built again on
-                // the new tip and gated again (docs/adr/0090).
+                // the new tip and gated again (docs/adr/0117).
                 if crate::turn::base_live(repo, config)? != base {
                     invalidate(repo, config, &id, "base_moved")?;
                     continue;

@@ -74,7 +74,7 @@ pub struct Settings {
     pub ready_label: Option<String>,
     pub epic_labels: Option<Vec<String>>,
     /// Read only to be said: no number of workers bounds a fleet, and a
-    /// config's changes nothing (docs/adr/0072). `doctor` says the key to
+    /// config's changes nothing (docs/adr/0107). `doctor` says the key to
     /// delete.
     pub concurrency: Option<NonZeroUsize>,
     pub escalate_label: Option<String>,

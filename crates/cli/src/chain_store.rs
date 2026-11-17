@@ -1,5 +1,5 @@
 //! The candidate chain of a repo's target branch, kept by the host that builds
-//! it, in the host's database (ADR-0090, `host_db`): one row per repo
+//! it, in the host's database (ADR-0117, `host_db`): one row per repo
 //! and target branch. A reader asks the database, which starts no process and
 //! asks no remote. Every write names the revision it was made on and takes
 //! only where the row is still at it, as the remote record's did: a turn

@@ -1,4 +1,4 @@
-//! The host's one afkconvoy database (ADR-0090): `host.db` under the
+//! The host's one afkconvoy database (ADR-0117): `host.db` under the
 //! cache directory, where the host-local state lives that no other host
 //! reads. Its candidate chains are the first (`chain_store`); the rest of it
 //! moves in as later issues take it from files. Its schema is versioned

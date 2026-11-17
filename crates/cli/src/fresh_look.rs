@@ -1,5 +1,5 @@
 //! A PR whose landing turns went red twice in a row is handed to a new worker
-//! in a new worktree (docs/adr/0088): the worker that retried it in its own
+//! in a new worktree (docs/adr/0114): the worker that retried it in its own
 //! worktree is ended, confirmed stopped, what it left is saved as a patch,
 //! its worktree is removed, and a worker of the issue starts in a new one on
 //! the PR's branch merged up to the base tip, briefed with both red runs.

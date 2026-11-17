@@ -1,5 +1,5 @@
 //! What is left of a checkout's concurrency: nothing bounds a fleet's workers
-//! any more, and admission alone decides each start (docs/adr/0072). A `run`
+//! any more, and admission alone decides each start (docs/adr/0107). A `run`
 //! still accepts `--concurrency` for one release, and keeps what it says with
 //! the checkout's entry on the checkout list, where it changes nothing:
 //! `doctor` says it is ignored, and `--concurrency default` drops it. After

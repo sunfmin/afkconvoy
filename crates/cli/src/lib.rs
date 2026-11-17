@@ -3053,7 +3053,7 @@ mod tests {
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--hot-cores", "0"]).is_err());
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--admit-load", "5%"]).is_err());
         assert!(asked(&[]).1.is_empty(), "named none, it changes none");
-        // host sleep is gone: its flags are no flags (docs/adr/0050)
+        // host sleep is gone: its flags are no flags (docs/adr/0101)
         for gone in ["--no-host-sleep", "--host-sleep", "--host-sleep-after"] {
             assert!(Cli::try_parse_from(["afkconvoy", "run", gone]).is_err(), "{gone}");
         }

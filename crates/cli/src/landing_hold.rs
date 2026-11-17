@@ -1,4 +1,4 @@
-//! An operator's landing hold (docs/adr/0089): one note in the repo's git
+//! An operator's landing hold (docs/adr/0115): one note in the repo's git
 //! dir, which every worktree of the repo on this host shares, so a worker's
 //! own `land` and `gate` read the same hold the fleet's tick does. While it
 //! stands no turn of a held issue starts and no worker's gate runs; claims,

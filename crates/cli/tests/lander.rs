@@ -417,7 +417,7 @@ fn a_faulted_landing_worker_continues_in_its_role_without_consuming_a_restart() 
     tick(&world, now + 90);
     let started = worker(&world, &dir);
     assert!(started.contains(" AFKCONVOY_STAGE='land' AFKCONVOY_ROLE='lander' "), "{started}");
-    // Codex reports its windows: it comes before pi (docs/adr/0088).
+    // Codex reports its windows: it comes before pi (docs/adr/0112).
     assert!(started.contains(" && codex "), "{started}");
     assert_eq!(world.claims(), claims);
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
