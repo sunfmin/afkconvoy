@@ -47,6 +47,7 @@ pub mod config;
 pub mod copies;
 pub use afkconvoy_host_reading::cpu;
 pub mod cut;
+pub mod cut_holder;
 pub mod daybook;
 mod delivery;
 pub mod disk;

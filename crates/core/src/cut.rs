@@ -924,7 +924,9 @@ pub fn failure_report(
         Some(checkout) => said.push_str(&format!(
             "Its checkout is kept, `{checkout}` on the host `{host}`, with what each step \
              printed in its git dir, until the next cut starts. The line that goes on from the \
-             step that failed, in it:\n\n```sh\n{goes_on}\n```\n\nNothing waits for it.\n"
+             step that failed, in it:\n\n```sh\n{goes_on}\n```\n\nNothing waits for it. \
+             It refuses at once, running nothing, while another cut runs in that checkout: one \
+             cut of a checkout runs at a time.\n"
         )),
         None => said.push_str(&format!(
             "Its checkout is gone from the host `{host}`, so no `--from` line can go on with \

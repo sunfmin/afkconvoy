@@ -331,10 +331,27 @@ pub fn start(
     }
     // Before the claim: a host kit that holds no harness starts nothing.
     let first = fleet.first_harness()?;
+    // Before the claim too: a kept checkout another cut runs in — one going
+    // on by hand with `--from` — is neither removed nor cut again while it
+    // runs (sunfmin/control#1331). Held here until the start removed it.
+    let source = Source::of(&fleet.repo)?;
+    let left = Worktree::named(&source, CHECKOUT)?;
+    let _held = match &left {
+        Some(left) => match crate::cut_holder::take(left, me.now)? {
+            Ok(held) => Some(held),
+            Err(holder) => {
+                found
+                    .cut_said
+                    .push(What::CutHeld { said: crate::cut_holder::said(left, holder.as_ref()) });
+                return Ok(Outcome::Nothing);
+            }
+        },
+        None => None,
+    };
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, CLAIM_KEY)? else {
         return Ok(Outcome::Lost);
     };
-    let started = started(fleet, me, agent, first);
+    let started = started(fleet, me, agent, first, left);
     if !matches!(started, Ok(Some(_)))
         && let Err(kept) = drop_run(&fleet.repo, &mut fleet.scan, &claim)
     {
@@ -363,11 +380,18 @@ pub fn start(
 
 /// What `start` does once it holds the claim → the cut's record, its
 /// checkout cut and its terminal started; `None` where nothing is left to cut.
-fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: Harness) -> Result<Option<Record>> {
+/// `left` is the checkout an earlier cut kept, which it removes.
+fn started(
+    fleet: &Fleet,
+    me: &Me,
+    agent: &Agent,
+    first: Harness,
+    left: Option<Worktree>,
+) -> Result<Option<Record>> {
     let base = fleet.base_tip()?;
     let Some(record) = pick(fleet, &base, me.now)? else { return Ok(None) };
     let source = Source::of(&fleet.repo)?;
-    if let Some(left) = Worktree::named(&source, CHECKOUT)? {
+    if let Some(left) = left {
         left.remove()?;
     }
     clear_local_branches(&fleet.repo)?;
@@ -761,6 +785,16 @@ pub fn run(
     clock: impl Fn() -> u64,
 ) -> Result<Value> {
     let checkout = cut_checkout(repo)?;
+    // Held as long as this process runs: a second cut of this checkout
+    // would share its `target/` and TMPDIR, and kill its tests as leaks.
+    let _held = match crate::cut_holder::take(&checkout, clock())? {
+        Ok(held) => held,
+        Err(holder) => bail!(
+            "{}: a second cut of one checkout runs nothing while it runs, and goes on once it \
+             has ended",
+            crate::cut_holder::said(&checkout, holder.as_ref())
+        ),
+    };
     let Some(mut record) = checkout.cut_record()? else {
         bail!(
             "{} says no cut: only the checkout a fleet started a cut in takes its steps",
@@ -1436,11 +1470,12 @@ With `--from <step>` it takes that step and those after it, the record kept as i
 
 {"version", "tag", "prs", "branch", "commit", "took", "closed", "said"} — the cut took every step: `took` is each step with its seconds, `closed` the issues it closed. {"version", "stopped": "tag", "why", "said"} — a minor landing superseded the patch; nothing was tagged or published, and the fleet cuts the minor next. {"version", "failed", "why", "said", "log"} — it failed at the step `failed`.
 
-Errors: the checkout is no cut's, or keeps no cut's record; the repo names no cut steps; `--from` names no step.
+Errors: another cut holds the checkout (its pid, step and since); the checkout is no cut's, or keeps no cut's record; the repo names no cut steps; `--from` names no step.
 
 ## What trips you up
 
 - One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, which opens the failure issue for it, or adds to the one open. A fleet lock holds a new one back; an open cut failure does not, but where the same failure repeated {const:CUT_REPEATS} times with nothing landed since.
+- One cut of a checkout runs at a time: `afkconvoy cut` holds its checkout for as long as it runs, and a second — the fleet's, or one run by hand with `--from` — refuses at once, naming the one that holds it (its pid, the step it is at, since when), and runs nothing: two at once would share its `target/` and the tests' TMPDIR, and each would kill the other's tests as leaks. A tick whose due cut would remove a checkout another cut holds starts nothing, and its line says so; the next tick asks again. A holder whose process is gone holds nothing: the next cut takes its checkout over.
 - A cut interrupted after tagging goes on from the tag; one interrupted before, from its branch. A cut started again for the same version takes up that commit, and pushes no second branch.
 - Cut records and serial barriers that earlier versions left on the remote candidate chain are read as before, and drain: nothing new names a cut there.
 - `sh -e` fails a step at a line whose command fails, not at one whose command it tests: a command of an `if` or `while` test, on the left of `&&` or `||`, after `!`, or before the last of a pipe fails nothing. `./packaging/release.sh publish "$VERSION" | tee published` passes whatever `release.sh` did.
