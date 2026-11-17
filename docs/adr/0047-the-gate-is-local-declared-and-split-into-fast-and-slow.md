@@ -80,4 +80,4 @@ A fast gate run by `afkconvoy gate --fast` is a `fast_gate` in the host's exclus
 - A slow test added without being marked fails the fast gate past 6 seconds, by name, and is checked alone before it is named slow; one between 2 and 6 seconds passes and stays fast until measured again.
 - A red run leaves no record, so the run that reached the limit leaves no time.
 
-Not yet aligned with ADR-0091: `gate.sh` opens and comments on the `slow-test` issue with `gh issue`, on GitHub, where the local tracker is a checkout's default.
+`gate.sh` opens and comments on the `slow-test` issue with `afkconvoy issue`, in the checkout's tracker: the host's local one unless the checkout names a GitHub repo (ADR-0091). Where the tracker cannot be reached, or the installed afkconvoy has no `issue`, the gate's printed line is all there is, and the gate is not red for it.

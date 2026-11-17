@@ -416,26 +416,31 @@ change_touches() {
 # Each test past the line that the change did not touch is named in one open
 # issue, never a red: a second sighting adds to that issue and opens no other.
 # This is the path a slow gate takes (ADR-0047): the issue carries the ready
-# label, and the fleet works it. Where gh cannot reach the tracker the line
-# printed above is all there is, and the gate is not red for it.
+# label, and the fleet works it. It is opened in the checkout's tracker, the
+# host's local one unless the checkout names a GitHub repo, through
+# `afkconvoy issue` (ADR-0091). Where the tracker cannot be reached, or the
+# installed afkconvoy has no `issue`, the line printed above is all there is,
+# and the gate is not red for it.
 report_untouched() {
-    command -v gh >/dev/null 2>&1 || return 0
+    command -v afkconvoy >/dev/null 2>&1 || return 0
+    command -v jq >/dev/null 2>&1 || return 0
     label=slow-test
-    found=$(gh issue list --state open --label "$label" --json number --jq '.[0].number // empty' 2>/dev/null) || return 0
+    listed=$(afkconvoy issue list --state open --label "$label" --json number 2>/dev/null) || return 0
+    found=$(printf '%s' "$listed" | jq -r '.issues[0].number // empty' 2>/dev/null) || return 0
     if [ -z "$found" ]; then
-        gh label create "$label" --description "A test past the fast gate's 2s line" >/dev/null 2>&1 || true
         body="Tests past the fast gate's 2s line, alone on a quiet host, that the change under test did not touch (sunfmin/control#1307). Move each to .config/slow-tests as its binary and name, or make it fast, then close this issue."
         while read -r binary name; do
             body="$body
 - \`$binary $name\`"
         done <"$1"
-        gh issue create --title "Tests are past the fast gate's 2s line: move them to .config/slow-tests or make them fast" --label "$label" --label ready-for-agent --body "$body" >/dev/null 2>&1 || true
+        afkconvoy issue create --title "Tests are past the fast gate's 2s line: move them to .config/slow-tests or make them fast" --label "$label" --label ready-for-agent --body "$body" >/dev/null 2>&1 || true
         return 0
     fi
-    text=$(gh issue view "$found" --json body,comments --jq '.body, (.comments[].body)' 2>/dev/null) || return 0
+    viewed=$(afkconvoy issue view "$found" --json body,comments 2>/dev/null) || return 0
+    text=$(printf '%s' "$viewed" | jq -r '.body, (.comments[].body)' 2>/dev/null) || return 0
     while read -r binary name; do
         case "$text" in *"$binary $name"*) continue ;; esac
-        gh issue comment "$found" --body "Seen again past the 2s line, untouched by the change under test: \`$binary $name\`" >/dev/null 2>&1 || true
+        afkconvoy issue comment "$found" --body "Seen again past the 2s line, untouched by the change under test: \`$binary $name\`" >/dev/null 2>&1 || true
     done <"$1"
 }
 if [ -z "$nextest" ] && [ -n "${1:-}" ]; then
