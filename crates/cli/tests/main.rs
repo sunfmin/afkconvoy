@@ -45,6 +45,7 @@ mod kimi;
 mod kit_research;
 mod lander;
 mod launch;
+mod local_tracker;
 mod lock;
 mod logged;
 mod migration;

@@ -363,8 +363,14 @@ impl GitHub {
         self.seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn saw_closed(&self, number: u64) {
+    /// Notes that issue `number` was seen closed (`Issues::seen_closed`).
+    pub(crate) fn saw_closed(&self, number: u64) {
         self.seen().closed.insert(number);
+    }
+
+    /// The issues this view and its clones have seen closed.
+    pub(crate) fn seen_closed(&self) -> Vec<u64> {
+        self.seen().closed.iter().copied().collect()
     }
 
     /// `gh` for the calls that each name their repo, where no checkout is at

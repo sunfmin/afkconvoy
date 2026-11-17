@@ -160,7 +160,11 @@ impl Whose {
             (Some(tracker), _) => tracker,
             (None, Some(checkout)) => {
                 let list = crate::checkout_list::List::of_host()?;
-                crate::checkout_list::said_tracker(&list, checkout)?.unwrap_or_else(|| repo.clone())
+                let said = crate::checkout_list::said_tracker(&list, checkout)?;
+                said.as_ref()
+                    .and_then(afkconvoy_core::tracker::Said::repo)
+                    .cloned()
+                    .unwrap_or_else(|| repo.clone())
             }
             (None, None) => {
                 bail!("{none}: name the tracker whose daybook it is with `--tracker`")
@@ -194,8 +198,9 @@ fn whose(checkout: Result<Repo>, tracker: Option<RepoName>) -> Result<(PathBuf, 
         }
         (None, Ok(checkout)) => {
             let list = crate::checkout_list::List::of_host()?;
-            let tracker = match crate::checkout_list::said_tracker(&list, &checkout)? {
-                Some(tracker) => tracker,
+            let said = crate::checkout_list::said_tracker(&list, &checkout)?;
+            let tracker = match said.as_ref().and_then(afkconvoy_core::tracker::Said::repo) {
+                Some(tracker) => tracker.clone(),
                 None => crate::checkout_list::named_repo(&checkout)?,
             };
             Ok((checkout.dir, tracker))

@@ -353,18 +353,9 @@ impl Issues for GitHubIssues {
                 continue;
             }
             let comments = if row.more { self.comments(row.number) } else { Ok(row.comments) };
-            let account = comments.map_err(|error| format!("{error:#}")).and_then(|comments| {
-                let mut accounts = comments.into_iter().filter(|comment| {
-                    // Include a damaged opening marker so it is not silently lost.
-                    comment.body.contains("<!--convoy:account ")
-                        || comment.body.contains("<!--convoy:account-->")
-                });
-                let body = accounts.next().map(|comment| comment.body);
-                if accounts.next().is_some() {
-                    return Err("issue has several work accounts".into());
-                }
-                Ok(body)
-            });
+            let account = comments
+                .map_err(|error| format!("{error:#}"))
+                .and_then(crate::issues::work_account);
             issues.push(afkconvoy_core::accounts::Issue {
                 number: row.number,
                 closed: row.closed,
@@ -401,7 +392,7 @@ impl Issues for GitHubIssues {
     }
 
     fn seen_closed(&self) -> Vec<u64> {
-        self.gh.seen().closed.iter().copied().collect()
+        self.gh.seen_closed()
     }
 
     /// In a tracker that is not the checkout's own repo it carries the repo

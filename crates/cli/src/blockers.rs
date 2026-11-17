@@ -29,7 +29,8 @@ fn serving(repo: &Repo, tracker: &str) -> Result<Vec<Checkout>> {
     for entry in List::of_host()?.read()?.checkouts {
         let Ok(other) = Repo::at(&entry.checkout) else { continue };
         let Ok(name) = name(&other) else { continue };
-        let uses = entry.tracker.as_ref().map_or(name.as_str(), |name| name.as_str());
+        let host = crate::host_settings::host_name();
+        let uses = entry.tracker.as_ref().map_or(name.clone(), |said| said.name(&host).to_string());
         if uses.eq_ignore_ascii_case(tracker) && !found.iter().any(|row| row.repo == name) {
             found.push(Checkout { repo: name, path: entry.checkout });
         }
@@ -58,6 +59,9 @@ pub fn unworked(
             let labels = edge.labels.as_deref().map(repo_labels);
             let target = if outside {
                 checkouts.iter().find(|checkout| checkout.repo.eq_ignore_ascii_case(of))
+            } else if let Some(work) = &edge.of {
+                // An issue whose repo is a field is that repo's, whatever it carries.
+                checkouts.iter().find(|checkout| checkout.repo.eq_ignore_ascii_case(work))
             } else {
                 labels.as_ref().filter(|labels| labels.len() == 1).and_then(|labels| {
                     checkouts.iter().find(|checkout| {

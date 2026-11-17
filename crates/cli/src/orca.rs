@@ -12,7 +12,6 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
-use afkconvoy_core::config::RepoName;
 use afkconvoy_core::cut;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::{Harness, Keystroke};
@@ -21,7 +20,7 @@ use afkconvoy_core::legacy::TRAIN_WORKTREE;
 use afkconvoy_core::line::niced;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, Tool, add_checkout};
-use afkconvoy_core::tracker::Tracker;
+use afkconvoy_core::tracker::{Said, Tracker};
 use afkconvoy_core::worker::{WorkerState, is_worktree_named, short_branch, worker_state};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -1671,14 +1670,19 @@ impl Worktree {
     /// (`tracker`), whether or not the checkout list holds its checkout yet.
     pub fn keep_tracker(&self, tracker: &Tracker) -> Result<()> {
         let file = self.note(TRACKER_FILE)?;
-        let named = tracker.named().map(RepoName::as_str).unwrap_or_default();
-        std::fs::write(&file, named).with_context(|| format!("cannot write {}", file.display()))
+        let said = match tracker {
+            Tracker::Own => String::new(),
+            Tracker::Other { tracker, .. } => tracker.to_string(),
+            Tracker::Local { .. } => Said::Local.to_string(),
+        };
+        std::fs::write(&file, said).with_context(|| format!("cannot write {}", file.display()))
     }
 
     /// The tracker the fleet that started the worker here kept
-    /// (`keep_tracker`): the repo it names, `Some(None)` for the checkout's
-    /// own, `None` where none was kept. One that names no repo is an error.
-    pub fn tracker(&self) -> Result<Option<Option<RepoName>>> {
+    /// (`keep_tracker`): the repo it names, or the host's local tracker,
+    /// `Some(None)` for the checkout's own, `None` where none was kept. One
+    /// that names no tracker is an error.
+    pub fn tracker(&self) -> Result<Option<Option<Said>>> {
         let file = self.note(TRACKER_FILE)?;
         let kept = match std::fs::read_to_string(&file) {
             Ok(kept) => kept,
@@ -1689,7 +1693,7 @@ impl Worktree {
         };
         match kept.trim() {
             "" => Ok(Some(None)),
-            named => match RepoName::read(named) {
+            named => match Said::read(named) {
                 Some(named) => Ok(Some(Some(named))),
                 None => bail!(
                     "{} says the tracker of the worker here is {named:?}, which names no repo, \

@@ -52,7 +52,7 @@ pub fn lock(config: &Config, gh: &GitHub, issue: u64, role: Option<&str>) -> Res
     if read.is_closed() {
         bail!("issue #{issue} is closed: a fleet lock is an open issue, and ends when it closes");
     }
-    if let Err(why) = gh.tracker.to_take(&read.labels) {
+    if let Err(why) = gh.tracker.to_take(&read.labels, read.of.as_deref()) {
         bail!("issue {} {why}: a lock holds the fleet whose issue it is", gh.tracker.issue(issue));
     }
     let label = &config.lock_label;
@@ -60,7 +60,7 @@ pub fn lock(config: &Config, gh: &GitHub, issue: u64, role: Option<&str>) -> Res
     if raised {
         issues.comment(issue, &raised_comment(role))?;
     }
-    issues.take(issue, &read.labels)?;
+    issues.take(issue, &read)?;
     if raised {
         issues.add_label(issue, label)?;
     }

@@ -88,8 +88,8 @@ fn trackers() -> Vec<(RepoName, PathBuf)> {
         return trackers;
     };
     for entry in listed.checkouts {
-        let tracker = match entry.tracker {
-            Some(tracker) => Some(tracker),
+        let tracker = match entry.tracker.as_ref().and_then(afkconvoy_core::tracker::Said::repo) {
+            Some(tracker) => Some(tracker.clone()),
             None => crate::git::Repo::at(&entry.checkout)
                 .and_then(|repo| crate::checkout_list::named_repo(&repo))
                 .ok(),

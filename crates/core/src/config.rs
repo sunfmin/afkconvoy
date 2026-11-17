@@ -503,6 +503,14 @@ impl RepoName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// `owner/name`, whose parts the caller made of letters, digits, `_`
+    /// and `-`, beginning with none of `-`: a name `read` takes, made
+    /// without a refusal no caller could meet (`tracker::local_name`).
+    pub(crate) fn made(owner: &str, name: &str) -> RepoName {
+        debug_assert!(RepoName::read(&format!("{owner}/{name}")).is_some(), "{owner}/{name}");
+        RepoName(format!("{owner}/{name}"))
+    }
 }
 
 impl TryFrom<String> for RepoName {

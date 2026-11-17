@@ -121,6 +121,20 @@ fn label_writes_are_idempotent() {
 }
 
 #[test]
+fn a_label_keeps_when_it_was_put_on_until_it_is_taken_off() {
+    let (mut store, _) = store("label-times");
+    let n = store.create(REPO, "t", "", &["a"], 10).unwrap();
+    store.add_labels(n, &["b"], 20).unwrap();
+    store.add_labels(n, &["a", "b"], 30).unwrap();
+    let added = |store: &mut Store| store.labels_added(n).unwrap();
+    assert_eq!(added(&mut store), [("a".into(), Some(10)), ("b".into(), Some(20))]);
+    store.remove_labels(n, &["a"], 40).unwrap();
+    store.add_labels(n, &["a"], 50).unwrap();
+    assert_eq!(added(&mut store), [("a".into(), Some(50)), ("b".into(), Some(20))]);
+    assert!(matches!(store.labels_added(99), Err(Error::NoSuchIssue(99))));
+}
+
+#[test]
 fn close_and_reopen_record_when_and_repeat_as_no_change() {
     let (mut store, _) = store("close");
     let n = store.create(REPO, "t", "", &[], 10).unwrap();
@@ -161,9 +175,13 @@ fn blockers_are_read_with_their_state_and_labels() {
     assert_eq!(
         blockers,
         [
-            Blocker { number: a, repo: REPO.into(), state: State::Open, labels: vec!["x".into()] },
-            Blocker { number: b, repo: "acme/gears".into(), state: State::Closed, labels: vec![] },
+            Blocker { number: a, repo: REPO.into(), closed: None, labels: vec!["x".into()] },
+            Blocker { number: b, repo: "acme/gears".into(), closed: Some(8), labels: vec![] },
         ]
+    );
+    assert_eq!(
+        blockers.iter().map(Blocker::state).collect::<Vec<_>>(),
+        [State::Open, State::Closed]
     );
     assert_eq!(store.view(n).unwrap().blockers, blockers);
     assert_eq!(store.view(n).unwrap().issue.updated, 6, "an edge already there changed nothing");

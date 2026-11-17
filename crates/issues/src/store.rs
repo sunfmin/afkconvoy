@@ -74,8 +74,15 @@ pub struct Comment {
 pub struct Blocker {
     pub number: u64,
     pub repo: String,
-    pub state: State,
+    /// When it closed, where it is closed.
+    pub closed: Option<u64>,
     pub labels: Vec<String>,
+}
+
+impl Blocker {
+    pub fn state(&self) -> State {
+        if self.closed.is_some() { State::Closed } else { State::Open }
+    }
 }
 
 /// One issue with its comments, oldest first, and its blockers, lowest
@@ -138,8 +145,8 @@ impl Store {
         let number = tx.last_insert_rowid() as u64;
         for label in labels {
             tx.execute(
-                "INSERT OR IGNORE INTO labels (issue, name) VALUES (?1, ?2)",
-                params![number, label],
+                "INSERT OR IGNORE INTO labels (issue, name, added) VALUES (?1, ?2, ?3)",
+                params![number, label, at],
             )?;
         }
         tx.commit()?;
@@ -207,27 +214,38 @@ impl Store {
         Ok(())
     }
 
-    /// Puts `labels` on issue `number`; one it carries already is left.
+    /// Puts `labels` on issue `number` at `at`; one it carries already is
+    /// left, and keeps when it was put on.
     pub fn add_labels(&mut self, number: u64, labels: &[&str], at: u64) -> Result<()> {
-        self.labelled(
-            number,
-            labels,
-            at,
-            "INSERT OR IGNORE INTO labels (issue, name) VALUES (?1, ?2)",
-        )
+        self.labelled(number, labels, at, |tx, label| {
+            tx.execute(
+                "INSERT OR IGNORE INTO labels (issue, name, added) VALUES (?1, ?2, ?3)",
+                params![number, label, at],
+            )
+        })
     }
 
     /// Takes `labels` off issue `number`; one it does not carry is no matter.
     pub fn remove_labels(&mut self, number: u64, labels: &[&str], at: u64) -> Result<()> {
-        self.labelled(number, labels, at, "DELETE FROM labels WHERE issue = ?1 AND name = ?2")
+        self.labelled(number, labels, at, |tx, label| {
+            tx.execute("DELETE FROM labels WHERE issue = ?1 AND name = ?2", params![number, label])
+        })
     }
 
-    fn labelled(&mut self, number: u64, labels: &[&str], at: u64, sql: &str) -> Result<()> {
+    /// Makes `change` of each of `labels` on issue `number`, at `at` where
+    /// one changed anything.
+    fn labelled(
+        &mut self,
+        number: u64,
+        labels: &[&str],
+        at: u64,
+        change: impl Fn(&Transaction<'_>, &str) -> rusqlite::Result<usize>,
+    ) -> Result<()> {
         let tx = self.write()?;
         exists(&tx, number)?;
         let mut changed = 0;
         for label in labels {
-            changed += tx.execute(sql, params![number, label])?;
+            changed += change(&tx, label)?;
         }
         if changed > 0 {
             touch(&tx, number, at)?;
@@ -316,6 +334,17 @@ impl Store {
         let tx = self.db.transaction()?;
         exists(&tx, number)?;
         blockers(&tx, number)
+    }
+
+    /// Each label issue `number` carries, in order, with when it was put on
+    /// — none where that was not kept.
+    pub fn labels_added(&mut self, number: u64) -> Result<Vec<(String, Option<u64>)>> {
+        let tx = self.db.transaction()?;
+        exists(&tx, number)?;
+        let mut statement =
+            tx.prepare("SELECT name, added FROM labels WHERE issue = ?1 ORDER BY name")?;
+        let rows = statement.query_map([number], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Every label some issue carries, of `repo` alone where it is named,
@@ -466,13 +495,7 @@ fn blockers(tx: &Transaction<'_>, number: u64) -> Result<Vec<Blocker>> {
          WHERE blockers.issue = ?1 ORDER BY issues.number",
     )?;
     let rows = statement.query_map([number], |row| {
-        let closed: Option<u64> = row.get(2)?;
-        Ok(Blocker {
-            number: row.get(0)?,
-            repo: row.get(1)?,
-            state: if closed.is_some() { State::Closed } else { State::Open },
-            labels: vec![],
-        })
+        Ok(Blocker { number: row.get(0)?, repo: row.get(1)?, closed: row.get(2)?, labels: vec![] })
     })?;
     let mut blockers = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     for blocker in &mut blockers {

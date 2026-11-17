@@ -44,6 +44,9 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         CHECK (issue <> blocker)
     ) WITHOUT ROWID;
     CREATE INDEX blockers_by_blocker ON blockers (blocker, issue);",
+    // When each label an issue carries was put on it: none of one put on
+    // before this was kept.
+    "ALTER TABLE labels ADD COLUMN added INTEGER;",
 ];
 
 /// The schema version of `db`.
@@ -103,8 +106,12 @@ mod tests {
         migrate(&mut db, MIGRATIONS).unwrap();
         db.pragma_update(None, "user_version", MIGRATIONS.len() as i64 + 1).unwrap();
         let refused = migrate(&mut db, MIGRATIONS).unwrap_err();
-        assert!(matches!(refused, Error::Newer { found: 2, known: 1 }), "{refused}");
-        assert_eq!(version(&db).unwrap(), 2);
+        let known = MIGRATIONS.len() as i64;
+        assert!(
+            matches!(refused, Error::Newer { found, known: k } if found == known + 1 && k == known),
+            "{refused}"
+        );
+        assert_eq!(version(&db).unwrap(), known + 1);
     }
 
     #[test]

@@ -15,6 +15,7 @@
 //! a script's `cat` — is not on it, which is why a test's fakes are programs
 //! and not scripts. `./gate.sh` reads the files (docs/gate-baseline.md).
 
+use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::PathBuf;
@@ -58,11 +59,46 @@ fn file() -> Option<&'static PathBuf> {
     .as_ref()
 }
 
+thread_local! {
+    /// The fixture this thread builds, while it builds one.
+    static FIXTURE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Runs `build` with the starts it makes on this thread counted as the
+/// fixture `name`'s, in its own file, and not as the running test's. A fixture
+/// built once and copied by every later test (a seed) is no one test's cost:
+/// which test builds it first, or races another to, is not fixed, and counted
+/// on that test it made the test's count vary run to run.
+pub fn as_fixture<T>(name: &str, build: impl FnOnce() -> T) -> T {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FIXTURE.with(|fixture| *fixture.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(FIXTURE.with(|fixture| fixture.borrow_mut().replace(name.to_owned())));
+    build()
+}
+
+/// Where a start made now is counted: the fixture's file while this thread
+/// builds one, else the running test's.
+fn counted_in() -> Option<PathBuf> {
+    let fixture = FIXTURE.with(|fixture| fixture.borrow().clone());
+    match (fixture, std::env::var(DIR_ENV)) {
+        (Some(name), Ok(dir)) => Some(file_of(&dir, FIXTURE_BINARY, &name)),
+        _ => file().cloned(),
+    }
+}
+
+/// The binary a fixture's file is named for: `./gate.sh` holds no fixture to
+/// the bound on one test.
+pub const FIXTURE_BINARY: &str = "fixture";
+
 /// A command that is counted when the gate counts: [`Command::new`], and the
 /// one place this crate makes a command.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(&program);
-    if let Some(file) = file() {
+    if let Some(file) = counted_in() {
         let line = format!(
             "{}\n",
             std::path::Path::new(program.as_ref()).file_name().map_or_else(
@@ -70,10 +106,10 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
                 |name| name.to_string_lossy().into_owned(),
             )
         );
-        if let Ok(mut open) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
+        if let Ok(mut open) = std::fs::OpenOptions::new().create(true).append(true).open(&file) {
             let _ = open.write_all(line.as_bytes());
         }
-        command.env(FILE_ENV, file);
+        command.env(FILE_ENV, &file);
     }
     command
 }

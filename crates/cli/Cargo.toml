@@ -13,6 +13,8 @@ afkconvoy-daybook = { path = "../daybook" }
 afkconvoy-gate = { path = "../gate" }
 afkconvoy-host-kit = { path = "../host-kit" }
 afkconvoy-host-reading = { path = "../host-reading" }
+# The host's local tracker (`issues::local`, docs/adr/0091).
+afkconvoy-issues = { path = "../issues" }
 afkconvoy-landing = { path = "../landing" }
 agent-help = { git = "https://github.com/sunfmin/agent-cli" }
 anyhow = "1"

@@ -359,7 +359,7 @@ fn selectable(gh: &GitHub, issue: u64) -> Result<()> {
     );
     let read = issues.issue(issue)?;
     ensure!(!read.pull_request && !read.is_closed(), "select a target for an open task issue");
-    gh.tracker.to_take(&read.labels).map_err(anyhow::Error::msg)?;
+    gh.tracker.to_take(&read.labels, read.of.as_deref()).map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

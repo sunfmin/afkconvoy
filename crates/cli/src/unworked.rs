@@ -2,6 +2,13 @@
 //! reconciles reports under a leased tracker ref, then observes the finding.
 //! A report's opening host remains its watch owner until recovery, even
 //! after a restart. No local observation time or checkout list is evidence.
+//!
+//! A GitHub tracker is read by name, every repo's issues in it, through its
+//! REST endpoints: label timelines say when an issue was made ready. The
+//! host's local tracker (docs/adr/0091) is read from its store, every repo's
+//! issues in it, the store saying when each label was put on; its reports
+//! need no lease, as no other host writes it, and the host runner alone
+//! writes them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -10,7 +17,7 @@ use afkconvoy_core::claims::{Claim, read_heartbeat};
 use afkconvoy_core::config::RepoName;
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::lease::stamp_stale;
-use afkconvoy_core::tracker::{Tracker, repo_labels};
+use afkconvoy_core::tracker::{Said, Tracker, repo_labels};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -64,6 +71,9 @@ struct Beat {
 struct Observed {
     checkout: PathBuf,
     tracker: String,
+    /// The tracker is the host's local tracker, named `tracker`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    local: bool,
     repo: String,
     escalate: String,
     waiting: Vec<Waiting>,
@@ -81,6 +91,58 @@ struct Issue {
     body: String,
     labels: Vec<String>,
     created: u64,
+    /// What the local tracker keeps of it beside: GitHub says it of a label
+    /// timeline and dependency edges, read as they are needed.
+    #[serde(skip)]
+    local: Option<Kept>,
+}
+
+/// What the host's local tracker keeps of an open issue for this read.
+#[derive(Clone)]
+struct Kept {
+    /// The repo it is of.
+    repo: String,
+    /// Each label it carries, with when it was put on.
+    added: Vec<(String, Option<u64>)>,
+    /// When each of its blockers closed: none of one open.
+    blockers: Vec<Option<u64>>,
+}
+
+impl Issue {
+    /// The repo it is of: of the local tracker its field; of a GitHub
+    /// tracker its one repo label, where it carries one alone.
+    fn repo(&self) -> Option<String> {
+        if let Some(kept) = &self.local {
+            return Some(kept.repo.to_lowercase());
+        }
+        let labels = repo_labels(&self.labels);
+        (labels.len() == 1).then(|| labels[0][5..].to_lowercase())
+    }
+}
+
+/// Every open issue of the host's local tracker, of every repo, with what
+/// it keeps of each (`Kept`): one read of its store.
+fn local_issues() -> Result<Vec<Issue>> {
+    use afkconvoy_issues::{Filter, Which};
+    let mut store = crate::issues::local::open_store(&crate::issues::local::store_path()?)?;
+    let views = store.views(&Filter { state: Which::Open, ..Filter::default() })?;
+    views
+        .into_iter()
+        .map(|view| {
+            let added = store.labels_added(view.issue.number)?;
+            Ok(Issue {
+                number: view.issue.number,
+                body: view.issue.body,
+                labels: view.issue.labels,
+                created: view.issue.created,
+                local: Some(Kept {
+                    repo: view.issue.repo,
+                    added,
+                    blockers: view.blockers.iter().map(|blocker| blocker.closed).collect(),
+                }),
+            })
+        })
+        .collect()
 }
 
 fn time(value: &Value) -> Option<u64> {
@@ -137,6 +199,10 @@ fn ready_since(
     issue: &Issue,
     labels: &[String],
 ) -> Result<Option<u64>> {
+    if let Some(kept) = &issue.local {
+        let added = |label: &String| kept.added.iter().find(|(name, _)| name == label)?.1;
+        return Ok(labels.iter().filter_map(added).min());
+    }
     let timeline =
         rows(gh, &format!("repos/{tracker}/issues/{}/timeline?per_page=100", issue.number), ".[]")?;
     // Only labels still present matter. Reapplication replaces the earlier
@@ -154,6 +220,9 @@ fn ready_since(
 }
 
 fn blockers(gh: &GitHub, tracker: &str, issue: &Issue) -> Result<Vec<Option<u64>>> {
+    if let Some(kept) = &issue.local {
+        return Ok(kept.blockers.clone());
+    }
     let mut edges = rows(
         gh,
         &format!("repos/{tracker}/issues/{}/dependencies/blocked_by?per_page=100", issue.number),
@@ -183,7 +252,7 @@ fn blockers(gh: &GitHub, tracker: &str, issue: &Issue) -> Result<Vec<Option<u64>
 fn observe(
     checkout: PathBuf,
     gh: &GitHub,
-    tracker: &str,
+    (tracker, local): (&str, bool),
     repo: &str,
     open: &[Issue],
     now: u64,
@@ -191,6 +260,7 @@ fn observe(
     let mut seen = Observed {
         checkout,
         tracker: tracker.into(),
+        local,
         repo: repo.into(),
         escalate: String::new(),
         waiting: vec![],
@@ -231,9 +301,7 @@ fn read_repo(seen: &mut Observed, gh: &GitHub, open: &[Issue], now: u64) -> Resu
     };
     let mut waiting = vec![];
     for issue in open {
-        let owned = repo_labels(&issue.labels);
-        if owned.len() != 1
-            || !owned[0].eq_ignore_ascii_case(&format!("repo:{}", seen.repo))
+        if issue.repo().is_none_or(|of| !of.eq_ignore_ascii_case(&seen.repo))
             || Report::read(&issue.body).is_some()
             || issue.labels.contains(&seen.escalate)
         {
@@ -270,14 +338,7 @@ fn read_repo(seen: &mut Observed, gh: &GitHub, open: &[Issue], now: u64) -> Resu
     let refs = remote::foreign_work_refs(&seen.checkout, &url(&seen.repo))
         .context("repo's remote could not be read")?;
     let mut claims = BTreeMap::new();
-    let tracker = if seen.tracker.eq_ignore_ascii_case(&seen.repo) {
-        Tracker::Own
-    } else {
-        Tracker::Other {
-            tracker: RepoName::read(&seen.tracker).context("invalid tracker")?,
-            repo: named,
-        }
-    };
+    let tracker = seen.tracker_of(named)?;
     for (name, sha) in refs {
         let Some(kept) = Layout::ALL.into_iter().find_map(|layout| layout.kept(&name)) else {
             continue;
@@ -320,22 +381,57 @@ fn read_repo(seen: &mut Observed, gh: &GitHub, open: &[Issue], now: u64) -> Resu
     Ok(())
 }
 
+impl Observed {
+    /// The tracker of the fleets of `repo` this observes the work of, as
+    /// they name their claims: their own repo's, where it is the tracker.
+    fn tracker_of(&self, repo: RepoName) -> Result<Tracker> {
+        if !self.local && self.tracker.eq_ignore_ascii_case(repo.as_str()) {
+            return Ok(Tracker::Own);
+        }
+        self.named_tracker(repo)
+    }
+
+    /// Its tracker, named — whichever repo its checkout is of — for the
+    /// issues of `repo` in it.
+    fn named_tracker(&self, repo: RepoName) -> Result<Tracker> {
+        let tracker = RepoName::read(&self.tracker).context("invalid tracker")?;
+        Ok(match self.local {
+            true => Tracker::Local { tracker, repo },
+            false => Tracker::Other { tracker, repo },
+        })
+    }
+
+    /// A view of its tracker's issues of its repo, from its checkout.
+    fn issues(&self) -> Result<std::sync::Arc<dyn crate::issues::Issues>> {
+        let repo = RepoName::read(&self.repo).context("invalid repo")?;
+        let gh = GitHub::new(self.checkout.clone(), self.named_tracker(repo)?);
+        Ok(crate::issues::of(&gh))
+    }
+}
+
 /// Read every tracker named by the checkout list once, including repos that
 /// have never been on this host. Errors remain evidence, never an empty remote.
 pub(crate) fn read(now: u64) -> Result<Value> {
     let listed = List::of_host()?.read()?.checkouts;
+    let host = crate::host_settings::host_name();
     let mut trackers = BTreeMap::new();
     for entry in listed {
         let Ok(repo) = Repo::at(&entry.checkout) else { continue };
-        let tracker = entry.tracker.or_else(|| named_repo(&repo).ok());
-        if let Some(tracker) = tracker {
-            trackers.entry(tracker.to_string().to_lowercase()).or_insert(repo.dir);
+        let tracker = match entry.tracker {
+            Some(said) => Some((said.name(&host), said == Said::Local)),
+            None => named_repo(&repo).ok().map(|named| (named, false)),
+        };
+        if let Some((tracker, local)) = tracker {
+            trackers.entry((tracker.to_string().to_lowercase(), local)).or_insert(repo.dir);
         }
     }
     let mut found = vec![];
-    for (tracker, checkout) in trackers {
+    for ((tracker, local), checkout) in trackers {
         let gh = GitHub::new(checkout.clone(), Tracker::Own);
-        let open = private(&gh, &tracker).and_then(|()| issues(&gh, &tracker));
+        let open = match local {
+            true => local_issues(),
+            false => private(&gh, &tracker).and_then(|()| issues(&gh, &tracker)),
+        };
         let open = match open {
             Ok(open) => open,
             Err(error) => {
@@ -343,6 +439,7 @@ pub(crate) fn read(now: u64) -> Result<Value> {
                     checkout,
                     repo: tracker.clone(),
                     tracker,
+                    local,
                     escalate: String::new(),
                     waiting: vec![],
                     reports: vec![],
@@ -355,17 +452,10 @@ pub(crate) fn read(now: u64) -> Result<Value> {
         };
         let repos: BTreeSet<String> = open
             .iter()
-            .filter_map(|issue| {
-                let labels = repo_labels(&issue.labels);
-                if labels.len() == 1 {
-                    Some(labels[0][5..].to_lowercase())
-                } else {
-                    Report::read(&issue.body).map(|r| r.repo)
-                }
-            })
+            .filter_map(|issue| issue.repo().or_else(|| Report::read(&issue.body).map(|r| r.repo)))
             .collect();
         for repo in repos {
-            found.push(observe(checkout.clone(), &gh, &tracker, &repo, &open, now));
+            found.push(observe(checkout.clone(), &gh, (&tracker, local), &repo, &open, now));
         }
     }
     Ok(serde_json::to_value(found)?)
@@ -426,6 +516,15 @@ pub(crate) fn quota_finding(quota: &Value) -> Finding {
     )
 }
 
+/// Where the report `issue` of `seen` is, as a human is told it: its page on
+/// GitHub, or its name in the host's local tracker.
+fn report_at(seen: &Observed, issue: u64) -> String {
+    match seen.local {
+        true => format!("{}#{issue}", seen.tracker),
+        false => format!("https://github.com/{}/issues/{issue}", seen.tracker),
+    }
+}
+
 fn finding_of(seen: &Observed, host: &str, now: u64) -> Option<Finding> {
     let identity = json!(["unworked-repo", seen.tracker, seen.repo]);
     if let Some(error) = &seen.error {
@@ -443,13 +542,15 @@ fn finding_of(seen: &Observed, host: &str, now: u64) -> Option<Finding> {
         identity,
         format!("no fleet has taken the waiting issues of {}", seen.repo),
         format!(
-            "{}/issues/{}; {}; waiting: {}",
-            format_args!("https://github.com/{}", seen.tracker),
-            report.issue,
+            "{}; {}; waiting: {}",
+            report_at(seen, report.issue),
             heartbeat(seen, now),
             serde_json::to_string(&report.report.waiting).unwrap_or_default()
         ),
-        format!("gh issue view {} --repo {}", report.issue, seen.tracker),
+        match seen.local {
+            true => format!("afkconvoy issue view {}", report.issue),
+            false => format!("gh issue view {} --repo {}", report.issue, seen.tracker),
+        },
     ))
 }
 
@@ -485,7 +586,7 @@ pub(crate) fn issue_url(value: &Value, condition: &str) -> Option<String> {
         let Some(report) = seen.reports.first() else { continue };
         let Some(finding) = finding_of(&seen, &report.report.host, 0) else { continue };
         if crate::doctor::scoped("host", finding.kind, &finding.watch_id) == condition {
-            return Some(format!("https://github.com/{}/issues/{}", seen.tracker, report.issue));
+            return Some(report_at(&seen, report.issue));
         }
     }
     None
@@ -550,13 +651,24 @@ impl Reports for GitReports {
     fn refresh(&self, seen: &Observed, now: u64) -> Result<Observed> {
         std::sync::Arc::new(crate::look::Look::new()).enter(|| {
             let gh = GitHub::new(seen.checkout.clone(), Tracker::Own);
-            private(&gh, &seen.tracker)?;
-            let open = issues(&gh, &seen.tracker)?;
-            Ok(observe(seen.checkout.clone(), &gh, &seen.tracker, &seen.repo, &open, now))
+            let open = match seen.local {
+                true => local_issues()?,
+                false => {
+                    private(&gh, &seen.tracker)?;
+                    issues(&gh, &seen.tracker)?
+                }
+            };
+            let tracker = (seen.tracker.as_str(), seen.local);
+            Ok(observe(seen.checkout.clone(), &gh, tracker, &seen.repo, &open, now))
         })
     }
 
+    /// Of the local tracker, taken at once: no other host writes it, and on
+    /// this one the host runner alone writes reports.
     fn take(&self, seen: &Observed, host: &str, now: u64) -> Result<Option<String>> {
+        if seen.local {
+            return Ok(Some(host.to_string()));
+        }
         let gh = GitHub::new(seen.checkout.clone(), Tracker::Own);
         let name = Self::refname(seen);
         let refs = remote::foreign_refs(&seen.checkout, &url(&seen.tracker), &[&name])?;
@@ -587,6 +699,9 @@ impl Reports for GitReports {
     }
 
     fn release(&self, seen: &Observed, claim: &str) -> Result<()> {
+        if seen.local {
+            return Ok(());
+        }
         remote::foreign_push(
             &seen.checkout,
             &url(&seen.tracker),
@@ -596,10 +711,7 @@ impl Reports for GitReports {
     }
 
     fn open(&self, seen: &Observed, report: &Report, now: u64) -> Result<u64> {
-        let tracker = RepoName::read(&seen.tracker).context("invalid tracker")?;
-        let repo = RepoName::read(&seen.repo).context("invalid repo")?;
-        let gh = GitHub::new(seen.checkout.clone(), Tracker::Other { tracker, repo });
-        let issues = crate::issues::of(&gh);
+        let issues = seen.issues()?;
         let waits = report
             .waiting
             .iter()
@@ -627,14 +739,7 @@ impl Reports for GitReports {
     }
 
     fn close(&self, seen: &Observed, issue: u64, host: &str) -> Result<()> {
-        let gh = GitHub::new(
-            seen.checkout.clone(),
-            Tracker::Other {
-                tracker: RepoName::read(&seen.tracker).context("invalid tracker")?,
-                repo: RepoName::read(&seen.repo).context("invalid repo")?,
-            },
-        );
-        let issues = crate::issues::of(&gh);
+        let issues = seen.issues()?;
         let marker = "<!--convoy:unworked-taken-->";
         if !issues.comments(issue)?.iter().any(|comment| comment.body.starts_with(marker)) {
             issues.comment(issue, &format!("{marker}\nThe work was taken by host {host}: its claims or live heartbeat are on the repo's remote."))?;
@@ -688,6 +793,7 @@ mod tests {
         Observed {
             checkout: "/listed".into(),
             tracker: "acme/control".into(),
+            local: false,
             repo: "acme/remote".into(),
             escalate: "ready-for-human".into(),
             waiting: vec![Waiting { issue: 7, seconds: 3660 }],

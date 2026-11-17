@@ -6,7 +6,6 @@ use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use afkconvoy_core::claims::InstanceId;
-use afkconvoy_core::config::RepoName;
 use afkconvoy_core::harness::Harness;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -34,7 +33,7 @@ pub struct Start {
     /// `--tracker`: the checkout's, kept with its entry on the list and read
     /// at each tick (`tracker`), never with `named`. `None` leaves it as it
     /// is.
-    pub tracker: Option<To<RepoName>>,
+    pub tracker: Option<To<afkconvoy_core::tracker::Said>>,
     /// `--harness`: the harness this checkout's workers start on, kept with
     /// its entry on the list and read at each tick (`named_harness`), never
     /// with `named`. `None` leaves it as it is.

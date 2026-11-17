@@ -208,7 +208,8 @@ check_process_bound() {
         return 1
         ;;
     esac
-    over=$(awk -v bound="$bound" '{ n[FILENAME]++ } END { for (f in n) if (n[f] > bound) { name = f; sub(/^.*\//, "", name); sub(/@/, " ", name); print n[f], name } }' "$1"/* 2>/dev/null | sort -rn)
+    # A fixture's file (`fixture@…`, census::as_fixture) is no test's.
+    over=$(awk -v bound="$bound" '{ n[FILENAME]++ } END { for (f in n) if (n[f] > bound && f !~ /\/fixture@[^\/]*$/) { name = f; sub(/^.*\//, "", name); sub(/@/, " ", name); print n[f], name } }' "$1"/* 2>/dev/null | sort -rn)
     [ -n "$over" ] || return 0
     printf '%s\n' "$over" | while read -r count name; do
         echo "gate: $name started $count processes in the fast gate, more than the bound of $bound (.config/process-bound). Name it in .config/slow-tests as its binary and name, or make it start fewer." >&2

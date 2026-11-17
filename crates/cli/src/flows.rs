@@ -12,10 +12,11 @@
 use afkconvoy_core::config::{Config, RepoName};
 use afkconvoy_core::line::Line;
 use afkconvoy_core::team::{DONE, HUMAN, LAND, Pass, Performer, Team, Workflow};
+use afkconvoy_core::tracker::Said;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use crate::checkout_list::{List, named_repo, said};
+use crate::checkout_list::{List, named_repo, said, tracker_for};
 use crate::config;
 use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
@@ -120,22 +121,20 @@ fn keep_off(config: &Config, escalate_label: &str) -> Value {
 /// `asked` is the tracker, and with neither the tracker is not said.
 fn tracker(repo: &Repo, asked: Option<&RepoName>) -> Result<(Tracker, bool)> {
     // The tracker a checkout names, none where that is its own repo.
-    let own = |named: &RepoName| -> Result<Option<RepoName>> {
+    let own = |named: &RepoName| -> Result<Option<Said>> {
         let is_own = named.as_str().eq_ignore_ascii_case(named_repo(repo)?.as_str());
-        Ok((!is_own).then(|| named.clone()))
+        Ok((!is_own).then(|| Said::Repo(named.clone())))
     };
-    let tracker = |named: Option<RepoName>| -> Result<Tracker> {
-        Ok(match named {
-            None => Tracker::Own,
-            Some(tracker) => Tracker::Other { tracker, repo: named_repo(repo)? },
-        })
-    };
-    let lower = |named: &Option<RepoName>| named.as_ref().map(|n| n.as_str().to_lowercase());
+    let tracker = |said: Option<Said>| tracker_for(said, repo);
+    let lower = |said: &Option<Said>| said.as_ref().map(|n| n.to_string().to_lowercase());
     match (said(&List::of_host()?, repo)?, asked) {
         (Some(listed), None) => Ok((tracker(listed)?, false)),
         (Some(listed), Some(asked)) => {
             if lower(&listed) != lower(&own(asked)?) {
-                let listed = listed.map_or_else(|| named_repo(repo), Ok)?;
+                let listed = listed.map_or_else(
+                    || named_repo(repo).map(|n| n.to_string()),
+                    |said| Ok(said.to_string()),
+                )?;
                 bail!(
                     "{} is on this host's checkout list with the tracker {listed}, and \
                      `--tracker` says {asked}: its fleet reads its issues in {listed}. Leave \

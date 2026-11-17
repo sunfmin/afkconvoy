@@ -513,6 +513,9 @@ impl World {
             ("AFKCONVOY_FAKE_PID_COUNTER".to_string(), shown(&self.root.join("host-pid-counter"))),
         ];
         env.extend(GIT_ENV.iter().map(|(name, value)| (name.to_string(), value.to_string())));
+        // The host's data directory, its local tracker in it: the world's,
+        // in every command and login shell, whatever the caller's says.
+        env.push(("XDG_DATA_HOME".to_string(), shown(&self.data())));
         // No checkout above the world is one of its: a test's directory
         // is in this repo's, when a worker's TMPDIR is in its worktree.
         env.push(("GIT_CEILING_DIRECTORIES".to_string(), shown(self.root.parent().unwrap())));
@@ -1465,12 +1468,19 @@ pub(crate) fn publish_seed(
             n => templates.join(format!("{name}-{n}")),
         };
         if !kept.exists() {
-            let scratch = tempfile::tempdir_in(&templates).unwrap();
-            create(&scratch.path().join("repo"));
-            std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
-            let inventory = serde_json::to_vec(&inventory(&scratch.path().join("repo"))).unwrap();
-            std::fs::write(scratch.path().join("inventory.json"), inventory).unwrap();
-            publish_scratch(scratch.path(), &kept);
+            // Built by whichever test needs it first, or by several racing:
+            // counted as the seed's, not as theirs (census::as_fixture). The
+            // git found once a process stays the test's either way.
+            std::sync::LazyLock::force(&REAL_GIT_DIR);
+            afkconvoy::census::as_fixture(&format!("seed:{name}"), || {
+                let scratch = tempfile::tempdir_in(&templates).unwrap();
+                create(&scratch.path().join("repo"));
+                std::fs::write(scratch.path().join("manifest.json"), &manifest).unwrap();
+                let inventory =
+                    serde_json::to_vec(&inventory(&scratch.path().join("repo"))).unwrap();
+                std::fs::write(scratch.path().join("inventory.json"), inventory).unwrap();
+                publish_scratch(scratch.path(), &kept);
+            });
         }
         if seed_is_complete(&kept, &manifest) {
             return kept.join("repo");
@@ -1840,6 +1850,33 @@ impl World {
         let again = self.root.join(name);
         git(&self.root, &["clone", "-q", self.bare.to_str().unwrap(), again.to_str().unwrap()]);
         again
+    }
+
+    /// This world's host's data directory (`XDG_DATA_HOME`): where its local
+    /// tracker is kept.
+    pub fn data(&self) -> PathBuf {
+        self.root.join("data")
+    }
+
+    /// Has `checkout` say its tracker is this host's local tracker, with its
+    /// entry on this world's checkout list, as `run --tracker local` keeps it.
+    pub fn say_local_tracker(&self, checkout: &Path) {
+        let file = self.cache().join("afkconvoy/checkouts.json");
+        let mut list = self.checkout_list();
+        let entries = list["checkouts"].as_array_mut().unwrap();
+        match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
+            Some(entry) => entry["tracker"] = json!("local"),
+            None => entries.push(json!({"checkout": checkout, "tracker": "local"})),
+        }
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, list.to_string()).unwrap();
+    }
+
+    /// This world's host's local tracker, as every command of the world
+    /// opens it.
+    pub fn local_tracker(&self) -> afkconvoy_issues::Store {
+        let path = self.data().join("afkconvoy/issues.db");
+        afkconvoy::issues::local::open_store(&path).unwrap()
     }
 
     /// This host's checkout list, as the host runner keeps it: none yet is

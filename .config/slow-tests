@@ -1215,3 +1215,12 @@ afkconvoy::cli dispatch::a_base_branch_the_remote_lacks_is_an_error
 afkconvoy::cli patrol::check_requires_a_positive_whole_landing_bound
 afkconvoy::cli accounts::account_windows_select_the_end_and_report_unknown_data
 afkconvoy::cli accounts::token_summary_counts_known_workers_by_harness_and_ranks_issues
+# Local tracker (docs/adr/0091), measured 2.1–4.3s on the slow profile: ticks, a run, doctor looks.
+afkconvoy::cli local_tracker::a_fleet_lock_of_the_local_tracker_holds_its_fleets_of_that_repo_alone
+afkconvoy::cli local_tracker::a_stage_record_is_written_to_the_local_tracker_and_read_back_to_advance_the_issue
+afkconvoy::cli local_tracker::doctor_finds_a_ready_local_issue_no_fleet_has_taken_by_when_its_label_was_put_on
+afkconvoy::cli local_tracker::run_tracker_local_keeps_it_on_the_checkout_list_and_asks_github_nothing_of_it
+afkconvoy::cli local_tracker::an_issue_opened_locally_is_claimed_worked_landed_and_closed_by_its_local_name
+# Local tracker: 92 and 46 processes in the fast gate (plans and targets of a world), past its bound.
+afkconvoy::cli local_tracker::an_issue_is_held_back_while_one_it_is_blocked_by_is_open
+afkconvoy::cli local_tracker::a_comment_the_fleet_writes_is_read_back_from_the_local_tracker

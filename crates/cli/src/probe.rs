@@ -466,8 +466,13 @@ pub fn public_tracker(repo: &Repo, now: u64, trusting: bool) -> Result<Option<St
 
 /// Why the fleet of the checkout `repo` is refused, where GitHub says the
 /// tracker `gh` names is public (`tracker::public`), naming it and the line
-/// that says a private one; `None` where it is not.
+/// that says a private one; `None` where it is not. The host's local tracker
+/// is never refused, nor is GitHub asked of it: it is no GitHub repo, and is
+/// written by the host's own user alone (docs/adr/0091).
 pub fn refused_public(repo: &Repo, gh: &GitHub) -> Result<Option<String>> {
+    if let Tracker::Local { .. } = gh.tracker {
+        return Ok(None);
+    }
     if !is_public(&gh.visibility()?) {
         return Ok(None);
     }

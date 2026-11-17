@@ -15,6 +15,7 @@ use std::sync::{Mutex, MutexGuard};
 use afkconvoy_core::checkouts;
 use afkconvoy_core::config::RepoName;
 use afkconvoy_core::harness::Harness;
+use afkconvoy_core::tracker::Said;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -55,10 +56,11 @@ pub struct Entry {
     /// `--concurrency`: none, and the default holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<NonZeroUsize>,
-    /// The repo its fleet reads and writes issues in, where that is not the
-    /// checkout's own: none, and it is its own.
+    /// The tracker its fleet reads and writes issues in, where that is not
+    /// the checkout's own repo — another repo, or the host's local tracker:
+    /// none, and it is its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tracker: Option<RepoName>,
+    pub tracker: Option<Said>,
     /// `--harness`: the harness this checkout's workers start on. None, and
     /// they start on the host kit's first eligible harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,7 +81,7 @@ pub struct Asked {
     /// `--concurrency` (`concurrency`).
     pub concurrency: Option<NonZeroUsize>,
     /// `--tracker` (`crate::tracker`).
-    pub tracker: Option<RepoName>,
+    pub tracker: Option<Said>,
     /// `--harness` (`named_harness`).
     pub harness: Option<Harness>,
 }
@@ -202,19 +204,28 @@ pub fn tracker_of(repo: &Repo) -> Result<Tracker> {
 /// what is done next: as the entry of `repo` itself says it, or of its main
 /// checkout, which every worktree of it shares — a worker's command acts on
 /// the issues its fleet does. One the list holds no entry of, or whose entry
-/// says none, is its own repo's. Another repo's issues are the checkout's
-/// by its repo label, which names the repo its remote names (`named_repo`).
+/// says none, is its own repo's (`tracker_for`).
 pub fn tracker_on(list: &List, repo: &Repo) -> Result<Tracker> {
-    match said_tracker(list, repo)? {
+    tracker_for(said_tracker(list, repo)?, repo)
+}
+
+/// The tracker of the checkout `repo` that says `said` of it on this host:
+/// its own repo where it says none. Another repo's issues, or the local
+/// tracker's, are the checkout's by the repo its remote names
+/// (`named_repo`) — as a repo label in another repo, as a field in the local
+/// tracker, which is named for this host (`host_settings::host_name`), as
+/// the claims of its fleets are stamped.
+pub fn tracker_for(said: Option<Said>, repo: &Repo) -> Result<Tracker> {
+    match said {
         None => Ok(Tracker::Own),
-        Some(tracker) => Ok(Tracker::Other { tracker, repo: named_repo(repo)? }),
+        Some(said) => Ok(said.tracker(&crate::host_settings::host_name(), named_repo(repo)?)),
     }
 }
 
 /// The tracker the checkout `repo` says on the host of `list`, with its
 /// entry or its main checkout's — where the list holds neither, what its
 /// `run` asked in this process: none, and it is its own repo.
-pub fn said_tracker(list: &List, repo: &Repo) -> Result<Option<RepoName>> {
+pub fn said_tracker(list: &List, repo: &Repo) -> Result<Option<Said>> {
     Ok(said(list, repo)?.flatten())
 }
 
@@ -228,7 +239,7 @@ pub fn said_tracker(list: &List, repo: &Repo) -> Result<Option<RepoName>> {
 /// `run --foreground` — and that kept nothing is read off the list as
 /// another checkout is; where neither says it, it is an error: a worker's
 /// command never acts on the issues of a tracker its fleet does not hold.
-pub fn said(list: &List, repo: &Repo) -> Result<Option<Option<RepoName>>> {
+pub fn said(list: &List, repo: &Repo) -> Result<Option<Option<Said>>> {
     let worktree = Worktree::at(repo.dir.clone(), String::new());
     let worker = worktree.holds_a_worker();
     if worker && let Some(kept) = worktree.tracker()? {
@@ -438,7 +449,7 @@ mod tests {
             .unwrap();
         assert_eq!(tracker_on(&list, &worktree).unwrap(), Tracker::Own);
 
-        let tracker = RepoName::read("acme/tracker");
+        let tracker = Said::read("acme/tracker");
         list.change(|listed| listed.checkouts[0].tracker = tracker).unwrap();
         assert_eq!(tracker_on(&list, &checkout).unwrap(), other);
         assert_eq!(
@@ -449,11 +460,21 @@ mod tests {
         let text = std::fs::read_to_string(list.file()).unwrap();
         assert!(text.contains("\"tracker\": \"acme/tracker\""), "{text}");
 
-        // a tracker that is no repo's name: the list cannot be read
+        // the host's local tracker, named for the host
+        list.change(|listed| listed.checkouts[0].tracker = Some(Said::Local)).unwrap();
+        let local = Tracker::Local {
+            tracker: afkconvoy_core::tracker::local_name(&crate::host_settings::host_name()),
+            repo: RepoName::read("acme/dev").unwrap(),
+        };
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), local);
+        let text = std::fs::read_to_string(list.file()).unwrap();
+        assert!(text.contains("\"tracker\": \"local\""), "{text}");
+
+        // a tracker that is no repo's name nor `local`: the list cannot be read
         std::fs::write(list.file(), r#"{"checkouts": [{"checkout": "/a", "tracker": "acme"}]}"#)
             .unwrap();
         let error = format!("{:#}", list.read().unwrap_err());
-        assert!(error.contains("`acme` is no repo's name"), "{error}");
+        assert!(error.contains("`acme` is no tracker"), "{error}");
     }
 
     #[test]
@@ -493,7 +514,7 @@ mod tests {
 
         // a worker's worktree that kept none goes by its checkout's entry
         std::fs::remove_file(held.note(crate::orca::TRACKER_FILE).unwrap()).unwrap();
-        let tracker = RepoName::read("acme/tracker");
+        let tracker = Said::read("acme/tracker");
         list.change(|listed| {
             let mut kept = entry(&checkout.dir.display().to_string());
             kept.tracker = tracker;
@@ -501,6 +522,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(tracker_on(&list, &worktree).unwrap(), other);
+
+        // a kept local tracker is the host's
+        let local = Said::Local
+            .tracker(&crate::host_settings::host_name(), RepoName::read("acme/dev").unwrap());
+        held.keep_tracker(&local).unwrap();
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), local);
 
         // a kept tracker that names no repo is an error
         std::fs::write(held.note(crate::orca::TRACKER_FILE).unwrap(), "acme").unwrap();

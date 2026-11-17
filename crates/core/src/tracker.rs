@@ -1,11 +1,16 @@
 //! The tracker: the repo a fleet reads and writes its issues in — its
-//! checkout's own, until the checkout's host names another (docs/adr/0027) —
-//! and how the repo the fleet works in names one of its issues: in a PR's
-//! closing line, a join commit, a branch, a worktree and a claim's ref. The
-//! one home of every such name, so that an issue of one tracker is never
-//! taken for an issue of the same number in the repo or in another tracker.
+//! checkout's own, until the checkout's host names another (docs/adr/0027),
+//! or its host's local tracker (docs/adr/0091) — and how the repo the fleet
+//! works in names one of its issues: in a PR's closing line, a join commit, a
+//! branch, a worktree and a claim's ref. The one home of every such name, so
+//! that an issue of one tracker is never taken for an issue of the same
+//! number in the repo or in another tracker. A tracker that is not the
+//! checkout's own is named `<owner>/<tracker>`; a host's local tracker is
+//! named so too, `local/<host>` (`local_name`), and every name is made of it
+//! alike.
 
 use flux_rs::attrs::*;
+use serde::{Deserialize, Serialize};
 
 use crate::closing::issues_closed_by;
 use crate::config::RepoName;
@@ -20,6 +25,9 @@ pub const REPO_LABEL: &str = "repo:";
 /// its issues.
 pub const PUBLIC: &str = "public";
 
+/// What a checkout says its tracker is, as `--tracker` says it: `local`.
+pub const LOCAL: &str = "local";
+
 /// The repo a fleet reads and writes its issues in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tracker {
@@ -29,6 +37,95 @@ pub enum Tracker {
     /// Another repo, `tracker`, in which the issues of the checkout's repo,
     /// `repo`, sit beside other repos' and carry its repo label.
     Other { tracker: RepoName, repo: RepoName },
+    /// The host's local tracker, named `tracker` (`local_name`), in which
+    /// the issues of the checkout's repo, `repo`, are those whose repo is
+    /// it: a field of the issue, not a label (docs/adr/0091).
+    Local { tracker: RepoName, repo: RepoName },
+}
+
+/// What a checkout says of its tracker on its host, beyond its own repo,
+/// which it says by saying none: another repo, `<owner>/<repo>`, or its
+/// host's local tracker, `local`. Kept as that text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub enum Said {
+    Repo(RepoName),
+    Local,
+}
+
+impl Said {
+    /// `text` as a checkout says its tracker: `local`, or a repo's name;
+    /// `None` of anything else.
+    pub fn read(text: &str) -> Option<Said> {
+        match text {
+            LOCAL => Some(Said::Local),
+            text => RepoName::read(text).map(Said::Repo),
+        }
+    }
+
+    /// The tracker of a checkout of `repo` on the host named `host` that
+    /// says this.
+    pub fn tracker(self, host: &str, repo: RepoName) -> Tracker {
+        match self {
+            Said::Repo(tracker) => Tracker::Other { tracker, repo },
+            Said::Local => Tracker::Local { tracker: local_name(host), repo },
+        }
+    }
+
+    /// The name of the tracker this says, on the host named `host`.
+    pub fn name(&self, host: &str) -> RepoName {
+        match self {
+            Said::Repo(tracker) => tracker.clone(),
+            Said::Local => local_name(host),
+        }
+    }
+
+    /// The repo it names, where it names one.
+    pub fn repo(&self) -> Option<&RepoName> {
+        match self {
+            Said::Repo(tracker) => Some(tracker),
+            Said::Local => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Said {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Said::Repo(tracker) => tracker.fmt(f),
+            Said::Local => f.write_str(LOCAL),
+        }
+    }
+}
+
+impl From<Said> for String {
+    fn from(said: Said) -> String {
+        said.to_string()
+    }
+}
+
+impl TryFrom<String> for Said {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Said, String> {
+        Said::read(&text)
+            .ok_or_else(|| format!("`{text}` is no tracker, `<owner>/<repo>` nor `{LOCAL}`"))
+    }
+}
+
+/// The name of the local tracker of the host named `host`: `local/<host>`,
+/// `<host>` in lower case with its `.local` suffix dropped (docs/adr/0091),
+/// and each character a ref's or a branch's part could not take, or that
+/// could end one badly — a `.` among them — a `-`. The one home of the name:
+/// the fleet, its workers and its humans name the host's tracker by it.
+pub fn local_name(host: &str) -> RepoName {
+    let lowered = host.trim().to_ascii_lowercase();
+    let host = lowered.strip_suffix(".local").unwrap_or(&lowered);
+    let part: String =
+        host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '-' }).collect();
+    let part = part.trim_matches('-');
+    let part = if part.is_empty() { "host" } else { part };
+    RepoName::made(LOCAL, part)
 }
 
 /// What a claim's ref, kept under `claim/<key>`, is to a fleet.
@@ -107,19 +204,21 @@ fn lowered(name: &RepoName) -> String {
 }
 
 impl Tracker {
-    /// The tracker's name, where it is another repo than the checkout's.
+    /// The tracker's name, where it is not the checkout's own repo: another
+    /// repo, or the host's local tracker.
     pub fn named(&self) -> Option<&RepoName> {
         match self {
             Tracker::Own => None,
-            Tracker::Other { tracker, .. } => Some(tracker),
+            Tracker::Other { tracker, .. } | Tracker::Local { tracker, .. } => Some(tracker),
         }
     }
 
     /// The repo label the fleet's issues carry in its tracker: none in the
-    /// checkout's own repo, whose issues are all its own.
+    /// checkout's own repo, whose issues are all its own, nor in the local
+    /// tracker, where an issue's repo is a field.
     pub fn repo_label(&self) -> Option<String> {
         match self {
-            Tracker::Own => None,
+            Tracker::Own | Tracker::Local { .. } => None,
             Tracker::Other { repo, .. } => Some(repo_label(repo)),
         }
     }
@@ -128,11 +227,16 @@ impl Tracker {
     /// in the checkout's own repo one that carries no repo label, which hands
     /// an issue to the repo it names; in another tracker one carrying the
     /// repo's. One that carries more is barred all the same (`plan::LabelBar`).
+    /// Of the local tracker, every issue read is the repo's: it is read by
+    /// its repo, whatever it carries.
     pub fn holds(&self, labels: &[String]) -> bool {
         let carried = repo_labels(labels);
-        match self.repo_label() {
-            None => carried.is_empty(),
-            Some(mine) => carried.iter().any(|label| label.eq_ignore_ascii_case(&mine)),
+        match self {
+            Tracker::Own => carried.is_empty(),
+            Tracker::Other { repo, .. } => {
+                carried.iter().any(|label| label.eq_ignore_ascii_case(&repo_label(repo)))
+            }
+            Tracker::Local { .. } => true,
         }
     }
 
@@ -141,7 +245,18 @@ impl Tracker {
     /// (`intake`, `lock`): the repo label, of one in another tracker that
     /// carries no repo label; nothing, of one that is the repo's already. An
     /// error saying why of one that is another repo's, or more than one's.
-    pub fn to_take(&self, labels: &[String]) -> Result<Option<String>, String> {
+    /// An issue of the local tracker is the repo's by its repo alone, `of`,
+    /// the field its tracker keeps, whatever it carries: an error of one of
+    /// another repo, nothing of one of this.
+    pub fn to_take(&self, labels: &[String], of: Option<&str>) -> Result<Option<String>, String> {
+        if let Tracker::Local { repo, .. } = self {
+            return match of {
+                Some(of) if !of.eq_ignore_ascii_case(repo.as_str()) => {
+                    Err(format!("is of {of}: it is that repo's to work, and its fleet's"))
+                }
+                _ => Ok(None),
+            };
+        }
         let carried = repo_labels(labels);
         let mine = self.repo_label();
         let others: Vec<&str> = carried
@@ -162,31 +277,41 @@ impl Tracker {
     /// The line `gh issue <verb> <number>` of this tracker's issue, as a
     /// human runs it in a checkout of the repo: naming the tracker, where it
     /// is another repo — `gh` would act on the checkout's own issue of that
-    /// number.
+    /// number; `afkconvoy issue <verb> <number>` of the local tracker, which
+    /// GitHub does not hold.
     #[spec(fn(&Tracker, &str, u64) -> Line[false])]
     pub fn gh_issue(&self, verb: &'static str, number: u64) -> Line {
-        let line = Line::new().fixed("gh issue ").fixed(verb).fixed(" ").number(number);
         match self {
-            Tracker::Own => line,
-            Tracker::Other { tracker, .. } => line.fixed(" --repo ").program(tracker.as_str()),
+            Tracker::Own => Line::new().fixed("gh issue ").fixed(verb).fixed(" ").number(number),
+            Tracker::Other { tracker, .. } => Line::new()
+                .fixed("gh issue ")
+                .fixed(verb)
+                .fixed(" ")
+                .number(number)
+                .fixed(" --repo ")
+                .program(tracker.as_str()),
+            Tracker::Local { .. } => {
+                Line::new().fixed("afkconvoy issue ").fixed(verb).fixed(" ").number(number)
+            }
         }
     }
 
     /// Issue `number` as the repo names it, in a PR's closing line and a
-    /// join commit: `#7` of its own, `acme/tracker#7` of another tracker's.
+    /// join commit: `#7` of its own, `acme/tracker#7` of another tracker's,
+    /// `local/<host>#7` of the local tracker's.
     pub fn issue(&self, number: u64) -> String {
-        match self {
-            Tracker::Own => format!("#{number}"),
-            Tracker::Other { tracker, .. } => format!("{tracker}#{number}"),
+        match self.named() {
+            None => format!("#{number}"),
+            Some(tracker) => format!("{tracker}#{number}"),
         }
     }
 
     /// The issue of this tracker `text` names as `issue` writes it, whatever
     /// the case of the tracker's name; `None` of a name of any other issue.
     pub fn issue_named(&self, text: &str) -> Option<u64> {
-        let number = match self {
-            Tracker::Own => text.strip_prefix('#')?,
-            Tracker::Other { tracker, .. } => {
+        let number = match self.named() {
+            None => text.strip_prefix('#')?,
+            Some(tracker) => {
                 let (named, number) = text.rsplit_once('#')?;
                 if !named.eq_ignore_ascii_case(tracker.as_str()) {
                     return None;
@@ -198,12 +323,12 @@ impl Tracker {
     }
 
     /// What the claim on issue `number` is kept under, after `claim/`: `7`
-    /// of the checkout's own repo, `acme/tracker/7` of another tracker. No
-    /// run's key holds a `/`.
+    /// of the checkout's own repo, `acme/tracker/7` of another tracker,
+    /// `local/<host>/7` of the local tracker. No run's key holds a `/`.
     pub fn claim_key(&self, number: u64) -> String {
-        match self {
-            Tracker::Own => number.to_string(),
-            Tracker::Other { tracker, .. } => format!("{}/{number}", lowered(tracker)),
+        match self.named() {
+            None => number.to_string(),
+            Some(tracker) => format!("{}/{number}", lowered(tracker)),
         }
     }
 
@@ -214,9 +339,9 @@ impl Tracker {
             None => canonical_number(key).map(|_| (None, key)),
         };
         let Some((of, number)) = issue else { return Claimed::Run };
-        let mine = match (self, of) {
-            (Tracker::Own, None) => true,
-            (Tracker::Other { tracker, .. }, Some(of)) => of == lowered(tracker),
+        let mine = match (self.named(), of) {
+            (None, None) => true,
+            (Some(tracker), Some(of)) => of == lowered(tracker),
             _ => false,
         };
         match canonical_number(number) {
@@ -227,12 +352,13 @@ impl Tracker {
 
     /// The name issue `number`'s worktree is created under, which orca
     /// derives its branch from: `issue-7-<slug>` of the checkout's own repo,
-    /// `acme-tracker-7-<slug>` of another tracker's.
+    /// `acme-tracker-7-<slug>` of another tracker's, `local-<host>-7-<slug>`
+    /// of the local tracker's.
     pub fn worktree_name(&self, number: u64, title: &str) -> String {
         let name = worktree_name(number, title);
-        match self {
-            Tracker::Own => name,
-            Tracker::Other { tracker, .. } => {
+        match self.named() {
+            None => name,
+            Some(tracker) => {
                 let slug: String = lowered(tracker)
                     .chars()
                     .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -258,15 +384,14 @@ impl Tracker {
 
     /// Whether `link`, an issue GitHub linked to a PR of the repo `of`, is
     /// one of this tracker's: of the checkout's own repo, one in `of`, or in
-    /// no repo GitHub named; of another tracker, one in it.
+    /// no repo GitHub named; of another tracker, one in it — of the local
+    /// tracker, which GitHub never links, none.
     fn holds_link(&self, link: &Linked, of: Option<&str>) -> bool {
-        match (self, link.repo.as_deref()) {
-            (Tracker::Own, Some(repo)) => of.is_none_or(|of| repo.eq_ignore_ascii_case(of)),
-            (Tracker::Own, None) => true,
-            (Tracker::Other { tracker, .. }, Some(repo)) => {
-                repo.eq_ignore_ascii_case(tracker.as_str())
-            }
-            (Tracker::Other { .. }, None) => false,
+        match (self.named(), link.repo.as_deref()) {
+            (None, Some(repo)) => of.is_none_or(|of| repo.eq_ignore_ascii_case(of)),
+            (None, None) => true,
+            (Some(tracker), Some(repo)) => repo.eq_ignore_ascii_case(tracker.as_str()),
+            (Some(_), None) => false,
         }
     }
 }
@@ -278,6 +403,64 @@ mod tests {
     fn other() -> Tracker {
         let (tracker, repo) = (RepoName::read("Acme/Tracker"), RepoName::read("acme/dev"));
         Tracker::Other { tracker: tracker.unwrap(), repo: repo.unwrap() }
+    }
+
+    fn local() -> Tracker {
+        Said::Local.tracker("Offices-MacBook-Pro.local", RepoName::read("acme/dev").unwrap())
+    }
+
+    #[test]
+    fn a_hosts_local_tracker_is_named_for_the_host_in_lower_case_without_local() {
+        for (host, named) in [
+            ("Offices-MacBook-Pro.local", "local/offices-macbook-pro"),
+            ("h1", "local/h1"),
+            ("Offices-MBP.lan", "local/offices-mbp-lan"),
+            ("-odd host.lock.", "local/odd-host-lock"),
+            ("..", "local/host"),
+        ] {
+            let name = local_name(host);
+            assert_eq!(name.as_str(), named, "{host}");
+            assert!(names_a_ref(&name), "{host}");
+        }
+        assert_eq!(local().named().unwrap().as_str(), "local/offices-macbook-pro");
+    }
+
+    #[test]
+    fn a_checkout_says_local_or_a_repo_and_keeps_it_as_said() {
+        assert_eq!(Said::read("local"), Some(Said::Local));
+        assert_eq!(
+            Said::read("acme/tracker"),
+            Some(Said::Repo(RepoName::read("acme/tracker").unwrap()))
+        );
+        for refused in ["", "Local", "acme", "local/"] {
+            assert_eq!(Said::read(refused), None, "{refused}");
+        }
+        let kept: Vec<Said> = serde_json::from_str(r#"["local", "acme/tracker"]"#).unwrap();
+        assert_eq!(serde_json::to_string(&kept).unwrap(), r#"["local","acme/tracker"]"#);
+        assert!(serde_json::from_str::<Said>(r#""nowhere""#).is_err());
+    }
+
+    #[test]
+    fn every_name_of_a_local_trackers_issue_is_made_as_another_trackers() {
+        let local = local();
+        assert_eq!(local.issue(7), "local/offices-macbook-pro#7");
+        assert_eq!(local.issue_named("Local/Offices-MacBook-Pro#7"), Some(7));
+        assert_eq!(local.issue_named("#7"), None);
+        assert_eq!(local.claim_key(7), "local/offices-macbook-pro/7");
+        assert_eq!(local.claimed("local/offices-macbook-pro/7"), Claimed::Issue(7));
+        assert_eq!(local.claimed("local/other/7"), Claimed::Elsewhere);
+        assert_eq!(local.claimed("7"), Claimed::Elsewhere);
+        assert_eq!(local.worktree_name(7, "Add plan"), "local-offices-macbook-pro-7-add-plan");
+        let body = "Closes local/offices-macbook-pro#7\nCloses #8\nCloses acme/tracker#9";
+        let linked = [Linked { number: 3, repo: Some("acme/dev".into()) }];
+        assert_eq!(local.closed_by(body, &linked, Some("acme/dev")), [7]);
+        assert_eq!(local.repo_label(), None);
+        let labels = ["repo:acme/web".to_string()];
+        assert!(local.holds(&labels));
+        assert_eq!(local.to_take(&labels, Some("Acme/Dev")), Ok(None));
+        let refused = local.to_take(&[], Some("acme/web")).unwrap_err();
+        assert!(refused.starts_with("is of acme/web"), "{refused}");
+        assert_eq!(local.gh_issue("close", 7).own(), "afkconvoy issue close 7");
     }
 
     #[test]
@@ -359,14 +542,14 @@ mod tests {
     #[test]
     fn an_issue_handed_to_the_fleet_is_given_the_repo_label_unless_it_is_another_repos() {
         let labels = |all: &[&str]| all.iter().map(|label| label.to_string()).collect::<Vec<_>>();
-        assert_eq!(other().to_take(&labels(&["bug"])), Ok(Some("repo:acme/dev".to_string())));
-        assert_eq!(other().to_take(&labels(&["Repo:Acme/Dev"])), Ok(None));
-        assert_eq!(Tracker::Own.to_take(&labels(&["bug"])), Ok(None));
+        assert_eq!(other().to_take(&labels(&["bug"]), None), Ok(Some("repo:acme/dev".to_string())));
+        assert_eq!(other().to_take(&labels(&["Repo:Acme/Dev"]), None), Ok(None));
+        assert_eq!(Tracker::Own.to_take(&labels(&["bug"]), None), Ok(None));
         for theirs in [&["repo:acme/web"][..], &["repo:acme/dev", "repo:acme/web"]] {
-            let refused = other().to_take(&labels(theirs)).unwrap_err();
+            let refused = other().to_take(&labels(theirs), None).unwrap_err();
             assert!(refused.contains("(repo:acme/web)"), "{refused}");
         }
-        let refused = Tracker::Own.to_take(&labels(&["repo:acme/web"])).unwrap_err();
+        let refused = Tracker::Own.to_take(&labels(&["repo:acme/web"]), None).unwrap_err();
         assert!(refused.contains("(repo:acme/web)"), "{refused}");
     }
 

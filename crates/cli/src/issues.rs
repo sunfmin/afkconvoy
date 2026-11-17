@@ -6,10 +6,10 @@
 //!
 //! An adapter answers each operation of [`Issues`] in domain types. Which
 //! adapter a checkout's fleet holds is chosen in [`of`] alone, from the
-//! tracker its host names (`checkout_list::tracker_of`): today every tracker
-//! is a GitHub repo's (`crate::gh::issues::GitHubIssues`). What only GitHub
-//! has — database and node ids, label colours, visibility, quota — stays in
-//! its adapter.
+//! tracker its host names (`checkout_list::tracker_of`): a GitHub repo's
+//! (`crate::gh::issues::GitHubIssues`), or the host's local tracker
+//! (`local::LocalIssues`). What only GitHub has — database and node ids,
+//! label colours, visibility, quota — stays in its adapter.
 //!
 //! The operations are the reads and writes the fleet makes, not GitHub's
 //! calls: each read is shaped so one paged query can answer it (an open
@@ -26,6 +26,8 @@ use anyhow::{Result, bail};
 use serde::Deserialize;
 
 use crate::gh::GitHub;
+
+pub mod local;
 
 /// The issues of the tracker a fleet works, open or closed. Every method
 /// names an issue by its number in the tracker; an issue that is no more —
@@ -97,13 +99,13 @@ pub trait Issues: Send + Sync {
     /// Takes one label off an issue that carries it.
     fn remove_label(&self, number: u64, label: &str) -> Result<()>;
 
-    /// Makes issue `number`, carrying `labels`, the repo's in its tracker
+    /// Makes issue `number`, as `read` read it, the repo's in its tracker
     /// before a command hands it to the fleet (`Tracker::to_take`): puts the
     /// repo label on it, in a tracker that is another repo, where it carries
     /// none. An error of one that is another repo's, which is left as it is.
-    fn take(&self, number: u64, labels: &[String]) -> Result<()> {
+    fn take(&self, number: u64, read: &IssueRead) -> Result<()> {
         let issue = self.tracker().issue(number);
-        match self.tracker().to_take(labels) {
+        match self.tracker().to_take(&read.labels, read.of.as_deref()) {
             Ok(Some(label)) => self.add_label(number, &label),
             Ok(None) => Ok(()),
             Err(why) => bail!("issue {issue} {why}"),
@@ -133,7 +135,23 @@ pub fn of(gh: &GitHub) -> Arc<dyn Issues> {
         Tracker::Own | Tracker::Other { .. } => {
             Arc::new(crate::gh::issues::GitHubIssues::new(gh.clone()))
         }
+        Tracker::Local { .. } => Arc::new(local::LocalIssues::new(gh.clone())),
     }
+}
+
+/// The body of the one work account among an issue's `comments`, none where
+/// it has none; an error where it has several. A damaged opening marker
+/// counts, so that no account is silently lost.
+pub(crate) fn work_account(comments: Vec<Comment>) -> Result<Option<String>, String> {
+    let mut accounts = comments.into_iter().filter(|comment| {
+        comment.body.contains("<!--convoy:account ")
+            || comment.body.contains("<!--convoy:account-->")
+    });
+    let body = accounts.next().map(|comment| comment.body);
+    if accounts.next().is_some() {
+        return Err("issue has several work accounts".into());
+    }
+    Ok(body)
 }
 
 /// One issue, open or closed, as `Issues::issue` reads it.
@@ -152,6 +170,10 @@ pub struct IssueRead {
     /// What it says, where it says anything.
     #[serde(default)]
     pub body: Option<String>,
+    /// The repo it is the work of, where the tracker keeps that as a field
+    /// of the issue — the local tracker — not as a repo label.
+    #[serde(default)]
+    pub of: Option<String>,
 }
 
 impl IssueRead {
@@ -165,10 +187,15 @@ impl IssueRead {
 pub struct BlockedBy {
     pub number: u64,
     pub state: String,
+    /// The tracker it is in, `owner/name`, where the tracker says.
     #[serde(default)]
     pub repo: Option<String>,
     #[serde(default)]
     pub labels: Option<Vec<String>>,
+    /// The repo it is the work of, where the tracker keeps that as a field
+    /// of the issue — the local tracker — not as a repo label.
+    #[serde(default)]
+    pub of: Option<String>,
 }
 
 /// The one answer to which blockers are open, for both paged rebuilds and

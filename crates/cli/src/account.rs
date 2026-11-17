@@ -45,10 +45,7 @@ pub fn leave(repo: &Repo, gh: &GitHub, issue: u64, end: End, now: u64) -> Result
     let (chip, model, cpus, bytes) = machine_of_host();
     let host = crate::this_host();
     let own = gh.repository()?;
-    let tracker = match &gh.tracker {
-        afkconvoy_core::tracker::Tracker::Own => own.as_str(),
-        afkconvoy_core::tracker::Tracker::Other { tracker, .. } => tracker.as_str(),
-    };
+    let tracker = gh.tracker.named().map_or(own.as_str(), |tracker| tracker.as_str());
     let config = crate::config::load(&crate::config::file_of(repo))?;
     let mut lanes = vec![(config.gate_command.as_str(), "whole")];
     if let Some(gates) = &config.gates {

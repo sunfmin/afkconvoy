@@ -217,11 +217,14 @@ fn host_tracker() -> Result<RepoName> {
     let listed = crate::checkout_list::List::of_host()?.read()?.checkouts;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for entry in listed {
-        let tracker = entry.tracker.or_else(|| {
-            Repo::at(&entry.checkout)
-                .ok()
-                .and_then(|repo| crate::checkout_list::named_repo(&repo).ok())
-        });
+        let tracker =
+            entry.tracker.as_ref().and_then(afkconvoy_core::tracker::Said::repo).cloned().or_else(
+                || {
+                    Repo::at(&entry.checkout)
+                        .ok()
+                        .and_then(|repo| crate::checkout_list::named_repo(&repo).ok())
+                },
+            );
         if let Some(tracker) = tracker {
             *counts.entry(tracker.as_str().to_string()).or_default() += 1;
         }

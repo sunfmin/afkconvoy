@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -560,11 +561,12 @@ enum Command {
         /// where `doctor` says it is ignored; `default` drops it
         #[arg(long, value_name = "CLAIMS", value_parser = concurrency::claims_or_default)]
         concurrency: Option<To<NonZeroUsize>>,
-        /// The private repo this checkout's fleet reads and writes its issues in: required
-        /// on its first `run`; kept on this host and never pushed. `default` says its own repo
-        /// explicitly, which must be private; omitted on later runs, its saved choice holds
-        #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_or_default)]
-        tracker: Option<To<RepoName>>,
+        /// The private repo this checkout's fleet reads and writes its issues in, or `local`:
+        /// this host's local tracker, `local/<host>`: required on its first `run`; kept on
+        /// this host and never pushed. `default` says its own repo explicitly, which must be
+        /// private; omitted on later runs, its saved choice holds
+        #[arg(long, value_name = "OWNER/REPO|local", value_parser = tracker::repo_or_default)]
+        tracker: Option<To<afkconvoy_core::tracker::Said>>,
         /// The harness this checkout's workers start on, from its next tick. `default` follows
         /// the host kit again. A word that is not a harness, or a harness the host kit does not
         /// hold, is an error and writes nothing
@@ -2243,6 +2245,9 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         _ => {}
     }
     let fixed_now = cli.now.flatten();
+    if let Some(now) = fixed_now {
+        let _ = TOLD_NOW.set(now);
+    }
     if let Command::Guard { terminal_input_only } = cli.command {
         return guard::guard(terminal_input_only);
     }
@@ -2367,6 +2372,17 @@ fn fail(code: u8, message: &str) -> ExitCode {
 
 fn clock() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
+/// The time this process's command was told it acts at (`--now`), where it
+/// was: kept once, as the command starts.
+static TOLD_NOW: OnceLock<u64> = OnceLock::new();
+
+/// The time a write this command makes is stamped with, where it stamps its
+/// own — the host's local tracker's: the time it was told it acts at
+/// (`--now`), else the clock's now. GitHub stamps its own writes.
+pub(crate) fn acting_now() -> u64 {
+    TOLD_NOW.get().copied().unwrap_or_else(clock)
 }
 
 /// A name no other thread of this process makes: the pid and a counter. A

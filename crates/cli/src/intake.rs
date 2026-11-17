@@ -131,7 +131,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
             !read.pull_request && !read.is_closed(),
             "intake requires an open task issue"
         );
-        gh.tracker.to_take(&read.labels).map_err(anyhow::Error::msg)?;
+        gh.tracker.to_take(&read.labels, read.of.as_deref()).map_err(anyhow::Error::msg)?;
         blockers(&*issues, number, &blocked_by)?;
         if let Some(id) = &delivery {
             crate::target::attach(repo, number, id)?;
@@ -142,7 +142,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
                 issues.add_blocker(number, blocker)?;
             }
         }
-        issues.take(number, &read.labels)?;
+        issues.take(number, &read)?;
         crate::flows::create_missing(
             &*issues,
             std::slice::from_ref(&config.ready_label),
@@ -190,7 +190,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     if issue.is_closed() {
         bail!("issue #{number} is closed: only an open issue is taken in");
     }
-    if let Err(why) = gh.tracker.to_take(&issue.labels) {
+    if let Err(why) = gh.tracker.to_take(&issue.labels, issue.of.as_deref()) {
         bail!("issue {} {why}", gh.tracker.issue(number));
     }
     match kept.team.flows(&issue.labels).as_slice() {
@@ -199,7 +199,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
             if let Some(id) = &delivery {
                 crate::target::attach(repo, number, id)?;
             }
-            issues.take(number, &issue.labels)?;
+            issues.take(number, &issue)?;
             let standing = came_in(&kept.team, &issue.labels, &issues.comments(number)?);
             let answer =
                 json!({"issue": number, "workflow": name, "taken": false, "standing": standing});
@@ -236,7 +236,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     if let Some(record) = &record {
         issues.comment(number, &record.comment())?;
     }
-    issues.take(number, &issue.labels)?;
+    issues.take(number, &issue)?;
     issues.add_label(number, workflow.flow_label())?;
     let mut taken = json!({"issue": number, "workflow": name, "taken": true,
         "blocked_by": blocked_by});
