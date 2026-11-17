@@ -12,6 +12,7 @@
 # Measured 7.64s: three queued deliveries and doctor's recovery observation.
 # Measured 9.5s and 8.3s: ticks of a `run` that each poll a queued line for 1s.
 # Resident asking scenarios start host processes and wait for watch looks and delivery.
+# Measured 9.0s: a landing on a proving branch and three promotions, each a gate run (local/macnomac-studio#31).
 afkconvoy exclusive::tests::fast_gates_of_one_repo_run_beside_a_slow_gate_and_each_other_while_the_host_has_room
 afkconvoy exclusive::tests::one_runs_at_a_time_in_the_order_asked_and_each_leaves_as_its_line_closes
 afkconvoy launch::tests::a_grandchild_holding_stdout_does_not_keep_the_login_question_waiting
@@ -30,6 +31,7 @@ afkconvoy-landing::standalone a_change_conflicting_with_one_of_a_group_goes_up_a
 afkconvoy-landing::standalone the_groups_of_a_level_gate_at_once
 afkconvoy-landing::standalone a_root_whose_tree_is_green_on_record_runs_no_second_fast_gate
 afkconvoy-landing::standalone the_chain_never_holds_two_valid_candidates_of_one_change
+afkconvoy-landing::standalone a_round_lands_on_the_proving_branch_fast_green_and_a_promotion_moves_the_base_branch
 afkconvoy::cli admission::a_busy_host_dispatches_nothing_new_and_the_frontier_waits_for_the_next_tick
 afkconvoy::cli admission::a_chain_that_cannot_keep_up_holds_its_repo_while_another_repo_starts
 afkconvoy::cli admission::a_queue_busy_over_the_last_minute_and_idle_now_holds_its_lagging_load_and_admits
@@ -975,6 +977,7 @@ afkconvoy::cli candidates::with_one_lane_a_round_s_one_group_gates_and_the_round
 # Measured 7.64s: three queued deliveries and doctor's recovery observation.
 # Measured 9.5s and 8.3s: ticks of a `run` that each poll a queued line for 1s.
 # Resident asking scenarios start host processes and wait for watch looks and delivery.
+# Measured 9.0s: a landing on a proving branch and three promotions, each a gate run (local/macnomac-studio#31).
 
 # Asking Terminal launch coverage: measured over 2s in the fast gate on FelixMBP14.local.
 # Doctor tests exceeded the fast gate's 6s limit after merging the preceding candidates.
