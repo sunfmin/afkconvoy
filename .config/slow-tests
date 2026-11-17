@@ -1241,3 +1241,5 @@ afkconvoy::cli flows::off_the_checkout_list_the_tracker_is_the_hosts_local_one_a
 # says no tracker now reads its remote's name with (docs/adr/0091).
 afkconvoy::cli plan::show_says_a_fleet_lock_holds_an_unbound_issue_back
 afkconvoy::cli watch_landing::only_a_watch_lands_by_the_watch_and_only_its_branch_s_pr
+afkconvoy::cli host_runner::an_older_releases_checkout_list_and_host_kit_files_answer_as_the_database_does
+afkconvoy::cli host_runner::two_runs_at_once_naming_different_settings_both_land

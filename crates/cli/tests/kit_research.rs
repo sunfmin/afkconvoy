@@ -250,7 +250,12 @@ fn settlement_and_placement_share_identities_and_invalid_settlement_writes_nothi
 fn malformed_or_inapplicable_research_changes_neither_the_kit_nor_its_time() {
     let world = pending();
     let before = world.kit();
-    let refreshed = || world.afk(&["doctor"]).json["host"]["host_kit"]["refreshed"].clone();
+    let refreshed = || -> Option<i64> {
+        let db = rusqlite::Connection::open(world.host_db()).unwrap();
+        use rusqlite::OptionalExtension;
+        let written = db.query_row("SELECT written FROM kit_refresh", [], |row| row.get(0));
+        written.optional().unwrap().flatten()
+    };
     let modified = refreshed();
     let mut cases = vec![
         (json!({"models":[]}), "places no model"),
