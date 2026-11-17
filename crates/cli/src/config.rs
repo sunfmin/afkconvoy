@@ -248,7 +248,7 @@ slow:
 
 The two are the gate split, not a gate more: together they check what `gate_command` checks: a landing turn runs the fast gate per candidate and the slow gate once per round (`afkconvoy land --help`), and a base tip with no record is gated with `gate_command` whole. So each budget is below its limit, their limits add up to no more than `gate_seconds`, and their budgets to no more than `gate_budget_seconds` where it is declared. `afkconvoy gate --fast` and `--slow` run each alone (`afkconvoy gate --help`). Older versions skip the block.
 
-A repo that declares a ```yaml gates block may name a proving branch in its ```yaml block, `proving_branch: proving`: a branch other than `base_branch`, which the remote holds. Then a round lands on the proving branch once its fast gate is green — its root merged onto the proving branch's tip and fast-gated only, every PR answering `merged` and its issue closing — and new workers, watches and fleet-lock repairs are cut from it and land on it. The base branch moves only by a promotion: `afkconvoy promote` runs the slow gate on the proving branch's tip, joins it with the fast run on record of that tree into a record of `gate_command`, and fast-forwards the base branch there once it is green (`afkconvoy promote --help`). Versions are still cut from the base branch. A repo that names no proving branch lands on its base branch, as without the key. The answer has it as {"proving_branch"} where it is named.
+A repo that declares a ```yaml gates block may name a proving branch in its ```yaml block, `proving_branch: proving`: a branch other than `base_branch`, which the remote holds. Then a round lands on the proving branch once its fast gate is green — its root merged onto the proving branch's tip and fast-gated only, every PR answering `merged` and its issue closing — and new workers, watches and fleet-lock repairs are cut from it and land on it. The base branch moves only by a promotion: `afkconvoy promote` runs the slow gate on the proving branch's tip, puts `gate_command` on record from it and the fast run on record of that tree, and fast-forwards the base branch there once it is green (`afkconvoy promote --help`). Versions are still cut from the base branch. A repo that names no proving branch lands on its base branch, as without the key. The answer has it as {"proving_branch"} where it is named.
 
 What is outside these blocks is yours to explain it in — but for a second block opened by the line ```yaml cut, which names the repo's cut steps and turns cutting on (`afkconvoy cut --help`). It is read beside this one; older versions read only this one, and refuse nothing for it.
 
@@ -494,7 +494,7 @@ mod tests {
         assert_eq!((fast.gates, fast.gate_budget_seconds), (None, Some(120)));
         // Without one, the repo lands on its base branch, as before.
         let plain = parse(&format!("{}{gates}", main(""))).unwrap();
-        assert_eq!((plain.proving_branch, plain.lands_on()), (None, "main"));
+        assert_eq!((plain.lands_on(), plain.proving_branch.as_deref()), ("main", None));
         let alone = format!("{:#}", parse(&main("proving_branch: proving\n")).unwrap_err());
         assert!(alone.contains("proving_branch") && alone.contains("```yaml gates"), "{alone}");
         let itself =

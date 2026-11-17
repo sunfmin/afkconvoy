@@ -231,8 +231,10 @@ fn gate(
         None => false,
     };
     let (command, seconds, ran) = match (&fast, joined) {
-        (Some((_, slow, gates)), true) => (slow.clone(), gates.slow.seconds, "slow"),
-        _ => (whole.clone(), declared.gate_seconds(), "whole"),
+        (Some((_, _, gates)), true) => {
+            (GateCommand::new(&gates.slow.command), gates.slow.seconds, "slow")
+        }
+        _ => (GateCommand::new(&declared.gate_command), declared.gate_seconds(), "whole"),
     };
     let limit = Duration::from_secs(seconds);
     let (gated, removal) = crate::gate::detached(repo, tip, Detached::Promotion, |checkout| {
@@ -344,7 +346,7 @@ The fleet, at its ticks, and the operator.
 In a repo with a proving branch, a round lands on the proving branch once its fast gate is green: its root merged onto the proving branch's tip and fast-gated only, each PR answering `merged` and its issue closing (`afkconvoy land --help`). The base branch moves only by a promotion, which is this command:
 
 1. It reads the base branch's tip and the proving branch's tip on the remote. The same commit: `current`, nothing to do. The base branch's tip not an ancestor of the proving branch's: `diverged`, and nothing moves — a promotion never moves the base branch to a commit that is not a fast-forward of it.
-2. It gates the proving branch's tip, in a worktree of its own detached at it, by the gate that tip's config declares. A green run of `gate_command` on record for its tree answers. Else, where the fast gate's green run of that tree is on record — the last round's landing put it there — it runs the slow gate alone and joins the two into a record of `gate_command`, as a round's tip is joined (ADR-0048). Else it runs `gate_command` whole.
+2. It gates the proving branch's tip, in a worktree of its own detached at it, by the gate that tip's config declares. A green run of `gate_command` on record for its tree answers. Else, where the fast gate's green run of that tree is on record — the last round's landing put it there — it runs the slow gate alone and puts `gate_command` on record from the two runs, as at a round's tip (ADR-0048). Else it runs `gate_command` whole.
 3. Green: it pushes the proving branch's tip to the base branch, a plain push the remote refuses unless it is a fast-forward: `promoted`. Red: the base branch stays where it was, and the answer and the fleet's log say so: `gate_red`, with the failing tests and the run's whole output. A run red only on TIMEOUTs the gate cannot classify on an overloaded host: `gate_unsettled`, nothing recorded.
 
 One promotion of a checkout runs at a time: another answers `promoting`. A repo with no proving branch answers `none`.
@@ -355,7 +357,7 @@ It reads the remote's base branch and proving branch and the gate records, and w
 
 ## What it answers
 
-{"outcome", "detail", "proving_branch", "proving_tip", "base_branch", "base_tip", "unpromoted", "oldest_waited_seconds", "fast_forward"}, and once it gated, {"gate"} — `recorded`, `slow` or `whole`, what ran — and {"gate_command"}. `outcome` is one of: none, current, diverged, promoting, promoted, gate_red, gate_unsettled, target_moved — the remote refused the fast-forward because the base branch moved meanwhile.
+{"outcome", "detail", "proving_branch", "proving_tip", "base_branch", "base_tip", "unpromoted", "oldest_waited_seconds", "fast_forward"}, and once it gated, {"gate"} — `recorded`, `slow` or `whole`, what ran — and {"gate_command"}; red, {"failing"}, the tests its output names failing, and {"gate_output"}, the file that keeps it. `outcome` is one of: none, current, diverged, promoting, promoted, gate_red, gate_unsettled, target_moved — the remote refused the fast-forward because the base branch moved meanwhile.
 
 ## What trips you up
 

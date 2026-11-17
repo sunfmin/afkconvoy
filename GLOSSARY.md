@@ -110,11 +110,11 @@ _Avoid_: trunk, main, default branch (a team's or a role's repo is read at its o
 
 **Proving branch**:
 The branch a repo with a fast and a slow gate may name (`proving_branch`) for its rounds to land on once their fast gate is green (ADR-0090): a round's root, merged onto its tip, is fast-gated only, every PR of it lands and its issue closes. New workers, watches and fleet-lock repairs are cut from it and land on it; it is a task's target branch unless the task is pinned to another. The base branch moves to it only by a promotion.
-_Avoid_: integration branch, staging branch, next
+_Avoid_: integration branch, staging branch
 
 **Promotion**:
 Moving the base branch to the proving branch's tip once the slow gate passed there (ADR-0090): the slow gate's run joined with the fast run on record of that tree into a record of the whole gate, or the whole gate where no fast run is on record, then a fast-forward of the base branch, never anything else. Red, the base branch stays where it was. `afkconvoy promote` makes one, and a tick does whenever the proving branch is ahead.
-_Avoid_: release, deploy, merge to main
+_Avoid_: merge to main, deploy (of a product)
 
 **Target branch**:
 The same-repo branch one task is cut from and lands on, pinned before it is claimed: the selected branch, or the configured base branch — the proving branch, where the repo names one. Its stages and continuations retain that destination.
