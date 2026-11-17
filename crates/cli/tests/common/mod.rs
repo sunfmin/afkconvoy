@@ -2284,9 +2284,14 @@ impl World {
     }
 
     /// The stand-in host's cores are `percent` busy, as admission reads
-    /// them; unsaid, how busy they are is not read.
+    /// them; unsaid, how busy they are is not read. The file is replaced
+    /// whole: one read while it is written finds it empty, and reads the
+    /// host's load in its place (sunfmin/control#1348).
     pub fn cores_busy(&self, percent: u64) {
-        std::fs::write(self.root.join("host-cpu-busy"), percent.to_string()).unwrap();
+        let file = self.root.join("host-cpu-busy");
+        let written = self.root.join("host-cpu-busy.new");
+        std::fs::write(&written, percent.to_string()).unwrap();
+        std::fs::rename(written, file).unwrap();
     }
 
     /// What the named host command stand-in was asked, one call a line.

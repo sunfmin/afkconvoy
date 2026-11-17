@@ -338,8 +338,13 @@ fn a_busy_host_bounds_candidates_and_room_lets_another_repo_start() {
     let third = start(&b, &other_repo, &a.cache(), 3);
     let watch = Watch::of(&a, &[&first, &third]).and(&b);
     until("the other repo's gate started beside it", &watch, || b.root.join("started").exists());
-    // Past the share now: nothing more starts beside the two.
+    // Past the share now: nothing more starts beside the two, once the
+    // queue reads it. A reading is said again within its second, and one
+    // taken before this would start the second turn (sunfmin/control#1348).
     a.cores_busy(95);
+    until("the queue read the cores past the share", &watch, || {
+        a.afk_in(&a.root, &["queue"]).ok()["room"]["reading"]["busy"] == 95
+    });
     let second = start(&a, &another, &a.cache(), 2);
     let all = Watch::of(&a, &[&first, &third, &second]).and(&b);
     until("the second turn asked after the round", &all, || asked_after(&a) == 1);
