@@ -36,6 +36,9 @@ struct Fake {
     closed: RefCell<Vec<(u64, String)>>,
     /// Each source deleted, at the head it was deleted at.
     deleted: RefCell<Vec<(String, String)>>,
+    /// What happens once, as a publication asks what its members carry:
+    /// after it read the target's tip and before its push.
+    publishing: RefCell<Option<Box<dyn FnOnce()>>>,
 }
 
 /// What a change was sent back with (`Forge::sent_back`).
@@ -93,6 +96,13 @@ impl Forge for Fake {
     fn delete_source(&self, change: &Change, head: &str) -> Result<(), String> {
         self.deleted.borrow_mut().push((change.source.clone(), head.to_string()));
         Ok(())
+    }
+
+    fn carries(&self, _: &Change) -> Result<Vec<Change>, String> {
+        if let Some(publishing) = self.publishing.borrow_mut().take() {
+            publishing();
+        }
+        Ok(vec![])
     }
 }
 
@@ -1194,4 +1204,128 @@ fn a_change_stacked_on_a_round_that_ends_red_is_charged_nothing_and_lands_in_the
     assert_eq!(gates.last(), Some(&("slow".to_string(), landed.commit.clone())));
     git(&work, &["fetch", "--quiet", "origin"]);
     assert_eq!(git(&work, &["rev-parse", "origin/main"]), landed.commit);
+}
+
+/// The refs of a chain the remote at `root` holds: the record afkconvoy's
+/// runner and this crate kept there before (`candidates/`), or a held ref.
+fn chain_refs_on_remote(root: &Path) -> String {
+    let remote = root.join("remote.git");
+    let patterns = [Layout::Hidden.under("candidates/"), Layout::Branches.under("candidates")];
+    let mut args = vec!["for-each-ref", "--format=%(refname)", "refs/convoy/held/"];
+    args.extend(patterns.iter().map(String::as_str));
+    git(&remote, &args)
+}
+
+/// A round lands with its chain kept on the host alone (docs/adr/0117): the
+/// remote holds no record of a chain, before the round or after it, and the
+/// checkout keeps the candidates reachable at its own held ref.
+#[test]
+fn a_round_lands_with_its_chain_on_the_host_and_none_on_the_remote() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, _) = scratch(root.path());
+    let asked = changes(&work, 2, &[]);
+    let forge = Fake::default();
+    let lander = lander(&work, &root.path().join("candidates"), &forge);
+    assert_eq!(chain_refs_on_remote(root.path()), "", "none before");
+
+    let outcomes = lander.land(&asked).unwrap();
+
+    assert!(outcomes.iter().all(|(_, o)| matches!(o, Outcome::Landed(_))), "{outcomes:?}");
+    assert_eq!(chain_refs_on_remote(root.path()), "", "none after");
+    let chain = recorded(&work);
+    let tip = chained(&chain).last().unwrap().commit.clone();
+    git(&work, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(&work, &["rev-parse", "origin/main"]), tip);
+    let held = git(&work, &["rev-parse", HELD]);
+    assert_eq!(held, git(&chains(&work), &["rev-parse", HELD]), "the checkout follows the host");
+    for c in &chain.candidates {
+        git(&work, &["merge-base", "--is-ancestor", &c.commit, &held]);
+    }
+}
+
+/// Another host's change, landed on `main` from the checkout `elsewhere`
+/// → the target's new tip.
+fn land_elsewhere(elsewhere: &Path) -> String {
+    std::fs::write(elsewhere.join("other.txt"), "other").unwrap();
+    git(elsewhere, &["add", "other.txt"]);
+    git(elsewhere, &["commit", "--quiet", "-m", "another host's change"]);
+    git(elsewhere, &["push", "--quiet", "origin", "main"]);
+    git(elsewhere, &["rev-parse", "HEAD"])
+}
+
+/// What landed of two changes after another host moved the target to
+/// `moved`: each built again on it and landed, the slow gate run on the
+/// round at the old tip and again at the new one, where it landed.
+fn rebuilt_on(work: &Path, ran: &Path, outcomes: &[(u64, Outcome<String>)], moved: &str) {
+    let chain = recorded(work);
+    let landed: Vec<Candidate> =
+        chained(&chain).into_iter().filter(|c| c.phase == Phase::Landed).collect();
+    let [first, second] = &landed[..] else { panic!("{chain:?}") };
+    assert_eq!(
+        outcomes,
+        [(1, Outcome::Landed(first.commit.clone())), (2, Outcome::Landed(second.commit.clone()))]
+    );
+    assert_eq!(first.predecessor, moved, "built again on the new tip");
+    // The round at the old tip was cancelled as the target moved.
+    let old = chain.chained().into_iter().filter(|c| c.phase == Phase::Cancelled);
+    let causes: Vec<Option<String>> = old.map(|c| c.cause.clone()).collect();
+    assert_eq!(causes, [Some("base_moved".to_string()), Some("base_moved".to_string())]);
+    git(work, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(work, &["rev-parse", "origin/main"]), second.commit);
+    let files = git(work, &["ls-tree", "--name-only", "origin/main"]);
+    assert!(files.contains("other.txt"), "{files}");
+    // Nothing untested landed: the slow gate ran at the tip that landed.
+    let runs = runs(ran);
+    assert!(runs.contains(&("slow".to_string(), second.commit.clone())), "{runs:?}");
+    assert_eq!(runs.iter().filter(|(gate, _)| gate == "slow").count(), 2, "{runs:?}");
+}
+
+/// Another host moves the target after a round's publication read its tip
+/// and before its push: the push is refused, the round is built again on
+/// the new tip and gated again, and lands there; nothing untested lands.
+#[test]
+fn a_round_whose_publication_is_refused_as_the_base_moved_is_rebuilt_on_the_new_tip_and_lands() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    let asked = changes(&work, 2, &[]);
+    let elsewhere = another_checkout(root.path(), "elsewhere");
+    let moved = std::rc::Rc::new(RefCell::new(String::new()));
+    let forge = Fake::default();
+    let noted = moved.clone();
+    let place = elsewhere.clone();
+    *forge.publishing.borrow_mut() =
+        Some(Box::new(move || *noted.borrow_mut() = land_elsewhere(&place)));
+
+    let outcomes = lander(&work, &root.path().join("candidates"), &forge).land(&asked).unwrap();
+
+    let moved = moved.borrow().clone();
+    assert!(!moved.is_empty(), "the target moved before the push");
+    rebuilt_on(&work, &ran, &outcomes, &moved);
+    assert_eq!(chain_refs_on_remote(root.path()), "");
+}
+
+/// Another host moves the target while a round's whole gate runs: the
+/// round is built again on the new tip and gated again, and lands there.
+#[test]
+fn a_round_whose_target_moves_while_its_whole_gate_runs_is_rebuilt_on_the_new_tip_and_lands() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, ran) = scratch(root.path());
+    let asked = changes(&work, 2, &[]);
+    let elsewhere = another_checkout(root.path(), "elsewhere");
+    std::fs::write(root.path().join("hold"), "").unwrap();
+    let worktrees = root.path().join("candidates");
+
+    let (outcomes, moved) = std::thread::scope(|scope| {
+        let landing = scope.spawn(|| {
+            let forge = Fake::default();
+            lander(&work, &worktrees, &forge).land(&asked).unwrap()
+        });
+        wait_for("the round's slow gate", || root.path().join("slowing").exists());
+        let moved = land_elsewhere(&elsewhere);
+        std::fs::write(root.path().join("release"), "").unwrap();
+        (landing.join().unwrap(), moved)
+    });
+
+    rebuilt_on(&work, &ran, &outcomes, &moved);
+    assert_eq!(chain_refs_on_remote(root.path()), "");
 }

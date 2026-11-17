@@ -87,8 +87,9 @@ pub type Told<E> = Vec<(u64, Result<(), E>)>;
 /// What became of each change, by its number.
 pub type Outcomes<R> = Vec<(u64, Outcome<R>)>;
 /// What became of each change one round decided, the changes that left it
-/// for the next, and whether the round was a stacked one discarded, which
-/// decided nothing of them.
+/// for the next, and whether the round was a stacked one discarded, or one
+/// to build again on a target another host moved, which decided nothing of
+/// them.
 type Rounded<R> = (Outcomes<R>, Vec<Change>, bool);
 
 /// How long a stacked round waits between reads of the round it stands on.
@@ -706,7 +707,8 @@ where
     /// as one fast-forward. A change that left the round for the next is
     /// taken into the next, while each round decides one change or more, or
     /// was a stacked round discarded as the round it stood on ended
-    /// otherwise than landed.
+    /// otherwise than landed, or a round whose publication another host's
+    /// move of the target refused, built again on the new tip.
     pub fn land(&self, changes: &[Change]) -> Result<Outcomes<F::Refusal>, Error<F::Error>> {
         let Some(target) = changes.first().map(|c| c.target.clone()) else {
             return Ok(vec![]);
@@ -752,7 +754,17 @@ where
             outcomes.extend(places.iter().map(|p| (p.change.number, Outcome::Waiting)));
             return Ok((outcomes, vec![], false));
         }
-        while self.step(target, &round, &places, changes, refused, &mut outcomes)? {}
+        let mut rebuilt = false;
+        loop {
+            match self.step(target, &round, &places, changes, refused, &mut outcomes)? {
+                Stepped::More => {}
+                Stepped::Done => break,
+                Stepped::Rebuilt => {
+                    rebuilt = true;
+                    break;
+                }
+            }
+        }
         let chain = self.change(target, |_| {})?;
         let held = chain.rounds().any(|r| r.id == round);
         if !held && chain.pending.iter().any(|b| ids.contains(&b.id)) {
@@ -769,7 +781,7 @@ where
         }
         let chain = self.change(target, |chain| chain.leave_round(|a| ids.contains(&a.id)))?;
         self.remove_ended(&chain);
-        Ok((outcomes, next, false))
+        Ok((outcomes, next, rebuilt))
     }
 
     /// The places `asking` takes in a round, each change as its forge has
@@ -876,8 +888,8 @@ where
 
     /// Takes the round `round` one step on: pairs a level, gates a level's
     /// pairs, makes a stacked round's stacked merge, assigns a candidate of
-    /// its root, gates the root whole, or lands it → whether there is more
-    /// to do. A stacked round with nothing to do waits for the round it
+    /// its root, gates the root whole, or lands it → what is left to do. A
+    /// stacked round with nothing to do waits for the round it
     /// stands on, unless that round's candidate is wedged.
     fn step(
         &self,
@@ -887,7 +899,7 @@ where
         changes: &[Change],
         refused: &mut Refusals,
         outcomes: &mut Outcomes<F::Refusal>,
-    ) -> Result<bool, Error<F::Error>> {
+    ) -> Result<Stepped, Error<F::Error>> {
         // No gate of this process runs between its steps.
         let owner = self.owner.clone();
         self.change(target, |chain| {
@@ -895,10 +907,10 @@ where
         })?;
         let read = self.read(target)?;
         let chain = &read.chain;
-        let Some(open) = chain.rounds().find(|r| r.id == round) else { return Ok(false) };
+        let Some(open) = chain.rounds().find(|r| r.id == round) else { return Ok(Stepped::Done) };
         if let Some(level) = chain.to_pair().filter(|(id, ..)| id == round) {
             self.pair(target, level)?;
-            return Ok(true);
+            return Ok(Stepped::More);
         }
         let mut gates: Vec<String> = vec![];
         let mut assign: Option<(String, u64)> = None;
@@ -915,28 +927,31 @@ where
         }
         if !gates.is_empty() {
             self.gate_pairs(target, &gates)?;
-            return Ok(true);
+            return Ok(Stepped::More);
         }
         if stack {
             self.stack_root(target)?;
-            return Ok(true);
+            return Ok(Stepped::More);
         }
         if let Some((ask, number)) = assign {
             self.assign_root(target, (&ask, number), places, outcomes)?;
-            return Ok(true);
+            return Ok(Stepped::More);
         }
         if let Some(on) = &open.on {
             let stood = chain.candidates.iter().find(|c| c.id == on.candidate);
             if stood.is_some_and(|c| c.wedged((self.now)())) {
-                return Ok(false);
+                return Ok(Stepped::Done);
             }
             std::thread::sleep(STACKED_WAIT);
-            return Ok(true);
+            return Ok(Stepped::More);
         }
         if let Some(tip) = chain.whole_tip() {
             let tip = tip.id.clone();
             self.gate_whole(target, &tip)?;
-            return Ok(true);
+            return Ok(Stepped::More);
+        }
+        if self.moved_under(chain, open, &read.base) {
+            return self.rebuild(target, open, &read.base, refused);
         }
         let mut ripe: Option<String> = None;
         for c in chain.chained().into_iter().rev() {
@@ -944,12 +959,52 @@ where
                 ripe = Some(c.id.clone());
             }
         }
-        let Some(ripe) = ripe else { return Ok(false) };
+        let Some(ripe) = ripe else { return Ok(Stepped::Done) };
         if self.publish_noting(target, &ripe, changes, refused)?.is_empty() {
             let again = self.read(target)?;
-            return Ok(!again.chain.ripe(&ripe, &again.base));
+            if self.moved_under(&again.chain, open, &again.base) {
+                return self.rebuild(target, open, &again.base, refused);
+            }
+            return Ok(if again.chain.ripe(&ripe, &again.base) {
+                Stepped::Done
+            } else {
+                Stepped::More
+            });
         }
-        Ok(true)
+        Ok(Stepped::More)
+    }
+
+    /// Whether the target moved, outside the chain, from under the round
+    /// `open`: the first valid candidate of the chain is the round's, and
+    /// stands on another commit than `base`, the target's tip.
+    fn moved_under(&self, chain: &Chain<F::Note>, open: &pairing::Round, base: &str) -> bool {
+        let first = chain.chained().into_iter().find(|c| c.valid());
+        first.is_some_and(|c| {
+            c.predecessor != base && open.asked.iter().any(|a| a.candidate.as_ref() == Some(&c.id))
+        })
+    }
+
+    /// Another host moved the target to `base` from under the round
+    /// `open`: its candidates are cancelled `base_moved`, and its changes
+    /// leave it to ask anew, built again on the new tip and gated again
+    /// (docs/adr/0117); a push of it refused is not their outcome.
+    fn rebuild(
+        &self,
+        target: &str,
+        open: &pairing::Round,
+        base: &str,
+        refused: &mut Refusals,
+    ) -> Result<Stepped, Error<F::Error>> {
+        let asked: Vec<(String, u64)> =
+            open.asked.iter().map(|a| (a.id.clone(), a.asks.change)).collect();
+        self.change(target, |chain| {
+            chain.observe_base(base);
+            for (id, _) in &asked {
+                chain.leave(id, Left::Next);
+            }
+        })?;
+        refused.retain(|(number, _)| !asked.iter().any(|(_, n)| n == number));
+        Ok(Stepped::Rebuilt)
     }
 
     /// Assigns the candidate of the round's root of the change `number`,
@@ -1248,6 +1303,17 @@ where
 /// The changes whose publication's push was refused, each with what git
 /// said.
 type Refusals = Vec<(u64, String)>;
+
+/// What one step of a round left to do.
+enum Stepped {
+    /// More steps.
+    More,
+    /// Nothing more of this round, in this run.
+    Done,
+    /// The round's publication was refused as another host moved the
+    /// target: its changes left it to be built again on the new tip.
+    Rebuilt,
+}
 
 /// The tree of `first` and `second` merged, where `git merge-tree` finds
 /// their merge clean; `None` where it conflicts.

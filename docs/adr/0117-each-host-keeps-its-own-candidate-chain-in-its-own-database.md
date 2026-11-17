@@ -65,11 +65,22 @@ database, and because a reader starts no process and needs no lock.
 
 ## The landing crate
 
-The landing crate (ADR-0058) says what one publication updates where the
-chain is not a ref of the remote — every member's source head kept, and the
-target moved — and, for a program of another repo that still keeps its chain
-on the remote, the same with the chain's record. afkconvoy does not call the
-latter.
+The landing crate (ADR-0058) says what one publication updates — every
+member's source head kept, and the target moved — and no chain record is
+among it: the crate's plain-git `Lander`, which a program of another repo
+lands with (Guild's), keeps its chain on the host too
+(sunfmin/control#1360). Its chain, rounds and groups are a commit per target
+at `refs/convoy/held/<target>` of a bare repo the program names on its host,
+one per repo, shared by every process and checkout of the host landing on
+it; the commit's parents keep the candidates reachable, and the checkout
+keeps them at the same ref. A write is a fast-forward of the commit it was
+read at, so git's ref update is its lock, as the transaction is afkconvoy's:
+a store in git rather than SQLite, because the candidates' commits must be
+kept in an object store anyway, and the crate gains no dependency. Its round
+is published as above, and where another host moved the target under it,
+seen before the push or by the push refused, the round's candidates are
+cancelled `base_moved` and its changes asked again in a round built on the
+new tip and gated again.
 
 ## The host's state
 
