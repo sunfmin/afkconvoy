@@ -4,7 +4,7 @@
 //! candidates and cancels a failed or invalid suffix, the round whose PRs are
 //! paired and fast-gated pair by pair, and whose root is gated whole once on
 //! the target tip (docs/adr/0083), and the ordered fast-forward that lands
-//! it, all on one record the remote holds. afkconvoy depends on it, and so may
+//! it, on a chain the host keeps (docs/adr/0117). afkconvoy depends on it, and so may
 //! another program, by a git dependency pinned to a revision of this repo.
 
 // Flux's refinements of the standard library — what gives a `Vec` its length.
