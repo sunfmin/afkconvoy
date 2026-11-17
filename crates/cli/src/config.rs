@@ -482,7 +482,9 @@ mod tests {
     #[test]
     fn a_proving_branch_is_read_only_beside_a_gates_block() {
         let main = |more: &str| {
-            format!("```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 3600\n{more}```\n")
+            format!(
+                "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 3600\n{more}```\n"
+            )
         };
         let gates = "```yaml gates\nfast:\n  command: ./gate.sh fast\n  seconds: 600\n  budget_seconds: 120\nslow:\n  command: ./gate.sh slow\n  seconds: 3000\n  budget_seconds: 480\n```\n";
         let config = parse(&format!("{}{gates}", main("proving_branch: proving\n"))).unwrap();
@@ -497,8 +499,10 @@ mod tests {
         assert_eq!((plain.lands_on(), plain.proving_branch.as_deref()), ("main", None));
         let alone = format!("{:#}", parse(&main("proving_branch: proving\n")).unwrap_err());
         assert!(alone.contains("proving_branch") && alone.contains("```yaml gates"), "{alone}");
-        let itself =
-            format!("{:#}", parse(&format!("{}{gates}", main("proving_branch: main\n"))).unwrap_err());
+        let itself = format!(
+            "{:#}",
+            parse(&format!("{}{gates}", main("proving_branch: main\n"))).unwrap_err()
+        );
         assert!(itself.contains("other than base_branch"), "{itself}");
     }
 

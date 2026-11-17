@@ -114,17 +114,7 @@ fn a_worker_started_after_a_landing_on_the_proving_branch_branches_from_it() {
     world.issue(3, &["ready-for-agent"]);
     world.kit_command("claude-code", "ckimi");
     let started = world
-        .afk(&[
-            "dispatch",
-            "--issue",
-            "3",
-            "--instance",
-            "alpha",
-            "--host",
-            "h1",
-            "--now",
-            "1000",
-        ])
+        .afk(&["dispatch", "--issue", "3", "--instance", "alpha", "--host", "h1", "--now", "1000"])
         .ok();
     let worktree = Path::new(started["worktree"].as_str().unwrap());
     assert_eq!(git(worktree, &["rev-parse", "HEAD"]), proving, "{started}");

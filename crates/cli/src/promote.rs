@@ -36,7 +36,11 @@ pub struct Standing {
 impl Standing {
     /// Where `config`'s proving branch and base branch stand on the remote
     /// now; `None` where it declares no proving branch.
-    pub fn read(repo: &Repo, config: &Config, tracker: &afkconvoy_core::tracker::Tracker) -> Result<Option<Standing>> {
+    pub fn read(
+        repo: &Repo,
+        config: &Config,
+        tracker: &afkconvoy_core::tracker::Tracker,
+    ) -> Result<Option<Standing>> {
         let Some(proving) = config.proving_branch.clone() else { return Ok(None) };
         let base_ref = format!("refs/heads/{}", config.base_branch);
         let proving_ref = format!("refs/heads/{proving}");
@@ -304,7 +308,11 @@ impl Lock {
 /// of the base branch, the tick starts a promotion of its own, detached from
 /// it, unless one runs → whether it started one. Its answer goes to the
 /// checkout's promotion log; how it ended is said in the fleet's log.
-pub fn tend(repo: &Repo, config: &Config, tracker: &afkconvoy_core::tracker::Tracker) -> Result<bool> {
+pub fn tend(
+    repo: &Repo,
+    config: &Config,
+    tracker: &afkconvoy_core::tracker::Tracker,
+) -> Result<bool> {
     let Some(standing) = Standing::read(repo, config, tracker)? else { return Ok(false) };
     if !standing.ahead() || !standing.fast_forward || Lock::held(repo) {
         return Ok(false);

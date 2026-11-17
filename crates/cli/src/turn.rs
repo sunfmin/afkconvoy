@@ -28,9 +28,8 @@ pub fn base(repo: &Repo, config: &Config) -> Result<String> {
 /// gate as their whole gate: the slow gate runs at a promotion
 /// (docs/adr/0090).
 pub(crate) fn tip_config(repo: &Repo, tip: &str, target: &str) -> Result<Config> {
-    let declared = crate::config::parse(
-        &repo.git_raw(&["show", &format!("{tip}:{}", crate::config::FILE)])?,
-    )?;
+    let declared =
+        crate::config::parse(&repo.git_raw(&["show", &format!("{tip}:{}", crate::config::FILE)])?)?;
     Ok(match declared.proves_on(target) {
         true => declared.fast_as_whole(),
         false => declared,
