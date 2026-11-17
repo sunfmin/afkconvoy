@@ -539,8 +539,9 @@ fn a_host_runner_ended_unexpectedly_is_started_again_by_its_keeper_on_the_same_l
     // told to stop, it ends, and its keeper with it: nothing starts it again
     world.afk(&["stop", "--all"]).ok();
     let keeper = json!(keeper);
+    // The keeper ends only once the host runner it started has: nothing is
+    // left to start it again.
     until("the keeper ended", || (!alive(&keeper)).then_some(()));
-    std::thread::sleep(Duration::from_secs(2));
     assert_eq!(world.host_runner(), None, "{:#?}", world.runner_log());
     let restarted =
         world.runner_log().iter().filter(|line| line.starts_with("host runner restarted")).count();
@@ -1068,6 +1069,15 @@ fn installed_said(world: &World) -> Value {
     world.afk(&["doctor", "--host", "h1"]).json["host"]["installed"].clone()
 }
 
+/// Waits for the host runner to look twice more at the file it was started
+/// from: the first of the two began after now, and whether it moves was
+/// decided, and any move said, before the second.
+fn looked_again(world: &World) {
+    let looked = || installed_said(world)["looked"].as_u64();
+    let before = until("the installed file looked at", looked);
+    until("two more looks at the installed file", || looked().filter(|now| *now >= before + 2));
+}
+
 #[test]
 fn the_host_runner_moves_onto_a_newer_afkconvoy_installed_where_it_was_started_from() {
     let world = World::new();
@@ -1183,7 +1193,7 @@ fn a_newer_afkconvoy_that_does_not_start_leaves_the_host_runner_holding_the_host
     assert!(events.iter().any(|event| event["event"] == "not_moved"), "{doctor}");
 
     // and it tries that file no more until it changes
-    std::thread::sleep(Duration::from_secs(3));
+    looked_again(&world);
     let log = world.runner_log();
     let moving = log.iter().filter(|said| said.starts_with("host runner moving: ")).count();
     assert_eq!(moving, 1, "{log:#?}");
@@ -1222,7 +1232,7 @@ fn the_host_runner_never_moves_onto_an_older_afkconvoy_nor_one_that_does_not_say
     assert!(evidence.contains("`--version` said \"afkconvoy says nothing\""), "{found}");
     logged(&world, &format!("{at}, which this host runner was started from, changed and does not"));
 
-    std::thread::sleep(Duration::from_secs(2));
+    looked_again(&world);
     assert_eq!(world.host_runner().map(u64::from), Some(old));
     let log = world.runner_log();
     assert!(!log.iter().any(|said| said.starts_with("host runner moving: ")), "{log:#?}");

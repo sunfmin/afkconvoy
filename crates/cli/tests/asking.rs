@@ -72,6 +72,17 @@ fn until<T>(world: &World, what: &str, mut got: impl FnMut() -> Option<T>) -> T 
     }
 }
 
+/// Waits for `n` steps of the asking session begun after now: what they
+/// would have asked or delivered, they have.
+fn stepped(world: &World, n: u64) {
+    let file = world.cache().join("afkconvoy/asking/steps");
+    let steps = || std::fs::read_to_string(&file).map_or(0, |n| n.trim().parse().unwrap());
+    let before = world.holding("afkconvoy/asking/state.lock", steps);
+    until(world, &format!("{n} asking steps begun after now"), || {
+        (steps() >= before + n).then_some(())
+    });
+}
+
 fn paused(world: &World, harness: &str, why: &str) {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
     world.pause(harness, now.as_secs(), why);
@@ -390,7 +401,7 @@ fn reworded_reports_and_runner_restart_do_not_ask_an_episode_twice() {
             && asking_state(&world)["current"]["delivered"] == true)
             .then_some(())
     });
-    std::thread::sleep(Duration::from_millis(1500));
+    stepped(&world, 1);
     assert_eq!(asking_creates(&world), 1);
     assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 1);
     settle(&world, "settled");
@@ -406,7 +417,7 @@ fn reworded_reports_and_runner_restart_do_not_ask_an_episode_twice() {
         &next,
         json!([{"condition": host, "question": "The same account, reworded?", "answer": "another answer"}]),
     );
-    std::thread::sleep(Duration::from_millis(1500));
+    stepped(&world, 1);
     assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 1);
     assert_eq!(asking_creates(&world), 1);
 }
@@ -443,7 +454,7 @@ fn busy_input_is_untouched_and_a_recovered_pending_question_is_never_delivered()
             && current["delivered"] == false)
             .then_some(())
     });
-    std::thread::sleep(Duration::from_millis(1200));
+    stepped(&world, 1);
     assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 1);
     unpaused(&world, "pi");
     until(&world, "recovered pending question removed", || {
@@ -456,7 +467,7 @@ fn busy_input_is_untouched_and_a_recovered_pending_question_is_never_delivered()
             }
         }
     });
-    std::thread::sleep(Duration::from_millis(1200));
+    stepped(&world, 1);
     assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 1);
 }
 
@@ -491,7 +502,8 @@ fn an_unverified_terminal_pauses_delivery_until_its_identity_is_restored() {
         asking_state(&world)["unavailable"].as_str().map(str::to_string)
     });
     settle(&world, "settled");
-    std::thread::sleep(Duration::from_millis(1200));
+    // One step settles the first question, the next would deliver the second.
+    stepped(&world, 2);
     assert_eq!(asking_terminal(&world)["sent"].as_array().unwrap().len(), 1);
     world.with_orca(|orca| {
         let terminal = orca["terminals"]
@@ -643,7 +655,7 @@ fn a_same_name_terminal_in_another_pty_or_pane_is_still_refused() {
             asking_state(&world)["unavailable"].as_str().map(str::to_string)
         });
         assert!(why.contains("ownership is unverified"), "{why}");
-        std::thread::sleep(Duration::from_millis(1200));
+        stepped(&world, 1);
         assert_eq!(asking_state(&world)["session"]["terminal"], json!(old));
         assert_eq!(journal(&world)["session"]["terminal"], json!(old));
         assert_eq!(restarted(&world)["sent"].as_array().unwrap().len(), 1);

@@ -202,6 +202,20 @@ fn state(world: &World) -> Value {
     std::fs::read(file).map_or(json!({}), |bytes| serde_json::from_slice(&bytes).unwrap())
 }
 
+/// Waits for a look and a check of the watch begun after now: whatever
+/// either would have done once nothing more changes, it has done.
+fn passed(world: &World) {
+    let counts = || {
+        let state = state(world);
+        (state["looks"].as_u64().unwrap_or(0), state["checks"].as_u64().unwrap_or(0))
+    };
+    let (looks, checks) = world.holding("afkconvoy/watch/state.lock", counts);
+    until(world, "a look and a check begun after now", || {
+        let (looked, checked) = counts();
+        (looked > looks && checked > checks).then_some(())
+    });
+}
+
 fn running(world: &World) -> Option<Value> {
     Some(state(world)["running"].clone()).filter(|running| !running.is_null())
 }
@@ -1357,13 +1371,13 @@ fn one_watch_covers_an_episode_is_kept_across_a_restart_and_is_recorded() {
 
     // What a look would find while it runs waits for it to end.
     paused(&world, "dsh", "it refused every prompt");
-    std::thread::sleep(Duration::from_millis(2500));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "no second watch beside the first");
 
     world.kill_host_runner("KILL");
     let again = run(&world, &dir);
     assert_ne!(again["host_runner"]["pid"], first["host_runner"]["pid"]);
-    std::thread::sleep(Duration::from_millis(2500));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "the running watch is kept, and none started beside it");
     assert_eq!(running(&world).unwrap()["id"], watch["id"]);
 
@@ -1950,11 +1964,11 @@ fn a_hot_worker_starts_the_host_watch_with_its_reading_and_evidence() {
     );
     printed(&world, &watch, &["told #7 to end its runaway process"], Some(0));
     until(&world, "watch record", || ended(&world, "ended"));
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "the same hot episode starts nothing again");
     world.kill_host_runner("KILL");
     run(&world, &dir);
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "a runner replacement keeps the hot episode");
     let doctor = world.afk(&["doctor", "--all"]).json;
     assert!(
@@ -2026,11 +2040,11 @@ fn admission_held_ten_minutes_starts_a_watch_with_the_host_reading() {
     until(&world, "watch end", || ended(&world, "ended"));
     let second = world.second_repo();
     world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "a new fleet shares the host's admission episode");
     world.kill_host_runner("KILL");
     run(&world, &dir);
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "episode coverage survives a runner replacement");
 }
 
@@ -2128,7 +2142,7 @@ fn pressure_starts_one_watch_across_fleets_and_no_worker_turns_hot() {
     world.afk_in(&second, &["run", "--host", "h1", "--second-ms", "100"]).ok();
     printed(&world, &watch, &["checked the outside memory holder"], Some(0));
     until(&world, "watch end", || ended(&world, "ended"));
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "one pressure episode across fleets");
     let doctor = world.afk(&["doctor", "--all"]).json;
     for checkout in doctor["checkouts"].as_array().unwrap() {
@@ -2234,9 +2248,7 @@ fn pressure_another_account_holds_with_no_fleet_worker_starts_no_watch_and_docto
     held_since(&world, true);
     let dir = operator(&world);
     run(&world, &dir);
-    let first = until(&world, "a look", || state(&world)["looked"].as_u64());
-    until(&world, "a later look", || state(&world)["looked"].as_u64().filter(|at| *at > first));
-    std::thread::sleep(Duration::from_secs(2));
+    passed(&world);
     assert!(starts(&world).is_empty(), "no watch: {}", state(&world));
     let doctor = world.afk(&["doctor", "--all"]).json;
     let found = pressure_finding(&doctor);
@@ -2302,11 +2314,7 @@ fn two_pressure_episodes_from_the_same_other_account_start_one_watch_until_the_c
     let mut saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     assert_eq!(saved["left"]["account"], "simulators", "{saved}");
     run(&world, &dir);
-    let looked = now();
-    until(&world, "a look of the new episode", || {
-        state(&world)["looked"].as_u64().filter(|at| *at > looked)
-    });
-    std::thread::sleep(Duration::from_secs(3));
+    passed(&world);
     assert_eq!(rounds(&world), vec![first.clone()], "the same cause starts no second watch");
     let doctor = world.afk(&["doctor", "--all"]).json;
     let found = pressure_finding(&doctor);
@@ -2395,7 +2403,7 @@ fn a_lost_creation_receipt_recovers_the_acknowledged_terminal_without_another_ag
     std::fs::remove_file(world.cache().join("afkconvoy/watch/state.json")).unwrap();
     run(&world, &dir);
     until(&world, "the retained watch", || running(&world).filter(|w| w["terminal"] == handle));
-    std::thread::sleep(Duration::from_millis(2200));
+    passed(&world);
     assert_eq!(starts(&world).len(), 1, "restart/repeated checks never create another agent");
     let terminal = world.orca()["terminals"]
         .as_array()
@@ -2428,7 +2436,7 @@ fn same_name_operator_terminals_block_discovery_without_being_adopted_or_closed(
     assert_eq!(open(&world, &dir).len(), 2);
     // A unique title still proves no ownership.
     world.with_orca(|orca| orca["terminals"][1]["title"] = json!("operator's work"));
-    std::thread::sleep(Duration::from_millis(2200));
+    passed(&world);
     assert!(starts(&world).is_empty());
     world.with_orca(|orca| orca["terminals"][0]["title"] = json!("operator"));
     until(&world, "start after unrelated titles are renamed", || running(&world));
@@ -2573,7 +2581,7 @@ fn uncertain_creation_and_prompt_receipts_pause_across_restarts_and_accept_an_ex
                 .filter(|why| why.contains("No replacement is started"))
                 .map(str::to_string)
         });
-        std::thread::sleep(Duration::from_millis(2200));
+        passed(&world);
         assert_eq!(starts(&world).len(), 1, "{status}");
         assert!(open(&world, &dir).contains(&watch["terminal"].as_str().unwrap().into()));
         let doctor = world.afk(&["doctor"]).json;

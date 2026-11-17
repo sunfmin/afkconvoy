@@ -21,6 +21,11 @@ use crate::orca::Worktree;
 use crate::watch_notify::Entry;
 
 const STATE: &str = "asking/state.json";
+/// How many steps have run to their end, each counted under the state lock
+/// it held throughout: one counted after a reader held that lock began
+/// after it (sunfmin/control#1280). Not in `STATE`, whose every change
+/// `inputs` takes for a reason to step again.
+const STEPS: &str = "asking/steps";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -170,6 +175,16 @@ fn note_failure(why: &str) -> Result<()> {
 
 fn step() -> Result<()> {
     let _lock = state_lock()?;
+    let stepped = step_held();
+    let file = crate::copies::cache()?.join(STEPS);
+    let steps: u64 =
+        std::fs::read_to_string(&file).ok().and_then(|n| n.trim().parse().ok()).unwrap_or(0);
+    std::fs::write(&file, steps.wrapping_add(1).to_string())?;
+    stepped
+}
+
+/// `step`, with the state lock held.
+fn step_held() -> Result<()> {
     let mut state = read()?;
     let journal = asking_terminal::read()?;
     if state.session.is_none()
