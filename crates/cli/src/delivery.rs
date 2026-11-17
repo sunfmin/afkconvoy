@@ -4,7 +4,7 @@
 //! a human.
 use std::time::Duration;
 
-use afkconvoy_core::candidate::{Chain, Phase};
+use afkconvoy_core::candidate::Phase;
 use afkconvoy_core::gate::{GateCommand, Tree};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -500,15 +500,8 @@ fn result_of(blocking: &[String]) -> String {
 }
 
 fn candidate_blocks(repo: &Repo, issue: u64) -> Result<Vec<String>> {
-    let prefix = repo.layout().under("candidates/");
     let mut reasons = vec![];
-    for record in repo.remote().records(&[&format!("{prefix}*")], Fresh::Process)? {
-        let chain: Chain = serde_json::from_str(&record.subject).with_context(|| {
-            format!(
-                "unreadable candidate record {}; restore it before a delivery handoff",
-                record.name
-            )
-        })?;
+    for (_, chain) in crate::chain_store::all(repo)? {
         let Some(last) = chain.candidates.iter().rfind(|c| c.note.issue == Some(issue)) else {
             continue;
         };

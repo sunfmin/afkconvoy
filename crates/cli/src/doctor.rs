@@ -618,6 +618,10 @@ pub struct State {
     /// The pending places live lands of this host hold on its chains, from
     /// the same listing.
     pub(crate) pending: Vec<crate::candidates::PendingLand>,
+    /// The remote candidate chain records an afkconvoy before
+    /// docs/adr/0090 left: ignored, and removed by the tick once no turn of
+    /// this host holds a place on one.
+    pub(crate) legacy_chains: Vec<(String, bool)>,
     /// When the base branch's tip on the remote was committed, in epoch
     /// seconds: the repo's last landing, this host's or a peer's.
     pub base_moved: Option<u64>,
@@ -2124,11 +2128,12 @@ fn finish_state(
         })
         .collect();
     let carried_landed = read_carried_landed(&fleet, &open)?;
-    let prefix = fleet.repo.layout().under("candidates/");
-    let chains = fleet.records_at_open(&format!("{prefix}*"));
-    let candidates = crate::candidates::view(&fleet.repo, &fleet.config, &chains)
-        .unwrap_or_else(|error| json!({"error": error.to_string()}));
-    let pending = crate::candidates::pending_lands(&chains, &prefix, now);
+    let (candidates, pending) = match crate::chain_store::all(&fleet.repo) {
+        Ok(chains) => {
+            (crate::candidates::view(&chains), crate::candidates::pending_lands(&chains, now))
+        }
+        Err(error) => (json!({"error": error.to_string()}), vec![]),
+    };
     let base_moved = fleet.base_tip().ok().and_then(|tip| {
         fleet.repo.git(&["log", "-1", "--format=%ct", &tip]).ok()?.trim().parse().ok()
     });
@@ -2157,6 +2162,13 @@ fn finish_state(
         legacy_targets: crate::target::legacy_left(&fleet).into_iter().map(|r| r.name).collect(),
         candidates,
         pending,
+        legacy_chains: crate::candidates::legacy(
+            &fleet.repo,
+            &fleet.records_at_open(&format!("{}*", fleet.repo.layout().under("candidates/"))),
+        )
+        .into_iter()
+        .map(|old| (old.name, old.in_use))
+        .collect(),
         base_moved,
         deliveries,
     };
@@ -2691,6 +2703,13 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String], look: &Look) ->
         "refusals": state.as_ref().ok().map(|state| &state.refusals),
         "waiting_on_human": waiting,
         "candidates": state.as_ref().ok().map(|state| &state.candidates),
+        "legacy_candidate_chains": state.as_ref().ok().map(|state| {
+            state
+                .legacy_chains
+                .iter()
+                .map(|(name, in_use)| json!({"ref": name, "in_use": in_use}))
+                .collect::<Vec<_>>()
+        }),
         "kept_at_settle": kept_at_settle_json(repo),
     });
     Ok(Examined { answer, found, pace, not_alive })
@@ -3223,7 +3242,7 @@ It also reads every tracker that list names once for repo-labelled work, includi
 
 ## What it answers
 
-{"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "findings", "deliveries"}
+{"host", "fleet", "claims", "issues", "waiting_on_human", "refusals", "candidates", "legacy_candidate_chains", "findings", "deliveries"}
 
 `targets` lists open tracker tasks with issue, tracker_issue, delivery (null when unattached), target_branch, configured_base and pinned; an invalid record or missing branch adds error rather than selecting the configured base. A failed listing is {error}.
 
@@ -3264,7 +3283,8 @@ It also reads every tracker that list names once for repo-labelled work, includi
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `refusals`: issue number → the harnesses that refused that task, each with `harness` and `evidence`, read from GitHub. Later starts skip them across every stage; the harness stays healthy for other issues.
 - `kept_at_settle`: each worktree of this checkout on this host that a settle kept, [] with none: {issue, path, branch, kept_because, unpushed, carried_by, since}. `kept_because` is `dirty`, `unpushed` or `unread`; `unpushed` how many commits only it holds; `carried_by` the PR that carries its issue's, or null; `since` when a settle first kept it. Each tick looks at it again and removes it once it holds nothing the remote does not.
-- `candidates`: the remote candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round, assigned}. `assigned` is when it was assigned, in epoch seconds, or null on a record older than that. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. A candidate of a round's root carries `batch: true` and its phase is `batched` until its round's whole gate runs at the root's last candidate; a pair of a round's pairing tree carries `pair`, {round, level, first, second, partner}: the PRs of its two nodes and the second's commit. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_round_gate` (batched, until its round's whole gate runs at the root's last candidate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
+- `legacy_candidate_chains`: the remote candidate chain records an older afkconvoy left, `[{ref, in_use}]`: this host keeps its chain in its own database and ignores them, and its tick removes each once `in_use` is false, no live process of this host holding a place on it. Empty where none is left.
+- `candidates`: this host's candidate chains for every target branch of this repo, each in order and identified by `target_branch`. Each candidate is {phase, commit, issue, pr, predecessor, waiting, target_branch, id, cause, cancelled_by, round, assigned}. `assigned` is when it was assigned, in epoch seconds, or null on a record older than that. `round` is the id of the candidate whose slow gate it waits on: the tip of the round now slow-gating, for each candidate of that round and the tip itself; null for one behind it or with no round running, which waits for the next round. A candidate of a round's root carries `batch: true` and its phase is `batched` until its round's whole gate runs at the root's last candidate; a pair of a round's pairing tree carries `pair`, {round, level, first, second, partner}: the PRs of its two nodes and the second's commit. `waiting` is `constructing_worktree`, `validating`, `waiting_for_round` (fast-green, until a round's slow gate lands it), `slow_gating` (the round's tip, running the slow gate), `waiting_for_round_gate` (batched, until its round's whole gate runs at the root's last candidate), `waiting_for_predecessor`, `confirming_process_exit`, `gate_red`, `cancelled` or `landed`. A finished candidate — phase `landed`, `red` or `cancelled` — carries no gate excerpt. A candidate gating now (phase `validating` or `slow`) may still carry `excerpt`. An error reading the chain is reported as `{error}`.
 - `codex_workers`: this checkout's Codex sessions, each with issue, worktree, harness, model, effort, model_source, effort_source and codex_home (its private session directory). Automatic starts read the model from your `~/.codex/config.toml` (`user_selection`) unless a model label is followed (`model_label`; a stored `casting` is read as that), and no user preference leaves the model null for Codex's native default (`codex_default`). Every start reads the effort from your own Codex config, or uses Codex's model default. Sources stay attached to the session after your config changes; a saved `/model` choice is shown with its session's private config as the source. [`afkconvoy help worker-launch`](help:worker-launch).
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, run as printed apart from what stands between < and >, naming the checkout as that command takes it so the line runs from any directory. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
 - `findings`: what is wrong, most severe first — none: []. Each is {kind, severity, what, evidence, fix, see, watch_id}:
@@ -3347,17 +3367,12 @@ mod tests {
                 asks: None,
             });
             let chain: Chain = Chain { pending, ..Chain::default() };
-            crate::remote::RemoteRecord {
-                name: "refs/convoy/candidates/main".into(),
-                sha: "0".into(),
-                subject: serde_json::to_string(&chain).unwrap(),
-            }
+            ("main".to_string(), chain)
         };
-        let prefix = "refs/convoy/candidates/";
-        let nineteen = pending_lands(&[record(19)], prefix, 5000);
+        let nineteen = pending_lands(&[record(19)], 5000);
         assert_eq!(nineteen.len(), 19, "a place whose owner is gone is no live land");
         assert!(pending_finding(&nineteen).is_none());
-        let found = pending_finding(&pending_lands(&[record(20)], prefix, 5000)).unwrap();
+        let found = pending_finding(&pending_lands(&[record(20)], 5000)).unwrap();
         assert_eq!(found.kind, Kind::PendingLands);
         assert!(found.what.starts_with("20 live lands hold pending turns"), "{}", found.what);
         let pid = live.pid;
@@ -3491,6 +3506,7 @@ mod tests {
             ready_label: "ready-for-agent".into(),
             tracker: Tracker::Own,
             unclaimed: vec![],
+            legacy_chains: vec![],
             left_watch: vec![],
             not_ours: vec![],
             on_gone: vec![],

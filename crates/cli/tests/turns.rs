@@ -45,8 +45,7 @@ fn seed(world: &World) {
 /// so a count of either alone holds only for a moment, which a loaded host's
 /// slower looks miss (sunfmin/control#1306). Both are read in one look.
 fn asked_after(world: &World) -> usize {
-    let record = world.remote(&["show", "-s", "--format=%B", "refs/convoy/candidates/main"]);
-    let chain: Value = serde_json::from_str(&record).unwrap_or(Value::Null);
+    let chain = world.chain("main");
     let pending = chain["pending"].as_array().map_or(0, Vec::len);
     pending + chain["stacked"]["asked"].as_array().map_or(0, Vec::len)
 }

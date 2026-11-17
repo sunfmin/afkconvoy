@@ -21,6 +21,12 @@ pub fn base(repo: &Repo, config: &Config) -> Result<String> {
     base_as(repo, config, Fresh::Process)
 }
 
+/// The base branch asked of the remote now, its objects brought here: what a
+/// candidate is built on and published at.
+pub(crate) fn base_live(repo: &Repo, config: &Config) -> Result<String> {
+    base_as(repo, config, Fresh::Live)
+}
+
 /// The base branch read as `fresh` says, its objects brought here.
 fn base_as(repo: &Repo, config: &Config, fresh: Fresh) -> Result<String> {
     repo.remote()

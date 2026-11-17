@@ -838,13 +838,9 @@ pub(crate) fn own_background(
     // keeps its own time: past one gate's limit, as a round's members wait
     // for its slow gate, it is not silent. On 2026-10-29 a member restarted
     // so ended its round's slow gate (sunfmin/control#244).
-    let prefix = fleet.repo.layout().under("candidates/");
     if waiting
-        && crate::candidates::landing(
-            &fleet.records_at_open(&format!("{prefix}*")),
-            &prefix,
-            &worktree.branch,
-        )
+        && crate::chain_store::all(&fleet.repo)
+            .is_ok_and(|chains| crate::candidates::landing(&chains, &worktree.branch))
     {
         return Ok(Some(Background { since: fleet.now, limit }));
     }

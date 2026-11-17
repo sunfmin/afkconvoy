@@ -4,6 +4,8 @@ status: accepted
 
 # Candidates, rounds and landing may be depended on by another program, with the forge behind an interface
 
+_See ADR-0090:_ afkconvoy keeps its chain in the host's database and no longer on the remote; the crate's `turn::publication` is what a publication updates without a chain record, and `turn::updates` is kept for a program that records its chain on the remote.
+
 Amends ADR-0024, ADR-0048 and ADR-0059 (sunfmin/control#696).
 
 How afkconvoy lands — a candidate as an immutable merge of a change's original head onto its predecessor, a candidate chain that cancels a failed or invalid suffix, a round that slow-gates once at the chain's tip and is not split when red (ADR-0048), an ordered fast-forward after the predecessor landed, all on one record the remote holds and changes only by compare-and-swap — is wanted by another program of this host's user (Guild, sunfmin/control#693), whose repos live on Forgejo and whose changes are its own tasks. Landing is already plain git: a turn merges, gates, records and pushes a fast-forward, and never asks the forge to merge. What tied it to GitHub and to the fleet is around it, and that is what is put behind an interface. The rules have one home.

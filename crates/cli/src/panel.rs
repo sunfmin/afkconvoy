@@ -631,15 +631,10 @@ pub fn read(
     };
     let mut panel = Panel::empty(fleet, me).show(&seen);
     panel.codex_workers = crate::codex_launch::workers(&fleet.repo);
-    let prefix = fleet.repo.layout().under("candidates/");
-    panel.candidates = crate::candidates::view(
-        &fleet.repo,
-        &fleet.config,
-        &fleet.records_at_open(&format!("{prefix}*")),
-    )
-    .ok()
-    .and_then(|rows| rows.as_array().cloned())
-    .unwrap_or_default();
+    panel.candidates = crate::chain_store::all(&fleet.repo)
+        .ok()
+        .and_then(|chains| crate::candidates::view(&chains).as_array().cloned())
+        .unwrap_or_default();
     panel.tracker = report.tracker_named();
     panel.deliveries = match &report.deliveries {
         Some(Ok(rows)) => rows.iter().map(crate::delivery::panel_line).collect(),

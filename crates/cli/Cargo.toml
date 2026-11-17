@@ -28,6 +28,9 @@ signal-hook = "0.3"
 # A rebuild's read keeps each issue's stage history beside the team whose
 # workflow it borrows (`stage::Flows`).
 self_cell = "1"
+# The host's one database (`host_db`): its candidate chains first, the rest of
+# its local state after them. Bundled, so no system library is assumed.
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 # What a process wrote to disk and where it works, as the kernel says them
