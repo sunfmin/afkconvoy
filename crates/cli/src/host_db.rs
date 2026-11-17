@@ -200,7 +200,10 @@ impl Host {
             let old = cache.join(FILE);
             // A hot journal beside it is a write an older process has not
             // ended: it stays until it has.
-            if old.exists() && !old.with_extension("db-journal").exists() && !older_runner(cache) {
+            if old.exists()
+                && !old.with_extension("db-journal").exists()
+                && !another_build_holds(cache)
+            {
                 aside(&old)?;
             }
         }
@@ -474,7 +477,7 @@ pub(crate) fn converge_file(
         )?;
         Ok(())
     })?;
-    if !older_runner(cache) {
+    if !another_build_holds(cache) {
         aside(file)?;
     }
     Ok(())
@@ -492,10 +495,16 @@ pub(crate) fn aside(file: &Path) -> Result<()> {
     }
 }
 
-/// Whether a host runner of a release older than this one holds the host of
-/// `cache`: it reads and writes the old files still, until it moves onto
-/// this release between two ticks (ADR-0023).
-pub(crate) fn older_runner(cache: &Path) -> bool {
+/// Whether a host runner of another build holds the host of `cache`, so an
+/// old file must stay where it is: one of an older release reads and writes
+/// the old files still, until it moves onto this release between two ticks
+/// (ADR-0023); and one of this same release but another executable — the
+/// installed afkconvoy while a test or a dev build runs — may be older than
+/// its version says. Only a free host, a runner of a newer release, or one
+/// started from this very executable lets a file be moved aside: a dev
+/// build's tests once moved the host's real kit.json aside under a runner
+/// whose version matched (2026-11-17).
+pub(crate) fn another_build_holds(cache: &Path) -> bool {
     let lock = cache.join(crate::host_runner::LOCK);
     let Ok(file) = std::fs::File::open(&lock) else { return false };
     // Free: no host runner holds it. A runner starting meanwhile waits for
@@ -508,7 +517,22 @@ pub(crate) fn older_runner(cache: &Path) -> bool {
     let version = holder.as_ref().and_then(|holder| holder["version"].as_str());
     use afkconvoy_core::host_runner::{Found, found};
     // One that says no version is of a release before it was said.
-    version.is_none_or(|version| found(crate::VERSION, version) == Found::Older)
+    let Some(version) = version else { return true };
+    match found(crate::VERSION, version) {
+        Found::Newer => false,
+        Found::Older => true,
+        // The same release: this build only if it is this executable.
+        _ => {
+            let theirs = holder.as_ref().and_then(|holder| holder["exe"].as_str());
+            theirs.is_none_or(|theirs| Some(PathBuf::from(theirs)) != this_executable())
+        }
+    }
+}
+
+/// This process's executable, its links resolved: what a host runner's lock
+/// names as `exe`.
+pub(crate) fn this_executable() -> Option<PathBuf> {
+    std::fs::canonicalize(std::env::current_exe().ok()?).ok()
 }
 
 /// Copies `old`, a host database an older afkconvoy kept, to `new` where
@@ -754,11 +778,18 @@ pub(crate) mod tests {
         Host { db: dir.join("data/host.db"), cache: Some(dir.join("cache")) }
     }
 
-    /// Holds the host runner's lock in `cache`, as a host runner of `version`.
+    /// Holds the host runner's lock in `cache`, as a host runner of `version`
+    /// of another executable.
     pub(crate) fn runner(cache: &Path, version: &str) -> std::fs::File {
+        runner_of(cache, version, Some(PathBuf::from("/elsewhere/afkconvoy")))
+    }
+
+    /// The same, as one started from `exe`.
+    pub(crate) fn runner_of(cache: &Path, version: &str, exe: Option<PathBuf>) -> std::fs::File {
         std::fs::create_dir_all(cache).unwrap();
         let lock = cache.join(crate::host_runner::LOCK);
-        std::fs::write(&lock, format!(r#"{{"pid": 1, "version": "{version}"}}"#)).unwrap();
+        let holder = serde_json::json!({"pid": 1, "version": version, "exe": exe});
+        std::fs::write(&lock, holder.to_string()).unwrap();
         let file = std::fs::File::open(&lock).unwrap();
         file.lock().unwrap();
         file
@@ -788,8 +819,14 @@ pub(crate) mod tests {
         assert_eq!(chains(&host.open().unwrap()), [r#"{"kept":2}"#], "copied once, never again");
         drop(older);
 
-        // a runner of this release, or none: moved aside, kept
-        let ours = runner(&cache, crate::VERSION);
+        // a runner of this release from another executable: left too
+        let other = runner(&cache, crate::VERSION);
+        host.open().unwrap();
+        assert!(cache.join(FILE).exists(), "another build of this release may read it");
+        drop(other);
+
+        // this very build, or none: moved aside, kept
+        let ours = runner_of(&cache, crate::VERSION, this_executable());
         assert_eq!(chains(&host.open().unwrap()), [r#"{"kept":2}"#]);
         assert!(!cache.join(FILE).exists());
         assert!(cache.join("host.db.migrated").exists(), "kept, to be renamed back");

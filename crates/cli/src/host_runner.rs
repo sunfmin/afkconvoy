@@ -1143,8 +1143,10 @@ fn took_host(file: &Path) -> Result<Option<(File, Value)>> {
     let before = std::fs::read_to_string(file).ok();
     let before = before.and_then(|text| serde_json::from_str::<Value>(&text).ok());
     let before = before.unwrap_or_default();
-    let mut holder =
-        json!({"pid": std::process::id(), "version": VERSION, "started": crate::clock()});
+    // `exe`: which build holds the host, beyond its version
+    // (`host_db::another_build_holds`).
+    let mut holder = json!({"pid": std::process::id(), "version": VERSION,
+        "started": crate::clock(), "exe": crate::host_db::this_executable()});
     if let Some(keeper) = KEEPER.get() {
         holder["keeper"] = json!(keeper);
     }

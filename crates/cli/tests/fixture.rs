@@ -410,3 +410,16 @@ fn resolved(path: &Path) -> PathBuf {
     }
     acc
 }
+
+/// The library a test calls in process finds the host's cache, data and
+/// config directories in its world, never in the HOME of whoever runs the
+/// tests: a dev build's tests once took the host's real kit.json into a
+/// world's database and moved it aside (2026-11-17).
+#[test]
+fn a_worlds_test_process_finds_the_hosts_directories_in_its_world() {
+    let world = World::new();
+    assert_eq!(afkconvoy::copies::cache().unwrap(), world.cache().join("afkconvoy"));
+    assert_eq!(afkconvoy::copies::data().unwrap(), world.data().join("afkconvoy"));
+    assert_eq!(afkconvoy::copies::config().unwrap(), world.config().join("afkconvoy"));
+    assert_eq!(afkconvoy::host_db::path().unwrap(), world.host_db());
+}

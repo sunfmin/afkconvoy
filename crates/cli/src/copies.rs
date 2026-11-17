@@ -87,6 +87,13 @@ fn data_home() -> Result<PathBuf> {
 /// it. The host kit was a file of it before the host database
 /// (`host_db`) kept it.
 pub fn config() -> Result<PathBuf> {
+    Ok(config_home()?.join("afkconvoy"))
+}
+
+/// The directory the config directory is in: this user's, as
+/// XDG_CONFIG_HOME or HOME says it.
+#[cfg(not(test))]
+fn config_home() -> Result<PathBuf> {
     let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
     Ok(match (set("XDG_CONFIG_HOME"), set("HOME")) {
         (Some(config), _) => PathBuf::from(config),
@@ -94,8 +101,17 @@ pub fn config() -> Result<PathBuf> {
         (None, None) => {
             bail!("neither XDG_CONFIG_HOME nor HOME says where the fleet's config directory is")
         }
+    })
+}
+
+/// The same, of a unit test: one of its own, as its cache directory is — no
+/// unit test reads or moves the host kit of whoever runs it.
+#[cfg(test)]
+fn config_home() -> Result<PathBuf> {
+    thread_local! {
+        static OWN: tempfile::TempDir = tempfile::tempdir().expect("a unit test's own config");
     }
-    .join("afkconvoy"))
+    Ok(OWN.with(|own| own.path().to_path_buf()))
 }
 
 /// Where on this host the copies are kept.

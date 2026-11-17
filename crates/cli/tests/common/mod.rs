@@ -289,9 +289,11 @@ impl World {
             clone,
             bin,
         };
-        // The library this test calls in process resolves the host's cache
-        // and data directories as a command does: they are this world's, never
-        // those of the host the tests run on. A test that read the checkout
+        // The library this test calls in process resolves the host's cache,
+        // data and config directories as a command does: they are this
+        // world's, never those of the host the tests run on. A dev build's
+        // tests once took the host's real kit.json from its config directory
+        // into a world's host.db and moved it aside (2026-11-17). A test that read the checkout
         // list through the library once took the host's real checkouts.json
         // into a host.db in its real data directory (2026-11-17). Each test is
         // a process of its own under nextest, so its environment is its own.
@@ -299,6 +301,7 @@ impl World {
         unsafe {
             std::env::set_var("XDG_CACHE_HOME", world.cache());
             std::env::set_var("XDG_DATA_HOME", world.data());
+            std::env::set_var("XDG_CONFIG_HOME", world.config());
         }
         world.write_gh(&json!({"bare": world.bare, "base": BASE, "issues": [], "prs": [],
             "comments": {}, "labels": ["ready-for-agent"], "calls": [], "envs": []}));
@@ -480,7 +483,7 @@ impl World {
             .env("SHELL", self.bin.join("shell"))
             .env("XDG_CACHE_HOME", self.cache())
             .env("XDG_DATA_HOME", self.data())
-            .env_remove("XDG_CONFIG_HOME")
+            .env("XDG_CONFIG_HOME", self.config())
             .env("HOME", self.home())
             .env_remove("ANTHROPIC_BASE_URL");
         // A stand-in world never inherits the host's real GitHub credential.
@@ -648,6 +651,12 @@ impl World {
     /// runs the tests is read. It holds nothing but what a test puts there.
     pub fn home(&self) -> PathBuf {
         self.root.join("home")
+    }
+
+    /// The world's config directory: its HOME's `.config`, as a login shell
+    /// of its host user that sets no XDG_CONFIG_HOME has it.
+    pub fn config(&self) -> PathBuf {
+        self.home().join(".config")
     }
 
     /// The host kit, as its file held it: kept in the host database.

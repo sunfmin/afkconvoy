@@ -591,7 +591,7 @@ const LOCKS: &str = "shared-readings";
 /// observation, whose loss costs one rejected request, never a fact.
 fn set_aside_old_notes(cache: &std::path::Path) -> Result<()> {
     let old = cache.join("github-quota");
-    if old.exists() && !crate::host_db::older_runner(cache) {
+    if old.exists() && !crate::host_db::another_build_holds(cache) {
         crate::host_db::aside(&old)?;
     }
     Ok(())
