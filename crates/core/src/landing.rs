@@ -73,27 +73,32 @@ pub fn merge_message(title: &str, pr: u64, of: &Of, tracker: &Tracker) -> String
 
 /// The line of a landing commit that names the host whose turn made it
 /// (sunfmin/control#1334): several hosts land on one proving branch, and a
-/// promotion says whose landings it covers.
+/// promotion says whose landings it covers. A watch's and a cut's landing
+/// name their host already (`By a watch on`, `By a cut on`), and take none.
 const LANDED_ON: &str = "Landed on ";
 
-/// `message`, a landing commit's, naming `host` as the host whose turn
-/// made it. A host that names none — an older release's — says nothing.
-pub fn landed_on(message: &str, host: &str) -> String {
+/// `message`, the landing commit of a PR of `of`, naming `host` as the
+/// host whose turn made it, where its message names none already. A host
+/// that names none says nothing.
+pub fn landed_on(message: &str, of: &Of, host: &str) -> String {
     let host = host.trim();
-    if host.is_empty() {
+    if host.is_empty() || matches!(of, Of::Watch(_) | Of::Cut(_)) {
         return message.to_string();
     }
     format!("{}\n{LANDED_ON}{host}\n", message.trim_end_matches('\n'))
 }
 
 /// The host a landing commit's message names as the one whose turn made
-/// it (`landed_on`); `None` where it names none.
+/// it: its `Landed on` line (`landed_on`), or a watch's or a cut's own;
+/// `None` where it names none — an older release's landing of an issue.
 pub fn landing_host(message: &str) -> Option<&str> {
-    message
-        .lines()
-        .find_map(|line| line.strip_prefix(LANDED_ON))
-        .map(str::trim)
-        .filter(|host| !host.is_empty())
+    [LANDED_ON, BY_WATCH, "By an inspection on ", BY_CUT].into_iter().find_map(|by| {
+        message
+            .lines()
+            .find_map(|line| line.strip_prefix(by))
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+    })
 }
 
 /// The line `git log --grep -E -i` finds the join commits of issue `number`
@@ -240,7 +245,11 @@ mod tests {
 
     #[test]
     fn a_landing_names_the_host_that_made_it_and_still_reads_back() {
-        let message = landed_on(&merge_message("Add plan", 31, &Of::Issue(7), &Tracker::Own), "a");
+        let message = landed_on(
+            &merge_message("Add plan", 31, &Of::Issue(7), &Tracker::Own),
+            &Of::Issue(7),
+            "a",
+        );
         assert_eq!(message, "Add plan (#31)\n\nCloses #7\nLanded on a\n");
         assert_eq!(landing_host(&message), Some("a"));
         let commits = [Logged { sha: "m1", parents: "t0 h31", message: &message }];
@@ -249,7 +258,11 @@ mod tests {
         assert_eq!(joins[0].issue(), Some(7));
         let older = merge_message("Add plan", 31, &Of::Issue(7), &Tracker::Own);
         assert_eq!(landing_host(&older), None, "an older release's landing names no host");
-        assert_eq!(landed_on(&older, " "), older);
+        assert_eq!(landed_on(&older, &Of::Issue(7), " "), older);
+        let watch = Of::Watch("h1".into());
+        let by_watch = merge_message("Queue", 45, &watch, &Tracker::Own);
+        assert_eq!(landed_on(&by_watch, &watch, "h1"), by_watch, "a watch names its host already");
+        assert_eq!(landing_host(&by_watch), Some("h1"));
     }
 
     #[test]

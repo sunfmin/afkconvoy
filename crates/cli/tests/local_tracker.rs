@@ -115,7 +115,10 @@ fn an_issue_opened_locally_is_claimed_worked_landed_and_closed_by_its_local_name
     assert_eq!(did(&tick(&world, "1090")), ["settle 1 done"]);
     assert_eq!(world.claims(), []);
     let joined = world.remote(&["log", "--format=%s%n%b", "--merges", "-1", "main"]);
-    assert_eq!(joined, "pr 70 (#70)\nCloses local/h1#1", "the join names the local issue");
+    assert_eq!(
+        joined, "pr 70 (#70)\nCloses local/h1#1\nLanded on h1",
+        "the join names the local issue"
+    );
 
     // GitHub was asked of no issue, label or visibility: only PRs and branches.
     assert_eq!(issue_calls(&world), [] as [Vec<String>; 0]);

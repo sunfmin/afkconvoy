@@ -106,7 +106,11 @@ impl Forge for Pulls<'_> {
     }
 
     fn message(&self, change: &Change) -> String {
-        landed_on(&merge_message(&change.title, change.number, self.of, self.tracker), self.host)
+        landed_on(
+            &merge_message(&change.title, change.number, self.of, self.tracker),
+            self.of,
+            self.host,
+        )
     }
 
     fn may_land(&self, _: &Change) -> Result<Result<(), Refusal>> {
