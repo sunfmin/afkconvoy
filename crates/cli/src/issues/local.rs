@@ -37,7 +37,6 @@ pub fn store_path() -> Result<PathBuf> {
     Ok(crate::copies::data()?.join(FILE))
 }
 
-
 /// The host's local tracker at `path`, made with its directory where there
 /// is none.
 pub fn open_store(path: &Path) -> Result<Store> {
