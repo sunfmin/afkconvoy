@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0072
 ---
 
 # A fleet cuts landed work when idle or past an age bound
@@ -8,7 +8,7 @@ A repo whose work the fleet lands is cut by hand: someone notices that `main` is
 
 The fleet cuts a version itself (#466). A **cut** is the run that makes a new version of a repo from its base branch: it commits the version on a branch of its own from the base tip, gates that commit, tags it, and publishes and installs it.
 
-Amended by sunfmin/control#541: a cut no longer lands on the base branch, and so no longer holds the landing train (below, **A branch of its own**).
+Amended by sunfmin/control#541: a cut no longer lands on the base branch, and so no longer holds other landings back (below, **A branch of its own**).
 
 Amended by sunfmin/control#1071: a PR that changes a path the repo declares in `minor_paths` makes the cut minor (below, **A design change is minor**).
 
@@ -18,7 +18,7 @@ Amended by sunfmin/control#1119: an operator's `afkconvoy cut --now` starts the 
 
 In a repo that turns cutting on, a tick whose pass ends idle — no claim held, an empty frontier, admission holding nothing back — starts a cut when its base branch holds landed commits past its newest version tag (`v` and three numbers), or its remote has no version tag and its cut block declares `initial: X.Y.Z`.
 
-Landed work also starts a cut at the first tick at or after the oldest landing past the newest tag reaches the repo's age bound: `busy_after_seconds` in the cut block. Leaving the key out means 18000 seconds (five hours) (sunfmin/control#197); sunfmin/control#106 set that default to 3600 seconds. Its age is measured from the committer time of the first first-parent commit past that tag, the time it landed, rather than a side branch's earlier commits. Claims, the frontier and admission holding workers back do not hold this cut back. A fleet lock and a live cut claim still do; an open cut failure does not (ADR-0072). An untagged initial cut remains idle-only.
+Landed work also starts a cut at the first tick at or after the oldest landing past the newest tag reaches the repo's age bound: `busy_after_seconds` in the cut block. Leaving the key out means 18000 seconds (five hours) (sunfmin/control#197). Its age is measured from the committer time of the first first-parent commit past that tag, the time it landed, rather than a side branch's earlier commits. Claims, the frontier and admission holding workers back do not hold this cut back. A fleet lock and a live cut claim still do; an open cut failure does not (ADR-0072). An untagged initial cut remains idle-only.
 
 At concurrency eight the fleet went 158 ticks without an idle end on 26 October 2026, leaving fixes already landed uninstalled for hours. Waiting for every claim makes the slowest worker set the release time. A version that the next landing makes stale is acceptable: the next cut picks that work up, and the age bound prevents indefinite waiting without stopping admission. The cut starts from the base branch as it stands; work still in flight goes into a later version. No fixed schedule starts one.
 
@@ -32,7 +32,7 @@ A cut is claimed on the remote as a patrol's run is (`refs/convoy/claim/cut`): o
 
 ## Who
 
-A worker in no role, started the way an inspection is (ADR-0026): a checkout of its own (`afkconvoy-cut`) cut from the base branch as it stands, a terminal of it under the host kit's first harness, on that harness's user default, the bounds of any unattended worker, and a time limit. It takes no slot of the concurrency. While it runs the fleet is not idle — it keeps its heartbeat, so its claim stays live, and keeps the host awake (ADR-0016) — and dispatches what comes as ever.
+A worker in no role: a checkout of its own (`afkconvoy-cut`) cut from the base branch as it stands, a terminal of it under the host kit's first harness, on that harness's user default, the bounds of any unattended worker, and a time limit. It takes no slot of the concurrency. While it runs the fleet is not idle — it keeps its heartbeat, so its claim stays live — and dispatches what comes as ever.
 
 It is a command, `afkconvoy cut`, not a model session. Its steps are known and the same every time; a command times each, names the step that failed, and holds the bounds by what it does — it pushes its own branch and one tag, and nothing to the base branch — where a model would be held to them by a guard and a brief. Nothing in a cut calls for judgement but a failure, and that goes to a human.
 
@@ -102,13 +102,13 @@ Choosing an explicit version instead of inferring it from files keeps the versio
 
 ## Considered options
 
-- **A model session in a role, as an inspection is.** Refused: the steps are known, and a model adds only a way to do them differently each time. What needs judgement — a step that failed — is a human's, through the issue.
+- **A model session in a role.** Refused: the steps are known, and a model adds only a way to do them differently each time. What needs judgement — a step that failed — is a human's, through the issue.
 - **Cut on a schedule.** Refused in favor of the oldest landing's age bound: a fixed schedule can cut moments after one landing and make another wait a whole interval. The bound follows actual landed work, while idle still cuts promptly. Cutting in the middle of work is acceptable; unbounded delay is not.
 - **Cut by a command a human runs.** Refused: it is the human session this replaces, and ordinary landings would still wait.
 - **Cut after every landing.** Refused: a version per PR, each published and installed, while the next PR is a gate away.
 - **Cut steps as keys of the config.** Refused for the older afkconvoy that refuses an unknown key (above).
 - **Tag the base branch's tip, and push the version commit to it.** Refused: the fleet pushes nothing to the base branch but through a gated turn. Its premise that the tag must sit on a commit the base branch carries gives way (sunfmin/control#541): the tag sits on the release branch's commit, whose parent is a base commit.
-- **Land the version commit through a landing turn, as a serial barrier.** Superseded by sunfmin/control#541: one host's cut that hung held every host's landings, and a cut that failed restarted without telling anyone.
+- **Land the version commit through a landing turn, as a serial barrier.** Refused (sunfmin/control#541): one host's cut that hung held every host's landings, and a cut that failed restarted without telling anyone.
 
 ## Consequences
 

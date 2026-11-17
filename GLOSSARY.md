@@ -101,7 +101,7 @@ A fleet instance with nothing to do now: it holds no claim — on an issue, a pa
 _Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
-What a fleet no longer does: put its host to sleep once every fleet on it was idle (ADR-0016, superseded by ADR-0050). No fleet puts its host to sleep; a fleet instance still notices its host waking from a sleep something else caused.
+What a fleet no longer does: put its host to sleep once every fleet on it was idle (ADR-0050). No fleet puts its host to sleep; a fleet instance still notices its host waking from a sleep something else caused.
 _Avoid_: sleep (the wait between ticks)
 
 **Base branch**:
@@ -519,7 +519,7 @@ _Avoid_: landing timeout, train health
 
 **Round**:
 The PRs that asked to land — each one's worker fast-green — taken together when it starts, and landed together through a pairing tree (ADR-0083): its groups are fast-gated alone, and its root, merged onto the target tip, is gated whole, fast and slow, once; green, every PR of it lands in one fast-forward and each issue closes. Its size is the PRs that are ready, not the host's room. A PR that asks during it waits for the next, or, while its whole gate runs, stacks on it as a stacked round. A red root is not split to find whose change failed: the round's last-asked PR's worker fixes it whole, from the round's issues and its failing tests, and the round's other PRs stop, their changes carried by that PR.
-_Avoid_: batch round (gone with ADR-0068), bisection, merge train, rollup
+_Avoid_: batch round (gone with ADR-0083), bisection, merge train, rollup
 
 **Pairing tree**:
 How a round's PRs come together (ADR-0083, amended by sunfmin/control#1239). At each level, in the order the nodes asked to land, the first node not yet taken starts a group, and every later node that merges cleanly with what that group holds so far (`git merge-tree`, textual conflicts only) is merged into it, the earlier-asked first; this repeats until every node of the level is taken. Groups group the same way, level by level, until one node is left: the root. A node no later node merges with goes up alone; the last-asked node that conflicts with every other of its level carries the earliest-asked of them no group took, one a level. Only the fast gate runs inside the tree: a round of N mutually clean PRs runs one. Its name is kept from when nodes merged two by two.

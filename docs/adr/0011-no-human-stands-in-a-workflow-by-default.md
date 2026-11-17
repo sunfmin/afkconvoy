@@ -14,10 +14,10 @@ This reverses where the design started — a human's label as the approval of ev
 - Rework is bounded by two breakers, since no reviewer of the reviewers exists: a total per issue, and rejections in a row by one stage. A breaker escalates straight to a human; one more role in the loop is one more round.
 - An `escalate` verdict goes first to a consult, where the stage names one, and only then to a human. The chain is one role long.
 - Whether a rejection raises new findings or old ones is not counted. Only the reviewer could say, and nothing could check it.
-- A ruling answers its issue and resumes its stage. Lasting rules are amended through ordinary work in their owning ADR, team or role rules with their sources preserved (ADR-0039, sunfmin/control#141). This supersedes the former automatic proposal and human acceptance lifecycle.
+- A ruling answers its issue and resumes its stage. Lasting rules are amended through ordinary work in their owning ADR, team or role rules with their sources preserved (ADR-0039, sunfmin/control#141).
 - Trunk broken is the one fault every issue shares, and with no human watching it would escalate them one by one. A fleet lock stops everything but the fix, and is itself the issue that carries the fix.
-- A human who is needed is not told (ADR-0008); the escalate label and the `stage:` label are what there is to look at.
+- A human who is needed is asked in the host's asking session (ADR-0052).
 
 ## Amended: a red base branch raises the lock in an unbound repo too
 
-A worker in an unbound repo, or its inspection, that proves the base branch red the same way gated alone in a clean checkout finds the open issue for the fix or opens one, makes it dispatchable with the ready label, and raises the fleet lock on it with `afkconvoy lock`. No role is needed. The train worker does the same in either repo; in a bound repo it takes the issue in to a workflow first. The issue is the tracker's, with the repo label where needed (ADR-0027). A red landing train whose base branch is green raises no lock. The worker parks its own issue on the fix's; the train worker has none to park and stops until told to carry on.
+A worker in an unbound repo, or its inspection, that proves the base branch red the same way gated alone in a clean checkout finds the open issue for the fix or opens one, makes it dispatchable with the ready label, and raises the fleet lock on it with `afkconvoy lock`. No role is needed. A turn that gates the base tip alone red does the same in either repo (ADR-0037). The issue is the tracker's, with the repo label where needed (ADR-0027). A red candidate whose base branch is green raises no lock. The worker parks its own issue on the fix's.

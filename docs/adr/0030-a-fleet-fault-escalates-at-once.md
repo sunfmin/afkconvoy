@@ -10,11 +10,10 @@ would answer for. Asking it about a fault there repeats the fault and delays
 the fix. So a **fleet fault** skips the consult and escalates at once, in a
 bound repo and an unbound one alike.
 
-Exactly three hand-offs are fleet faults: `its worker start failed again`,
-`its harness's worktree trust gap`, and `its landing train was given up twice`.
-Either the worker never took its brief or the fleet's landing machinery
-stopped. The fix is on the host: trusting a worktree, switching a harness,
-waiting out a usage limit, or mending a build server. The escalation comment
+Exactly two hand-offs are fleet faults: `its worker start failed again` and
+`its harness's worktree trust gap`. Either way the worker never took its brief.
+The fix is on the host: trusting a worktree, switching a harness, waiting out
+a usage limit, or mending a build server. The escalation comment
 and `doctor`'s `waiting_on_human` entry name the fleet fault and say that the
 fix is on the host. Its escalation marker records which fault it was, so a
 later tick leaves it with the human instead of asking a consult.

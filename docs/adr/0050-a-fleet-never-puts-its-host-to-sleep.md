@@ -4,9 +4,9 @@ status: accepted
 
 # A fleet never puts its host to sleep
 
-Supersedes ADR-0016, and of ADR-0033 its host-sleep question.
+Removes host sleep, and of ADR-0033 its host-sleep question.
 
-ADR-0016 had a fleet put its host to sleep (`pmset sleepnow`) once every fleet instance on it had been idle ten minutes within the host's sleep hours, unless the host settings kept it awake. It did so by default: a new host put itself to sleep until someone said `--no-host-sleep`. But a fleet sees only its own work. A host that also serves a person, a watch, another session or a download was put to sleep by a tool that could not see them, and a host asleep is out of reach until something else wakes it. The operator decided to take host sleep out of afkconvoy, so that no fleet can put a host to sleep by mistake.
+A fleet used to put its host to sleep (`pmset sleepnow`) once every fleet instance on it had been idle ten minutes within the host's sleep hours, unless the host settings kept it awake. It did so by default: a new host put itself to sleep until someone said `--no-host-sleep`. But a fleet sees only its own work. A host that also serves a person, a watch, another session or a download was put to sleep by a tool that could not see them, and a host asleep is out of reach until something else wakes it. The operator decided to take host sleep out of afkconvoy, so that no fleet can put a host to sleep by mistake.
 
 ## Decision
 

@@ -6,7 +6,7 @@ status: accepted
 
 _Amended by ADR-0090:_ a round holds only the PRs whose turns ran on one host: there is no round across hosts. The root is published by the same atomic push; where another host moved the base, the push is refused and the round is built again on the new tip and gated again.
 
-Replaces the candidate chain within a round of ADR-0037 and ADR-0048, and the batch round of ADR-0068 (sunfmin/control#1135; decided by Felix, control session 2026-11-15 ~21:20 JST).
+Replaces the candidate chain within a round of ADR-0037 and ADR-0048, and the batch round (sunfmin/control#1135; decided by Felix, control session 2026-11-15 ~21:20 JST).
 
 Felix: 「我想把这个逻辑改成。并发的寻找和自己不冲突的 PR。两个合在一起。跑快测试。……两两合并这种。所有这种只靠跑快测试。只有到最后合并到 main 的时候。才跑一次整体的测试。当然是这些 PR 都已经改完了的情况下。」 — find, concurrently, the PRs that do not conflict with each other; merge them two by two and run the fast gate; run the whole gate once, only as it all merges onto main.
 
@@ -35,7 +35,7 @@ The code and the records keep this ADR's names: the module `pairing`, a group's 
 - **The root** is merged onto the target tip and gated whole, fast and slow, once. Green: the target branch fast-forwards to it; every PR in it lands, and each issue closes.
 - **Carrying**: a pair red on its fast gate → the later-asked PR's worker merges the partner's PR into its own, fixes it, and passes its fast gate. A PR that conflicts with every possible partner merges the earliest-asked one it conflicts with into its own, resolves, and tries pairing again, one at a time. The **carried PR** is closed, commented "carried by #…", its branch deleted, its worktree removed and its worker ended; the **carrying PR**'s description is rewritten as the changes together, with `Closes` for every issue. The carried issue stays open until the carrying PR lands, so it can be dispatched again if that PR never lands. A carrying PR re-enters the current round if its whole gate has not started, else the next.
 - **A red root** is not bisected: ADR-0048's reason stands. The worker of the round's last-asked PR fast-forwards the root-onto-tip merge into its branch, fixes it on the spot, and lands the whole round as one carrying PR; every other PR of the round is carried as above.
-- **Removed**: the candidate chain within a round, its suffix cancellation, and the batch round with its bisection (ADR-0068). **Kept**: the local gate only, no rebase, the forge never merges, reused runs (ADR-0069), and a cut lands nothing.
+- **Removed**: the candidate chain within a round, its suffix cancellation, and the batch round with its bisection. **Kept**: the local gate only, no rebase, the forge never merges, reused runs (ADR-0069), and a cut lands nothing.
 - **Both programs**: it lives in the landing crate, so afkconvoy's turn and Guild's lander use the one implementation (ADR-0060).
 
 ## How it is built
@@ -78,7 +78,7 @@ The plain runner (`Lander::land`) carries the same way among the changes it is g
 
 - **Kill the running round's slow gate for a newcomer, merge it in and gate fast and slow again** (asked by Felix, 2026-11-15 ~21:50 JST). Refused: it delays the round already running by F+S−R (R its remaining slow gate) to save the newcomer only R, and throws away the slow gate already run (medians from 2026-11-11..15: fast 132 s and slow 344 s for afkconvoy, 136 s and 194 s for guild); arrivals closer together than F+S — guild saw 302 PRs in 3.5 days, in bursts — would restart a round forever; and a red newcomer would make the round's earlier green PRs carried by it. Stacking takes the newcomer's critical path from R+F+S to about R+S, leaves the running round untouched, cannot starve, and costs one extra fast gate.
 
-- **Keep the candidate chain and only gate its tip whole.** The batch round (ADR-0068). Refused: one red change still holds back every change behind it, and finding it costs log2 N whole gates.
+- **Keep the candidate chain and only gate its tip whole.** The batch round. Refused: one red change still holds back every change behind it, and finding it costs log2 N whole gates.
 - **Land the root's merge commit itself.** Refused: a merge of the root onto the tip carries no commit per PR, and the target's history is where a landing is read from (ADR-0037). The PRs merged onto the tip one after another hold the same changes, and their last commit is what is gated.
 - **Bisect a red root.** Refused, as ADR-0048 refused it: each split is a slow gate run, and the round's issues and failing tests say what a fix needs.
 

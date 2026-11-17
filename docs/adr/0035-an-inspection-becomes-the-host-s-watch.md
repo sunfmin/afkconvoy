@@ -9,7 +9,7 @@ interactive session across independent rounds; looks continue while it is
 busy, and reporting leaves the healthy harness standing by. The older rules
 below that stop looks or end a reported harness are superseded.
 
-Supersedes ADR-0026. Amends ADR-0019 and ADR-0029: their resource limits,
+Amends ADR-0026, ADR-0019 and ADR-0029: their resource limits,
 readings, evidence and episode boundaries remain; each condition calls for
 one host watch through a finding in the look. There is no separate inspection
 agent, brief, claim, turn, time limit or `inspected` command.
@@ -43,6 +43,6 @@ operator: only fleet-owned processes, no host runner termination, no deletion
 of irreplaceable files or uncommitted work, no force push or base branch push.
 
 `land --watch` joins a watch's change from its own linked worktree on no issue.
-Its join commit names the watch and host. Fleet locks, gate turns, abandonment
-and rejoining work as before. Existing join commits attributed to an inspection
-are still read as watch joins, so an upgrade leaves no PR behind on a train.
+Its join commit names the watch and host. Fleet locks and turns work as before.
+Existing join commits attributed to an inspection are still read as watch
+joins.

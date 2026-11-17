@@ -4,7 +4,7 @@ status: accepted
 
 # A fast-green round lands on a proving branch, and a promotion moves the base branch
 
-Amends ADR-0004, ADR-0037, ADR-0048, ADR-0083 and ADR-0006 (sunfmin/control#1308).
+Amends ADR-0037, ADR-0048, ADR-0083 and ADR-0006 (sunfmin/control#1308).
 
 Decided by Felix in the control session on 2026-11-17, about 10:40 JST:
 
@@ -32,7 +32,7 @@ The new branch is the **proving branch**; moving the base branch to the proving 
 
 ## Amendments
 
-- **ADR-0004 and ADR-0037** removed the landing train because it "added no verification after a recorded turn, but needed another worker and a separate lane". The proving branch adds the slow gate after the turn, so that reason no longer holds for a repo with a proving branch: its turn records only the fast gate, and the promotion is the verification that follows it. A repo without one still lands with no second step.
+- **ADR-0037** lands with no step after the turn, because a second step "would add no verification after a recorded turn". The proving branch adds the slow gate after the turn, so that reason no longer holds for a repo with a proving branch: its turn records only the fast gate, and the promotion is the verification that follows it. A repo without one still lands with no second step.
 - **ADR-0048 and ADR-0083** refused "a separate repair worker for a red round". On the proving branch a round is not slow-gated at all, and its PRs' workers have ended once it lands; under point 2, a red slow gate on the proving branch is repaired by the proving branch's own worker. The refusal stands for a round landing on a base branch.
 - **ADR-0006**: a repo now has two branches in play. A task's target branch is the proving branch; the base branch moves only by promotion, and is still where versions are cut (ADR-0037: a cut lands nothing, and tags what it gated).
 

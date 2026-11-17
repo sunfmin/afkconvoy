@@ -4,7 +4,7 @@ status: accepted
 
 # Admission alone decides each start
 
-Amends ADR-0019 and ADR-0050, and supersedes ADR-0025 (sunfmin/control#824).
+Amends ADR-0019 and ADR-0050, and replaces the checkout's said concurrency (sunfmin/control#824).
 
 No number bounds how many workers a checkout's fleet instance holds at work at once: there is no concurrency to set, on the host or in the repo. A tick starts workers while admission admits, from what the host and the accounts can carry now.
 
