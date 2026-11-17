@@ -613,7 +613,7 @@ pub struct State {
     /// The separate `target/<n>` records an earlier release left, which the
     /// acting tick carries and removes (`target::carry_legacy`).
     pub legacy_targets: Vec<String>,
-    /// The gate records an afkconvoy before docs/adr/0069's amendment left on
+    /// The gate records an afkconvoy before docs/adr/0037's amendment left on
     /// the remote: read by nothing, and removed by the next start's probe.
     pub legacy_gate_records: Vec<String>,
     /// Candidate state from the same remote listing as the working set.

@@ -100,16 +100,6 @@ test ! -f "$root/fail-$name"
 }
 
 fn start(world: &World, dir: &Path, cache: &Path, n: u64) -> Child {
-    start_with_record_push_limit(world, dir, cache, n, None)
-}
-
-fn start_with_record_push_limit(
-    world: &World,
-    dir: &Path,
-    cache: &Path,
-    n: u64,
-    seconds: Option<u64>,
-) -> Child {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), dir);
     command
         .env("XDG_CACHE_HOME", cache)
@@ -118,9 +108,6 @@ fn start_with_record_push_limit(
         .args(["land", "--issue", &n.to_string()])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    if let Some(seconds) = seconds {
-        command.env("AFKCONVOY_GATE_RECORD_PUSH_SECONDS", seconds.to_string());
-    }
     command.spawn().unwrap()
 }
 
@@ -303,9 +290,8 @@ done"#,
     assert!(!path.starts_with(&world.clone));
     assert_eq!(candidate["phase"], "landed");
     assert!(!path.exists(), "the stopped candidate is removed from the new root");
-    assert!(
-        !world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]).is_empty()
-    );
+    assert!(!world.gate_records().is_empty());
+    assert_eq!(world.remote_gate_refs(), [] as [String; 0], "nothing is pushed of it");
 }
 
 /// A candidate's gate builds warm, in a clone of its worker's `target/`
@@ -755,53 +741,29 @@ fn a_gate_past_its_limit_is_red_and_terminated() {
 }
 
 #[test]
-fn a_stalled_gate_record_push_releases_the_lane_without_recording_green() {
+fn a_green_run_the_host_cannot_record_is_no_landing_and_frees_the_lane() {
     let world = world(1);
     let (a, _) = worker(&world, 1, "a");
     let (b, _) = worker(&world, 2, "b");
-    let started = world.root.join("push-started");
-    let hook = format!(
-        "#!/bin/sh\nwhile read old new ref; do\n  case \"$ref\" in refs/convoy/gate/*)\n    \
-         if test ! -f '{0}'; then touch '{0}'; sleep 30; fi;;\n  esac\ndone\n",
-        started.display()
-    );
-    let hook_path = world.bare.join("hooks/pre-receive");
-    std::fs::write(&hook_path, hook).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    world.refuse_gate_records("the disk is full");
 
     let _runner = world.host_held();
-    let mut aa = start_with_record_push_limit(&world, &a, &world.cache(), 1, Some(1));
-    until(|| world.root.join("start-a").exists() || aa.try_wait().unwrap().is_some());
-    if aa.try_wait().unwrap().is_some() {
-        panic!("the first turn ended before its gate: {}", finish(aa));
-    }
+    let aa = start(&world, &a, &world.cache(), 1);
+    began(&world, "a");
     release(&world, "a", false);
-    until(|| started.exists() || aa.try_wait().unwrap().is_some());
-    if aa.try_wait().unwrap().is_some() {
-        panic!("the first turn ended before the push stalled: {}", finish(aa));
-    }
-    let mut bb = start(&world, &b, &world.cache(), 2);
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(!world.root.join("start-b").exists(), "the stalled push held the only worker lane");
-    assert!(bb.try_wait().unwrap().is_none(), "the queued turn is still waiting");
-
     let failed = finish(aa);
     assert_eq!(failed["outcome"], "gate_red", "{failed}");
-    assert_eq!(failed["status"], "green", "the tests passed before the push stalled");
+    assert_eq!(failed["status"], "green", "the tests passed");
     assert_eq!(failed["exit_code"], 0);
-    assert_eq!(failed["timed_out"], false, "the gate did not reach its own limit");
+    assert_eq!(failed["timed_out"], false);
     assert_eq!(failed["recorded"], false);
     let not_recorded = failed["not_recorded"].as_str().unwrap();
-    assert!(not_recorded.contains("did not end within 1s"), "{failed}");
-    assert!(not_recorded.contains("Git reported "), "{failed}");
-    assert!(not_recorded.contains(" sent before the push was ended"), "{failed}");
+    assert!(not_recorded.contains("the disk is full"), "{failed}");
     assert_eq!(world.state(1), "open");
 
-    until(|| world.root.join("start-b").exists() || bb.try_wait().unwrap().is_some());
-    if bb.try_wait().unwrap().is_some() {
-        panic!("the queued turn ended before its gate: {}", finish(bb));
-    }
+    world.allow_gate_records();
+    let bb = start(&world, &b, &world.cache(), 2);
+    began(&world, "b");
     release(&world, "b", false);
     let landed = finish(bb);
     assert_eq!(landed["outcome"], "merged", "{landed}");
@@ -1343,8 +1305,8 @@ fn a_gating_candidate_keeps_its_worktree_and_a_stopped_one_loses_it() {
     let candidate = chained(&world).into_iter().find(|c| c["issue"] == 1).unwrap();
     assert_eq!(candidate["phase"], "landed");
     assert_eq!(candidate["commit"], landed_a["commit"]);
-    let gates = world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]);
-    assert!(!gates.is_empty(), "the recorded gate run stays on the remote");
+    let gates = world.gate_records();
+    assert!(!gates.is_empty(), "the recorded gate run stays on the host's record");
     let tip = chain_tip(&world);
     drop(hold);
     world.watch_git();
@@ -1353,10 +1315,7 @@ fn a_gating_candidate_keeps_its_worktree_and_a_stopped_one_loses_it() {
     assert!(!listed(&world, &a_tree));
     assert_removal_follows_the_look(&world);
     assert_eq!(chain_tip(&world), tip, "the candidate chain is not rewritten");
-    assert_eq!(
-        world.remote(&["for-each-ref", "--format=%(objectname)", "refs/convoy/gate"]),
-        gates
-    );
+    assert_eq!(world.gate_records(), gates);
     assert!(issue_a.is_dir());
     std::fs::create_dir_all(&a_tree).unwrap();
     let sealed = a_tree.join("sealed");
@@ -1881,12 +1840,7 @@ fn a_candidate_red_only_on_timeouts_under_overload_is_unsettled_not_red() {
     let candidates = chain(&world)["candidates"].clone();
     assert!(candidates.as_array().unwrap().iter().all(|c| c["phase"] != "red"), "{candidates}");
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base, "nothing landed");
-    assert!(
-        !world
-            .remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/gate/"])
-            .contains("/red-1-"),
-        "an unsettled run is not recorded red"
-    );
+    assert!(world.red_gate_runs().is_empty(), "an unsettled run is not recorded red");
     assert_eq!(world.state(1), "open");
     std::fs::remove_file(&overloaded).unwrap();
     let landed = finish(start(&world, &a, &world.cache(), 1));
@@ -2144,12 +2098,7 @@ fn two_hosts_land_on_one_base_and_the_one_refused_gates_again_on_the_new_tip() {
     let files = world.remote(&["ls-tree", "--name-only", "refs/heads/main"]);
     assert!(files.lines().any(|f| f == "a.txt") && files.lines().any(|f| f == "b.txt"), "{files}");
     let tree = world.remote(&["rev-parse", &format!("{tip}^{{tree}}")]);
-    assert!(
-        !world
-            .remote(&["for-each-ref", "--format=%(refname)", &format!("refs/convoy/gate/{tree}-*")])
-            .is_empty(),
-        "the tree it landed was gated"
-    );
+    assert!(world.gate_recorded(&tree), "the tree it landed was gated");
     assert!(
         world.remote(&["for-each-ref", "--format=%(refname)", "refs/convoy/candidates"]).is_empty()
     );

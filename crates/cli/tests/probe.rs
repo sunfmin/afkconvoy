@@ -70,9 +70,8 @@ fn a_start_probes_the_remote_and_leaves_nothing_behind() {
     ticked.ok();
 
     let probes = world.probes();
-    assert_eq!(probes.len(), 4, "two probes, each pushed and deleted: {probes:?}");
+    assert_eq!(probes.len(), 2, "one probe, pushed and deleted: {probes:?}");
     assert!(probes[0].starts_with("refs/convoy/probe-1000-"), "{probes:?}");
-    assert!(probes[1].starts_with("refs/convoy/gate/probe-1000-"), "{probes:?}");
     assert_eq!(refs(&world, "refs/convoy"), [] as [String; 0]);
     assert_eq!(refs(&world, "refs/heads"), ["refs/heads/main"]);
 }
@@ -288,12 +287,11 @@ fn one_rejection_of_a_noted_hidden_layout_leaves_it_and_two_move_it() {
     assert!(probes[0].starts_with("refs/convoy/probe-"), "{probes:?}");
     assert!(probes[1].starts_with("refs/heads/convoy-probe-"), "{probes:?}");
 
-    // The write is still attempted on the noted layout, and nowhere else.
+    // A gate run's record is the host's, whatever the remote takes: none is
+    // pushed on either layout.
     let gated = world.afk(&["gate", "--now", "5000"]).ok();
-    assert_eq!(gated["recorded"], false, "{gated}");
-    let wrote: Vec<_> = world.pushes().into_iter().filter(|name| name.contains("/gate/")).collect();
-    assert!(wrote.iter().any(|name| name.starts_with("refs/convoy/gate/")), "{wrote:?}");
-    assert!(wrote.iter().all(|name| !name.starts_with("refs/heads/convoy-")), "{wrote:?}");
+    assert_eq!(gated["recorded"], true, "{gated}");
+    assert!(world.pushes().iter().all(|name| !name.contains("gate/")), "{:?}", world.pushes());
 
     let twice = plan_at(&world, "8200");
     assert!(warnings(&twice).join("\n").contains("kept as branches"), "{}", twice.stderr);
@@ -302,9 +300,8 @@ fn one_rejection_of_a_noted_hidden_layout_leaves_it_and_two_move_it() {
 
     let gated = world.afk(&["gate", "--now", "6000"]).ok();
     assert_eq!(gated["recorded"], true, "{gated}");
-    let records = refs(&world, "refs/heads/convoy-gate");
-    assert_eq!(records.len(), 1, "{records:?}");
-    assert_eq!(refs(&world, "refs/convoy/gate"), [] as [String; 0]);
+    assert_eq!(world.gate_records().len(), 1);
+    assert_eq!(world.remote_gate_refs(), [] as [String; 0]);
     assert!(
         refs(&world, "refs/").iter().all(|name| !name.contains("probe-")),
         "probe litter on either layout is swept: {:?}",
@@ -376,9 +373,8 @@ fn two_rejections_of_a_noted_branch_layout_settle_hidden_refs() {
 
     let gated = world.afk(&["gate", "--now", "9000"]).ok();
     assert_eq!(gated["recorded"], true, "{gated}");
-    let records = refs(&world, "refs/convoy/gate");
-    assert_eq!(records.len(), 1, "{records:?}");
-    assert_eq!(refs(&world, "refs/heads/convoy-gate"), [] as [String; 0]);
+    assert_eq!(world.gate_records().len(), 1);
+    assert_eq!(world.remote_gate_refs(), [] as [String; 0]);
 }
 
 #[test]
@@ -485,61 +481,59 @@ fn a_base_branch_the_remote_lacks_is_an_error_and_none_is_created() {
 }
 
 #[test]
-fn a_remote_that_refuses_gate_records_is_a_warning_and_every_landing_runs_the_gate() {
+fn a_remote_that_refuses_gate_refs_is_no_matter_the_host_records_its_runs() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     world.set_gate("true");
     world.remote_rejects("refs/convoy/gate/");
 
     let ticked = tick_at(&world, "1000");
-    let said = warnings(&ticked).join("\n");
-    assert!(said.contains("refuses refs under refs/convoy/gate/*"), "{}", ticked.stderr);
-    assert!(said.contains("every landing runs the gate itself"), "{said}");
-    assert_eq!(warnings(&ticked).len(), 1, "the layout itself was taken: {said}");
+    assert_eq!(warnings(&ticked), [] as [&str; 0], "{}", ticked.stderr);
     assert_eq!(did(&ticked.ok()), ["dispatch 7 done", "heartbeat done"]);
     assert_eq!(
         refs(&world, "refs/convoy"),
         ["refs/convoy/claim/7", "refs/convoy/heartbeat/alpha"],
         "the fleet's other refs stay where they were, and no probe is left"
     );
-
-    // a green run cannot go on record: the next run of the gate is a run
-    for now in ["1100", "1200"] {
-        let gated = world.afk(&["gate", "--now", now]).ok();
-        assert_eq!(gated["status"], "green", "{gated}");
-        assert_eq!(gated["recorded"], false, "{gated}");
-    }
+    let gated = world.afk(&["gate", "--now", "1100"]).ok();
+    assert_eq!(gated["status"], "green", "{gated}");
+    assert_eq!(gated["recorded"], true, "{gated}");
 }
 
 #[test]
-fn a_start_sweeps_gate_records_past_their_day_and_probes_left_behind() {
+fn a_start_removes_every_gate_ref_from_the_remote_and_doctor_says_while_one_is_left() {
     let world = World::new();
     world.set_gate("true");
-    let records = || refs(&world, "refs/convoy/gate");
+    let left = |now: &str| {
+        let doctor = world.afk(&["doctor", "--host", "h1", "--now", now]).json;
+        let findings = doctor["findings"].as_array().unwrap().clone();
+        findings.into_iter().find(|f| f["kind"] == "legacy_gate_records")
+    };
 
+    // What an older release left, on either layout, one of them a gate
+    // run of a tree this host records again; and a start killed mid-probe.
     world.afk(&["gate", "--now", "5000"]).ok();
-    let old = records();
-    commit(&world.clone, "more.txt", "more\n");
-    world.afk(&["gate", "--now", "80000"]).ok();
-    assert_eq!(records().len(), 2);
-    // a start killed mid-probe left these; and one record nobody can read
     let head = git(&world.clone, &["rev-parse", "HEAD"]);
-    for litter in ["refs/convoy/probe-1-1", "refs/convoy/gate/probe-1-1", "refs/convoy/gate/junk"] {
+    let tree = git(&world.clone, &["rev-parse", "HEAD^{tree}"]);
+    for litter in [
+        format!("refs/convoy/gate/{tree}-00000000000000ff"),
+        "refs/heads/convoy-gate/junk".to_string(),
+        "refs/convoy/gate/red-7-1".to_string(),
+        "refs/convoy/probe-1-1".to_string(),
+    ] {
         git(&world.clone, &["push", "-q", "origin", &format!("{head}:{litter}")]);
     }
+    let found = left("6000").expect("doctor says gate records are left");
+    assert!(found["what"].as_str().unwrap().starts_with("3 gate records"), "{found}");
 
-    // a day after the first run, to the second: it is still believed
-    world.afk(&["plan", "--now", "91400"]).ok();
-    assert_eq!(records().len(), 2, "{:?}", records());
+    // `run` probes at every start, and `plan` too.
+    world.afk(&["plan", "--now", "6000"]).ok();
+    assert_eq!(world.remote_gate_refs(), [] as [String; 0]);
     assert_eq!(refs(&world, "refs/convoy/probe-1-1"), [] as [String; 0]);
+    assert!(left("6100").is_none(), "none is left");
+    assert_eq!(world.gate_records().len(), 1, "the host's own record stays");
 
-    // one second on, it is not: `run` probes at every start
-    run_once_at(&world, "91401").ok();
-    let kept = records();
-    assert_eq!(kept.len(), 1, "{kept:?}");
-    assert_ne!(kept, old, "the record of the second run stays");
-
-    // only gate records are swept: a claim of any age stays
+    // only gate records and probes are removed: a claim of any age stays
     world.issue(7, &[]);
     world.afk(&["claim", "--issue", "7", "--instance", "alpha", "--now", "100"]).ok();
     world.afk(&["plan", "--now", "999999"]).ok();

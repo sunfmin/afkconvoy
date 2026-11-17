@@ -4,7 +4,7 @@
 //! written, and which record is believed, is said here once, for every
 //! program that records gate runs. Where a record is kept is the program's
 //! own (`Records`): afkconvoy keeps its host's in the host's database
-//! (docs/adr/0069); `Git` keeps them on a remote, reached with plain git, and
+//! (docs/adr/0037); `Git` keeps them on a remote, reached with plain git, and
 //! `gate` runs a gate command with it, for a program that has no other way.
 
 use std::io::{BufRead, BufReader, Read};

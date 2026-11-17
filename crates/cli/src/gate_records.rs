@@ -1,4 +1,4 @@
-//! The host's recorded gate runs (docs/adr/0069), kept in the host's
+//! The host's recorded gate runs (docs/adr/0037), kept in the host's
 //! database (ADR-0117, `host_db`): the green run of a command on a tree, one
 //! row per repo, tree and command; and a red run of an issue's tree, kept
 //! until its work account cites it. Each row holds the record's one encoding,

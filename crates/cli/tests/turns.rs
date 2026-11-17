@@ -230,15 +230,7 @@ fn two_turns_land_in_order_with_a_record_of_each_landed_tree_and_no_line() {
     for answer in [&a, &b] {
         let commit = answer["commit"].as_str().unwrap();
         let tree = git(&world.clone, &["rev-parse", &format!("{commit}^{{tree}}")]);
-        assert!(
-            !world
-                .remote(&[
-                    "for-each-ref",
-                    "--format=%(refname)",
-                    &format!("refs/convoy/gate/{tree}-*")
-                ])
-                .is_empty()
-        );
+        assert!(world.gate_recorded(&tree));
     }
 }
 
@@ -471,7 +463,7 @@ fn a_green_run_without_a_written_record_joins_nothing_and_keeps_the_pr_in_its_an
     world.set_gate("true");
     seed(&world);
     let worker = world.worker(1, "one.txt", "one");
-    world.watch_pushes(Some("convoy/gate"));
+    world.refuse_gate_records("refused by the test");
     let answer = world.afk_in(&worker, &["gate", "--land"]).ok();
     assert_eq!(answer["status"], "green");
     assert_eq!(answer["recorded"], false);
@@ -479,7 +471,7 @@ fn a_green_run_without_a_written_record_joins_nothing_and_keeps_the_pr_in_its_an
     assert_eq!(answer["issue"], 1);
     assert_eq!(answer["pr"], 10);
     assert!(world.remote(&["for-each-ref", "--format=%(refname)", LINE]).is_empty());
-    world.watch_pushes(None);
+    world.allow_gate_records();
     assert_eq!(world.afk_in(&worker, &["gate", "--land"]).ok()["outcome"], "merged");
 }
 
@@ -488,10 +480,10 @@ fn a_green_tip_whose_record_cannot_be_written_returns_a_retryable_error() {
     let world = World::new();
     world.set_gate("true");
     let worker = world.worker(1, "one.txt", "one");
-    world.watch_pushes(Some("convoy/gate"));
+    world.refuse_gate_records("refused by the test");
     let error = world.afk_in(&worker, &["gate", "--land"]).error();
     assert!(error.contains("gated green without a record"), "{error}");
-    world.watch_pushes(None);
+    world.allow_gate_records();
     assert_eq!(world.afk_in(&worker, &["gate", "--land"]).ok()["outcome"], "merged");
 }
 

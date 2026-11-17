@@ -735,7 +735,7 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
 
     // Probes — this one's, on whichever layout it asked, and any a start
     // killed mid-probe left — and every gate record: a host keeps its own
-    // in its database (docs/adr/0069), and none is read from the remote.
+    // in its database (docs/adr/0037), and none is read from the remote.
     let patterns: Vec<String> = Layout::ALL.into_iter().map(|layout| layout.every("")).collect();
     let patterns: Vec<&str> = patterns.iter().map(String::as_str).collect();
     let mut litter = vec![];
