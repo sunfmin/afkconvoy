@@ -752,7 +752,7 @@ impl Fleet {
                 crate::probe::check_cut_needs(&self.repo, &self.config, self.now, false)?;
         }
         // An open failure is said whatever the cut's standing: it holds no
-        // cut back but where the same failure repeats (docs/adr/0072).
+        // cut back but where the same failure repeats (docs/adr/0028).
         if let Some(row) = set.cut.as_mut()
             && let Some(issue) = row.failure
         {
@@ -913,7 +913,7 @@ fn labels_of(open: &OpenIssues, number: u64) -> Vec<String> {
 impl Fleet {
     /// The open issues no claim holds whose named files overlap the files
     /// the claimed issues name: the work in flight (`apart::overlapping`,
-    /// docs/adr/0076). Of an issue whose body was not read, nothing is known.
+    /// docs/adr/0107). Of an issue whose body was not read, nothing is known.
     fn overlapping(&self, open: &crate::issues::OpenIssues) -> Vec<u64> {
         use afkconvoy_core::apart::{named_files, overlapping};
         let named =

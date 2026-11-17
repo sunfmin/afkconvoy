@@ -3015,10 +3015,10 @@ mod tests {
     /// does not.
     #[test]
     fn the_help_never_names_a_closed_document() {
-        let cited = "so a repo config names none (`docs/adr/0025`).\nThe rest stays.\n";
+        let cited = "so a repo config names none (`docs/adr/0020`).\nThe rest stays.\n";
         assert_eq!(names_closed_adr(cited), Some(1));
         assert_eq!(names_closed_adr("so a repo config names none.\n"), None);
-        let later = "The rule.\nSee docs/adr/0027.\n";
+        let later = "The rule.\nSee docs/adr/0091.\n";
         assert_eq!(names_closed_adr(later), Some(2));
         let rendered = manual().manual().unwrap();
         assert_eq!(
@@ -3126,7 +3126,7 @@ mod tests {
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--hot-cores", "0"]).is_err());
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--admit-load", "5%"]).is_err());
         assert!(asked(&[]).1.is_empty(), "named none, it changes none");
-        // host sleep is gone: its flags are no flags (docs/adr/0101)
+        // host sleep is gone: its flags are no flags
         for gone in ["--no-host-sleep", "--host-sleep", "--host-sleep-after"] {
             assert!(Cli::try_parse_from(["afkconvoy", "run", gone]).is_err(), "{gone}");
         }

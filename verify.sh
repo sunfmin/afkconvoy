@@ -1,11 +1,11 @@
 #!/bin/sh
 # Checks the refinement types of the core crate, and of the harness, gate and
 # landing crates it depends on, with Flux (docs/adr/0007, docs/adr/0058,
-# docs/adr/0059, docs/adr/0060).
+# docs/adr/0058).
 # Needs Homebrew's `sunfmin/tap/flux-toolchain`, the newest the tap has: its
 # `cargo-flux` brings the `fixpoint`, `z3` and Flux sysroot it was built with,
 # and nothing here pins or builds any of them (sunfmin/control#735,
-# docs/adr/0067).
+# docs/adr/0007).
 #
 #   ./verify.sh                 check the whole core, harness, gate and landing crates
 #   ./verify.sh free_slots      check the functions whose path contains a name

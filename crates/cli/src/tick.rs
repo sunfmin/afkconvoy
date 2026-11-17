@@ -363,7 +363,7 @@ pub fn tick(
         let unmatched = afkconvoy_core::casting::unmatched_models(team, &kit.range());
         let _ = crate::roster_issue::open(&fleet.gh, &bound.team.repo, &unmatched);
     }
-    // What no consult saw goes to one first (docs/adr/0018), and is read
+    // What no consult saw goes to one first (docs/adr/0005), and is read
     // again as the fleet's. A team that does not load puts nothing: the
     // rebuild says why of each issue.
     let put = crate::stage::put_to_consults(&fleet, &flows, &open.issues).unwrap_or_default();
@@ -374,7 +374,7 @@ pub fn tick(
     // A busy host, an account that would run out or a long exclusive queue
     // starts no new worker this tick (docs/adr/0019, docs/adr/0107).
     // The candidate chain is read once a tick: its answers come from turns
-    // that take longer than a pass (docs/adr/0076).
+    // that take longer than a pass (docs/adr/0107).
     let landing = crate::admission::landing_of(&fleet.repo.dir, fleet.now);
     let mut admission = admission_of(&fleet, &set, 0, landing)?;
     set.held_back = admission.holds();
@@ -1622,8 +1622,8 @@ impl hot::Hears for Said {
 /// hot (`hot::watch`, docs/adr/0019). Resource conditions are kept for the
 /// host watch's next look. It says how it stands as each tick begins and
 /// ends, among the others its host runner holds (`Standing`, docs/adr/0023),
-/// and begins no tick while a move holds them back (docs/adr/0032). It never
-/// puts the host to sleep (docs/adr/0101). It obeys `holder`'s stop — whoever holds the
+/// and begins no tick while a move holds them back (docs/adr/0023). It never
+/// puts the host to sleep. It obeys `holder`'s stop — whoever holds the
 /// process listens for the signals — and says each line to its echo. It
 /// ends in an error as its tracker is found public (`probe::public_tracker`).
 pub fn run(
@@ -1675,14 +1675,14 @@ pub fn run(
         }
         // Each tick is a look of its own: what a look reads once, it reads
         // once in this tick, not once in the runner's life, so what a `run`
-        // registered since is seen (docs/adr/0043).
+        // registered since is seen (the `look` module).
         crate::look::begin();
         // A tracker made public ends this fleet instance before it works
         // anything more — within the hour a check that found it private
         // stands, and at once of one said anew — as a start's probe refuses
         // one: it is broken, and each start of it again
         // is refused until the tracker is private or another is said
-        // (docs/adr/0027). A check that cannot be made costs nothing: the
+        // (docs/adr/0091). A check that cannot be made costs nothing: the
         // tick reads GitHub too, and says why that fails.
         if let Ok(Some(why)) = crate::probe::public_tracker(repo, clock(), true) {
             return Err(See::Troubleshooting.refusal(why));

@@ -1,6 +1,6 @@
 # Issue tracker
 
-Issues and specs for this repo live in its **tracker** (`GLOSSARY.md`, `docs/adr/0027`, `docs/adr/0091`): by default its host's **local tracker**, `local/<host>`, a database on the host; or a GitHub repo the checkout names. Whose issues a fleet works is a fact of its host, never pushed, so this file names no tracker: ask the host. `afkconvoy issue` reads and writes either kind, with `gh issue`'s verbs and flags (`afkconvoy issue --help`); `gh issue` reaches a GitHub tracker only.
+Issues and specs for this repo live in its **tracker** (`GLOSSARY.md`, `docs/adr/0091`, `docs/adr/0091`): by default its host's **local tracker**, `local/<host>`, a database on the host; or a GitHub repo the checkout names. Whose issues a fleet works is a fact of its host, never pushed, so this file names no tracker: ask the host. `afkconvoy issue` reads and writes either kind, with `gh issue`'s verbs and flags (`afkconvoy issue --help`); `gh issue` reaches a GitHub tracker only.
 
 ## Find the tracker
 

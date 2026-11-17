@@ -17,7 +17,7 @@ pub const PATROLS: &str = "patrols";
 /// The directory of a role's repo that holds one entry per skill, the file
 /// of a skill's directory that says what the skill is, and a directory's
 /// rules — in a role's directory the role's, and in a team's the team rules:
-/// where every harness reads them (docs/adr/0013), the harness crate's.
+/// where every harness reads them (docs/adr/0020), the harness crate's.
 pub use afkconvoy_harness::start::{RULES, SKILL_FILE, SKILLS};
 /// The keys of a skill's frontmatter every harness reads: what `skill-file`,
 /// the help topic, must name.
@@ -340,7 +340,7 @@ pub struct Team {
     /// worker of the team is given with that directory.
     pub rules: bool,
     /// Whether a worker of the team is given the host user's own skills and
-    /// rules beside its role's (docs/adr/0017): `true` unless the team file
+    /// rules beside its role's (docs/adr/0009): `true` unless the team file
     /// says `host_user: false`, which keeps a role the same on every host.
     /// The default of every role, which a role may set for itself
     /// (`Role::host_user`).
@@ -673,7 +673,7 @@ pub struct Patrol {
     pub max_landed_a_day: Option<u64>,
 }
 
-/// Who a stage hands an issue to before a human (docs/adr/0018): `by_role`
+/// Who a stage hands an issue to before a human (docs/adr/0005): `by_role`
 /// when a role it names, one of a team of `roles`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[refined_by(by_role: bool, roles: int)]
@@ -923,7 +923,7 @@ pub const ROLE_FORMS: &str = "owner/repo, owner/repo/path or ./path";
 
 /// The directory `named` names as a role of a team at `at` — `owner/repo`,
 /// `owner/repo/path`, or `./path`, a path from the root of the team's own
-/// repo (docs/adr/0014) — or why it names none.
+/// repo (docs/adr/0009) — or why it names none.
 fn role_dir(named: &str, at: Option<&RepoDir>) -> Result<RepoDir, String> {
     let read = match named.strip_prefix("./").or(if named == "." { Some("") } else { None }) {
         Some(path) => match at {

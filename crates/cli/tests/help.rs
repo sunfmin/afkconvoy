@@ -961,7 +961,7 @@ fn the_guide_teaches_the_loop_that_designs_a_team() {
 }
 
 /// One repo for a team and its roles is the layout a new team starts from
-/// (docs/adr/0014): `scaffold` shows it before a role on its own.
+/// (docs/adr/0009): `scaffold` shows it before a role on its own.
 #[test]
 fn scaffold_shows_a_team_and_its_roles_in_one_repo_first() {
     let said = asked(&["scaffold", "--help"]);

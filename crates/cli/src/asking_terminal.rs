@@ -265,7 +265,7 @@ fn reincarnated(saved: &Value, row: &Value) -> bool {
 }
 
 /// Takes back a re-incarnated pane while the session's marked executor still
-/// runs: the record takes its new handle and identity (ADR-0110). A send
+/// runs: the record takes its new handle and identity (ADR-0096). A send
 /// left unresolved is delivered where the session took a turn since it was
 /// offered, and otherwise offered afresh: its saved request key binds the old
 /// incarnation. With the executor gone the pane is ours but the session is

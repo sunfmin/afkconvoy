@@ -1382,7 +1382,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
     {
         // What its issue says, and how the cut starts again: by itself, at
         // the next due cut, or once more lands where the same failure
-        // repeated (docs/adr/0072). The watch looks for its cause
+        // repeated (docs/adr/0028). The watch looks for its cause
         // (sunfmin/control#801).
         let held = match cut.standing == cut::Standing::Failed {
             true => "the fleet cuts no version until more lands: ",
@@ -2766,7 +2766,7 @@ fn exclusive_findings(entries: &[Entry], now: u64) -> Vec<Finding> {
 }
 
 /// A repo whose candidate chain had more conflicts than landings in the last
-/// hour, at the fewest that hold its starts (docs/adr/0076): admission
+/// hour, at the fewest that hold its starts (docs/adr/0107): admission
 /// starts no new worker of it until the chain drains. Nothing of the host
 /// is to mend, and the watch is not called for it.
 fn landing_finding(entries: &[Entry], now: u64) -> Option<Finding> {

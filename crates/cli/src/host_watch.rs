@@ -43,12 +43,12 @@ const FAILED_CUT: &str = afkconvoy_core::cut::FAILED_LABEL;
 pub const CHECKOUT: &str = "afkconvoy-watch";
 
 /// What every watch leaves with a human, in either directory: spending
-/// money, and nothing else (docs/adr/0073).
+/// money, and nothing else (docs/adr/0040).
 pub(crate) const HUMAN_KINDS: &str = "- spending money.";
 
 /// What every watch decides itself, by the recommended answer, and how it
 /// records each decision; and how a step only a person can do is listed
-/// without holding the rest back (docs/adr/0073).
+/// without holding the rest back (docs/adr/0040).
 pub(crate) const DECIDES: &str = "\
 Decide everything else by its recommended answer, as the operator would, and act on it:\n\
 what cannot be undone, taking a secret or private data off the host, and changing what a\n\

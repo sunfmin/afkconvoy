@@ -1,46 +1,27 @@
-# afkconvoy is a trimmed Rust port of afk-fleet
+---
+status: accepted
+---
 
-afkconvoy reimplements [`sunfmin/afk-fleet`](https://github.com/sunfmin/afk-fleet) — a Claude Code skill backed by Python scripts — as a standalone Rust command-line tool installed with Homebrew. It is not a line-for-line port: each afk-fleet feature was kept, changed or cut on purpose, and afk-fleet's own ADRs remain the rationale for whatever is kept as it was.
+# afkconvoy is a trimmed Rust port of afk-fleet, and runs its own loop
 
-## Kept as in afk-fleet
+afkconvoy reimplements [`sunfmin/afk-fleet`](https://github.com/sunfmin/afk-fleet) — a Claude Code skill backed by Python scripts — as a standalone Rust command-line tool installed with Homebrew. It is not a line-for-line port: each afk-fleet feature was kept, changed or cut on purpose, and afk-fleet's own ADRs remain the rationale for whatever is kept as it was (cooperative multi-fleet claims with a per-instance heartbeat and lease, orca as the worker backend, recorded gate runs, park with blocker standings, the status board, the bootstrap probes, an explicit `takeover`).
 
-- Cooperative multi-fleet: atomic claim refs, a per-instance heartbeat and lease, unattended reclaim of stale claims (afk-fleet ADR-0003, 0044).
-- orca as the only worker backend (ADR-0005, 0021).
-- The opaque worker launch command, with custom-provider detection, alias candidates and the resolve check — for Claude only (ADR-0010).
-- Recorded gate runs (ADR-0030).
-- Continuation in three tiers, with the branches the fleet cut recorded on the issue (ADR-0011, 0043).
-- The silent-worker ladder: nudge, then escalate; for a landing worker, nudge, one restart, nudge, then escalate (ADR-0018, 0035).
-- Park, with blocker standings and the cycle check (ADR-0022).
-- The status board (ADR-0006).
-- Fast-forwarding the fleet's own checkout after a landing (ADR-0037).
-- The bootstrap probes: claim-namespace fallback, branch protection, gate-record writability and sweep.
-- The explicit `takeover` command, for another host's fleet.
+## Its own namespace
 
-## Changed
+Everything afkconvoy writes on the remote carries its own prefix: refs under `refs/convoy/*` and comment markers as `<!--convoy:…-->`, where afk-fleet uses `refs/afk/*` and `<!--afk:…-->`. The two tools share no ref and no marker, so neither reads the other's claims as its own, and afkconvoy does not see a claim afk-fleet holds.
 
-- The tool runs its own loop and asks no one anything (ADR-0002).
-- A host runs one fleet per repo and takes its own host's claims at start (ADR-0003).
-- The gate is local (ADR-0004), and every PR lands in a turn (ADR-0037).
-- A failure escalates; nothing is retried (ADR-0005).
-- `giving-up` and `needs-decision` are one verdict, `needs-human`.
-- `already-satisfied` is confirmed in code: a branch with no commit past the base and a clean worktree closes the issue, anything else escalates.
-- Every wake-up runs a full tick; only the busy and idle sleep intervals remain of the pacing.
-- A wake is a subcommand that signals the host's `run` process, not a line typed into a terminal.
-- The base branch is a config key (ADR-0006).
-- Config stays a yaml block in a markdown file under `docs/agents/`, with six keys: `base_branch`, `ready_label`, `epic_labels`, `concurrency`, `gate_command`, `escalate_label`.
-- Everything the tool writes on the remote carries its own prefix: refs under `refs/convoy/*` (branches under `convoy-*` where the remote refuses non-branch refs) and comment markers as `<!--convoy:…-->`, where afk-fleet uses `refs/afk/*` and `<!--afk:…-->`. The two tools share no ref and no marker, so neither reads the other's claims as its own, and afkconvoy does not see a claim afk-fleet holds.
+## It runs its own loop, and asks no model to judge
 
-## Cut
+In afk-fleet the loop is an LLM session that calls `afk cycle`, carries an opaque state between calls, and answers four kinds of judgment. Each of those went with something afkconvoy cut, or became a rule code applies. With nothing left to judge, the loop is a plain long-running process: tick, sleep, tick. No state crosses a process boundary, and a wake is `afkconvoy wake`, which reaches the host's runner (ADR-0023), not a line typed at a session.
 
-- The LLM launcher, the opaque cycle state and all four judgments.
-- The qoderclicn runtime and runtime detection.
-- `gate.ci: required`: reading and waiting for GitHub checks.
-- The adversarial verify, and with it the landing turn, the merge queue and giving a turn up.
-- The retry ladder and the `afk-attempt/*` labels.
-- The fingerprint gate.
-- The drain.
-- The base branch kept on the remote and confirmed at every launch.
+Anything that would need judgment has no one in the loop to ask: it must be a rule, or an issue — a failure escalates and nothing is retried (ADR-0005). Models work issues; they never decide what the fleet does next.
 
-## Commands
+Cut from afk-fleet on purpose: the LLM launcher and its cycle state; reading and waiting for GitHub checks (the gate is local, ADR-0047); the adversarial verify and the merge queue (a PR lands in a turn, ADR-0037); the retry ladder and its `afk-attempt/*` labels; the fingerprint gate; the drain; the qoderclicn runtime and runtime detection.
 
-`run` (the loop), `plan`, `tick`, `takeover`, `wake`; the worker's own `gate` and `land`; and each transition as a subcommand for debugging by hand.
+## The ref layout, and when it moves
+
+A remote that refuses hidden refs keeps the fleet's refs as `convoy-*` branches instead (`refs/heads/convoy-*`). A startup probe settles which layout the remote takes, and the checkout notes it for every later command. A checkout that has noted no layout takes hidden refs, or branches where the remote rejects those.
+
+A noted layout moves only when two startup probes that actually run, one after the other, each see the noted layout rejected and the other taken. One rejected probe push was once read as the remote refusing the layout and the note flapped between the two, so a recorded gate run left on the layout just left was no longer believed and the same tree was gated twice. One rejection leaves the note; a probe that takes the noted layout clears the streak; a probe that reaches no verdict refuses the start and changes nothing.
+
+A turn believes a recorded gate run of one tree and one gate command from either layout while the run stands. A new record is written only on the noted layout, and a red run drops the record on both. Claims and heartbeats stay on the noted layout.

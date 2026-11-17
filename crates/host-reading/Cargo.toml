@@ -1,6 +1,6 @@
 [package]
 name = "afkconvoy-host-reading"
-description = "How busy a host is, with no fleet concept in its API: the kernel's CPU ticks over the last minute, the load average over the cores where those cannot be read, and the memory free under a floor, as the exclusive queue's holder starts a command by them (docs/adr/0089)"
+description = "How busy a host is, with no fleet concept in its API: the kernel's CPU ticks over the last minute, the load average over the cores where those cannot be read, and the memory free under a floor, as the exclusive queue's holder starts a command by them (docs/adr/0058)"
 version.workspace = true
 edition.workspace = true
 publish = false

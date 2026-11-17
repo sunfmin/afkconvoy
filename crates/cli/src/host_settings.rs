@@ -108,7 +108,7 @@ pub struct Settings {
     pub agent_guards: Option<PathBuf>,
     /// What another afkconvoy says beside them, kept as it is: an older one's
     /// `no_host_sleep` among them, which keeps that one from putting the
-    /// host to sleep (docs/adr/0101).
+    /// host to sleep.
     #[serde(flatten)]
     rest: Map<String, Value>,
 }

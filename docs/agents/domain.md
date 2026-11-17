@@ -49,3 +49,9 @@ If the concept you need isn't in the glossary yet, that's a signal: either you'r
 If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
 
 > _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+
+## Changing the ADRs
+
+An ADR states one decision as it stands today. Write a new one only for a decision that is hard to reverse, surprising without context, and the result of a real trade-off; a tuning value, a bug fix's story, a workaround for another tool's version, or a rule a help topic or code comment already holds is not one.
+
+A later decision that changes an ADR rewrites that ADR in place, or deletes it when nothing of it stands; it never adds an "Amended by" or "Superseded by" note or a new ADR that amends it. A deleted ADR's citations move to the ADR that holds the decision now. `./gate.sh fast` refuses an ADR marked amended or superseded, and a citation of an ADR number `docs/adr/` does not have.

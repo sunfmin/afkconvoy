@@ -789,7 +789,7 @@ fn a_refused_registration_says_orcas_error() {
     world.afk(&["stop", "--all"]).ok();
 }
 
-/// Only money is a human's (docs/adr/0073): a watch given a decision that
+/// Only money is a human's (docs/adr/0040): a watch given a decision that
 /// cannot be undone, with its recommended answer, acts on it and its round's
 /// daybook entry records what it chose, why and how to undo it; a decision
 /// to spend money it lists for the asking session and leaves waiting.

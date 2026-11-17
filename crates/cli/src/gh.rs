@@ -522,7 +522,7 @@ impl GitHub {
     /// Installs this look's quota scope from the note on disk, without asking
     /// `rate_limit`. A read that may refuse spends no round trip on the probe.
     /// A held login is still refused, and a primary-quota error still observes
-    /// (`quota`, docs/adr/0043).
+    /// (`quota`, the `look` module).
     pub(crate) fn note_without_probe(&self) -> Result<()> {
         if self.quota.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
             return Ok(());
@@ -545,7 +545,7 @@ impl GitHub {
                 .any(|name| made.read(name).is_ok_and(|r| r.remaining == Some(0) && r.reset > now));
             // Once in this look, and not while the note already says the
             // login is held. A second ask in the same look does nothing
-            // (`observe`, docs/adr/0043).
+            // (`observe`, the `look` module).
             if !held {
                 made.observe(self)?;
             }
@@ -616,7 +616,7 @@ impl GitHub {
 
     /// The quota note as it stands. A look that read GitHub already carried
     /// the response headers into it; this reports that note and does not ask
-    /// `rate_limit` of its own (docs/adr/0043). An empty note is an answer.
+    /// `rate_limit` of its own (the `look` module). An empty note is an answer.
     pub(crate) fn quota_status(&self) -> Result<serde_json::Value> {
         crate::gh_quota::Scope::of(self)?.json()
     }

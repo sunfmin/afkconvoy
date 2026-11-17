@@ -322,7 +322,7 @@ fn lock_dir(dir: &Path) -> Result<File> {
 }
 
 /// A fast gate holds no repo lease: fast gates run in their own worktrees,
-/// side by side whatever their repo (docs/adr/0049).
+/// side by side whatever their repo (docs/adr/0047).
 fn repo_file(ticket: &Ticket) -> Result<Option<(std::path::PathBuf, File)>> {
     let Some(repo) = ticket.repo.as_ref().filter(|_| !afkconvoy_core::exclusive::is_fast(ticket))
     else {

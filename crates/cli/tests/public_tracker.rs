@@ -1,6 +1,6 @@
 //! A public tracker is refused: anyone can comment on its issues, and so
 //! write what the fleet reads as its state and what its workers read as
-//! their task (docs/adr/0027). A start's probe refuses one, so does `run
+//! their task (docs/adr/0091). A start's probe refuses one, so does `run
 //! --tracker`, and a running fleet instance whose tracker is made public
 //! ends as its next check finds it, within the hour one that found it
 //! private stands.
@@ -209,7 +209,7 @@ fn a_listed_checkout_of_a_public_repo_a_move_starts_is_refused_and_stays_on_the_
     let mut older = listed_by_an_older_host_runner(&world);
 
     // Taken into the host database, its entry names its own repo, the
-    // tracker the older release meant (ADR-0119): a `run` that says no
+    // tracker the older release meant (ADR-0117): a `run` that says no
     // other refuses that public tracker before it moves the older runner,
     // with the line that fixes it, and the checkout stays on the list.
     let refused = world.afk(&RUN);

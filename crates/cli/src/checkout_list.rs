@@ -1,5 +1,5 @@
 //! The checkout list: which checkouts this host's runner works, kept in the
-//! host's database (`host_db`, docs/adr/0119), never pushed, with the host
+//! host's database (`host_db`, docs/adr/0117), never pushed, with the host
 //! settings beside them (`host_settings`, docs/adr/0023).
 //!
 //! It is read whole by anyone, and a reader sees one list or the next. A

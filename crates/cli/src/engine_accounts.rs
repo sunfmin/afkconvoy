@@ -1,5 +1,5 @@
 //! The engine accounts this host's workers start on (GLOSSARY: **Account**;
-//! docs/adr/0086, docs/adr/0087): read from mytokens, their one home; what
+//! docs/adr/0086): read from mytokens, their one home; what
 //! this host last heard of each — its usage windows and a limit it met —
 //! kept in its account book; and the one a worker starts on, chosen by the
 //! core (`afkconvoy_core::engine_account::choose`).
@@ -182,7 +182,7 @@ pub(crate) fn account_of(worktree: &Worktree) -> Option<String> {
 /// names an account whose login is a file (Codex, Grok, Kimi Code): its name
 /// and its home, `~/.agent-accounts/<name>` under `user_home`. Its worker's
 /// kept home links that home's login in place of the host user's
-/// (`kept::for_worker`, docs/adr/0112). `None`: it started on no account,
+/// (`kept::for_worker`, docs/adr/0086). `None`: it started on no account,
 /// or on a token, which no file holds.
 pub(crate) fn login_of(worktree: &Worktree, user_home: &Path) -> Option<Login> {
     let name = account_of(worktree)?;

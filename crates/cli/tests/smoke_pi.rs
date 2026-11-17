@@ -1,7 +1,7 @@
 //! The one test against real pi. Every other test starts a pi worker in a
 //! stand-in orca and runs the fleet's extension under a stand-in pi, which
 //! proves the fleet builds the right line — not that pi answers it as
-//! assumed (docs/adr/0013). This one runs that line for real, in a throwaway
+//! assumed (docs/adr/0020). This one runs that line for real, in a throwaway
 //! role with a throwaway project as its worktree, under a throwaway home that
 //! holds everything of a host user's a worker must not load, and has the
 //! worker try what its role's own limit and the guard refuse.

@@ -1308,7 +1308,7 @@ pub(crate) struct Request<'a> {
 ///
 /// A turn that has just written a chain calls this. That write is past the
 /// look's moment, so the listing the look holds is not this chain
-/// (docs/adr/0043).
+/// (the `look` module).
 pub(crate) fn remove_stopped_worktrees(repo: &Repo) -> Result<Vec<Unremoved>> {
     remove_listed(repo, &crate::chain_store::all(repo)?)
 }
@@ -1819,7 +1819,7 @@ pub(crate) fn run(request: Request<'_>, mut answer: Value) -> Result<Value> {
             }
             let tree = repo.git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
             // Where the commit splits its gate, the candidate runs the fast gate,
-            // and a round at it the slow one (docs/adr/0048).
+            // and a round at it the slow one (docs/adr/0083).
             let own = Declared {
                 whole: declared.gate_command.clone(),
                 seconds: declared.gate_seconds(),
@@ -2896,7 +2896,7 @@ struct Round<'a> {
 /// Green puts the whole gate on record for the tip's tree, from its fast
 /// and slow runs. Red is not bisected: the worker's branch is brought up to
 /// the round's tip, which holds every change of the round, and the worker
-/// fixes the round from its issues and the failing tests (docs/adr/0048).
+/// fixes the round from its issues and the failing tests (docs/adr/0083).
 fn round(round: Round<'_>) -> Result<Option<Value>> {
     let InRound { repo, config, id, host, issue, heavy, clock, .. } = *round.turn;
     // The slow gate takes a worker lane again; a barrier still holds its own.

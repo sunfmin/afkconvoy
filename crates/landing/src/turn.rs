@@ -24,7 +24,7 @@ pub struct Declared {
 }
 
 /// The gate a candidate runs itself, and its limit; and the slow gate a
-/// round at it runs, where its commit splits its gate (docs/adr/0048).
+/// round at it runs, where its commit splits its gate (docs/adr/0083).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Own {
     pub command: String,

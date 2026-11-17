@@ -1,7 +1,7 @@
 //! A session the harness keeps of its own: reading the user's config, a fresh
 //! directory, and the launch line. Codex is that harness. The facts — the
 //! file, the model, the effort, the directory, the watch line — are the
-//! harness's (docs/adr/0013). Here they are only read and put in place.
+//! harness's (docs/adr/0020). Here they are only read and put in place.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};

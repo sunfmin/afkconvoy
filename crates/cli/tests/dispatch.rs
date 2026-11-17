@@ -291,7 +291,7 @@ fn the_steps_run_in_order() {
         calls,
         [
             // what survived is read first, under the claim; the repo list is
-            // the look's one (docs/adr/0043)
+            // the look's one (the `look` module)
             "repo list",
             "worktree list",
             "worktree create",

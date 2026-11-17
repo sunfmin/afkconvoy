@@ -1,4 +1,4 @@
-//! The host's one afkconvoy database (ADR-0117, ADR-0119): `host.db` in the
+//! The host's one afkconvoy database (ADR-0117): `host.db` in the
 //! data directory (`copies::data`), where the host-local state lives that
 //! no other host reads and nothing else gives back. Its candidate chains
 //! (`chain_store`) and each store that was a file of the cache directory
@@ -441,7 +441,7 @@ fn aside(file: &Path) -> Result<()> {
 
 /// Whether a host runner of a release older than this one holds the host of
 /// `cache`: it reads and writes the old files still, until it moves onto
-/// this release between two ticks (ADR-0032).
+/// this release between two ticks (ADR-0023).
 fn older_runner(cache: &Path) -> bool {
     let lock = cache.join(crate::host_runner::LOCK);
     let Ok(file) = std::fs::File::open(&lock) else { return false };

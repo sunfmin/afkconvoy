@@ -18,7 +18,7 @@ pub const CPU_HELD: u64 = 120;
 
 /// How long, in seconds, a process of a worker must have taken no CPU and
 /// had no child, holding build-directory locks, for its worker to turn
-/// stalled (docs/adr/0113): three minutes. A build waiting on one that runs
+/// stalled (docs/adr/0082): three minutes. A build waiting on one that runs
 /// waits on a holder that takes CPU or has children, so it never stalls.
 pub const STALL_HELD: u64 = 180;
 

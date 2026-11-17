@@ -2,7 +2,7 @@
 //! runner itself (docs/adr/0023): whether each is starting, in a tick, at
 //! work or quiet, as each says it as its ticks begin and end. A move onto a
 //! newer release reads them, and holds new ticks back while it prepares
-//! (docs/adr/0032). No fleet instance asks another.
+//! (docs/adr/0023). No fleet instance asks another.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};

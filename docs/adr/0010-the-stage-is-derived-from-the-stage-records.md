@@ -18,4 +18,4 @@ A workflow states its transitions outright: each stage says where `pass` leads a
 - `reject` may only lead to an earlier stage, so every cycle in a workflow passes through a counted rejection and no separate check for unbounded loops is needed. What is checked when a team is loaded: every stage can be reached, every stage can reach an end, and every role and skill named exists.
 - A workflow changed under an issue in flight can leave a record naming a stage that no longer exists. The fleet does not guess; it escalates and says the workflow changed.
 - A human steers an issue by declaring a verdict or a ruling through the fleet, which adds a record. Moving a label does nothing.
-- Splitting an issue needs no state of its own: it is a park on issues the stage itself opened (see Split).
+- Splitting an issue needs no state of its own: it is a park on issues the stage itself opened (`afkconvoy help workflows`).

@@ -1,4 +1,4 @@
-//! What afkconvoy knows of each harness it starts sessions of (docs/adr/0013,
+//! What afkconvoy knows of each harness it starts sessions of (docs/adr/0020,
 //! docs/adr/0058), kept apart so that another program can depend on it: how
 //! each starts, where it reads its rules and skills, how a hook reaches it,
 //! where it keeps its session, what its usage lines count, what it says of

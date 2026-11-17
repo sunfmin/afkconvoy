@@ -1,4 +1,4 @@
-//! Candidates, candidate chains, rounds and landing (docs/adr/0060), with
+//! Candidates, candidate chains, rounds and landing (docs/adr/0058), with
 //! the forge behind an interface and no fleet concept in their API: a
 //! change's immutable merge onto its predecessor, the chain that orders the
 //! candidates and cancels a failed or invalid suffix, the round whose PRs are

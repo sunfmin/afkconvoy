@@ -1,6 +1,6 @@
 [package]
 name = "afkconvoy-daybook"
-description = "The daybook — the entry format and its lesson, the day, appending an entry and reading a span — kept in a host's own SQLite database or a GitHub tracker's Discussions behind one interface, with no fleet concept in its API (docs/adr/0071, docs/adr/0118)"
+description = "The daybook — the entry format and its lesson, the day, appending an entry and reading a span — kept in a host's own SQLite database or a GitHub tracker's Discussions behind one interface, with no fleet concept in its API (docs/adr/0058, docs/adr/0118)"
 version.workspace = true
 edition.workspace = true
 publish = false

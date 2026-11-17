@@ -101,7 +101,7 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     // A start is a look of its own. The host runner is one process, and an
     // earlier tick already read what a look reads once; this start reads
     // each again, so a checkout a `run` registered since is known
-    // (docs/adr/0043).
+    // (the `look` module).
     crate::look::begin();
     let (named, knobs) = (&start.named, &start.knobs);
     let fixed_now = knobs.now;

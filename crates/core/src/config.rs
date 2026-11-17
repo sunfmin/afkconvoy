@@ -533,7 +533,7 @@ impl std::fmt::Display for RepoName {
     }
 }
 
-/// A directory of a repo: the whole of it, or a subdirectory (docs/adr/0014).
+/// A directory of a repo: the whole of it, or a subdirectory (docs/adr/0009).
 /// A team is one and so is a role. It is written `owner/repo` or
 /// `owner/repo/path`: the first two segments are the repo, the rest the path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

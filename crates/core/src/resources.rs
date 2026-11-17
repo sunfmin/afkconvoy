@@ -25,7 +25,7 @@ pub enum Reason {
     Queue,
     /// The share of the host's cores or memory afkconvoy may use itself.
     Share,
-    /// The repo's candidate chain, which cannot keep up (docs/adr/0076). It
+    /// The repo's candidate chain, which cannot keep up (docs/adr/0107). It
     /// drains as the running workers land, and calls for no watch.
     Landing,
     /// No account of the harness its workers start on takes one

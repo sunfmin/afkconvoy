@@ -31,7 +31,7 @@ const PUSH_EVERY: [&str; 3] = ["--all", "--mirror", "--branches"];
 /// The `git` subcommands that leave a commit on the branch.
 const COMMITS: [&str; 5] = ["commit", "merge", "cherry-pick", "revert", "am"];
 /// The programs that change the host — delete what is on it, or stop what
-/// runs on it — which a consult does not run (docs/adr/0018).
+/// runs on it — which a consult does not run (docs/adr/0005).
 const HOST_CHANGES: [&str; 7] = ["rm", "rmdir", "unlink", "shred", "kill", "pkill", "killall"];
 /// The programs that delete the paths they are given.
 const DELETES: [&str; 4] = ["rm", "rmdir", "unlink", "shred"];
@@ -90,7 +90,7 @@ enum At {
     Stage(String),
     Patrol(String),
     /// The watch of the hot worker so named, or of the host
-    /// (docs/adr/0026): the operator on its host, whatever its facts say,
+    /// (docs/adr/0040): the operator on its host, whatever its facts say,
     /// within the bounds of any unattended worker.
     Watch(String),
 }

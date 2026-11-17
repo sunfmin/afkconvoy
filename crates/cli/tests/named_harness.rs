@@ -522,20 +522,11 @@ fn the_glossary_and_adr_0020_say_a_checkout_can_name_its_harness() {
     );
     assert!(glossary.contains("no other harness is started in its place"), "{glossary}");
     assert!(!glossary.contains("docs/adr/"), "{glossary}");
-    let yielded = std::fs::read_to_string(
-        root.join("docs/adr/0020-an-issue-is-cast-within-its-role-s-range-on-the-host.md"),
-    )
-    .unwrap();
-    assert!(
-        yielded.contains("yielded for a checkout that names a harness by ADR-0045"),
-        "{yielded}"
-    );
-    assert!(yielded.contains("never starts by a checkout's named harness"), "{yielded}");
     let recorded = std::fs::read_to_string(
-        root.join("docs/adr/0045-a-checkout-can-name-the-harness-its-workers-start-on.md"),
+        root.join("docs/adr/0020-an-issue-s-worker-runs-within-its-role-s-range-on-the-host.md"),
     )
     .unwrap();
-    assert!(recorded.contains("ADR-0020"), "{recorded}");
     assert!(recorded.contains("checkout list"), "{recorded}");
     assert!(recorded.contains("--harness default"), "{recorded}");
+    assert!(recorded.contains("on that harness or not at all"), "{recorded}");
 }

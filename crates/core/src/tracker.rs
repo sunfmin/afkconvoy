@@ -1,5 +1,5 @@
 //! The tracker: the repo a fleet reads and writes its issues in — its
-//! checkout's own, until the checkout's host names another (docs/adr/0027),
+//! checkout's own, until the checkout's host names another (docs/adr/0091),
 //! or its host's local tracker (docs/adr/0091) — and how the repo the fleet
 //! works in names one of its issues: in a PR's closing line, a join commit, a
 //! branch, a worktree and a claim's ref. The one home of every such name, so
@@ -211,7 +211,7 @@ pub fn says_private(checkout: &str) -> String {
 
 /// Why the fleet of the checkout `checkout` is refused, whose tracker,
 /// `named`, GitHub says is public: anyone could write what the fleet reads as
-/// its state and what its workers read as their task (docs/adr/0027).
+/// its state and what its workers read as their task (docs/adr/0091).
 pub fn public(named: &str, checkout: &str) -> String {
     format!(
         "the tracker of {checkout}, {named}, is public: anyone can comment on its issues, and so \

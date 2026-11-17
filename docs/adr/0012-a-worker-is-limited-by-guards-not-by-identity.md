@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0027
+status: accepted
 ---
 
 # A worker is limited by guards, not by its identity
@@ -14,5 +14,4 @@ Giving workers a GitHub identity of their own, narrower than the host's, was con
 
 - A guard recognises commands. A worker that wraps the same act in a script gets past it. This protects against a worker that errs, not one that has been turned.
 - What makes that acceptable is elsewhere: the gate is run by the fleet, and nothing reaches the base branch except through a turn or a promotion (ADR-0037, ADR-0090). The worst a stray worker does is confuse one issue, which shows as an escalation.
-- Text a worker reads in the repo — an issue body, a comment, a document — can carry instructions. A repo that takes issues from strangers needs the separate identity first.
-  _Amended by ADR-0027:_ the repo may be public, but its fleet's tracker may not: the issues, and every comment a worker reads, are in a tracker that only collaborators can write.
+- Text a worker reads in the repo — an issue body, a comment, a document — can carry instructions. A repo that takes issues from strangers needs the separate identity first. The repo itself may be public, but its fleet's tracker may not: the issues, and every comment a worker reads, are in a tracker only collaborators can write (ADR-0091).

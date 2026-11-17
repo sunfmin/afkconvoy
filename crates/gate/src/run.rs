@@ -1,5 +1,5 @@
 //! A gate run's evidence on the remote: what a run of a gate command on a
-//! committed tree writes there, takes away, and reads back (docs/adr/0024).
+//! committed tree writes there, takes away, and reads back (docs/adr/0047).
 //! Whether a run is put on record is `gate::after_run`'s to say; what is
 //! written where, and read from which ref layout, is said here once, for
 //! every program that records gate runs. How a record reaches the remote is

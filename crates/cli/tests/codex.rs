@@ -1,4 +1,4 @@
-//! Codex is a harness (docs/adr/0013): a stage that names it gets a worker
+//! Codex is a harness (docs/adr/0020): a stage that names it gets a worker
 //! that is a Codex session, started in its role's directory under a user
 //! directory of the fleet's own, with the hooks that ask the guard and tell
 //! the worker backend said on the line that starts it. The line is read off a

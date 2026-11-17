@@ -82,7 +82,7 @@ fn hand_on(fleet: &mut Fleet, claim: &Claim, waits_at: Option<&str>, end: End) -
 
 /// Hands `claim` on for `failure`, said as `why`: to its stage's consult,
 /// where the stage names one that has not ruled on that kind of failure
-/// since a human last put the issue at a stage (docs/adr/0018) — the fleet
+/// since a human last put the issue at a stage (docs/adr/0005) — the fleet
 /// leaves the record of the failure, with what a human handed it would be
 /// told, and ends the claim, the worktree kept for the consult — and else to
 /// a human, as ever.

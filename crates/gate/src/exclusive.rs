@@ -10,8 +10,8 @@
 //! a reading, and the first while nothing of the queue runs whatever the
 //! reading says. No lane has a count of places. A lane still says what a
 //! command is, and which it is held apart from: a worker's fast gate
-//! (docs/adr/0049) is not held apart from another of its repo, nor from a
-//! slow gate (docs/adr/0048) or a turn.
+//! (docs/adr/0047) is not held apart from another of its repo, nor from a
+//! slow gate (docs/adr/0083) or a turn.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -156,7 +156,7 @@ pub enum Gate {
 }
 
 /// The busy share of the host's cores a command starts under, in percent,
-/// where the host says none: the one admission holds at (docs/adr/0084).
+/// where the host says none: the one admission holds at (docs/adr/0107).
 pub const BUSY_SHARE: u64 = 90;
 
 /// The CPU, in percent of the host's, a running command whose kind has no

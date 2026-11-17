@@ -1,5 +1,5 @@
 //! The **daybook**: the operator's one place to read, after the fact, what
-//! agents did and decided outside any issue (docs/adr/0071). Its entries are
+//! agents did and decided outside any issue (docs/adr/0058). Its entries are
 //! kept in one of two stores behind one interface, `Store` (docs/adr/0118):
 //!
 //! - `Local`, a host's own: one SQLite database, a row an entry, at a path

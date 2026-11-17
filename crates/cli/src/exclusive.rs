@@ -42,7 +42,7 @@ const ASKS_EVERY: Duration = Duration::from_millis(200);
 /// queue: it says it at once.
 const PLACED_WITHIN: Duration = Duration::from_secs(10);
 
-/// The default bound on time holding other commands up (docs/adr/0031).
+/// The default bound on time holding other commands up (docs/adr/0088).
 pub const SECONDS: u64 = 1200;
 /// Reserved for a command ended at the exclusive bound. A child's own use
 /// of it is reported as exit 1, so this outcome is unambiguous.
@@ -81,7 +81,7 @@ fn is_cut(repo: &Repo) -> bool {
 
 /// Which of the two gates (docs/adr/0047) the command `exclusive` runs is,
 /// as `gate --fast` and `--slow` say it to the gate's command: `fast` takes
-/// the fast lane (docs/adr/0049). It is said to that `exclusive` alone, and
+/// the fast lane (docs/adr/0047). It is said to that `exclusive` alone, and
 /// not passed on to what its command runs.
 pub const GATE_ENV: &str = "AFKCONVOY_GATE";
 
@@ -303,7 +303,7 @@ impl Permit {
     }
 
     /// One of the two gates a worker runs alone, `gate --fast` or `--slow`,
-    /// in its lane (docs/adr/0049): the fast lane, or the slow lanes. Taken
+    /// in its lane (docs/adr/0047): the fast lane, or the slow lanes. Taken
     /// before the gate's command starts, so that the wait for it uses none
     /// of the gate's limit, which times the command alone (sunfmin/control#822).
     pub(crate) fn alone(repo: &Repo, command: &str, gate: Gate) -> Result<Self> {
@@ -654,7 +654,7 @@ impl Host<Note> for Hosted {
 }
 
 /// How busy this host is at `now`, as the queue starts a command by it
-/// (docs/adr/0088): the host reading crate's (docs/adr/0089), its memory held
+/// (docs/adr/0088): the host reading crate's (docs/adr/0058), its memory held
 /// to admission's floor in the host settings. `None`: neither its cores nor
 /// its load can be read.
 fn host_reading(
@@ -977,7 +977,7 @@ pub fn standing() -> Result<Vec<Ticket>> {
 
 /// The work `queue`'s running tickets run, as `procs` — one reading of the
 /// process table — finds it: what admission discounts of the host's load
-/// (docs/adr/0050) and the hot sampler of a worker's memory (docs/adr/0105).
+/// (docs/adr/0107) and the hot sampler of a worker's memory (docs/adr/0019).
 pub(crate) fn running_work(queue: &[Ticket], procs: &[crate::hot::Proc]) -> Work {
     let table: Vec<(u32, u32)> = procs.iter().map(|proc| (proc.pid, proc.ppid)).collect();
     afkconvoy_core::exclusive::running_work(queue, &table)

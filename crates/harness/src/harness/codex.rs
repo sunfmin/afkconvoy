@@ -3,7 +3,7 @@
 //! terminal, never as one run of a prompt: the fleet sends to, nudges and
 //! wakes a worker after it starts. It has no way to be told to leave the host
 //! user's configuration out, so it is given a user directory of the fleet's
-//! own (docs/adr/0013). It writes its configuration file in that directory
+//! own (docs/adr/0020). It writes its configuration file in that directory
 //! by itself: what the fleet says to it is said on the line that starts it,
 //! and in no shared file — each session's user directory is private, so a
 //! saved /model choice cannot affect a later worker. The hooks that ask the
@@ -15,8 +15,8 @@
 //! the fleet's copy of a role links the one to the other. No flag has it look
 //! nowhere else, so it also loads the skills of the host user's home, wherever
 //! its user directory is: the one thing of the host user's a worker is left
-//! with where it is given none of the others (docs/adr/0013). Given them
-//! (docs/adr/0017), it finds the host user's skills and rules where it finds a
+//! with where it is given none of the others (docs/adr/0020). Given them
+//! (docs/adr/0009), it finds the host user's skills and rules where it finds a
 //! user's, in its user directory, linked there; of two skills of one name it
 //! shows both, so the fleet turns off the host user's where a role's stands
 //! for it.
@@ -238,7 +238,7 @@ const RULES_FILES: &str = "project_doc_fallback_filenames";
 /// Has Codex load the rules of the directory it starts in alone. It loads
 /// those of every directory from the root of a project down, and with no
 /// file that marks a root there is none: nothing above a role's directory is
-/// the role's (docs/adr/0014).
+/// the role's (docs/adr/0009).
 const NO_ROOT: &str = "project_root_markers=[]";
 /// The key of Codex's configuration whose text is put before the model as a
 /// developer's: the one way Codex is given rules from outside the directory
@@ -473,7 +473,7 @@ pub(super) fn watch(command: &str, worktree: &str, kept: &str, model: Option<&st
 
 /// Codex keeps each session apart from every other. These names are the
 /// facts a worker start, the directory the host keeps and a watch start
-/// ask the harness for (docs/adr/0013).
+/// ask the harness for (docs/adr/0020).
 pub(super) const SESSION: super::Session = super::Session {
     fresh: "codex",
     note: HOME_NOTE,

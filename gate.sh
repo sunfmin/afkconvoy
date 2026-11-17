@@ -53,7 +53,7 @@ export PATH RUSTUP_TOOLCHAIN
 AFKCONVOY_BUILD_COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
 export AFKCONVOY_BUILD_COMMIT
 # Each step's seconds, said as the gate ends, green or red: the fleet times
-# only the whole gate (docs/adr/0024), and which step grew is for its log to
+# only the whole gate (docs/adr/0047), and which step grew is for its log to
 # say. A red gate says the steps it finished.
 began=$(date +%s)
 echo "gate: ${1:-fast and slow} gate started $(date -u '+%Y-%m-%dT%H:%M:%SZ') on $(hostname), commit $(git rev-parse HEAD)" >&2
@@ -151,8 +151,8 @@ left_behind() {
 }
 # The cores the gate is given are not its tests' threads. `afkconvoy
 # exclusive` says a gate's share of the host as NEXTEST_TEST_THREADS, in
-# cores: those afkconvoy may use where the host caps its share (ADR-0075),
-# fewer beside another lane (ADR-0049). nextest would run one test to a core,
+# cores: those afkconvoy may use where the host caps its share (ADR-0107),
+# fewer beside another lane (ADR-0047). nextest would run one test to a core,
 # and a test of the CLI waits on the processes it starts: on Studio64, 154
 # slow tests took 199, 98 and 55 seconds at 4, 8 and 16 at a time, in about
 # the same CPU, 16 at a time keeping 5.9 cores busy (sunfmin/control#965,
@@ -415,7 +415,7 @@ change_touches() {
 }
 # Each test past the line that the change did not touch is named in one open
 # issue, never a red: a second sighting adds to that issue and opens no other.
-# This is the path a slow gate takes (ADR-0024): the issue carries the ready
+# This is the path a slow gate takes (ADR-0047): the issue carries the ready
 # label, and the fleet works it. Where gh cannot reach the tracker the line
 # printed above is all there is, and the gate is not red for it.
 report_untouched() {
@@ -452,10 +452,33 @@ if [ -n "$tracked_tmp" ]; then
     exit 1
 fi
 step tracked-temp
+# An ADR states its decision as it stands: a later decision rewrites the ADR
+# it changes, or deletes it, and never piles an amendment or a "superseded
+# by" on it (docs/agents/domain.md). Every ADR a tracked file cites by number
+# exists, so deleting or folding one moves its citations with it.
+if [ -d docs/adr ]; then
+    piled=$(grep -lE '^(status:.*(amended|superseded)|#+ .*[Aa]mend)' docs/adr/*.md || true)
+    if [ -n "$piled" ]; then
+        echo "gate: an ADR changed by a later decision is rewritten to state it, not marked amended or superseded; rewrite these, or delete them and move their citations:" >&2
+        printf '%s\n' "$piled" >&2
+        exit 1
+    fi
+    dangling=$(git ls-files -z -- ':!:**/recorded/**' ':!:*.jsonl' |
+        xargs -0 grep -noE '(ADR-|docs/adr/)[0-9]{4}([^-0-9]|$)' 2>/dev/null |
+        awk -v known="$(ls docs/adr | cut -c1-4 | tr '\n' ' ')" '
+            BEGIN { n = split(known, k, " "); for (i = 1; i <= n; i++) have[k[i]] = 1 }
+            { if (match($0, /[0-9][0-9][0-9][0-9][^0-9]*$/) && !(substr($0, RSTART, 4) in have)) print }')
+    if [ -n "$dangling" ]; then
+        echo "gate: these cite an ADR docs/adr/ does not have; cite the ADR that holds the decision now:" >&2
+        printf '%s\n' "$dangling" >&2
+        exit 1
+    fi
+fi
+step adrs
 cargo fmt --all --check
 step fmt
 # Every function of the core crate and of the harness, gate and landing
-# crates it depends on (docs/adr/0058, docs/adr/0059, docs/adr/0060) is
+# crates it depends on (docs/adr/0058) is
 # checked: none is taken on trust.
 # Flux says so itself, in the summary that ends its run on a crate, so an
 # exemption counts however it is written. Flux summarises every dependency:

@@ -96,7 +96,7 @@ pub fn example(name: &str) -> Option<&'static Example> {
 impl Example {
     /// Its files as they are written for a team whose directory is `root`, a
     /// path from the root of its repo: the team file names each role by its
-    /// path from there (docs/adr/0014), and holds it as `./roles/<name>`.
+    /// path from there (docs/adr/0009), and holds it as `./roles/<name>`.
     fn files(&self, root: &str) -> Vec<(String, String)> {
         let written = |path: &str, text: &str| {
             if path == TEAM_FILE && !root.is_empty() {
@@ -152,7 +152,7 @@ fn team_files(
         }
     }
     // A role written here is named by its path from the root of the team's
-    // repo, not from the team's directory (docs/adr/0014).
+    // repo, not from the team's directory (docs/adr/0009).
     let under = |path: String| if root.is_empty() { path } else { format!("{root}/{path}") };
     let lines: Vec<String> = roles
         .iter()

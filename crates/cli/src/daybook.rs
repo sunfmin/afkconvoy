@@ -6,7 +6,7 @@
 //!
 //! What a daybook is — the entry's shape and its lesson, the day, the
 //! database and its schema, reading a span — is the daybook crate's
-//! (`afkconvoy-daybook`, ADR-0071), which another program uses too. What is
+//! (`afkconvoy-daybook`, ADR-0058), which another program uses too. What is
 //! afkconvoy's own is here: the kind of session its environment tells, the
 //! repo a checkout names, where the host's data directory is, and the weekly
 //! distillation's file.

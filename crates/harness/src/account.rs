@@ -294,7 +294,7 @@ impl Account {
     /// Its own home under the user's home `user_home`: a refreshing login's
     /// harness's user configuration, pointed at by that harness's variable
     /// (`Harness::config_dir`). A Claude Code account's session is given
-    /// none (docs/adr/0087).
+    /// none (docs/adr/0086).
     pub fn home(&self, user_home: &Path) -> PathBuf {
         user_home.join(HOMES).join(&self.name)
     }
@@ -334,7 +334,7 @@ impl Account {
     /// home being `user_home`: a Claude Code token goes in its environment
     /// alone, and the session keeps the configuration directory it would
     /// have — where its sessions, status line, rules and skills are, which
-    /// whoever started it reads (docs/adr/0087); a login, on its machine, is
+    /// whoever started it reads (docs/adr/0086); a login, on its machine, is
     /// its home, found logged in by its login file there.
     pub fn session(&self, here: &str, user_home: &Path) -> Session {
         let home = self.home(user_home);

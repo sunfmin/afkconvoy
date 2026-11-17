@@ -1,5 +1,5 @@
 //! The fleet report: the facts of one fleet that `plan`, `doctor` and the
-//! panel each show, read once from one look (docs/adr/0043) — intake, what
+//! panel each show, read once from one look (the `look` module) — intake, what
 //! each role's range leaves out, the roster entries that match nothing, the
 //! roles that can run nothing safely, the concurrency, the harness, the
 //! tracker, the Jira deliveries, admission, and each queued issue's planned

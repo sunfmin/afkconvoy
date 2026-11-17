@@ -587,7 +587,7 @@ pub fn ask_login_shell_again(dir: &Path, script: &str) -> Option<(bool, String)>
 }
 
 /// The login shell's answer to one question in one directory, asked once in
-/// this look (docs/adr/0043). A tick asked `type` and the flags question of
+/// this look (the `look` module). A tick asked `type` and the flags question of
 /// its default harness twice, once for the fleet's view of what it can start
 /// and once for the agent that starts it: a login shell each. In a sample of
 /// the slow gate's tests, 787 of 2,186 questions were asked again in the

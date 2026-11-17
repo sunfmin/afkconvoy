@@ -1,8 +1,8 @@
 //! One worker selection (sunfmin/control#225): what a worker runs — its
 //! harness and its model — decided once, from facts the fleet gathers once.
 //! The role's range (docs/adr/0020), the runnable host kit, the harness a
-//! checkout names (docs/adr/0045), the harnesses paused on the host, the
-//! issue's model label (docs/adr/0022, docs/adr/0093) and the harness user
+//! checkout names (docs/adr/0020), the harnesses paused on the host, the
+//! issue's model label (docs/adr/0093) and the harness user
 //! default are each a fact here. Dispatch, switch, patrol, plan and the
 //! panel all ask `select`, and its answer says how the model goes on the
 //! start line, whether or not the harness keeps a session of its own.
