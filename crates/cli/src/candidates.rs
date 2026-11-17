@@ -49,15 +49,16 @@ const AT_MOST: Duration = Duration::from_secs(1);
 
 /// How long a land turn holds a pending place, waiting on the chain and
 /// then for its lane, before it ends `waited_past_bound` and
-/// frees it (`pending_bound`). On Studio64, 2026-11-15, 25 live lands of
+/// frees it (`pending_bound`); a land turn waiting on a red base tip waits
+/// no longer either (`turn::take`, sunfmin/control#1302). On Studio64, 2026-11-15, 25 live lands of
 /// sunfmin/guild held pending places, one for 3 h 10 min; a round waits for
 /// every pending turn, so none started, and their polling spent the REST
 /// quota (sunfmin/control#1117).
-const PENDING_FOR: Duration = Duration::from_secs(30 * 60);
+pub(crate) const PENDING_FOR: Duration = Duration::from_secs(30 * 60);
 
 /// `PENDING_FOR`, or the seconds `AFKCONVOY_PENDING_SECONDS` says: the tests
 /// set it short.
-fn pending_bound() -> Duration {
+pub(crate) fn pending_bound() -> Duration {
     std::env::var("AFKCONVOY_PENDING_SECONDS")
         .ok()
         .and_then(|value| value.parse().ok())

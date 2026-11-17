@@ -4,9 +4,10 @@
 //! builds need kept free. Under it, the `target/` of each worktree no one
 //! builds in — its worker ended, or nothing wrote it for `IDLE_AFTER` — is
 //! reclaimed first; the exclusive queue grants no new heavy command while the
-//! disk is still under it after that. A disk under its floor, or falling
-//! faster than `FALLING`, is an episode, which `doctor` reports as a host
-//! finding with the worktrees that build and their `target/` sizes.
+//! disk is still under it after that. A disk under its floor, or falling at
+//! `FALLING` or faster toward a floor it would reach within `HORIZON`
+//! (`afkconvoy_core::disk::episode`), is an episode, which `doctor` reports as
+//! a host finding with the worktrees that build and their `target/` sizes.
 
 use std::collections::VecDeque;
 use std::os::unix::fs::MetadataExt;
@@ -15,7 +16,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use afkconvoy_core::admission::{Disk, SHARES};
 use afkconvoy_core::disk::{
-    BUILDING_WITHIN, FALL_OVER, FALLING, IDLE_AFTER, Target, Why, fall, floor, reserve, to_reclaim,
+    BUILDING_WITHIN, FALL_OVER, IDLE_AFTER, Target, Why, episode, fall, floor, reserve, to_reclaim,
 };
 use afkconvoy_core::exclusive::{Low, Ticket};
 use serde::{Deserialize, Serialize};
@@ -214,8 +215,8 @@ pub struct Seen {
     /// Whether the queue grants nothing new: under its floor still, after
     /// reclaiming what it could.
     pub held: bool,
-    /// Since when it has been under its floor or falling past `FALLING`, in
-    /// epoch seconds; `None`: it is neither.
+    /// Since when it has been in an episode (`afkconvoy_core::disk::episode`),
+    /// in epoch seconds; `None`: it is not.
     pub since: Option<u64>,
     /// The `target/` dirs reclaimed in this episode, the latest `RECLAIMED_KEPT`.
     #[serde(default)]
@@ -316,7 +317,7 @@ impl Keeper {
         let samples: Vec<(u64, u64)> = self.samples.iter().copied().collect();
         let fall = fall(&samples, FALL_OVER);
         let held = disk.free < floor;
-        let episode = held || fall.is_some_and(|fall| fall >= FALLING);
+        let episode = episode(disk.free, floor, fall);
         let before = self.seen.take().filter(|seen| seen.since.is_some());
         let since = episode.then(|| before.as_ref().and_then(|seen| seen.since).unwrap_or(now));
         let mut kept = match (&before, episode) {
@@ -368,7 +369,7 @@ pub fn building(checkouts: &[PathBuf], now: u64) -> Vec<Building> {
 }
 
 /// The host finding of a disk episode the host runner says (`Seen::since`):
-/// the disk under its floor, or falling past `FALLING`, with the worktrees
+/// the disk under its floor, or falling fast toward it, with the worktrees
 /// of `checkouts` that build and their `target/` sizes. None outside one.
 pub fn finding_of(seen: &Seen, checkouts: &[PathBuf], now: u64) -> Option<Finding> {
     let since = seen.since?;

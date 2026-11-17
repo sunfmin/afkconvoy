@@ -4,6 +4,11 @@
 //! episode. Decided here, from what the effect layer read; reading the disk,
 //! the worktrees and their processes is the effect layer's.
 //!
+//! A disk is in an episode while it is under its floor, or while its free
+//! space falls at `FALLING` or faster and, at that rate, would reach the floor
+//! within `HORIZON` (sunfmin/control#1301): a fast fall with terabytes above
+//! the floor — parallel builds writing their `target/` — is no episode.
+//!
 //! A build fills the disk while it runs: a fixed share of the volume holds
 //! back nothing that is already building. So the floor is what the builds
 //! that may run at once take, measured: the largest fresh build on record on
@@ -28,9 +33,13 @@ pub const BUILDING_WITHIN: u64 = 600;
 /// seconds, where its worker still runs: six hours.
 pub const IDLE_AFTER: u64 = 6 * 3600;
 
-/// The fall of the disk's free space, in bytes a minute, past which it is an
-/// episode whatever the floor: 2 GiB a minute empties 100 GB in under an hour.
+/// The fall of the disk's free space, in bytes a minute, from which it is
+/// fast: 2 GiB a minute empties 100 GB in under an hour.
 pub const FALLING: u64 = 2 << 30;
+
+/// How soon, in seconds, a fast fall must bring the disk's free space down to
+/// its floor to be an episode: within the hour.
+pub const HORIZON: u64 = 3600;
 
 /// How far back the fall of the disk's free space is read, in seconds.
 pub const FALL_OVER: u64 = 300;
@@ -137,6 +146,20 @@ pub fn fall(samples: &[(u64, u64)], over: u64) -> Option<u64> {
     Some(u64::try_from(fell * 60 / span as u128).unwrap_or(u64::MAX))
 }
 
+/// Whether a disk with `free` bytes free, held to `floor`, whose free space
+/// falls `fall` bytes a minute, is in an episode: under its floor, or falling
+/// at `FALLING` or faster toward a floor it would reach within `HORIZON`.
+pub fn episode(free: u64, floor: u64, fall: Option<u64>) -> bool {
+    if free < floor {
+        return true;
+    }
+    let Some(fall) = fall.filter(|fall| *fall >= FALLING) else {
+        return false;
+    };
+    let above = (free - floor) as u128;
+    above <= fall as u128 * HORIZON as u128 / 60
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +221,19 @@ mod tests {
         assert_eq!(fall(&[(0, 10), (30, 0)], FALL_OVER), None, "under a minute");
         assert_eq!(fall(&[(0, 10), (60, 20)], FALL_OVER), Some(0), "it rose");
         assert_eq!(fall(&[], FALL_OVER), None);
+    }
+
+    #[test]
+    fn a_fast_fall_is_an_episode_only_when_it_would_reach_the_floor_within_the_horizon() {
+        // A 1.8 TiB disk held to keep 18.6 GiB free, as on sunfmin/control#1301.
+        let floor = floor(1843 * GIB, 1, Some(186 * GIB / 10));
+        assert_eq!(floor, 186 * GIB / 10);
+        assert!(!episode(1638 * GIB, floor, Some(4 * GIB)), "1.6 TiB free: hours from the floor");
+        assert!(episode(120 * GIB, floor, Some(4 * GIB)), "120 GiB free: under half an hour");
+        assert!(!episode(120 * GIB, floor, Some(FALLING - 1)), "not fast");
+        assert!(!episode(120 * GIB, floor, None), "too few looks");
+        assert!(episode(floor - 1, floor, None), "under its floor");
+        assert!(episode(floor + 60 * 4 * GIB, floor, Some(4 * GIB)), "the hour, to the byte");
+        assert!(!episode(floor + 60 * 4 * GIB + 1, floor, Some(4 * GIB)), "past the hour");
     }
 }

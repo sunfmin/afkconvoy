@@ -18,7 +18,7 @@ Rebuildable space is reclaimed before anything is refused. Under the floor, the 
 
 A worker's own build outside the queue is bounded by its hot limit on writing, now a share of the disk free *over the floor*: it is hot before the disk reaches the floor, not after it is full.
 
-A disk under its floor, or whose free space falls faster than 2 GiB a minute over five minutes, is an episode: `doctor` reports it as a host finding naming the worktrees that build and the sizes of their `target/`.
+A disk under its floor, or whose free space falls faster than 2 GiB a minute over five minutes, is an episode — the fall only where, at that rate, it would bring the disk to its floor within the hour (sunfmin/control#1301): `doctor` reports it as a host finding naming the worktrees that build and the sizes of their `target/`.
 
 ## Considered options
 
