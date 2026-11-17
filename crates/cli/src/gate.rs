@@ -130,11 +130,11 @@ fn run_command(
         shell.env(crate::candidates::PROCESS_ENV, candidate.process_marker());
         // Five cold builds at once on eight cores passed the fast gate's
         // limit before their tests began (2026-10-29). It only warms the
-        // build: what reads the build's output asks cargo where it is, as
-        // huacnlee/cargo ignores this and builds into the candidate's own
-        // `./target`, warm from the crates it shares (sunfmin/control#1127).
+        // build, which goes into the candidate's own `./target`
+        // (sunfmin/control#1262); a target the environment names is the
+        // environment's.
         if std::env::var_os("CARGO_TARGET_DIR").is_none() {
-            shell.env("CARGO_TARGET_DIR", candidate.target());
+            candidate.seed(&repo.dir);
         }
     }
     let scope = candidate
