@@ -71,6 +71,7 @@ pub(crate) fn plan(
         crate::promote::Standing::read(&fleet.repo, &fleet.config, &fleet.gh.tracker)?
     {
         plan["proving"] = standing.json(now);
+        plan["proving"]["promotion"] = crate::promote::due(&standing, now).json();
     }
     if let Some(pressure) = crate::resources::from_elsewhere(now, &readings) {
         plan["memory_pressure"] = pressure;
