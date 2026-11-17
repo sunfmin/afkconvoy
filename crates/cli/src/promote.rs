@@ -532,3 +532,43 @@ It reads the remote's base branch and proving branch and the gate records, and w
 
 - A red promotion is not repaired in this version: fast-green PRs keep landing on the proving branch, and the base branch waits until a promotion of a later tip is green.
 - A repo that moves its base branch by hand, past the proving branch, is `diverged` until the proving branch holds the base branch's tip again."#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn standing(oldest: u64) -> Standing {
+        Standing {
+            base_branch: "main".into(),
+            proving_branch: "proving".into(),
+            base: "a".into(),
+            tip: "b".into(),
+            unpromoted: 1,
+            oldest: Some(oldest),
+            fast_forward: true,
+        }
+    }
+
+    fn host(waiting: usize, running: usize, busy: Option<u64>) -> Host {
+        Host { waiting, running, busy, share: 90, unread: None }
+    }
+
+    #[test]
+    fn a_promotion_starts_while_the_host_is_idle_or_once_the_oldest_change_waited_the_bound() {
+        let idle = Due::of(&standing(1000), &host(0, 0, Some(10)), 3600, 1010);
+        assert_eq!(idle, Due::Idle);
+        let busy = Due::of(&standing(1000), &host(2, 1, Some(10)), 3600, 1010);
+        assert!(!busy.starts());
+        let said = busy.said().unwrap();
+        assert!(said.contains("host busy: 2 worker commands waiting, 1 running"), "{said}");
+        assert!(said.contains("in 3590s at the bound"), "{said}");
+        let cores = Due::of(&standing(1000), &host(0, 0, Some(95)), 3600, 1010);
+        assert!(cores.said().unwrap().contains("cores 95% busy"), "{cores:?}");
+        let past = Due::of(&standing(1000), &host(1, 0, None), 3600, 4600);
+        assert!(past.starts() && past.said().unwrap().contains("starts anyway"), "{past:?}");
+        let unread = Host { unread: Some("no answer".into()), ..host(0, 0, None) };
+        assert!(!Due::of(&standing(1000), &unread, 3600, 1010).starts());
+        let current = Standing { tip: "a".into(), ..standing(1000) };
+        assert_eq!(Due::of(&current, &host(0, 0, None), 3600, 1010), Due::Not);
+    }
+}
